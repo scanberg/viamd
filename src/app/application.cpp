@@ -230,7 +230,7 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 }
 
-bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
+bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         MD_LOG_ERROR("Error while initializing glfw.");
@@ -258,7 +258,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     // Zero terminated
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
-    str_t ztitle = str_copy(title, md_temp_allocator(temp));
+    md_str_t ztitle = md_str_copy(title, md_temp_allocator(temp));
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
         MD_LOG_ERROR("Could not create glfw window.");
@@ -394,7 +394,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
 
-        str_t* str_paths = md_temp_alloc_array(temp, str_t, num_files);
+        md_str_t* str_paths = md_temp_alloc_array(temp, md_str_t, num_files);
         for (int i = 0; i < num_files; ++i) {
             str_paths[i] = {paths[i], strlen(paths[i])};
         }
@@ -507,7 +507,7 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
+bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, md_str_t filter) {    
     md_temp_scope_t temp = md_temp_begin();
     nfdu8char_t* out_path = NULL;
     MD_DEFER {
@@ -518,7 +518,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
     nfdresult_t result = NFD_ERROR;
 
     // Zero terminated variant
-    str_t zfilt = str_copy(filter, md_temp_allocator(temp));
+    md_str_t zfilt = md_str_copy(filter, md_temp_allocator(temp));
 
     // NFD(e)'s filter spec is a comma-separated list of extensions without the leading dot
     // (e.g. "png,jpg,jpeg"), which is exactly the format callers already pass as `filter` here.
@@ -554,18 +554,18 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         if (flags & FileDialogFlag_Save) {
             // If the user is saving through the dialogue and there is no extension
             // In such case we append the first extension found in the filter (if supplied)
-            str_t ext;
-            str_t path = str_from_cstr(out_path);
-            if (!extract_ext(&ext, path) && filter) {
+            md_str_t ext;
+            md_str_t path = md_str_from_cstr(out_path);
+            if (!md_extract_ext(&ext, path) && filter) {
                 // get ext from supplied filter (first match)
                 ext = filter;
-                str_find_char(&ext.len, ext, ',');
-                len += snprintf(str_buf + len, str_cap - len, "." STR_FMT, STR_ARG(ext));
+                md_str_find_char(&ext.len, ext, ',');
+                len += snprintf(str_buf + len, str_cap - len, "." MD_STR_FMT, MD_STR_ARG(ext));
             }
         }
         
         if (0 < len && len < (int)str_cap) {
-            replace_char(str_buf, len, '\\', '/');
+            md_replace_char(str_buf, len, '\\', '/');
             return true;
         }
 

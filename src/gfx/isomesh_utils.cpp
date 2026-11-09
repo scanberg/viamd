@@ -18,7 +18,7 @@
 
 namespace isomesh {
 
-static constexpr str_t v_shader_src_fs_triangle = STR_LIT(R"(
+static constexpr md_str_t v_shader_src_fs_triangle = MD_STR_LIT(R"(
 #version 410 core
 void main() {
     uint idx = uint(gl_VertexID) % 3U;
@@ -28,7 +28,7 @@ void main() {
 
 // The mean of the frames over the target (isomesh_accumulate.frag): the radiance scaled to the exact coverage
 // of the surfaces (Enderton's alpha correction), and the coverage of the surfaces and what they enclose
-static constexpr str_t f_shader_src_composite = STR_LIT(R"(
+static constexpr md_str_t f_shader_src_composite = MD_STR_LIT(R"(
 #version 410 core
 uniform sampler2D u_tex_color;
 uniform sampler2D u_tex_t;
@@ -179,7 +179,7 @@ static void blue_noise_generate(float* out, int n) {
     md_free(md_get_heap_allocator(), energy0, sizeof(float) * N);
 }
 
-static GLuint link(str_t v_src, str_t f_src, const char* name, str_t f_defines = {}) {
+static GLuint link(md_str_t v_src, md_str_t f_src, const char* name, md_str_t f_defines = {}) {
     GLuint v = gl::compile_shader_from_source(v_src, GL_VERTEX_SHADER);
     GLuint f = gl::compile_shader_from_source(f_src, GL_FRAGMENT_SHADER, f_defines);
     GLuint p = 0;
@@ -230,18 +230,18 @@ static void accumulate_locations(AccumulateProgram* ap) {
 #undef LOC
 
 void initialize() {
-    const str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
-    const str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
-    const str_t acc  = {(const char*)isomesh_accumulate_frag, isomesh_accumulate_frag_size};
+    const md_str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
+    const md_str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
+    const md_str_t acc  = {(const char*)isomesh_accumulate_frag, isomesh_accumulate_frag_size};
 
     shutdown();
 
     static const char* const pass_defines[5] = {"", "#define ISOMESH_PASS 1", "#define ISOMESH_PASS 2", "#define ISOMESH_PASS 3",
                                                 "#define ISOMESH_PASS 4"};
     for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
-        gl.pass[p].program = link(vert, frag, "pass", str_from_cstr(pass_defines[p]));
+        gl.pass[p].program = link(vert, frag, "pass", md_str_from_cstr(pass_defines[p]));
     }
-    gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
+    gl.mesh_tod.program   = link(vert, frag, "transmittance", MD_STR_LIT("#define ISOMESH_TRANSMITTANCE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
     gl.ok = gl.pass[Pass_Peel0].program && gl.pass[Pass_Peel1].program && gl.pass[Pass_Depth].program &&

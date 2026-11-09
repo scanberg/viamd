@@ -36,11 +36,11 @@
 // third of the gaussians.
 #define ESP_SCREENING_THRESHOLD 1.0e-6
 
-static const str_t ESP_TOTAL_DENSITY_PATH    = STR_INIT("orbital/total/density");
-static const str_t ESP_ALPHA_DENSITY_PATH    = STR_INIT("orbital/alpha/density");
-static const str_t ESP_BETA_DENSITY_PATH     = STR_INIT("orbital/beta/density");
-static const str_t ESP_NUCLEAR_CHARGE_PATH   = STR_INIT("qm/atom/nuclear_charge");
-static const str_t ESP_MOLECULAR_CHARGE_PATH = STR_INIT("vlx/molecular_charge");
+static const md_str_t ESP_TOTAL_DENSITY_PATH    = MD_STR_INIT("orbital/total/density");
+static const md_str_t ESP_ALPHA_DENSITY_PATH    = MD_STR_INIT("orbital/alpha/density");
+static const md_str_t ESP_BETA_DENSITY_PATH     = MD_STR_INIT("orbital/beta/density");
+static const md_str_t ESP_NUCLEAR_CHARGE_PATH   = MD_STR_INIT("qm/atom/nuclear_charge");
+static const md_str_t ESP_MOLECULAR_CHARGE_PATH = MD_STR_INIT("vlx/molecular_charge");
 
 // Read on the bits: viamd is built with fast math, where NAN need not compare as itself
 static inline bool is_finite_f64(double v) {
@@ -102,7 +102,7 @@ void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind from, Surf
 
 // The charges of the system's atoms, NAN for an atom that has none
 static const md_attribute_t* find_atom_charges(const md_system_t& sys) {
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
     if (!attr || md_attribute_element_count(&attr->format) != md_system_atom_count(&sys)) {
         return nullptr;
     }
@@ -127,7 +127,7 @@ static bool has_environment(const md_system_t& sys) {
 }
 
 // A per atom column of 'components' values in 'unit', or nothing when the system has none
-static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path, uint32_t components, md_unit_t unit) {
+static bool extract_atom_column(double* dst, const md_system_t& sys, md_str_t path, uint32_t components, md_unit_t unit) {
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
     const size_t num_atoms = md_system_atom_count(&sys);
     if (!attr || attr->format.components != components || md_attribute_value_count(&attr->format) != num_atoms) {
@@ -143,10 +143,10 @@ static bool extract_atom_column(double* dst, const md_system_t& sys, str_t path,
 // the induced dipoles in it beside that of the charges, as bare point dipoles - so they are added to
 // the sites' permanent dipoles rather than offered as a field of their own: the permanent part alone
 // is not a potential the QM density was ever in, and not that of a non-polarizable run either.
-static const str_t EMBEDDING_INDUCED_DIPOLE_PATH = STR_INIT("atom/induced_dipole");
+static const md_str_t EMBEDDING_INDUCED_DIPOLE_PATH = MD_STR_INIT("atom/induced_dipole");
 
 // Environment sites whose `components` values in `path` are finite and not all zero; 0 without the column
-static size_t count_environment_sites(const md_system_t& sys, double* scratch, str_t path, uint32_t components, md_unit_t unit) {
+static size_t count_environment_sites(const md_system_t& sys, double* scratch, md_str_t path, uint32_t components, md_unit_t unit) {
     if (!extract_atom_column(scratch, sys, path, components, unit)) {
         return 0;
     }
@@ -173,11 +173,11 @@ SurfaceFieldEmbeddingContent surface_field_embedding_content(const md_system_t& 
     double* scratch = (double*)md_temp_alloc(temp, sizeof(double) * 6 * MD_MAX(num_atoms, (size_t)1));
     const md_unit_t e_bohr  = md_unit_elementary_charge_bohr();
     const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
-    c.charges        = count_environment_sites(sys, scratch, STR_LIT("atom/charge"),        1, md_unit_elementary_charge());
-    c.dipoles        = count_environment_sites(sys, scratch, STR_LIT("atom/dipole"),        3, e_bohr);
-    c.quadrupoles    = count_environment_sites(sys, scratch, STR_LIT("atom/quadrupole"),    6, e_bohr2);
+    c.charges        = count_environment_sites(sys, scratch, MD_STR_LIT("atom/charge"),        1, md_unit_elementary_charge());
+    c.dipoles        = count_environment_sites(sys, scratch, MD_STR_LIT("atom/dipole"),        3, e_bohr);
+    c.quadrupoles    = count_environment_sites(sys, scratch, MD_STR_LIT("atom/quadrupole"),    6, e_bohr2);
     c.induced        = count_environment_sites(sys, scratch, EMBEDDING_INDUCED_DIPOLE_PATH, 3, e_bohr);
-    c.polarizable    = count_environment_sites(sys, scratch, STR_LIT("atom/polarizability"), 1, md_unit_none());
+    c.polarizable    = count_environment_sites(sys, scratch, MD_STR_LIT("atom/polarizability"), 1, md_unit_none());
     return c;
 }
 
@@ -203,9 +203,9 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
     double* Q  = (double*)md_temp_alloc(temp, sizeof(double) * 6 * num_atoms);
     const md_unit_t e_bohr2 = md_unit_mul(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 2));
     double* mu_ind = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms);
-    const bool has_mu  = extract_atom_column(mu, sys, STR_LIT("atom/dipole"),     3, md_unit_elementary_charge_bohr());
+    const bool has_mu  = extract_atom_column(mu, sys, MD_STR_LIT("atom/dipole"),     3, md_unit_elementary_charge_bohr());
     const bool has_ind = extract_atom_column(mu_ind, sys, EMBEDDING_INDUCED_DIPOLE_PATH, 3, md_unit_elementary_charge_bohr());
-    const bool has_Q   = extract_atom_column(Q,  sys, STR_LIT("atom/quadrupole"), 6, e_bohr2);
+    const bool has_Q   = extract_atom_column(Q,  sys, MD_STR_LIT("atom/quadrupole"), 6, e_bohr2);
 
     float*  xyz    = (float*)md_temp_alloc(temp, sizeof(float) * 3 * num_atoms);
     double* charge = (double*)md_temp_alloc(temp, sizeof(double) * num_atoms);
@@ -265,8 +265,8 @@ static const md_attribute_t* find_esp_density(const md_system_t& sys) {
 }
 
 static bool esp_available(const md_system_t& sys) {
-    return md_attributes_find(&sys.attributes, STR_LIT("basis/shell/atom_index")) != nullptr &&
-           md_attributes_find(&sys.attributes, STR_LIT("basis/primitive/exponent")) != nullptr &&
+    return md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
+           md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr &&
            md_attributes_find(&sys.attributes, ESP_NUCLEAR_CHARGE_PATH) != nullptr &&
            find_esp_density(sys) != nullptr;
 }
@@ -338,7 +338,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     const size_t num_d = num_ao * num_ao;
     double* D = (double*)md_temp_alloc(temp, sizeof(double) * num_d);
     if (!D || md_attribute_extract_f64(D, num_d, d_attr, md_attribute_slice_all(), md_unit_none()) != num_d) {
-        MD_LOG_ERROR("Electrostatic potential: could not read '" STR_FMT "'", STR_ARG(d_attr->path));
+        MD_LOG_ERROR("Electrostatic potential: could not read '" MD_STR_FMT "'", MD_STR_ARG(d_attr->path));
         return false;
     }
 
@@ -346,7 +346,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     const md_attribute_t* z_attr = md_attributes_find(&sys.attributes, ESP_NUCLEAR_CHARGE_PATH);
     const size_t num_z = z_attr ? md_attribute_element_count(&z_attr->format) : 0;
     if (num_z < num_atoms) {
-        MD_LOG_ERROR("Electrostatic potential: the basis spans %zu atoms and '" STR_FMT "' holds %zu", num_atoms, STR_ARG(ESP_NUCLEAR_CHARGE_PATH), num_z);
+        MD_LOG_ERROR("Electrostatic potential: the basis spans %zu atoms and '" MD_STR_FMT "' holds %zu", num_atoms, MD_STR_ARG(ESP_NUCLEAR_CHARGE_PATH), num_z);
         return false;
     }
     double* Z = (double*)md_temp_alloc(temp, sizeof(double) * num_z);
@@ -406,8 +406,8 @@ struct OrbitalRatio {
 };
 
 static inline bool basis_published(const md_system_t& sys) {
-    return md_attributes_find(&sys.attributes, STR_LIT("basis/shell/atom_index")) != nullptr &&
-           md_attributes_find(&sys.attributes, STR_LIT("basis/primitive/exponent")) != nullptr;
+    return md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
+           md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr;
 }
 
 static inline float ratio_value(double num, double rho, double floor_value) {
@@ -475,7 +475,7 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
             for (size_t k = 0; k < den.count; ++k) a->floor_value = MD_MIN(a->floor_value, we[k] / den.w[k]);   // |e_HOMO|
         }
     } else {
-        den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, STR_LIT("orbital/total/density"), heap);
+        den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, MD_STR_LIT("orbital/total/density"), heap);
         nom.count = md_qm_attachment_orbitals(&nom.rows, &nom.w, &nom.num_ao, &sys, heap);
         a->floor_value = 0.0;
     }

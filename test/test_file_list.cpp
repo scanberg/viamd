@@ -124,22 +124,22 @@ namespace {
 struct Written {
     viamd::serialization_state_t s = {};
     Written(const char* workspace, md_allocator_i* alloc) {
-        s.filename = str_from_cstr(workspace);
+        s.filename = md_str_from_cstr(workspace);
         s.sw = md_str_writer_create(alloc);
     }
     ~Written() { md_str_writer_free(&s.sw); }
-    str_t text() const { return md_str_writer_to_str(&s.sw); }
+    md_str_t text() const { return md_str_writer_to_str(&s.sw); }
 };
 
 struct Read {
     WorkspaceFiles files = {};
     SystemPlan plan = {};
     md_allocator_i* alloc = md_get_heap_allocator();
-    Read(str_t text, str_t folder, size_t max_runs = 1) {
+    Read(md_str_t text, md_str_t folder, size_t max_runs = 1) {
         viamd::deserialization_state_t d = {};
-        d.filename = STR_LIT("test.via");
+        d.filename = MD_STR_LIT("test.via");
         d.text = text;
-        str_t section;
+        md_str_t section;
         while (viamd::next_section_header(section, d)) {
             workspace_files_read(&files, d, folder, alloc);
         }
@@ -153,8 +153,8 @@ struct Read {
         std::string s;
         static const char* names[] = { "None", "System", "Supplement", "Trajectory", "Series" };
         for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
-            str_t name = str_from_cstr(plan.inputs[i].entry.path);
-            extract_file(&name, name);
+            md_str_t name = md_str_from_cstr(plan.inputs[i].entry.path);
+            md_extract_file(&name, name);
             if (!s.empty()) s += " ";
             s += std::string(name.ptr, name.len) + ":" + names[plan.inputs[i].role] + ":" + std::to_string(plan.inputs[i].run);
         }
@@ -166,13 +166,13 @@ struct Read {
 // or as given where it cannot be made so
 std::string resolved(const char* path) {
     char buf[1024];
-    const size_t len = md_path_write_canonical(buf, sizeof(buf), str_from_cstr(path));
+    const size_t len = md_path_write_canonical(buf, sizeof(buf), md_str_from_cstr(path));
     return len ? std::string(buf, len) : std::string(path);
 }
 
-bool contains(str_t text, const char* what) {
+bool contains(md_str_t text, const char* what) {
     size_t loc;
-    return str_find_str(&loc, text, str_from_cstr(what));
+    return md_str_find_str(&loc, text, md_str_from_cstr(what));
 }
 
 }  // namespace
@@ -182,10 +182,10 @@ UTEST(viamd_file_list, workspace_round_trip) {
 
     // A canonical folder ends with its separator
     char folder_buf[1024];
-    const size_t folder_len = md_path_write_canonical(folder_buf, sizeof(folder_buf), STR_LIT(VIAMD_TEST_DATA_DIR));
+    const size_t folder_len = md_path_write_canonical(folder_buf, sizeof(folder_buf), MD_STR_LIT(VIAMD_TEST_DATA_DIR));
     ASSERT_GT(folder_len, 0u);
-    const str_t folder = {folder_buf, folder_len};
-    ASSERT_TRUE(str_ends_with(folder, STR_LIT("/")));
+    const md_str_t folder = {folder_buf, folder_len};
+    ASSERT_TRUE(md_str_ends_with(folder, MD_STR_LIT("/")));
     auto at = [&](const char* name) { return std::string(folder.ptr, folder.len) + name; };
 
     List l;
@@ -204,7 +204,7 @@ UTEST(viamd_file_list, workspace_round_trip) {
     const std::string workspace = at("viamd_test.via"), data = at("sub dir/system.data");
     Written w(workspace.c_str(), alloc);
     EXPECT_EQ(8, file_list_serialize(w.s, &l.list, 3, 7));    // the next free run id
-    const str_t text = w.text();
+    const md_str_t text = w.text();
 
     // Ids as given, owners by id, paths relative to the workspace, the loader only where it was chosen
     EXPECT_TRUE(contains(text, "[System]\nId=3\nAtomCount=1234\n"));
@@ -229,20 +229,20 @@ UTEST(viamd_file_list, workspace_round_trip) {
 }
 
 UTEST(viamd_file_list, the_order_of_the_sections_does_not_matter) {
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "[Input]\nRun=5\nPath=/d/b.edr\n"
         "[Input]\nSystem=2\nPath=/d/a.top\n"
         "[Run]\nId=5\nSystem=2\n"
         "[Input]\nRun=5\nPath=/d/a.xtc\n"
         "[Input]\nSystem=2\nPath=/d/a.gro\n"
         "[System]\nId=2\n");
-    Read r(text, STR_LIT("/"));
+    Read r(text, MD_STR_LIT("/"));
     // Within an owner the order is the load order; the first of each is what builds or opens it
     { const std::string got_ = r.str(); EXPECT_STREQ("a.top:System:-1 a.gro:Supplement:-1 b.edr:Trajectory:0 a.xtc:Series:0", got_.c_str()); }
 }
 
 UTEST(viamd_file_list, more_than_this_build_loads_is_counted_and_left_out) {
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "[System]\nId=0\n[System]\nId=1\n"
         "[Run]\nId=0\nSystem=0\n[Run]\nId=1\nSystem=0\n[Run]\nId=2\nSystem=1\n"
         "[Input]\nSystem=0\nPath=/d/a.gro\n"
@@ -253,21 +253,21 @@ UTEST(viamd_file_list, more_than_this_build_loads_is_counted_and_left_out) {
         "[Input]\nRun=9\nPath=/d/dangling.xtc\n"
         "[Input]\nSystem=0\nRun=0\nPath=/d/both.xtc\n"
         "[Input]\nPath=/d/none.xtc\n");
-    Read one(text, STR_LIT("/"));
+    Read one(text, MD_STR_LIT("/"));
     { const std::string got_ = one.str(); EXPECT_STREQ("a.gro:System:-1 rep1.xtc:Trajectory:0", got_.c_str()); }
     EXPECT_EQ(1u, one.plan.skipped_systems);
     EXPECT_EQ(1u, one.plan.skipped_runs);      // of the first system
     EXPECT_EQ(3u, one.plan.skipped_inputs);    // dangling, both owners, none
 
     // A build that opens several runs takes them in order
-    Read two(text, STR_LIT("/"), 4);
+    Read two(text, MD_STR_LIT("/"), 4);
     { const std::string got_ = two.str(); EXPECT_STREQ("a.gro:System:-1 rep1.xtc:Trajectory:0 rep2.xtc:Trajectory:1", got_.c_str()); }
     EXPECT_EQ(0u, two.plan.skipped_runs);
 }
 
 UTEST(viamd_file_list, version_1_files_load_in_their_slots_order) {
     // Keys in any order: structure, trajectory, energies, series - and an empty slot is no file
-    const str_t text = STR_LIT(
+    const md_str_t text = MD_STR_LIT(
         "[Files]\n"
         "SeriesFile=b.xvg\n"
         "TrajectoryFile=traj/a.xtc\n"
@@ -275,7 +275,7 @@ UTEST(viamd_file_list, version_1_files_load_in_their_slots_order) {
         "MoleculeFile=a.gro\n"
         "SeriesFile=/abs/c.csv\n"
         "CoarseGrained=1\n");
-    Read r(text, STR_LIT("/ws/"));
+    Read r(text, MD_STR_LIT("/ws/"));
     { const std::string got_ = r.str(); EXPECT_STREQ("a.gro:System:-1 a.xtc:Trajectory:0 a.edr:Series:0 b.xvg:Series:0 c.csv:Series:0", got_.c_str()); }
     const std::string traj = resolved("/ws/traj/a.xtc"), csv = resolved("/abs/c.csv");   // kept: the checks take pointers
     EXPECT_STREQ(traj.c_str(), r.plan.inputs[1].entry.path);
@@ -283,17 +283,17 @@ UTEST(viamd_file_list, version_1_files_load_in_their_slots_order) {
     EXPECT_FALSE(r.plan.inputs[0].opens_own_run);   // it has a trajectory of its own
 
     // Without a trajectory the structure file's own frames were the run, and the series were along them
-    Read own(STR_LIT("[Files]\nMoleculeFile=a.pdb\nTrajectoryFile=\nSeriesFile=a.xvg\n"), STR_LIT("/ws/"));
+    Read own(MD_STR_LIT("[Files]\nMoleculeFile=a.pdb\nTrajectoryFile=\nSeriesFile=a.xvg\n"), MD_STR_LIT("/ws/"));
     { const std::string got_ = own.str(); EXPECT_STREQ("a.pdb:System:-1 a.xvg:Series:0", got_.c_str()); }
     EXPECT_TRUE(own.plan.inputs[0].opens_own_run);
 
     // Saved with nothing loaded
-    Read empty(STR_LIT("[Files]\nMoleculeFile=\nTrajectoryFile=\n"), STR_LIT("/ws/"));
+    Read empty(MD_STR_LIT("[Files]\nMoleculeFile=\nTrajectoryFile=\n"), MD_STR_LIT("/ws/"));
     EXPECT_EQ(0u, md_array_size(empty.plan.inputs));
 }
 
 UTEST(viamd_file_list, an_unknown_loader_falls_back_to_the_extension) {
-    Read r(STR_LIT("[System]\nId=0\n[Input]\nSystem=0\nPath=/x/file.h5\nLoader=nosuchformat\n"), STR_LIT("/"));
+    Read r(MD_STR_LIT("[System]\nId=0\n[Input]\nSystem=0\nPath=/x/file.h5\nLoader=nosuchformat\n"), MD_STR_LIT("/"));
     ASSERT_EQ(1u, md_array_size(r.plan.inputs));
     EXPECT_FALSE(r.plan.inputs[0].entry.explicit_type);
     EXPECT_EQ(LoaderType_Undefined, r.plan.inputs[0].entry.type);
@@ -305,15 +305,15 @@ UTEST(viamd_file_list, a_topology_keeps_the_file_of_its_coordinates) {
     const char* names[] = { "viamd_test_sys.prmtop", "viamd_test_md.nc", "viamd_test_eq.rst7", "viamd_test.via" };
     for (const char* n : names) {
         md_file_t f = {};
-        ASSERT_TRUE(md_file_open(&f, str_from_cstr(n), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+        ASSERT_TRUE(md_file_open(&f, md_str_from_cstr(n), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
         md_file_close(&f);
     }
     char folder_buf[1024];
-    const size_t folder_len = md_path_write_canonical(folder_buf, sizeof(folder_buf), STR_LIT("./"));
+    const size_t folder_len = md_path_write_canonical(folder_buf, sizeof(folder_buf), MD_STR_LIT("./"));
     ASSERT_GT(folder_len, 0u);
     std::string folder_s(folder_buf, folder_len);
     if (folder_s.back() != '/') folder_s += '/';
-    const str_t folder = {folder_s.c_str(), folder_s.size()};
+    const md_str_t folder = {folder_s.c_str(), folder_s.size()};
     auto at = [&](const char* name) { return folder_s + name; };
 
     // A topology built with the coordinates of a trajectory, which is also its run
@@ -335,7 +335,7 @@ UTEST(viamd_file_list, a_topology_keeps_the_file_of_its_coordinates) {
     const std::string workspace = at("viamd_test.via");    // Written keeps the pointer: the string has to outlive it
     Written w(workspace.c_str(), alloc);
     file_list_serialize(w.s, &one.list, 0, 0);
-    const str_t text = w.text();
+    const md_str_t text = w.text();
     EXPECT_TRUE(contains(text, "[Input]\nSystem=0\nPath=./viamd_test_sys.prmtop\nCoordinates=./viamd_test_md.nc\n"));
 
     Read r(text, folder);

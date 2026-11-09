@@ -11,7 +11,7 @@
 // address of an existing variable, so nothing has to move into a settings blob
 // in order to become persistent:
 //
-//     app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
+//     app_settings::bind(MD_STR_LIT("keep_representations"), &state.settings.keep_representations);
 //
 // Bind everything first, then call initialize(): it reads the .ini, so every
 // bound value is live the moment it returns. A bound address has to outlive the
@@ -24,16 +24,16 @@ namespace app_settings {
 // context exists, after every bind()/on_apply(), and before the first frame.
 void initialize();
 
-void bind(str_t key, bool*  value);
-void bind(str_t key, int*   value);
-void bind(str_t key, float* value);
-void bind(str_t key, float* values, size_t count);  // A vector (a colour), written as count numbers, comma separated
-void bind(str_t key, char*  buf, size_t cap);
+void bind(md_str_t key, bool*  value);
+void bind(md_str_t key, int*   value);
+void bind(md_str_t key, float* value);
+void bind(md_str_t key, float* values, size_t count);  // A vector (a colour), written as count numbers, comma separated
+void bind(md_str_t key, char*  buf, size_t cap);
 
 // An enum, as its value: the enums of the settings are plain C enums the size of an int. Its range is the
 // caller's to check (on_apply), a .ini can hold anything.
 template <typename E>
-inline void bind_enum(str_t key, E* value) {
+inline void bind_enum(md_str_t key, E* value) {
     static_assert(sizeof(E) == sizeof(int), "app_settings::bind_enum: an enum the size of an int");
     bind(key, (int*)value);
 }

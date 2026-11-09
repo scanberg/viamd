@@ -281,7 +281,7 @@ static struct {
     } upscale;
 } gl;
 
-static constexpr str_t v_shader_src_fs_quad = STR_LIT(
+static constexpr md_str_t v_shader_src_fs_quad = MD_STR_LIT(
 R"(
 #version 150 core
 
@@ -299,7 +299,7 @@ void main() {
 }
 )");
 
-static constexpr str_t f_shader_src_linearize_depth = STR_LIT(
+static constexpr md_str_t f_shader_src_linearize_depth = MD_STR_LIT(
 R"(
 #ifndef PERSPECTIVE
 #define PERSPECTIVE 1
@@ -326,7 +326,7 @@ void main() {
 )");
 
 
-static GLuint setup_program_from_source(str_t name, str_t f_shader_src, str_t defines = {}) {
+static GLuint setup_program_from_source(md_str_t name, md_str_t f_shader_src, md_str_t defines = {}) {
     GLuint f_shader = gl::compile_shader_from_source(f_shader_src, GL_FRAGMENT_SHADER, defines);
     GLuint program = 0;
 
@@ -437,8 +437,8 @@ static constexpr float R_MAX_FRACTION = 0.1f;   // largest sampling distance, fr
 static constexpr float SHADOW_R_MIN_PX       = 1.0f;
 static constexpr float SHADOW_R_MAX_FRACTION = 0.3f;
 
-static GLuint setup_variant(str_t name, str_t src, bool perspective) {
-    return setup_program_from_source(name, src, perspective ? STR_LIT("#define AO_PERSPECTIVE 1") : STR_LIT("#define AO_PERSPECTIVE 0"));
+static GLuint setup_variant(md_str_t name, md_str_t src, bool perspective) {
+    return setup_program_from_source(name, src, perspective ? MD_STR_LIT("#define AO_PERSPECTIVE 1") : MD_STR_LIT("#define AO_PERSPECTIVE 0"));
 }
 
 static GLuint* all_programs[] = {gl.ssao.program_ao, gl.ssao.program_ao_quality, gl.ssao.program_shadow,
@@ -454,20 +454,20 @@ static void delete_programs() {
 }
 
 void initialize_programs() {
-    const str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
-    const str_t quality_src  = {(const char*)ssao_bitmask_frag, ssao_bitmask_frag_size};
-    const str_t shadow_src   = {(const char*)screen_space_frag, screen_space_frag_size};
-    const str_t temporal_src = {(const char*)ssao_temporal_frag, ssao_temporal_frag_size};
-    const str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
-    const str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
+    const md_str_t ao_src       = {(const char*)ssao_frag, ssao_frag_size};
+    const md_str_t quality_src  = {(const char*)ssao_bitmask_frag, ssao_bitmask_frag_size};
+    const md_str_t shadow_src   = {(const char*)screen_space_frag, screen_space_frag_size};
+    const md_str_t temporal_src = {(const char*)ssao_temporal_frag, ssao_temporal_frag_size};
+    const md_str_t blur_src     = {(const char*)blur_frag, blur_frag_size};
+    const md_str_t upsample_src = {(const char*)upsample_frag, upsample_frag_size};
     delete_programs();
     for (int i = 0; i < 2; ++i) {
-        gl.ssao.program_ao[i]         = setup_variant(STR_LIT("ssao"),          ao_src,       i == 1);
-        gl.ssao.program_ao_quality[i] = setup_variant(STR_LIT("ssao quality"),  quality_src,  i == 1);
-        gl.ssao.program_shadow[i]     = setup_variant(STR_LIT("shadows"),       shadow_src,   i == 1);
-        gl.ssao.program_temporal[i]   = setup_variant(STR_LIT("ssao temporal"), temporal_src, i == 1);
-        gl.ssao.program_blur[i]       = setup_variant(STR_LIT("ssao blur"),     blur_src,     i == 1);
-        gl.ssao.program_upsample[i]   = setup_variant(STR_LIT("ssao upsample"), upsample_src, i == 1);
+        gl.ssao.program_ao[i]         = setup_variant(MD_STR_LIT("ssao"),          ao_src,       i == 1);
+        gl.ssao.program_ao_quality[i] = setup_variant(MD_STR_LIT("ssao quality"),  quality_src,  i == 1);
+        gl.ssao.program_shadow[i]     = setup_variant(MD_STR_LIT("shadows"),       shadow_src,   i == 1);
+        gl.ssao.program_temporal[i]   = setup_variant(MD_STR_LIT("ssao temporal"), temporal_src, i == 1);
+        gl.ssao.program_blur[i]       = setup_variant(MD_STR_LIT("ssao blur"),     blur_src,     i == 1);
+        gl.ssao.program_upsample[i]   = setup_variant(MD_STR_LIT("ssao upsample"), upsample_src, i == 1);
     }
 }
 
@@ -511,11 +511,11 @@ void shutdown() {
 
 namespace fxaa {
 void initialize() {
-    gl.luma.program = setup_program_from_source(STR_LIT("luma"), {(const char*)luma_frag, luma_frag_size});
+    gl.luma.program = setup_program_from_source(MD_STR_LIT("luma"), {(const char*)luma_frag, luma_frag_size});
     gl.luma.uniform_loc.tex_rgba = glGetUniformLocation(gl.luma.program, "u_tex_rgba");
 
-    str_t defines = STR_INIT("#define FXAA_PC 1\n#define FXAA_GLSL_130 1\n#define FXAA_QUALITY__PRESET 12");
-    gl.fxaa.program = setup_program_from_source(STR_LIT("fxaa"), {(const char*)fxaa_frag, fxaa_frag_size}, defines);
+    md_str_t defines = MD_STR_INIT("#define FXAA_PC 1\n#define FXAA_GLSL_130 1\n#define FXAA_QUALITY__PRESET 12");
+    gl.fxaa.program = setup_program_from_source(MD_STR_LIT("fxaa"), {(const char*)fxaa_frag, fxaa_frag_size}, defines);
     gl.fxaa.uniform_loc.tex_rgbl = glGetUniformLocation(gl.fxaa.program, "u_tex_rgbl");
     gl.fxaa.uniform_loc.rcp_res  = glGetUniformLocation(gl.fxaa.program, "u_rcp_res");
     gl.fxaa.uniform_loc.tc_scl   = glGetUniformLocation(gl.fxaa.program, "u_tc_scl");
@@ -566,8 +566,8 @@ static struct {
     GLuint ubo = 0;
 } compose;
 
-static void init_variant(decltype(compose.persp)& v, str_t defines) {
-    v.program = setup_program_from_source(STR_LIT("compose deferred"), {(const char*)compose_deferred_frag, compose_deferred_frag_size}, defines);
+static void init_variant(decltype(compose.persp)& v, md_str_t defines) {
+    v.program = setup_program_from_source(MD_STR_LIT("compose deferred"), {(const char*)compose_deferred_frag, compose_deferred_frag_size}, defines);
     v.uniform_loc.texture_depth = glGetUniformLocation(v.program, "u_texture_depth");
     v.uniform_loc.texture_color = glGetUniformLocation(v.program, "u_texture_color");
     v.uniform_loc.texture_normal = glGetUniformLocation(v.program, "u_texture_normal");
@@ -577,8 +577,8 @@ static void init_variant(decltype(compose.persp)& v, str_t defines) {
 }
 
 void initialize() {
-    init_variant(compose.persp, STR_LIT("#define COMPOSE_PROJECTION_PERSPECTIVE 1\n"));
-    init_variant(compose.ortho, STR_LIT("#define COMPOSE_PROJECTION_PERSPECTIVE 0\n"));
+    init_variant(compose.persp, MD_STR_LIT("#define COMPOSE_PROJECTION_PERSPECTIVE 1\n"));
+    init_variant(compose.ortho, MD_STR_LIT("#define COMPOSE_PROJECTION_PERSPECTIVE 0\n"));
     
     if (compose.ubo == 0) {
         glGenBuffers(1, &compose.ubo);
@@ -622,7 +622,7 @@ static struct {
 
 void initialize() {
     {
-        display_transform.program = setup_program_from_source(STR_LIT("Display transform"), {(const char*)display_frag, display_frag_size});
+        display_transform.program = setup_program_from_source(MD_STR_LIT("Display transform"), {(const char*)display_frag, display_frag_size});
         display_transform.uniform_loc.texture          = glGetUniformLocation(display_transform.program, "u_texture");
         display_transform.uniform_loc.texture_coverage = glGetUniformLocation(display_transform.program, "u_texture_coverage");
         display_transform.uniform_loc.texture_iso      = glGetUniformLocation(display_transform.program, "u_texture_iso");
@@ -634,8 +634,8 @@ void initialize() {
     }
     {
         // Fast Reversible (For AA) (Credits to Brian Karis: http://graphicrants.blogspot.com/2013/12/tone-mapping.html)
-        fast_reversible.program_forward = setup_program_from_source(STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, STR_LIT("#define USE_INVERSE 0"));
-        fast_reversible.program_inverse = setup_program_from_source(STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, STR_LIT("#define USE_INVERSE 1"));
+        fast_reversible.program_forward = setup_program_from_source(MD_STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, MD_STR_LIT("#define USE_INVERSE 0"));
+        fast_reversible.program_inverse = setup_program_from_source(MD_STR_LIT("Fast Reversible"), {(const char*)fast_reversible_frag, fast_reversible_frag_size}, MD_STR_LIT("#define USE_INVERSE 1"));
         fast_reversible.uniform_loc.texture = glGetUniformLocation(fast_reversible.program_forward, "u_texture");
     }
 }
@@ -658,7 +658,7 @@ static constexpr int   TILE             = 8;      // half-res pixels per tile si
 static constexpr float MAX_COC_FRACTION = 0.04f;  // CoC clamp, fraction of the viewport height
 static constexpr int   MAX_BANDS        = 8;
 
-static GLuint setup(str_t name, const unsigned char* src, size_t size, str_t defines = {}) {
+static GLuint setup(md_str_t name, const unsigned char* src, size_t size, md_str_t defines = {}) {
     return setup_program_from_source(name, {(const char*)src, size}, defines);
 }
 
@@ -693,13 +693,13 @@ void initialize_programs() {
         if (*prog) glDeleteProgram(*prog);
         *prog = 0;
     }
-    gl.bokeh_dof.program_prepass   = setup(STR_LIT("DOF prepass"),   dof_prepass_frag,   dof_prepass_frag_size);
-    gl.bokeh_dof.program_tile      = setup(STR_LIT("DOF tile"),      dof_tile_frag,      dof_tile_frag_size);
-    gl.bokeh_dof.program_gather    = setup(STR_LIT("DOF gather"),    dof_gather_frag,    dof_gather_frag_size);
-    gl.bokeh_dof.program_near_down = setup(STR_LIT("DOF near down"), dof_near_down_frag, dof_near_down_frag_size);
-    gl.bokeh_dof.program_near      = setup(STR_LIT("DOF near"),      dof_near_frag,      dof_near_frag_size);
-    gl.bokeh_dof.program_fill      = setup(STR_LIT("DOF fill"),      dof_fill_frag,      dof_fill_frag_size);
-    gl.bokeh_dof.program_composite = setup(STR_LIT("DOF composite"), dof_composite_frag, dof_composite_frag_size);
+    gl.bokeh_dof.program_prepass   = setup(MD_STR_LIT("DOF prepass"),   dof_prepass_frag,   dof_prepass_frag_size);
+    gl.bokeh_dof.program_tile      = setup(MD_STR_LIT("DOF tile"),      dof_tile_frag,      dof_tile_frag_size);
+    gl.bokeh_dof.program_gather    = setup(MD_STR_LIT("DOF gather"),    dof_gather_frag,    dof_gather_frag_size);
+    gl.bokeh_dof.program_near_down = setup(MD_STR_LIT("DOF near down"), dof_near_down_frag, dof_near_down_frag_size);
+    gl.bokeh_dof.program_near      = setup(MD_STR_LIT("DOF near"),      dof_near_frag,      dof_near_frag_size);
+    gl.bokeh_dof.program_fill      = setup(MD_STR_LIT("DOF fill"),      dof_fill_frag,      dof_fill_frag_size);
+    gl.bokeh_dof.program_composite = setup(MD_STR_LIT("DOF composite"), dof_composite_frag, dof_composite_frag_size);
 }
 
 void initialize_targets(int32_t width, int32_t height) {
@@ -768,7 +768,7 @@ static GLuint program_coverage = 0;
 static GLint uniform_loc_texture = -1;
 
 // The coverage of the geometry: 1 where the G-buffer holds a surface (its colour has alpha), 0 for the background
-constexpr str_t f_shader_src_coverage = STR_LIT(R"(
+constexpr md_str_t f_shader_src_coverage = MD_STR_LIT(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -780,7 +780,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_src_tex = STR_LIT(R"(
+constexpr md_str_t f_shader_src_tex = MD_STR_LIT(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -794,7 +794,7 @@ void main() {
 
 // Final copy to the (8-bit) output with triangular dither of +-1 LSB. Quantisation happens only here, so this replaces
 // the large per-pixel albedo noise compose used to add against banding.
-constexpr str_t f_shader_src_tex_dither = STR_LIT(R"(
+constexpr md_str_t f_shader_src_tex_dither = MD_STR_LIT(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -820,7 +820,7 @@ void main() {
 // The image is anti-aliased, the marks are not: they are a pixel soft, by a tent over the 3x3 pixels about each, which
 // four bilinear taps between the pixels make. The outline is the band in which the tent of where the marks are at all
 // is neither 0 nor 1: two pixels wide, and with taps further out (u_outline_step) as many times wider.
-constexpr str_t f_shader_src_marks = STR_LIT(R"(
+constexpr md_str_t f_shader_src_marks = MD_STR_LIT(R"(
 #version 410 core
 
 uniform sampler2D u_texture;
@@ -907,14 +907,14 @@ void main() {
 )");
 
 void initialize() {
-    program_tex = setup_program_from_source(STR_LIT("blit texture"), f_shader_src_tex);
+    program_tex = setup_program_from_source(MD_STR_LIT("blit texture"), f_shader_src_tex);
     uniform_loc_texture = glGetUniformLocation(program_tex, "u_texture");
 
-    program_tex_dither = setup_program_from_source(STR_LIT("blit texture dither"), f_shader_src_tex_dither);
+    program_tex_dither = setup_program_from_source(MD_STR_LIT("blit texture dither"), f_shader_src_tex_dither);
 
-    program_marks = setup_program_from_source(STR_LIT("present marks"), f_shader_src_marks);
+    program_marks = setup_program_from_source(MD_STR_LIT("present marks"), f_shader_src_marks);
 
-    program_coverage = setup_program_from_source(STR_LIT("blit coverage"), f_shader_src_coverage);
+    program_coverage = setup_program_from_source(MD_STR_LIT("blit coverage"), f_shader_src_coverage);
 
 }
 
@@ -933,7 +933,7 @@ static GLuint program_box = 0;
 static GLint uniform_loc_texture = -1;
 static GLint uniform_loc_inv_res_dir = -1;
 
-constexpr str_t f_shader_src_gaussian = STR_LIT(R"(
+constexpr md_str_t f_shader_src_gaussian = MD_STR_LIT(R"(
 #version 150 core
 
 #define KERNEL_RADIUS 5
@@ -973,7 +973,7 @@ void main() {
 }
 )");
 
-constexpr str_t f_shader_src_box = STR_LIT(R"(
+constexpr md_str_t f_shader_src_box = MD_STR_LIT(R"(
 #version 150 core
 
 uniform sampler2D u_texture;
@@ -996,11 +996,11 @@ void main() {
 )");
 
 void initialize() {
-    program_gaussian = setup_program_from_source(STR_LIT("gaussian blur"), f_shader_src_gaussian);
+    program_gaussian = setup_program_from_source(MD_STR_LIT("gaussian blur"), f_shader_src_gaussian);
     uniform_loc_texture = glGetUniformLocation(program_gaussian, "u_texture");
     uniform_loc_inv_res_dir = glGetUniformLocation(program_gaussian, "u_inv_res_dir");
 
-    program_box = setup_program_from_source(STR_LIT("box blur"), f_shader_src_box);
+    program_box = setup_program_from_source(MD_STR_LIT("box blur"), f_shader_src_box);
 }
 
 void shutdown() {
@@ -1048,26 +1048,26 @@ struct {
 
 void initialize_programs() {
     {
-        blit_velocity.program = setup_program_from_source(STR_LIT("screen-space velocity"), {(const char*)blit_velocity_frag, blit_velocity_frag_size});
+        blit_velocity.program = setup_program_from_source(MD_STR_LIT("screen-space velocity"), {(const char*)blit_velocity_frag, blit_velocity_frag_size});
 		blit_velocity.uniform_loc.tex_depth = glGetUniformLocation(blit_velocity.program, "u_tex_depth");
         blit_velocity.uniform_loc.curr_clip_to_prev_clip_mat = glGetUniformLocation(blit_velocity.program, "u_curr_clip_to_prev_clip_mat");
         blit_velocity.uniform_loc.jitter_uv = glGetUniformLocation(blit_velocity.program, "u_jitter_uv");
 
     }
     {
-        str_t defines = STR_INIT("#define TILE_SIZE " MD_STRINGIFY_VAL(VEL_TILE_SIZE));
-        blit_tilemax.program = setup_program_from_source(STR_LIT("tilemax"), {(const char*)blit_tilemax_frag, blit_tilemax_frag_size}, defines);
+        md_str_t defines = MD_STR_INIT("#define TILE_SIZE " MD_STRINGIFY_VAL(VEL_TILE_SIZE));
+        blit_tilemax.program = setup_program_from_source(MD_STR_LIT("tilemax"), {(const char*)blit_tilemax_frag, blit_tilemax_frag_size}, defines);
         blit_tilemax.uniform_loc.tex_vel = glGetUniformLocation(blit_tilemax.program, "u_tex_vel");
         blit_tilemax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_tilemax.program, "u_tex_linear_depth");
     }
     {
-        blit_neighbormax.program = setup_program_from_source(STR_LIT("neighbormax"), {(const char*)blit_neighbormax_frag, blit_neighbormax_frag_size});
+        blit_neighbormax.program = setup_program_from_source(MD_STR_LIT("neighbormax"), {(const char*)blit_neighbormax_frag, blit_neighbormax_frag_size});
         blit_neighbormax.uniform_loc.tex_vel = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel");
         blit_neighbormax.uniform_loc.tex_linear_depth = glGetUniformLocation(blit_neighbormax.program, "u_tex_linear_depth");
         blit_neighbormax.uniform_loc.tex_vel_texel_size = glGetUniformLocation(blit_neighbormax.program, "u_tex_vel_texel_size");
     }
     {
-        blit_dilate.program = setup_program_from_source(STR_LIT("velocity dilate"), { (const char*)blit_velocity_dilate_frag, blit_velocity_dilate_frag_size });
+        blit_dilate.program = setup_program_from_source(MD_STR_LIT("velocity dilate"), { (const char*)blit_velocity_dilate_frag, blit_velocity_dilate_frag_size });
         blit_dilate.uniform_loc.tex_vel = glGetUniformLocation(blit_dilate.program, "u_tex_vel");
         blit_dilate.uniform_loc.texel_size = glGetUniformLocation(blit_dilate.program, "u_texel_size");
     }
@@ -1142,7 +1142,7 @@ static void get_locations(decltype(gl.temporal[0][0]) p) {  // a reference to on
 
 // Catmull-Rom from nine bilinear taps (the four of a row of weights folded into two where they are the same sign):
 // sharp, but each frame on its own, for upscaling without TAA. Clamped at 0 for its overshoot.
-static constexpr str_t f_shader_src_upscale = STR_LIT(R"(
+static constexpr md_str_t f_shader_src_upscale = MD_STR_LIT(R"(
 #version 150 core
 uniform sampler2D u_tex;
 uniform vec4 u_src_texel;   // 1 / size, size of u_tex
@@ -1171,16 +1171,16 @@ void main() {
 )");
 
 void initialize() {
-    const str_t src = {(const char*)temporal_frag, temporal_frag_size};
-    gl.temporal[1][0].program = setup_program_from_source(STR_LIT("temporal aa + motion-blur"), src);
-    gl.temporal[0][0].program = setup_program_from_source(STR_LIT("temporal aa"), src, STR_LIT("#define USE_MOTION_BLUR 0\n"));
-    gl.temporal[1][1].program = setup_program_from_source(STR_LIT("temporal aa upscale + motion-blur"), src, STR_LIT("#define UPSCALE 1\n"));
-    gl.temporal[0][1].program = setup_program_from_source(STR_LIT("temporal aa upscale"), src, STR_LIT("#define USE_MOTION_BLUR 0\n#define UPSCALE 1\n"));
+    const md_str_t src = {(const char*)temporal_frag, temporal_frag_size};
+    gl.temporal[1][0].program = setup_program_from_source(MD_STR_LIT("temporal aa + motion-blur"), src);
+    gl.temporal[0][0].program = setup_program_from_source(MD_STR_LIT("temporal aa"), src, MD_STR_LIT("#define USE_MOTION_BLUR 0\n"));
+    gl.temporal[1][1].program = setup_program_from_source(MD_STR_LIT("temporal aa upscale + motion-blur"), src, MD_STR_LIT("#define UPSCALE 1\n"));
+    gl.temporal[0][1].program = setup_program_from_source(MD_STR_LIT("temporal aa upscale"), src, MD_STR_LIT("#define USE_MOTION_BLUR 0\n#define UPSCALE 1\n"));
     for (auto& row : gl.temporal) {
         for (auto& p : row) get_locations(p);
     }
 
-    gl.upscale.program       = setup_program_from_source(STR_LIT("upscale"), f_shader_src_upscale);
+    gl.upscale.program       = setup_program_from_source(MD_STR_LIT("upscale"), f_shader_src_upscale);
     gl.upscale.loc_tex       = glGetUniformLocation(gl.upscale.program, "u_tex");
     gl.upscale.loc_src_texel = glGetUniformLocation(gl.upscale.program, "u_src_texel");
     gl.upscale.loc_src_size  = glGetUniformLocation(gl.upscale.program, "u_src_size");
@@ -1201,7 +1201,7 @@ void shutdown() {
 namespace sharpen {
 static GLuint program = 0;
 void initialize() {
-    constexpr str_t f_shader_src_sharpen = STR_LIT(
+    constexpr md_str_t f_shader_src_sharpen = MD_STR_LIT(
  R"(#version 150 core
 
     uniform sampler2D u_tex;
@@ -1219,7 +1219,7 @@ void initialize() {
         float neg_weight = -u_weight * 0.25;
         out_frag = vec4(vec3(pos_weight * cc + neg_weight * (cl + ct + cr + cb)), 1.0);
     })");
-    program = setup_program_from_source(STR_LIT("sharpen"), f_shader_src_sharpen);
+    program = setup_program_from_source(MD_STR_LIT("sharpen"), f_shader_src_sharpen);
 }
 
 void sharpen(GLuint in_texture, float weight = 1.0f) {
@@ -1247,9 +1247,9 @@ static void initialize_programs() {
 
     gl.v_shader_fs_quad = gl::compile_shader_from_source(v_shader_src_fs_quad, GL_VERTEX_SHADER);
 
-    gl.linear_depth.linearize.program_persp = setup_program_from_source(STR_LIT("linearize depth persp"), f_shader_src_linearize_depth, STR_LIT("#version 150 core\n#define PERSPECTIVE 1"));
-    gl.linear_depth.linearize.program_ortho = setup_program_from_source(STR_LIT("linearize depth ortho"), f_shader_src_linearize_depth, STR_LIT("#version 150 core\n#define PERSPECTIVE 0"));
-    gl.linear_depth.downsample.program = setup_program_from_source(STR_LIT("linear depth downsample"), {(const char*)depth_downsample_frag, depth_downsample_frag_size});
+    gl.linear_depth.linearize.program_persp = setup_program_from_source(MD_STR_LIT("linearize depth persp"), f_shader_src_linearize_depth, MD_STR_LIT("#version 150 core\n#define PERSPECTIVE 1"));
+    gl.linear_depth.linearize.program_ortho = setup_program_from_source(MD_STR_LIT("linearize depth ortho"), f_shader_src_linearize_depth, MD_STR_LIT("#version 150 core\n#define PERSPECTIVE 0"));
+    gl.linear_depth.downsample.program = setup_program_from_source(MD_STR_LIT("linear depth downsample"), {(const char*)depth_downsample_frag, depth_downsample_frag_size});
 
     ssao::initialize_programs();
     dof::initialize_programs();

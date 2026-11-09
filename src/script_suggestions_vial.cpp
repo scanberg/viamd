@@ -38,16 +38,16 @@ constexpr size_t key_max[Key_Count] = {4, 0, 3, 4, 3};     // the most values ea
 const char* const predefined[] = {"protein", "nucleic", "water", "ion", "lipid", "backbone", "sidechain"};
 constexpr size_t num_predefined = sizeof(predefined) / sizeof(predefined[0]);
 
-str_t take(md_str_writer_t* sb, md_allocator_i* alloc) {
-    str_t s = str_copy(md_str_writer_to_str(sb), alloc);
+md_str_t take(md_str_writer_t* sb, md_allocator_i* alloc) {
+    md_str_t s = md_str_copy(md_str_writer_to_str(sb), alloc);
     md_str_writer_reset(sb);
     return s;
 }
 
 // A string is written in single quotes, or double where it holds a single one; one which holds both, a backslash,
 // something that cannot be typed or a glob character (a name is matched as a glob) is not written
-bool quotable(str_t s) {
-    if (str_empty(s)) return false;
+bool quotable(md_str_t s) {
+    if (md_str_empty(s)) return false;
     bool dq = false, sq = false;
     for (size_t i = 0; i < s.len; ++i) {
         const unsigned char ch = (unsigned char)s.ptr[i];
@@ -58,16 +58,16 @@ bool quotable(str_t s) {
     return !(dq && sq);
 }
 
-void write_quoted(md_str_writer_t* sb, str_t s) {
+void write_quoted(md_str_writer_t* sb, md_str_t s) {
     size_t loc;
-    const char q = str_find_char(&loc, s, '\'') ? '"' : '\'';
+    const char q = md_str_find_char(&loc, s, '\'') ? '"' : '\'';
     *sb += q;
     *sb += s;
     *sb += q;
 }
 
 // 'A', or ['A', 'B']
-void write_strings(md_str_writer_t* sb, const str_t* s, size_t n) {
+void write_strings(md_str_writer_t* sb, const md_str_t* s, size_t n) {
     if (n > 1) *sb += '[';
     for (size_t i = 0; i < n; ++i) {
         if (i) *sb += ", ";
@@ -103,15 +103,15 @@ bool write_ids(md_str_writer_t* sb, const int32_t* v, size_t n) {
 }
 
 // Terms joined by `or`. `and` binds tighter, so a term with one needs nothing around it.
-void write_or(md_str_writer_t* sb, const str_t* terms, size_t n) {
+void write_or(md_str_writer_t* sb, const md_str_t* terms, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         if (i) *sb += " or ";
         *sb += terms[i];
     }
 }
 
-void push_unique_str(md_array(str_t)* arr, str_t s, md_allocator_i* alloc) {
-    for (size_t i = 0; i < md_array_size(*arr); ++i) if (str_eq((*arr)[i], s)) return;
+void push_unique_str(md_array(md_str_t)* arr, md_str_t s, md_allocator_i* alloc) {
+    for (size_t i = 0; i < md_array_size(*arr); ++i) if (md_str_eq((*arr)[i], s)) return;
     md_array_push(*arr, s, alloc);
 }
 
@@ -129,7 +129,7 @@ int32_t res_chain(const Ctx& c, int32_t res) { return res >= 0 ? md_system_chain
 
 // The value of a keyword for a particle, as a string or an int; false where it has none (a particle of no residue has
 // no resid, one of no chain no chain)
-bool key_str(const Ctx& c, Key k, size_t atom, str_t* out) {
+bool key_str(const Ctx& c, Key k, size_t atom, md_str_t* out) {
     const md_system_t& sys = *c.sys;
     switch (k) {
     case Key_Name: *out = md_atom_name(&sys.atom, atom); return quotable(*out);
@@ -171,9 +171,9 @@ const char* key_word(Key k) {
 // has none, or there are too many.
 struct KeyValues {
     bool usable = false;
-    md_array(str_t) strs = 0;       // the strings, in the order first met
+    md_array(md_str_t) strs = 0;       // the strings, in the order first met
     md_array(int32_t) ids = 0;      // resid: sorted, unique
-    str_t text = {};                // as written: 'CA', ['N', 'CA'], 10..20
+    md_str_t text = {};                // as written: 'CA', ['N', 'CA'], 10..20
 };
 
 void key_values(KeyValues* kv, const Ctx& c, Key k, md_bitset_t sel) {
@@ -184,7 +184,7 @@ void key_values(KeyValues* kv, const Ctx& c, Key k, md_bitset_t sel) {
             if (!key_int(c, it.idx, &id)) return;
             md_array_push(kv->ids, id, c.temp);
         } else {
-            str_t s;
+            md_str_t s;
             if (!key_str(c, k, it.idx, &s)) return;
             push_unique_str(&kv->strs, s, c.temp);
             if (md_array_size(kv->strs) > key_max[k]) return;
@@ -212,17 +212,17 @@ bool key_holds(const Ctx& c, Key k, const KeyValues& kv, size_t atom) {
         for (size_t i = 0; i < md_array_size(kv.ids); ++i) if (kv.ids[i] == id) return true;
         return false;
     }
-    str_t s;
+    md_str_t s;
     if (!key_str(c, k, atom, &s)) return false;
     for (size_t i = 0; i < md_array_size(kv.strs); ++i) {
-        if (k == Key_Element ? str_eq_ignore_case(kv.strs[i], s) : str_eq(kv.strs[i], s)) return true;
+        if (k == Key_Element ? md_str_eq_ignore_case(kv.strs[i], s) : md_str_eq(kv.strs[i], s)) return true;
     }
     return false;
 }
 
 // ### VALIDATION ###
 
-bool filter_sets(md_array(md_bitset_t)* sets, str_t expr, const md_system_t& sys, md_allocator_i* temp) {
+bool filter_sets(md_array(md_bitset_t)* sets, md_str_t expr, const md_system_t& sys, md_allocator_i* temp) {
     script::FilterCtx ctx = {};
     ctx.sys = &sys;
     *sets = 0;
@@ -230,7 +230,7 @@ bool filter_sets(md_array(md_bitset_t)* sets, str_t expr, const md_system_t& sys
 }
 
 // The particles the expression picks, all its sets as one
-bool filter_union(md_bitmask_t* out, str_t expr, const md_system_t& sys, md_allocator_i* temp, size_t* num_sets = nullptr) {
+bool filter_union(md_bitmask_t* out, md_str_t expr, const md_system_t& sys, md_allocator_i* temp, size_t* num_sets = nullptr) {
     md_array(md_bitset_t) sets = 0;
     if (!filter_sets(&sets, expr, sys, temp)) return false;
     *out = md_bitmask_create(0, (uint32_t)sys.atom.count, temp);
@@ -239,12 +239,12 @@ bool filter_union(md_bitmask_t* out, str_t expr, const md_system_t& sys, md_allo
     return true;
 }
 
-bool picks_exactly(str_t expr, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, size_t* num_sets = nullptr) {
+bool picks_exactly(md_str_t expr, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, size_t* num_sets = nullptr) {
     md_bitmask_t m;
     return filter_union(&m, expr, sys, temp, num_sets) && md_bitset_equal(md_bitmask_view(&m), sel);
 }
 
-bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
+bool compiles(md_str_t src, const md_system_t& sys, md_allocator_i* temp) {
     script::Program* ir = script::compile(script::Language::V2, src, script::CompileDesc{&sys}, temp);
     const bool ok = script::valid(ir) && script::num_errors(ir) == 0;
     script::program_free(ir);
@@ -255,7 +255,7 @@ bool compiles(str_t src, const md_system_t& sys, md_allocator_i* temp) {
 
 // particle(k=v, ...) of every combination of up to three keywords, optionally within a predefined set that holds the
 // selection, which picks it: tested cheaply first, then evaluated. The shortest few.
-void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
+void describe(md_array(md_str_t)* out, const Ctx& c, md_bitset_t sel) {
     const md_system_t& sys = *c.sys;
     const uint64_t count = md_bitset_count(sel);
 
@@ -263,11 +263,11 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     for (int k = 0; k < Key_Count; ++k) key_values(&kv[k], c, (Key)k, sel);
 
     // The predefined sets which hold the selection, each a context the keywords can narrow
-    struct Context { str_t name; md_bitmask_t atoms; };
+    struct Context { md_str_t name; md_bitmask_t atoms; };
     md_array(Context) contexts = 0;
     md_array_push(contexts, Context{}, c.temp);     // none: the system
     for (size_t i = 0; i < num_predefined; ++i) {
-        Context ctx = {str_from_cstr(predefined[i]), {}};
+        Context ctx = {md_str_from_cstr(predefined[i]), {}};
         if (!filter_union(&ctx.atoms, ctx.name, sys, c.temp)) continue;
         const md_bitset_t view = md_bitmask_view(&ctx.atoms);
         if (md_bitset_count(view) < count) continue;
@@ -309,7 +309,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     }
     // Only those that say nothing more than they need: no other picks it with fewer of its keywords, in the system or
     // in its own context. particle(name='CA') is enough; protein and particle(name='CA') adds nothing.
-    md_array(str_t) found = 0;
+    md_array(md_str_t) found = 0;
     md_str_writer_t sb = md_str_writer_create(c.temp);
     for (size_t i = 0; i < md_array_size(fits); ++i) {
         const Found& f = fits[i];
@@ -343,7 +343,7 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
     }
     // The shortest first, of those which pick it
     for (size_t i = 1; i < md_array_size(found); ++i) {
-        for (size_t k = i; k > 0 && found[k].len < found[k - 1].len; --k) { str_t t = found[k]; found[k] = found[k - 1]; found[k - 1] = t; }
+        for (size_t k = i; k > 0 && found[k].len < found[k - 1].len; --k) { md_str_t t = found[k]; found[k] = found[k - 1]; found[k - 1] = t; }
     }
     size_t taken = 0;
     for (size_t i = 0; i < md_array_size(found) && taken < MAX_DESCRIPTIONS; ++i) {
@@ -361,14 +361,14 @@ void describe(md_array(str_t)* out, const Ctx& c, md_bitset_t sel) {
 bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     const md_system_t& sys = *c.sys;
     if (!sys.residue.seq_id) return false;
-    md_array(str_t) terms = 0;
+    md_array(md_str_t) terms = 0;
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_str_writer_t names = md_str_writer_create(c.temp);
 
     // A run: residues one after another in the system, of one chain, with ids one after another, all whole or all with
     // the same names selected
     int32_t run_chain = -2, run_beg = 0, run_end = 0, run_last_res = -2;
-    str_t run_names = {};
+    md_str_t run_names = {};
     auto flush = [&]() {
         if (run_chain == -2) return;
         sb += "particle(";
@@ -379,7 +379,7 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
         }
         if (run_beg == run_end) md_str_writer_fmt(&sb, "resid=%d", run_beg);
         else md_str_writer_fmt(&sb, "resid=%d..%d", run_beg, run_end);
-        if (!str_empty(run_names)) { sb += ", name="; sb += run_names; }
+        if (!md_str_empty(run_names)) { sb += ", name="; sb += run_names; }
         sb += ')';
         md_array_push(terms, take(&sb, c.temp), c.temp);
         run_chain = -2;
@@ -393,12 +393,12 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
         covered += n;
         const int32_t chain = res_chain(c, (int32_t)r);
         if (chain >= 0 && !quotable(md_system_chain_id(&sys, (size_t)chain))) return false;
-        str_t nm = {};
+        md_str_t nm = {};
         if (n != ar.end - ar.beg) {
-            md_array(str_t) list = 0;
+            md_array(md_str_t) list = 0;
             for (uint32_t a = ar.beg; a < ar.end; ++a) {
                 if (!md_bitset_test(sel, a)) continue;
-                const str_t s = md_atom_name(&sys.atom, a);
+                const md_str_t s = md_atom_name(&sys.atom, a);
                 if (!quotable(s)) return false;
                 md_array_push(list, s, c.temp);
             }
@@ -406,7 +406,7 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
             nm = take(&names, c.temp);
         }
         const int32_t id = (int32_t)md_system_residue_seq_id(&sys, r);
-        const bool extends = run_chain == chain && run_last_res + 1 == (int32_t)r && run_end + 1 == id && str_eq(run_names, nm);
+        const bool extends = run_chain == chain && run_last_res + 1 == (int32_t)r && run_end + 1 == id && md_str_eq(run_names, nm);
         if (!extends) {
             flush();
             if (md_array_size(terms) >= c.max_terms) return false;
@@ -425,7 +425,7 @@ bool write_residues(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
 
 // By their positions in the system: particle[4], particle[10:20], particle[[3, 7, 9]], joined by `or`
 bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
-    md_array(str_t) terms = 0;
+    md_array(md_str_t) terms = 0;
     md_array(uint32_t) singles = 0;
     md_str_writer_t sb = md_str_writer_create(c.temp);
     md_bitset_iter_t it = md_bitset_iter(sel);
@@ -460,26 +460,26 @@ bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
     return md_str_writer_len(out) <= c.limit;
 }
 
-void push_suggestion(md_array(ScriptSuggestion)* out, str_t text, str_t hint, md_allocator_i* alloc) {
-    for (size_t i = 0; i < md_array_size(*out); ++i) if (str_eq((*out)[i].text, text)) return;
-    ScriptSuggestion s = {str_copy(text, alloc), str_copy(hint, alloc)};
+void push_suggestion(md_array(ScriptSuggestion)* out, md_str_t text, md_str_t hint, md_allocator_i* alloc) {
+    for (size_t i = 0; i < md_array_size(*out); ++i) if (md_str_eq((*out)[i].text, text)) return;
+    ScriptSuggestion s = {md_str_copy(text, alloc), md_str_copy(hint, alloc)};
     md_array_push(*out, s, alloc);
 }
 
 }  // namespace
 
-static void smiles_selection_line(md_array(ScriptSuggestion)* out, str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc);
+static void smiles_selection_line(md_array(ScriptSuggestion)* out, md_str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc);
 
-md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
+md_array(ScriptSuggestion) script_suggest_selection_vial(md_str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
     md_array(ScriptSuggestion) out = 0;
-    if (md_bitset_empty(sel) || sys.atom.count == 0 || str_empty(ident)) return out;
+    if (md_bitset_empty(sel) || sys.atom.count == 0 || md_str_empty(ident)) return out;
 
     md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     Ctx c = {&sys, temp};
 
-    md_array(str_t) cand = 0;
+    md_array(md_str_t) cand = 0;
     const uint64_t count = md_bitset_count(sel);
-    if (count == sys.atom.count) md_array_push(cand, STR_LIT("particle"), temp);
+    if (count == sys.atom.count) md_array_push(cand, MD_STR_LIT("particle"), temp);
     else describe(&cand, c, sel);
 
     md_str_writer_t sb = md_str_writer_create(temp);
@@ -489,11 +489,11 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
     md_str_writer_reset(&sb);
 
     md_str_writer_t line = md_str_writer_create(temp);
-    auto offer = [&](str_t expr, bool listed) {
+    auto offer = [&](md_str_t expr, bool listed) {
         if (!picks_exactly(expr, sel, sys, temp)) return false;
         md_str_writer_fmt(&sb, "%llu particle%s", (unsigned long long)count, count == 1 ? "" : "s");
         if (listed) sb += ", listed: nothing shorter describes them";
-        md_str_writer_fmt(&line, STR_FMT " = " STR_FMT, STR_ARG(ident), STR_ARG(expr));
+        md_str_writer_fmt(&line, MD_STR_FMT " = " MD_STR_FMT, MD_STR_ARG(ident), MD_STR_ARG(expr));
         push_suggestion(&out, md_str_writer_to_str(&line), md_str_writer_to_str(&sb), alloc);
         md_str_writer_reset(&line);
         md_str_writer_reset(&sb);
@@ -505,12 +505,12 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
     if (md_array_size(out) == 0) {
         c.limit = MAX_LISTED_EXPR_LEN;
         c.max_terms = MAX_LISTED_EXPR_LEN / 16;
-        md_array(str_t) listed = 0;
+        md_array(md_str_t) listed = 0;
         if (write_residues(&sb, c, sel)) md_array_push(listed, take(&sb, temp), temp);
         md_str_writer_reset(&sb);
         if (write_positions(&sb, c, sel)) md_array_push(listed, take(&sb, temp), temp);
         md_str_writer_reset(&sb);
-        if (md_array_size(listed) == 2 && listed[1].len < listed[0].len) { str_t t = listed[0]; listed[0] = listed[1]; listed[1] = t; }
+        if (md_array_size(listed) == 2 && listed[1].len < listed[0].len) { md_str_t t = listed[0]; listed[0] = listed[1]; listed[1] = t; }
         for (size_t i = 0; i < md_array_size(listed) && !offer(listed[i], true); ++i) {}
     }
 
@@ -523,7 +523,7 @@ md_array(ScriptSuggestion) script_suggest_selection_vial(str_t ident, md_bitset_
 
 // ### CHEMISTRY ###
 
-struct Line { str_t text; str_t hint; };
+struct Line { md_str_t text; md_str_t hint; };
 
 // The atoms within radius bonds of any of the seeds, heavy ones only besides the seeds themselves: the context a
 // pattern needs to say where it is. Sorted.
@@ -582,7 +582,7 @@ static bool connected(const int32_t* atoms, size_t n, const md_system_t& sys, md
 
 // Whether a pattern is cheap to look for and specific: found within a bounded search, and no more than a few hundred
 // times. A pattern of a methyl or a water is neither, in a membrane of thousands of lipids.
-static bool few_matches(size_t* count, str_t pattern, const md_system_t& sys, md_allocator_i* temp) {
+static bool few_matches(size_t* count, md_str_t pattern, const md_system_t& sys, md_allocator_i* temp) {
     md_match_query_t q = {};
     if (!md_match_query_init_smiles(&q, pattern, temp, NULL)) return false;
     md_match_desc_t desc = {};
@@ -597,7 +597,7 @@ static bool few_matches(size_t* count, str_t pattern, const md_system_t& sys, md
     return true;
 }
 
-static void smiles_lines(md_array(Line)* lines, str_t ident, const char* proc, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* temp) {
+static void smiles_lines(md_array(Line)* lines, md_str_t ident, const char* proc, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* temp) {
     if (!sys.bond.count) return;
     size_t last_matches = 0;
     for (int radius = 1; radius <= 2; ++radius) {
@@ -614,10 +614,10 @@ static void smiles_lines(md_array(Line)* lines, str_t ident, const char* proc, c
         if (!len || len >= sizeof(pattern) || len > 160) return;
         if (strchr(pattern, '\'') || strchr(pattern, '\\')) return;
         size_t estimate = 0;
-        if (!few_matches(&estimate, str_from_cstr(pattern), sys, temp)) continue;
+        if (!few_matches(&estimate, md_str_from_cstr(pattern), sys, temp)) continue;
         md_str_writer_t sb = md_str_writer_create(temp);
         md_str_writer_fmt(&sb, "smiles_atoms('%s')", pattern);
-        const str_t expr = take(&sb, temp);
+        const md_str_t expr = take(&sb, temp);
         // The picked atoms are one row of what it gives, in order; the rows are the matches
         md_array(md_bitset_t) sets = 0;
         if (!filter_sets(&sets, expr, sys, temp) || md_array_size(sets) == 0 || md_array_size(sets) % count) continue;
@@ -631,8 +631,8 @@ static void smiles_lines(md_array(Line)* lines, str_t ident, const char* proc, c
         if (!found) continue;
         if (matches == last_matches) continue;     // no more telling than the shorter one
         last_matches = matches;
-        md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(expr));
-        const str_t text = take(&sb, temp);
+        md_str_writer_fmt(&sb, MD_STR_FMT " = %s(" MD_STR_FMT ")", MD_STR_ARG(ident), proc, MD_STR_ARG(expr));
+        const md_str_t text = take(&sb, temp);
         if (matches == 1) md_str_writer_fmt(&sb, "By the chemistry around the atoms, %d bond%s out: found only here", radius, radius == 1 ? "" : "s");
         else md_str_writer_fmt(&sb, "One value for each of the %zu places with this chemistry, %d bond%s out", matches, radius, radius == 1 ? "" : "s");
         Line l = {text, take(&sb, temp)};
@@ -640,7 +640,7 @@ static void smiles_lines(md_array(Line)* lines, str_t ident, const char* proc, c
     }
 }
 
-str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
+md_str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_allocator_i* alloc) {
     const size_t n = md_bitset_count(sel);
     if (n == 0 || n > 4 * MD_SMILES_WRITE_MAX) return {};
     uint32_t* idx = (uint32_t*)md_alloc(alloc, n * sizeof(uint32_t));
@@ -658,27 +658,27 @@ str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_alloca
     return {buf, len};
 }
 
-static void smiles_selection_line(md_array(ScriptSuggestion)* out, str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc) {
+static void smiles_selection_line(md_array(ScriptSuggestion)* out, md_str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc) {
     if (!sys.bond.count) return;
-    const str_t canon = script_selection_smiles(sel, sys, temp);
-    if (str_empty(canon) || canon.len > 200 || str_find_char(NULL, canon, '\'')) return;
+    const md_str_t canon = script_selection_smiles(sel, sys, temp);
+    if (md_str_empty(canon) || canon.len > 200 || md_str_find_char(NULL, canon, '\'')) return;
     // A line here picks the selection: every place with the chemistry is selected, and nothing else, hydrogens
     // aside, which the pattern leaves implicit
     size_t matches = 0;
     if (!few_matches(&matches, canon, sys, temp)) return;
     md_str_writer_t sb = md_str_writer_create(temp);
-    md_str_writer_fmt(&sb, "smiles('" STR_FMT "')", STR_ARG(canon));
-    const str_t expr = take(&sb, temp);
+    md_str_writer_fmt(&sb, "smiles('" MD_STR_FMT "')", MD_STR_ARG(canon));
+    const md_str_t expr = take(&sb, temp);
     if (!picks_exactly(expr, sel, sys, temp)) return;
-    md_str_writer_fmt(&sb, STR_FMT " = " STR_FMT, STR_ARG(ident), STR_ARG(expr));
-    const str_t text = take(&sb, temp);
+    md_str_writer_fmt(&sb, MD_STR_FMT " = " MD_STR_FMT, MD_STR_ARG(ident), MD_STR_ARG(expr));
+    const md_str_t text = take(&sb, temp);
     md_str_writer_fmt(&sb, "By their chemistry, as canonical SMILES: %zu place%s", matches, matches == 1 ? "" : "s");
     push_suggestion(out, text, take(&sb, temp), alloc);
 }
 
-md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc) {
+md_array(ScriptSuggestion) script_suggest_measurement_vial(md_str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc) {
     md_array(ScriptSuggestion) out = 0;
-    if (count < 2 || count > 4 || str_empty(ident)) return out;
+    if (count < 2 || count > 4 || md_str_empty(ident)) return out;
     for (size_t i = 0; i < count; ++i) {
         if (atoms[i] < 0 || (size_t)atoms[i] >= sys.atom.count) return out;
         for (size_t k = 0; k < i; ++k) if (atoms[k] == atoms[i]) return out;
@@ -691,8 +691,8 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     md_array(Line) lines = 0;
     md_str_writer_t sb = md_str_writer_create(temp);
 
-    auto push_call = [&](const str_t* args, str_t hint) {
-        md_str_writer_fmt(&sb, STR_FMT " = %s(", STR_ARG(ident), proc);
+    auto push_call = [&](const md_str_t* args, md_str_t hint) {
+        md_str_writer_fmt(&sb, MD_STR_FMT " = %s(", MD_STR_ARG(ident), proc);
         for (size_t i = 0; i < count; ++i) {
             if (i) sb += ", ";
             sb += args[i];
@@ -701,12 +701,12 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         Line l = {take(&sb, temp), hint};
         md_array_push(lines, l, temp);
     };
-    auto picks_atom = [&](str_t expr, int32_t atom) {
+    auto picks_atom = [&](md_str_t expr, int32_t atom) {
         return picks_exactly(expr, md_bitset_range((uint32_t)atom, (uint32_t)atom + 1), sys, temp);
     };
 
     // By position: always right, whatever the particles are called
-    str_t args[4] = {};
+    md_str_t args[4] = {};
     for (size_t i = 0; i < count; ++i) {
         md_str_writer_fmt(&sb, "particle[%d]", atoms[i]);
         args[i] = take(&sb, temp);
@@ -716,7 +716,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     // Within residues as the file numbers them, each written once: particle(chain='A', resid=12). A particle is named
     // where its name picks it alone in its residue, and taken by its position there where it does not.
     int32_t res[4] = {-1, -1, -1, -1};
-    str_t names[4] = {}, rexpr[4] = {};
+    md_str_t names[4] = {}, rexpr[4] = {};
     bool unique[4] = {}, all_unique = true;
     int32_t pos[4] = {};
     md_bitset_t res0 = {};      // the first particle's residue, as rexpr[0] picks it
@@ -729,7 +729,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         const int32_t chain = res_chain(c, res[i]);
         sb += "particle(";
         if (chain >= 0) {
-            const str_t id = md_system_chain_id(&sys, (size_t)chain);
+            const md_str_t id = md_system_chain_id(&sys, (size_t)chain);
             if (!quotable(id)) { by_res = false; break; }
             sb += "chain=";
             write_quoted(&sb, id);
@@ -743,7 +743,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
         if (i == 0) res0 = rs[0];
         pos[i] = (int32_t)md_bitset_count_range(rs[0], 0, (uint32_t)atoms[i]);
         names[i] = md_atom_name(&sys.atom, (size_t)atoms[i]);
-        if (quotable(names[i]) && !str_empty(names[i])) {
+        if (quotable(names[i]) && !md_str_empty(names[i])) {
             sb += rexpr[i];
             sb += '[';
             write_quoted(&sb, names[i]);
@@ -754,7 +754,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
     }
     md_str_writer_reset(&sb);
     // Whether a stacked expression gives the particles, one per set, in order
-    auto stacks = [&](str_t expr, const int32_t* want, size_t n) {
+    auto stacks = [&](md_str_t expr, const int32_t* want, size_t n) {
         md_array(md_bitset_t) sets = 0;
         if (!filter_sets(&sets, expr, sys, temp) || md_array_size(sets) != n) return false;
         for (size_t k = 0; k < n; ++k) {
@@ -775,11 +775,11 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
                 else md_str_writer_fmt(&sb, "%d", pos[i]);
             }
             sb += "]]";
-            const str_t stacked = take(&sb, temp);
+            const md_str_t stacked = take(&sb, temp);
             if (stacks(stacked, atoms, count)) {
-                md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
-                const str_t text = take(&sb, temp);
-                Line l = {text, by_pos ? STR_LIT("By position within the residue") : str_t{}};
+                md_str_writer_fmt(&sb, MD_STR_FMT " = %s(" MD_STR_FMT ")", MD_STR_ARG(ident), proc, MD_STR_ARG(stacked));
+                const md_str_t text = take(&sb, temp);
+                Line l = {text, by_pos ? MD_STR_LIT("By position within the residue") : md_str_t{}};
                 md_array_push(lines, l, temp);
             }
         }
@@ -799,12 +799,12 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
 
     // The same measurement in every residue of the name: by the names where each residue has each once, else by the
     // positions where every residue of the name has the same particles in the same order, so a position means the same
-    const str_t resname = by_res && same_res ? md_system_residue_name(&sys, (size_t)res[0]) : str_t{};
-    if (quotable(resname) && !str_empty(resname)) {
+    const md_str_t resname = by_res && same_res ? md_system_residue_name(&sys, (size_t)res[0]) : md_str_t{};
+    if (quotable(resname) && !md_str_empty(resname)) {
         sb += "residue(";
         write_quoted(&sb, resname);
         sb += ')';
-        const str_t every = take(&sb, temp);
+        const md_str_t every = take(&sb, temp);
         md_array(md_bitset_t) units = 0;
         size_t num_res = filter_sets(&units, every, sys, temp) ? md_array_size(units) : 0;
         if (num_res > 1) {
@@ -819,7 +819,7 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
                 same = md_bitset_count(units[u]) == n0;
                 if (!same) break;
                 md_bitset_extract_indices(au, n0, units[u]);
-                for (size_t q = 0; q < n0 && same; ++q) same = str_eq(md_atom_name(&sys.atom, a0[q]), md_atom_name(&sys.atom, au[q]));
+                for (size_t q = 0; q < n0 && same; ++q) same = md_str_eq(md_atom_name(&sys.atom, a0[q]), md_atom_name(&sys.atom, au[q]));
             }
             for (int by_pos = 0; by_pos < 2; ++by_pos) {
                 if (!by_pos && !all_unique) continue;
@@ -832,14 +832,14 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(str_t ident, const in
                     else md_str_writer_fmt(&sb, "%d", pos[i]);
                 }
                 sb += "]]";
-                const str_t stacked = take(&sb, temp);
+                const md_str_t stacked = take(&sb, temp);
                 md_array(md_bitset_t) sets = 0;
                 bool ok = filter_sets(&sets, stacked, sys, temp) && md_array_size(sets) == num_res * count;
                 for (size_t k = 0; k < md_array_size(sets) && ok; ++k) ok = md_bitset_count(sets[k]) == 1;
                 if (!ok) continue;
-                md_str_writer_fmt(&sb, STR_FMT " = %s(" STR_FMT ")", STR_ARG(ident), proc, STR_ARG(stacked));
-                const str_t text = take(&sb, temp);
-                md_str_writer_fmt(&sb, "One value for each of the %zu " STR_FMT "%s", num_res, STR_ARG(resname), by_pos ? ", by position within each" : "");
+                md_str_writer_fmt(&sb, MD_STR_FMT " = %s(" MD_STR_FMT ")", MD_STR_ARG(ident), proc, MD_STR_ARG(stacked));
+                const md_str_t text = take(&sb, temp);
+                md_str_writer_fmt(&sb, "One value for each of the %zu " MD_STR_FMT "%s", num_res, MD_STR_ARG(resname), by_pos ? ", by position within each" : "");
                 Line l = {text, take(&sb, temp)};
                 md_array_push(lines, l, temp);
             }

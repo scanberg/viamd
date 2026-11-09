@@ -164,19 +164,19 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-                viamd::write_section_header(state, STR_LIT("Contacts"));
-                viamd::write_int(state, STR_LIT("GroupBy"), (int)group_by);
-                viamd::write_flt(state, STR_LIT("Cutoff"), cutoff);
+                viamd::write_section_header(state, MD_STR_LIT("Contacts"));
+                viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
+                viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("Contacts"))) {
-                    str_t ident, arg;
+                if (md_str_eq(viamd::section_header(state), MD_STR_LIT("Contacts"))) {
+                    md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (str_eq(ident, STR_LIT("GroupBy"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("GroupBy"))) {
                             viamd::extract_enum(group_by, arg, GroupBy_Count);
-                        } else if (str_eq(ident, STR_LIT("Cutoff"))) {
+                        } else if (md_str_eq(ident, MD_STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
                         }
                     }
@@ -234,7 +234,7 @@ struct Contacts : viamd::EventHandler {
         }
         pending.groups.resize(off.size() - 1);
 
-        task.start(STR_LIT("Contacts"), [this]() {
+        task.start(MD_STR_LIT("Contacts"), [this]() {
             const md_system_t& sys = app_state->mold.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;

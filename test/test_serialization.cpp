@@ -16,14 +16,14 @@ struct writer_t {
     viamd::serialization_state_t state = {};
 
     writer_t(md_allocator_i* alloc) {
-        state.filename = STR_LIT("test.viamd");
+        state.filename = MD_STR_LIT("test.viamd");
         md_str_writer_init(&state.sw, alloc);
     }
     ~writer_t() { md_str_writer_free(&state.sw); }
 
     viamd::deserialization_state_t reader() {
         viamd::deserialization_state_t d = {};
-        d.filename = STR_LIT("test.viamd");
+        d.filename = MD_STR_LIT("test.viamd");
         d.text = md_str_writer_to_str(&state.sw);
         return d;
     }
@@ -37,10 +37,10 @@ struct entry_t {
 
 size_t read_entries(entry_t* out, size_t cap, viamd::deserialization_state_t& deser) {
     size_t count = 0;
-    str_t ident, arg;
+    md_str_t ident, arg;
     while (count < cap && viamd::next_entry(ident, arg, deser)) {
-        snprintf(out[count].ident, sizeof(out[count].ident), STR_FMT, STR_ARG(ident));
-        snprintf(out[count].arg,   sizeof(out[count].arg),   STR_FMT, STR_ARG(arg));
+        snprintf(out[count].ident, sizeof(out[count].ident), MD_STR_FMT, MD_STR_ARG(ident));
+        snprintf(out[count].arg,   sizeof(out[count].arg),   MD_STR_FMT, MD_STR_ARG(arg));
         count += 1;
     }
     return count;
@@ -52,78 +52,78 @@ UTEST(viamd_serialization, scalar_round_trip) {
     md_allocator_i* alloc = md_get_heap_allocator();
     writer_t w(alloc);
 
-    viamd::write_section_header(w.state, STR_LIT("Camera"));
-    viamd::write_int (w.state, STR_LIT("Frame"),   1234);
-    viamd::write_bool(w.state, STR_LIT("Ortho"),   true);
-    viamd::write_flt (w.state, STR_LIT("Near"),    0.25f);
-    viamd::write_dbl (w.state, STR_LIT("Far"),     1000.5);
-    viamd::write_vec3(w.state, STR_LIT("Pos"),     vec3_t{1.5f, -2.25f, 3.0f});
-    viamd::write_quat(w.state, STR_LIT("Ori"),     quat_t{0.0f, 0.0f, 0.0f, 1.0f});
-    viamd::write_str (w.state, STR_LIT("Label"),   STR_LIT("a simple label"));
+    viamd::write_section_header(w.state, MD_STR_LIT("Camera"));
+    viamd::write_int (w.state, MD_STR_LIT("Frame"),   1234);
+    viamd::write_bool(w.state, MD_STR_LIT("Ortho"),   true);
+    viamd::write_flt (w.state, MD_STR_LIT("Near"),    0.25f);
+    viamd::write_dbl (w.state, MD_STR_LIT("Far"),     1000.5);
+    viamd::write_vec3(w.state, MD_STR_LIT("Pos"),     vec3_t{1.5f, -2.25f, 3.0f});
+    viamd::write_quat(w.state, MD_STR_LIT("Ori"),     quat_t{0.0f, 0.0f, 0.0f, 1.0f});
+    viamd::write_str (w.state, MD_STR_LIT("Label"),   MD_STR_LIT("a simple label"));
 
     viamd::deserialization_state_t deser = w.reader();
 
-    str_t section;
+    md_str_t section;
     ASSERT_TRUE(viamd::next_section_header(section, deser));
-    EXPECT_TRUE(str_eq(section, STR_LIT("Camera")));
+    EXPECT_TRUE(md_str_eq(section, MD_STR_LIT("Camera")));
 
     entry_t e[16];
     const size_t n = read_entries(e, 16, deser);
     ASSERT_EQ(7u, (uint32_t)n);
 
     int i = 0;
-    EXPECT_TRUE(viamd::extract_int(i, str_from_cstr(e[0].arg)));
+    EXPECT_TRUE(viamd::extract_int(i, md_str_from_cstr(e[0].arg)));
     EXPECT_EQ(1234, i);
 
     bool b = false;
-    EXPECT_TRUE(viamd::extract_bool(b, str_from_cstr(e[1].arg)));
+    EXPECT_TRUE(viamd::extract_bool(b, md_str_from_cstr(e[1].arg)));
     EXPECT_TRUE(b);
 
     float f = 0;
-    EXPECT_TRUE(viamd::extract_flt(f, str_from_cstr(e[2].arg)));
+    EXPECT_TRUE(viamd::extract_flt(f, md_str_from_cstr(e[2].arg)));
     EXPECT_NEAR(0.25, (double)f, 1.0e-6);
 
     double d = 0;
-    EXPECT_TRUE(viamd::extract_dbl(d, str_from_cstr(e[3].arg)));
+    EXPECT_TRUE(viamd::extract_dbl(d, md_str_from_cstr(e[3].arg)));
     EXPECT_NEAR(1000.5, d, 1.0e-6);
 
     vec3_t v = {0, 0, 0};
-    viamd::extract_vec3(v, str_from_cstr(e[4].arg));
+    viamd::extract_vec3(v, md_str_from_cstr(e[4].arg));
     EXPECT_NEAR( 1.50, (double)v.x, 1.0e-5);
     EXPECT_NEAR(-2.25, (double)v.y, 1.0e-5);
     EXPECT_NEAR( 3.00, (double)v.z, 1.0e-5);
 
     quat_t q = {1, 1, 1, 1};
-    viamd::extract_quat(q, str_from_cstr(e[5].arg));
+    viamd::extract_quat(q, md_str_from_cstr(e[5].arg));
     EXPECT_NEAR(0.0, (double)q.x, 1.0e-5);
     EXPECT_NEAR(1.0, (double)q.w, 1.0e-5);
 
-    str_t s = {};
-    EXPECT_TRUE(viamd::extract_str(s, str_from_cstr(e[6].arg)));
-    EXPECT_TRUE(str_eq(s, STR_LIT("a simple label")));
+    md_str_t s = {};
+    EXPECT_TRUE(viamd::extract_str(s, md_str_from_cstr(e[6].arg)));
+    EXPECT_TRUE(md_str_eq(s, MD_STR_LIT("a simple label")));
 }
 
 UTEST(viamd_serialization, sections_are_walked_in_order) {
     md_allocator_i* alloc = md_get_heap_allocator();
     writer_t w(alloc);
 
-    viamd::write_section_header(w.state, STR_LIT("First"));
-    viamd::write_int(w.state, STR_LIT("A"), 1);
-    viamd::write_section_header(w.state, STR_LIT("Second"));
-    viamd::write_int(w.state, STR_LIT("B"), 2);
-    viamd::write_int(w.state, STR_LIT("C"), 3);
+    viamd::write_section_header(w.state, MD_STR_LIT("First"));
+    viamd::write_int(w.state, MD_STR_LIT("A"), 1);
+    viamd::write_section_header(w.state, MD_STR_LIT("Second"));
+    viamd::write_int(w.state, MD_STR_LIT("B"), 2);
+    viamd::write_int(w.state, MD_STR_LIT("C"), 3);
 
     viamd::deserialization_state_t deser = w.reader();
     entry_t e[8];
-    str_t section;
+    md_str_t section;
 
     ASSERT_TRUE(viamd::next_section_header(section, deser));
-    EXPECT_TRUE(str_eq(section, STR_LIT("First")));
+    EXPECT_TRUE(md_str_eq(section, MD_STR_LIT("First")));
     // next_entry must stop at the following section header rather than running past it
     EXPECT_EQ(1u, (uint32_t)read_entries(e, 8, deser));
 
     ASSERT_TRUE(viamd::next_section_header(section, deser));
-    EXPECT_TRUE(str_eq(section, STR_LIT("Second")));
+    EXPECT_TRUE(md_str_eq(section, MD_STR_LIT("Second")));
     EXPECT_EQ(2u, (uint32_t)read_entries(e, 8, deser));
 
     EXPECT_FALSE(viamd::next_section_header(section, deser));
@@ -134,14 +134,14 @@ UTEST(viamd_serialization, multiline_string_round_trip) {
     writer_t w(alloc);
 
     // Script text is written this way, and it is the only value that may contain newlines
-    const str_t script = STR_LIT("d1 = distance(1,2);\nsel = residue(1:10);\n");
+    const md_str_t script = MD_STR_LIT("d1 = distance(1,2);\nsel = residue(1:10);\n");
 
-    viamd::write_section_header(w.state, STR_LIT("Script"));
-    viamd::write_str(w.state, STR_LIT("Text"), script);
-    viamd::write_int(w.state, STR_LIT("After"), 7);
+    viamd::write_section_header(w.state, MD_STR_LIT("Script"));
+    viamd::write_str(w.state, MD_STR_LIT("Text"), script);
+    viamd::write_int(w.state, MD_STR_LIT("After"), 7);
 
     viamd::deserialization_state_t deser = w.reader();
-    str_t section;
+    md_str_t section;
     ASSERT_TRUE(viamd::next_section_header(section, deser));
 
     entry_t e[8];
@@ -153,7 +153,7 @@ UTEST(viamd_serialization, multiline_string_round_trip) {
     // The entry after a multiline string has to survive it
     EXPECT_STREQ("After", e[1].ident);
     int i = 0;
-    EXPECT_TRUE(viamd::extract_int(i, str_from_cstr(e[1].arg)));
+    EXPECT_TRUE(viamd::extract_int(i, md_str_from_cstr(e[1].arg)));
     EXPECT_EQ(7, i);
 }
 
@@ -165,17 +165,17 @@ UTEST(viamd_serialization, bitset_round_trip) {
     md_bitset_t src = md_bitset_from_indices(bits, MD_COUNTOF(bits), alloc);
     md_bitset_t dst = {};
 
-    viamd::write_section_header(w.state, STR_LIT("Selection"));
-    viamd::write_bitset(w.state, STR_LIT("Mask"), &src);
+    viamd::write_section_header(w.state, MD_STR_LIT("Selection"));
+    viamd::write_bitset(w.state, MD_STR_LIT("Mask"), &src);
 
     viamd::deserialization_state_t deser = w.reader();
-    str_t section;
+    md_str_t section;
     ASSERT_TRUE(viamd::next_section_header(section, deser));
 
     entry_t e[4];
     ASSERT_EQ(1u, (uint32_t)read_entries(e, 4, deser));
     EXPECT_STREQ("Mask", e[0].ident);
-    ASSERT_TRUE(viamd::extract_bitset(&dst, str_from_cstr(e[0].arg), alloc));
+    ASSERT_TRUE(viamd::extract_bitset(&dst, md_str_from_cstr(e[0].arg), alloc));
 
     EXPECT_EQ(md_bitset_count(src), md_bitset_count(dst));
     EXPECT_TRUE(md_bitset_equal(src, dst));
@@ -197,16 +197,16 @@ UTEST(viamd_serialization, bitset_round_trip_large_indices) {
     md_bitset_t src = md_bitset_from_indices(bits, MD_COUNTOF(bits), alloc);
     md_bitset_t dst = {};
 
-    viamd::write_section_header(w.state, STR_LIT("Selection"));
-    viamd::write_bitset(w.state, STR_LIT("Mask"), &src);
+    viamd::write_section_header(w.state, MD_STR_LIT("Selection"));
+    viamd::write_bitset(w.state, MD_STR_LIT("Mask"), &src);
 
     viamd::deserialization_state_t deser = w.reader();
-    str_t section;
+    md_str_t section;
     ASSERT_TRUE(viamd::next_section_header(section, deser));
 
     entry_t e[4];
     ASSERT_EQ(1u, (uint32_t)read_entries(e, 4, deser));
-    ASSERT_TRUE(viamd::extract_bitset(&dst, str_from_cstr(e[0].arg), alloc));
+    ASSERT_TRUE(viamd::extract_bitset(&dst, md_str_from_cstr(e[0].arg), alloc));
     EXPECT_TRUE(md_bitset_equal(src, dst));
 
     md_bitset_free(&src, alloc);
@@ -226,7 +226,7 @@ UTEST(viamd_serialization, bitset_reads_masks_written_by_md_bitfield) {
         char arg[256];
         snprintf(arg, sizeof(arg), "###%s###", golden[k].b64);
         md_bitset_t s = {};
-        ASSERT_TRUE(viamd::extract_bitset(&s, str_from_cstr(arg), alloc));
+        ASSERT_TRUE(viamd::extract_bitset(&s, md_str_from_cstr(arg), alloc));
         EXPECT_EQ(golden[k].count, md_bitset_count(s));
         for (size_t r = 0; r < golden[k].num_ranges; ++r) {
             EXPECT_TRUE(md_bitset_test_all_range(s, golden[k].ranges[r][0], golden[k].ranges[r][1]));
@@ -235,10 +235,10 @@ UTEST(viamd_serialization, bitset_reads_masks_written_by_md_bitfield) {
 
         // Written back: the identical string
         writer_t w(alloc);
-        viamd::write_section_header(w.state, STR_LIT("S"));
-        viamd::write_bitset(w.state, STR_LIT("Mask"), &s);
+        viamd::write_section_header(w.state, MD_STR_LIT("S"));
+        viamd::write_bitset(w.state, MD_STR_LIT("Mask"), &s);
         viamd::deserialization_state_t deser = w.reader();
-        str_t section;
+        md_str_t section;
         ASSERT_TRUE(viamd::next_section_header(section, deser));
         entry_t e[2];
         ASSERT_EQ(1u, (uint32_t)read_entries(e, 2, deser));
@@ -257,14 +257,14 @@ UTEST(viamd_serialization, entry_after_a_bitfield_survives) {
 
     md_bitset_t mask = md_bitset_range(0, 32);
 
-    viamd::write_section_header(w.state, STR_LIT("Groups"));
-    viamd::write_str   (w.state, STR_LIT("GroupLabel"), STR_LIT("first"));
-    viamd::write_bitset(w.state, STR_LIT("GroupAtoms"), &mask);
-    viamd::write_str   (w.state, STR_LIT("GroupLabel"), STR_LIT("second"));
-    viamd::write_bitset(w.state, STR_LIT("GroupAtoms"), &mask);
+    viamd::write_section_header(w.state, MD_STR_LIT("Groups"));
+    viamd::write_str   (w.state, MD_STR_LIT("GroupLabel"), MD_STR_LIT("first"));
+    viamd::write_bitset(w.state, MD_STR_LIT("GroupAtoms"), &mask);
+    viamd::write_str   (w.state, MD_STR_LIT("GroupLabel"), MD_STR_LIT("second"));
+    viamd::write_bitset(w.state, MD_STR_LIT("GroupAtoms"), &mask);
 
     viamd::deserialization_state_t deser = w.reader();
-    str_t section;
+    md_str_t section;
     ASSERT_TRUE(viamd::next_section_header(section, deser));
 
     entry_t e[8];
@@ -282,19 +282,19 @@ UTEST(viamd_serialization, malformed_values_are_rejected) {
     // A value that does not parse must be reported and must leave the destination alone, so a
     // corrupt workspace degrades to defaults instead of to garbage.
     int i = 42;
-    EXPECT_FALSE(viamd::extract_int(i, STR_LIT("not_a_number")));
+    EXPECT_FALSE(viamd::extract_int(i, MD_STR_LIT("not_a_number")));
     EXPECT_EQ(42, i);
 
     bool b = false;
-    EXPECT_FALSE(viamd::extract_bool(b, STR_LIT("2")));
+    EXPECT_FALSE(viamd::extract_bool(b, MD_STR_LIT("2")));
     EXPECT_FALSE(b);
 
     double d = 1.5;
-    EXPECT_FALSE(viamd::extract_dbl(d, STR_LIT("")));
+    EXPECT_FALSE(viamd::extract_dbl(d, MD_STR_LIT("")));
     EXPECT_NEAR(1.5, d, 1.0e-9);
 
     md_allocator_i* alloc = md_get_heap_allocator();
     md_bitset_t bs = {};
-    EXPECT_FALSE(viamd::extract_bitset(&bs, STR_LIT("no markers here"), alloc));
+    EXPECT_FALSE(viamd::extract_bitset(&bs, MD_STR_LIT("no markers here"), alloc));
     EXPECT_TRUE(md_bitset_empty(bs));
 }

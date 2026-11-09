@@ -63,7 +63,7 @@ static bool field_context(FieldContext* ctx, md_temp_scope_t temp, const IsoFiel
     return true;
 }
 
-static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, str_t coefficient_path, const md_attribute_slice_t* slice) {
+static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, md_str_t coefficient_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
@@ -72,13 +72,13 @@ static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, str_t
     const double* coeffs = orbital_coefficients_extract(&num_ao, temp, *g.sys, coefficient_path, slice);
     if (!coeffs) return nullptr;
     if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), STR_ARG(coefficient_path), num_ao);
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(coefficient_path), num_ao);
         return nullptr;
     }
     return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), coeffs, md_get_heap_allocator());
 }
 
-md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, str_t coefficient_path, const md_attribute_slice_t* slice) {
+md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     return field_create_orbital(current_geometry(temp, state), coefficient_path, slice);
@@ -103,7 +103,7 @@ md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* stat
     return field_create_density_matrix(current_geometry(temp, state), density_matrix, dim);
 }
 
-static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, str_t density_path, const md_attribute_slice_t* slice) {
+static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t dim = 0;
@@ -111,7 +111,7 @@ static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, str_t
     return D ? field_create_density_matrix(g, D, dim) : nullptr;
 }
 
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_t density_path, const md_attribute_slice_t* slice) {
+md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     return field_create_density(current_geometry(temp, state), density_path, slice);
@@ -121,7 +121,7 @@ md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_
 // (md_qm_density_orbitals): the field takes them as they are, where from the matrix it would factorize
 // it again, which for a protein's density is minutes rather than a second. NULL when the system does
 // not publish the orbitals, or the density is zero.
-static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, str_t density_path) {
+static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, md_str_t density_path) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
@@ -132,7 +132,7 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, s
     const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, g.sys, density_path, md_temp_allocator(temp));
     if (count == 0) return nullptr;
     if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), STR_ARG(density_path), num_ao);
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(density_path), num_ao);
         return nullptr;
     }
     return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), rows, nullptr, weights, count, md_get_heap_allocator());
@@ -834,17 +834,17 @@ static IsoFieldSpec field_spec_of(const ElectronicStructureRepresentation& es) {
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& es) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
-        const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.orbital_idx);
         return field_create_orbital(g, path, &slice);
     }
     case ElectronicStructureSource::NaturalTransitionOrbital: {
-        const str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
+        const md_str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
         const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.excited_state_idx, (uint32_t)es.nto_lambda_idx);
         return field_create_orbital(g, path, &slice);
     }
     case ElectronicStructureSource::TransitionDensity: {
-        str_t path = es_path::attachment_density;
+        md_str_t path = es_path::attachment_density;
         switch (es.transition_density_component) {
         case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
         case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
@@ -857,7 +857,7 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldS
     case ElectronicStructureSource::ElectronDensity: {
         // from its orbitals where the system has them, from its matrix otherwise. Its maxima are at the
         // nuclei: the GPU extraction evaluates it only around the surface (the flood)
-        const str_t path = es_electron_density_path(es.spin);
+        const md_str_t path = es_electron_density_path(es.spin);
         md_gto_iso_field_t* f = field_create_scf_density(g, path);
         if (!f) f = field_create_density(g, path, nullptr);
         md_gto_iso_field_set_maxima_at_atoms(f, true);

@@ -78,7 +78,7 @@ static md_unit_t parse_option(Quantity quantity, size_t option) {
     const char* str = s_desc[quantity].options[option].ini;
     if (is_derived(str)) return md_unit_none();
     md_unit_t unit;
-    if (!md_unit_parse(&unit, str_from_cstr(str))) {
+    if (!md_unit_parse(&unit, md_str_from_cstr(str))) {
         // An option this file spells wrong, which no .ini can cause and no user can fix.
         MD_LOG_ERROR("display_units: '%s' is not a parsable unit", str);
         return md_unit_none();
@@ -88,7 +88,7 @@ static md_unit_t parse_option(Quantity quantity, size_t option) {
 
 void select(Quantity quantity, size_t option) {
     MD_ASSERT(quantity < Quantity_Count && option < s_desc[quantity].num_options);
-    str_copy_to_char_buf(s_str[quantity], sizeof(s_str[quantity]), str_from_cstr(s_desc[quantity].options[option].ini));
+    md_str_copy_to_char_buf(s_str[quantity], sizeof(s_str[quantity]), md_str_from_cstr(s_desc[quantity].options[option].ini));
     s_unit[quantity] = parse_option(quantity, option);
     s_version += 1;
 }
@@ -127,7 +127,7 @@ void adopt_ini() {
         }
 
         md_unit_t unit;
-        if (!md_unit_parse(&unit, str_from_cstr(s_str[i])) || md_unit_is_none(unit)) {
+        if (!md_unit_parse(&unit, md_str_from_cstr(s_str[i])) || md_unit_is_none(unit)) {
             MD_LOG_ERROR("display_units: '%s' is not a unit, showing %s in %s instead", s_str[i], s_desc[i].label,
                          s_desc[i].options[s_desc[i].default_option].label);
             select(quantity, s_desc[i].default_option);

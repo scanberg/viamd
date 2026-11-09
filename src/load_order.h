@@ -44,16 +44,16 @@ struct PendingFiles {
 struct LoadOps {
     void* user = nullptr;
     // Loads the file in the role (load_data). A topology with load_state.coordinates set builds the system with them.
-    LoadResult (*load)(void* user, str_t path, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) = nullptr;
+    LoadResult (*load)(void* user, md_str_t path, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) = nullptr;
     size_t (*system_atoms)(void* user) = nullptr;   // 0 without a system
     size_t (*run_frames)(void* user) = nullptr;     // 0 without a run
     const FileList* (*files)(void* user) = nullptr; // the files the loaded system was built from
     // The atom count of a file as its header tells (loader::atom_count when not given)
-    size_t (*atom_count)(void* user, str_t path, const loader::LoaderState& load_state) = nullptr;
+    size_t (*atom_count)(void* user, md_str_t path, const loader::LoaderState& load_state) = nullptr;
 };
 
 // The loader state of an entry, as it was loaded
 loader::LoaderState load_order_loader_state(const FileEntry& e);
 
 // Loads a file on its own, in the order rules above
-LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, str_t path, const loader::LoaderState& load_state);
+LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, md_str_t path, const loader::LoaderState& load_state);

@@ -346,28 +346,28 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
 
 // ## Workspace
 
-void layer_group_serialize(viamd::serialization_state_t& state, str_t section, const LayerGroup& g) {
+void layer_group_serialize(viamd::serialization_state_t& state, md_str_t section, const LayerGroup& g) {
     viamd::write_section_header(state, section);
-    viamd::write_int(state, STR_LIT("Id"), (int64_t)g.node.id);
-    if (g.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(g.name));
-    viamd::write_bool(state, STR_LIT("Visible"), g.visible);
-    viamd::write_bool(state, STR_LIT("Open"), g.open);
-    if (g.filter.text[0]) viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(g.filter.text));
-    if (g.follow_selection) viamd::write_bool(state, STR_LIT("FollowSelection"), true);
+    viamd::write_int(state, MD_STR_LIT("Id"), (int64_t)g.node.id);
+    if (g.name[0]) viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(g.name));
+    viamd::write_bool(state, MD_STR_LIT("Visible"), g.visible);
+    viamd::write_bool(state, MD_STR_LIT("Open"), g.open);
+    if (g.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(g.filter.text));
+    if (g.follow_selection) viamd::write_bool(state, MD_STR_LIT("FollowSelection"), true);
 }
 
-void layer_group_deserialize_entry(LayerGroup* g, str_t ident, str_t arg, int* file_id) {
-    if (str_eq_cstr(ident, "Id")) {
+void layer_group_deserialize_entry(LayerGroup* g, md_str_t ident, md_str_t arg, int* file_id) {
+    if (md_str_eq_cstr(ident, "Id")) {
         viamd::extract_int(*file_id, arg);
-    } else if (str_eq_cstr(ident, "Name")) {
+    } else if (md_str_eq_cstr(ident, "Name")) {
         viamd::extract_to_char_buf(g->name, sizeof(g->name), arg);
-    } else if (str_eq_cstr(ident, "Visible")) {
+    } else if (md_str_eq_cstr(ident, "Visible")) {
         viamd::extract_bool(g->visible, arg);
-    } else if (str_eq_cstr(ident, "Open")) {
+    } else if (md_str_eq_cstr(ident, "Open")) {
         viamd::extract_bool(g->open, arg);
-    } else if (str_eq_cstr(ident, "Filter")) {
+    } else if (md_str_eq_cstr(ident, "Filter")) {
         viamd::extract_to_char_buf(g->filter.text, sizeof(g->filter.text), arg);
-    } else if (str_eq_cstr(ident, "FollowSelection")) {
+    } else if (md_str_eq_cstr(ident, "FollowSelection")) {
         viamd::extract_bool(g->follow_selection, arg);
     }
 }

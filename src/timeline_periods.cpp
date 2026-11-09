@@ -124,7 +124,7 @@ TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, int3
     r.beg    = MD_MIN(beg, end);
     r.end    = MD_MAX(beg, end);
     if (name && name[0]) {
-        str_copy_to_char_buf(r.name, sizeof(r.name), str_from_cstr(name));
+        md_str_copy_to_char_buf(r.name, sizeof(r.name), md_str_from_cstr(name));
     } else {
         timeline_periods_default_name(r.name, sizeof(r.name), rs, r.beg == r.end);
     }
@@ -240,36 +240,36 @@ TimelinePeriodHit timeline_periods_hit_test(const TimelinePeriodBar* bars, const
 void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs) {
     for (int i = 0; i < rs->count; ++i) {
         const TimelinePeriod& r = rs->items[i];
-        viamd::write_section_header(state, STR_LIT("TimelinePeriod"));
-        viamd::write_int(state, STR_LIT("Id"), r.id);
-        viamd::write_str(state, STR_LIT("Name"), str_from_cstr(r.name));
+        viamd::write_section_header(state, MD_STR_LIT("TimelinePeriod"));
+        viamd::write_int(state, MD_STR_LIT("Id"), r.id);
+        viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(r.name));
         if (r.note[0]) {
-            viamd::write_str(state, STR_LIT("Note"), str_from_cstr(r.note));
+            viamd::write_str(state, MD_STR_LIT("Note"), md_str_from_cstr(r.note));
         }
-        viamd::write_vec4(state, STR_LIT("Color"), r.color);
-        viamd::write_bool(state, STR_LIT("Follow"), r.follow);
+        viamd::write_vec4(state, MD_STR_LIT("Color"), r.color);
+        viamd::write_bool(state, MD_STR_LIT("Follow"), r.follow);
         const int frames[2] = { r.beg, r.end };
-        viamd::write_int_vec(state, STR_LIT("Frames"), frames, 2);
+        viamd::write_int_vec(state, MD_STR_LIT("Frames"), frames, 2);
     }
 }
 
 bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs) {
     TimelinePeriod r = {};
     bool has_color = false;
-    str_t ident, arg;
+    md_str_t ident, arg;
     int id = 0;
     while (viamd::next_entry(ident, arg, state)) {
-        if (str_eq(ident, STR_LIT("Id"))) {
+        if (md_str_eq(ident, MD_STR_LIT("Id"))) {
             viamd::extract_int(id, arg);
-        } else if (str_eq(ident, STR_LIT("Name"))) {
+        } else if (md_str_eq(ident, MD_STR_LIT("Name"))) {
             viamd::extract_to_char_buf(r.name, sizeof(r.name), arg);
-        } else if (str_eq(ident, STR_LIT("Note"))) {
+        } else if (md_str_eq(ident, MD_STR_LIT("Note"))) {
             viamd::extract_to_char_buf(r.note, sizeof(r.note), arg);
-        } else if (str_eq(ident, STR_LIT("Color"))) {
+        } else if (md_str_eq(ident, MD_STR_LIT("Color"))) {
             has_color = viamd::extract_vec4(r.color, arg);
-        } else if (str_eq(ident, STR_LIT("Follow"))) {
+        } else if (md_str_eq(ident, MD_STR_LIT("Follow"))) {
             viamd::extract_bool(r.follow, arg);
-        } else if (str_eq(ident, STR_LIT("Frames"))) {
+        } else if (md_str_eq(ident, MD_STR_LIT("Frames"))) {
             int frames[2];
             if (viamd::extract_int_vec(frames, 2, arg)) {
                 r.beg = frames[0];
@@ -285,7 +285,7 @@ bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, 
         dst->id = (uint32_t)id;
         rs->next_id = MD_MAX(rs->next_id, (uint32_t)id + 1);
     }
-    str_copy_to_char_buf(dst->note, sizeof(dst->note), str_from_cstr(r.note));
+    md_str_copy_to_char_buf(dst->note, sizeof(dst->note), md_str_from_cstr(r.note));
     if (has_color) dst->color = r.color;
     return true;
 }

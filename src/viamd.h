@@ -91,7 +91,7 @@ constexpr ImGuiKey KEY_RECENTER_ON_HIGHLIGHT    = ImGuiKey_F2;
 constexpr ImGuiKeyChord KEY_SCRIPT_EVALUATE          = ImGuiMod_Shift | ImGuiKey_Enter;
 constexpr ImGuiKeyChord KEY_SHOW_ATTRIBUTE_WINDOW = ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_A;
 
-constexpr str_t WORKSPACE_FILE_EXTENSION = STR_INIT("via");
+constexpr md_str_t WORKSPACE_FILE_EXTENSION = MD_STR_INIT("via");
 
 typedef uint64_t PickingDomainID;
 typedef uint64_t PickingSourceID;
@@ -512,7 +512,7 @@ inline const char* bond_color_mode_str[(int)BondColorMode::Count] = {
 
 struct FileQueue {
     struct Entry {
-        str_t path;
+        md_str_t path;
         FileFlags flags;
         int prio;
     };
@@ -545,7 +545,7 @@ struct Selection {
 // DipoleGroup and 'label' points into the attribute table, so it must not outlive the system.
 struct DipoleGroup {
     md_attribute_id_t key = MD_ATTRIBUTE_INVALID;   // id of the vector attribute, stable across a reload
-    str_t  label  = { 0 };                          // group name as the path spells it
+    md_str_t  label  = { 0 };                          // group name as the path spells it
     uint32_t count = 0;                             // elements in the group; 1 means the index is decorative
     md_unit_t unit = md_unit_none();
 };
@@ -557,7 +557,7 @@ struct DipoleGroup {
 // must not outlive it.
 struct DensityProperty {
     uint64_t key    = 0;    // attribute id, stable across a reload
-    str_t label     = { 0 };
+    md_str_t label     = { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -1281,7 +1281,7 @@ struct ScriptVisTarget {
     enum Kind : uint8_t { None = 0, Ref, Str };
     Kind kind = None;
     script::Ref ref = {};               // Ref
-    str_t str = {};                     // Str: an expression, copied into the frame allocator
+    md_str_t str = {};                     // Str: an expression, copied into the frame allocator
     int subidx = -1;
     uint32_t flags = 0;                 // script::DRAW_*
 };
@@ -1444,7 +1444,7 @@ struct ApplicationState {
         ScreenshotResolution resolution = ScreenshotResolution::Window;
         int   res_x = 1920;
         int   res_y = 1080;
-        str_t path_to_file = {};    // Being made: saved once the image has settled (render())
+        md_str_t path_to_file = {};    // Being made: saved once the image has settled (render())
     } screenshot;
 
     struct {
@@ -2060,7 +2060,7 @@ struct ViamdEventHandler : viamd::EventHandler {
 struct LoadDataPayload {
     ApplicationState* app_state;
     loader::LoaderState loader_state;
-    str_t path_to_file;
+    md_str_t path_to_file;
 };
 
 // A picking tooltip, gathered from every handler that recognises the hit and drawn as one window: a title names what
@@ -2071,8 +2071,8 @@ enum class TooltipLineKind : uint8_t { Title, Row };
 
 struct TooltipLine {
     TooltipLineKind kind = TooltipLineKind::Title;
-    str_t key  = {};    // Row only, and must live for the frame (a literal, a label of the system, frame memory)
-    str_t text = {};
+    md_str_t key  = {};    // Row only, and must live for the frame (a literal, a label of the system, frame memory)
+    md_str_t text = {};
 };
 
 struct PickingTooltipTextRequest {
@@ -2087,7 +2087,7 @@ struct PickingTooltipTextRequest {
 #define TOOLTIP_ANGSTROM "\xC3\x85"     // Å
 
 void tooltip_title(PickingTooltipTextRequest* req, const char* format, ...);
-void tooltip_row(PickingTooltipTextRequest* req, str_t key, const char* format, ...);
+void tooltip_row(PickingTooltipTextRequest* req, md_str_t key, const char* format, ...);
 
 enum ViewFitRound {
     ViewFitRound_Highlight = 0,
@@ -2437,17 +2437,17 @@ void interrupt_async_tasks(ApplicationState* state);
 // Loads a file in the given role (see file_list.h): FileRole_System replaces the system, FileRole_Trajectory
 // the run, a supplement adds to the system and a series to the run. opens_own_run: a system file of several
 // frames opens them as the run too. A file that loads is recorded in files.list.
-LoadResult load_data(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
+LoadResult load_data(ApplicationState* app, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
 
 // Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
 // give it (file_role), and a system file opens its own frames as the run. A topology without coordinates and its
 // coordinates come in either order (load_order.h).
-LoadResult load_data_from_file(ApplicationState* app, str_t filepath, const loader::LoaderState& load_state);
+LoadResult load_data_from_file(ApplicationState* app, md_str_t filepath, const loader::LoaderState& load_state);
 void init_system_data(ApplicationState* app);
 // Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
 // run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
-void init_trajectory_data(ApplicationState* app, str_t run_file, uint32_t traj_flags = 0);
+void init_trajectory_data(ApplicationState* app, md_str_t run_file, uint32_t traj_flags = 0);
 
 // The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
 // unit, which is none when the file does not know time and the values are frame ordinals. NULL,
@@ -2492,10 +2492,10 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited);
 // The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
 // bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.
 const char* bond_kind_str(md_bond_flags_t flags);
-bool        bond_kind_parse(md_bond_flags_t* out, str_t str);
+bool        bond_kind_parse(md_bond_flags_t* out, md_str_t str);
 // Origins of bonds, a mask of 1 << md_bond_origin_t, by name: "file,inferred"
 const char* bond_origins_str(char* buf, size_t cap, uint32_t origins);
-bool        bond_origins_parse(uint32_t* out, str_t str);
+bool        bond_origins_parse(uint32_t* out, md_str_t str);
 
 // Brings the bond changes tracked (operations.bond_tracking) up to date with the frame shown, the topology, the scope
 // and the parameters. Once a frame, before the bonds are uploaded.
@@ -2524,9 +2524,9 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
 
 // "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
 // Empty when no trajectory is loaded, or when it does not fit in buf.
-str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, str_t leaf);
+md_str_t run_attribute_path(char* buf, size_t cap, const ApplicationState* app, md_str_t leaf);
 // The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
-const md_attribute_t* run_attribute(const ApplicationState* app, str_t leaf);
+const md_attribute_t* run_attribute(const ApplicationState* app, md_str_t leaf);
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
 // of the run at the displayed frame (secondary_structure_render), else the state's own assignment
@@ -2545,9 +2545,9 @@ int playback_stride(const ApplicationState* app);
 
 // Workspace
 // See #workspace in viamd.cpp for what a workspace holds and the order it is loaded in
-void load_workspace(ApplicationState* app, str_t file);
+void load_workspace(ApplicationState* app, md_str_t file);
 // True when the whole file was written; it is then the current workspace (files.workspace)
-bool save_workspace(ApplicationState* app, str_t file);
+bool save_workspace(ApplicationState* app, md_str_t file);
 
 // Whether this window is open belongs to the workspace: stored under [Windows] as name=0/1. name
 // is the window's identity in the file, so it stays the same when the window is renamed on screen.
@@ -2561,7 +2561,7 @@ static inline script::FilterCtx filter_context(const ApplicationState* app) {
 }
 
 // The selection keeps its own copy of atom_mask
-Selection* create_selection(ApplicationState* app, str_t name, md_bitset_t atom_mask = {});
+Selection* create_selection(ApplicationState* app, md_str_t name, md_bitset_t atom_mask = {});
 void remove_selection(ApplicationState* app, size_t idx);
 void remove_all_selections(ApplicationState* app);
 
@@ -2634,7 +2634,7 @@ void es_jobs_shutdown(ApplicationState* state);
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
 // Writes at most cap-1 characters plus a terminator, returns the length written.
-int dipole_label_pretty(char* buf, size_t cap, str_t group);
+int dipole_label_pretty(char* buf, size_t cap, md_str_t group);
 
 // The same, plus a 1 based element number when the group holds more than one moment:
 // "Electric Transition 3". A single moment gets no number, because there is nothing to tell apart.
@@ -2654,7 +2654,7 @@ size_t atom_attribute_query(md_attribute_id_t out_ids[], size_t cap, const md_sy
 
 // What to show for it: the attribute's label, or its leaf path segment when it has none. A view
 // into the table's storage, null terminated, so it can go straight to ImGui.
-str_t atom_attribute_label(const md_attribute_t* attr);
+md_str_t atom_attribute_label(const md_attribute_t* attr);
 
 // Number of variants: the leading index axis, 1 when the field has none.
 int atom_attribute_variant_count(const md_attribute_t* attr);
@@ -2691,7 +2691,7 @@ void system_gpu_data_free(ApplicationState* state);
 // md_attribute_slice_1(m) for a {M,A} matrix of molecular orbitals, md_attribute_slice_2(s,l) for
 // the {S,L,A} natural transition orbitals - the caller says which row, and nothing here has to know
 // which of the two it was addressing.
-double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, str_t coefficient_path, const md_attribute_slice_t* slice);
+double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, md_str_t coefficient_path, const md_attribute_slice_t* slice);
 
 // Evaluates one molecular orbital into a 3D texture, sourcing everything it needs from the system:
 // the GTO basis and the AO coefficients from the attribute table, the atom positions from the state.
@@ -2703,7 +2703,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // is data is data.
 bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
                          const vec3_t* atom_pos, size_t num_atom_pos,
-                         str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+                         md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 
 // Positions for a system's BASIS atoms, in the bohr and interleaved layout md_gto works in, taken
 // out of `state` through the QM -> system map. Allocated from temp; null with a zero count when the
@@ -2817,14 +2817,14 @@ struct OrbitalFrontier {
     int lumo_idx      = -1;
     int num_orbitals  = 0;
 };
-bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, str_t occupation_path);
+bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, md_str_t occupation_path);
 
 // The orbital energies of one spin channel (es_path::alpha_energy or its beta sibling), in Hartree,
 // or NULL when that column is absent. Hands back the stored buffer rather than a copy: the column is
 // resident F64 and every caller only reads it. out_count receives its length, which is the orbital
 // count the column itself states - compare it against es_orbital_extent's before indexing the two
 // together rather than assuming they agree.
-const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, str_t energy_path);
+const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, md_str_t energy_path);
 
 // True when the system holds a SECOND, DISTINCT set of orbital coefficients - an unrestricted
 // calculation. Restricted and restricted-openshell publish beta as an alias of alpha: one datum
@@ -2848,7 +2848,7 @@ bool es_has_distinct_beta_occupations(const md_system_t& sys);
 //
 // A double rather than a count: natural orbitals occupy fractionally, and rounding here would hide
 // that from a caller who cares. Canonical SCF sums to an integer within float noise.
-double es_electron_count(const md_system_t& sys, str_t occupation_path);
+double es_electron_count(const md_system_t& sys, md_str_t occupation_path);
 
 // Excited states carrying natural transition orbitals, from the weight table's leading axis.
 size_t es_excited_state_count(const md_system_t& sys);
@@ -2875,12 +2875,12 @@ void es_nto_warm_free(ApplicationState* state);
 // it to one symmetric matrix. Either storage is read: square ({A,A}, or {S,A,A} with
 // md_attribute_slice_1(state)), or packed (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, as the density
 // properties are). out_dim receives A.
-double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice);
+double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice);
 
 // The same matrix as its packed upper triangle in float, A(A+1)/2 values - the form both density
 // evaluation paths hand the shader. Prefer it wherever the matrix only goes on to be evaluated: a
 // packed attribute is read as it is, and its full double matrix is never made.
-float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, str_t density_path, const md_attribute_slice_t* slice);
+float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice);
 
 // Evaluates one density into a 3D texture, from the same two sources as orbital_evaluate_gl: the
 // basis/ attributes and the state's atom positions. density_path plus 'slice' name the matrix -
@@ -2888,7 +2888,7 @@ float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_sy
 // state index - and whether that matrix is stored or computed on demand is the table's business.
 bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
                          const vec3_t* atom_pos, size_t num_atom_pos,
-                         str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
+                         md_str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
 
 // The same, over a matrix the caller already has in hand rather than a path to extract it from.
 // The transition densities are VIRTUAL and are rebuilt from the response solution on every read,
@@ -2907,36 +2907,36 @@ bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const m
 // is waiting for a neutral name, and the moment a second reader publishes something comparable is
 // the moment to give them one and alias these onto it.
 namespace es_path {
-    inline const str_t alpha_coefficient   = STR_INIT("orbital/alpha/coefficient");
-    inline const str_t beta_coefficient    = STR_INIT("orbital/beta/coefficient");
+    inline const md_str_t alpha_coefficient   = MD_STR_INIT("orbital/alpha/coefficient");
+    inline const md_str_t beta_coefficient    = MD_STR_INIT("orbital/beta/coefficient");
 
-    inline const str_t alpha_energy        = STR_INIT("orbital/alpha/energy");
-    inline const str_t beta_energy         = STR_INIT("orbital/beta/energy");
+    inline const md_str_t alpha_energy        = MD_STR_INIT("orbital/alpha/energy");
+    inline const md_str_t beta_energy         = MD_STR_INIT("orbital/beta/energy");
 
-    inline const str_t alpha_occupation    = STR_INIT("orbital/alpha/occupation");
-    inline const str_t beta_occupation     = STR_INIT("orbital/beta/occupation");
+    inline const md_str_t alpha_occupation    = MD_STR_INIT("orbital/alpha/occupation");
+    inline const md_str_t beta_occupation     = MD_STR_INIT("orbital/beta/occupation");
 
     // The AO metric the coefficients and densities above are expressed against. Singular for a
     // basis that was stored spherically - see the note on md_vlx_publish_attributes.
-    inline const str_t overlap             = STR_INIT("basis/overlap");
+    inline const md_str_t overlap             = MD_STR_INIT("basis/overlap");
 
-    inline const str_t alpha_density       = STR_INIT("orbital/alpha/density");
-    inline const str_t beta_density        = STR_INIT("orbital/beta/density");
-    inline const str_t total_density       = STR_INIT("orbital/total/density");
-    inline const str_t difference_density  = STR_INIT("orbital/difference/density");
+    inline const md_str_t alpha_density       = MD_STR_INIT("orbital/alpha/density");
+    inline const md_str_t beta_density        = MD_STR_INIT("orbital/beta/density");
+    inline const md_str_t total_density       = MD_STR_INIT("orbital/total/density");
+    inline const md_str_t difference_density  = MD_STR_INIT("orbital/difference/density");
 
-    inline const str_t nto_particle        = STR_INIT("vlx/rsp/nto/particle/coefficient");
-    inline const str_t nto_hole            = STR_INIT("vlx/rsp/nto/hole/coefficient");
+    inline const md_str_t nto_particle        = MD_STR_INIT("vlx/rsp/nto/particle/coefficient");
+    inline const md_str_t nto_hole            = MD_STR_INIT("vlx/rsp/nto/hole/coefficient");
 
     // {S,Lmax}, the weight of each NTO pair, padded with zeros on the ragged lambda axis and
     // indexing the same space as the two coefficient attributes above.
-    inline const str_t nto_lambda          = STR_INIT("vlx/rsp/nto/lambda");
+    inline const md_str_t nto_lambda          = MD_STR_INIT("vlx/rsp/nto/lambda");
 
-    inline const str_t attachment_density  = STR_INIT("vlx/rsp/transition_density/attachment");
-    inline const str_t detachment_density  = STR_INIT("vlx/rsp/transition_density/detachment");
-    inline const str_t transition_diff     = STR_INIT("vlx/rsp/transition_density/difference");
+    inline const md_str_t attachment_density  = MD_STR_INIT("vlx/rsp/transition_density/attachment");
+    inline const md_str_t detachment_density  = MD_STR_INIT("vlx/rsp/transition_density/detachment");
+    inline const md_str_t transition_diff     = MD_STR_INIT("vlx/rsp/transition_density/difference");
 
-    inline const str_t density_property    = STR_INIT("vlx/density_property");
+    inline const md_str_t density_property    = MD_STR_INIT("vlx/density_property");
 }
 
 // The only interpretation of use_magnitude there is. ABS is a MODIFIER bit on an accumulate op, not
@@ -2947,7 +2947,7 @@ inline md_gto_op_t es_gto_op(bool use_magnitude) {
 
 // Which density path a spin selection names. The four are siblings in the table precisely so that
 // this is a lookup and not four cases of arithmetic at the point of use.
-inline str_t es_electron_density_path(ElectronicStructureSpin spin) {
+inline md_str_t es_electron_density_path(ElectronicStructureSpin spin) {
     switch (spin) {
     case ElectronicStructureSpin::Alpha:      return es_path::alpha_density;
     case ElectronicStructureSpin::Beta:       return es_path::beta_density;
@@ -2969,11 +2969,11 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
 //
 // With the GPU backend the texture is filled from the frame loop rather than before the call
 // returns; gpu_volume_jobs_drain() forces it where the contents are needed immediately.
-bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t coefficient_path,
+bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 // async (the representations): on the GPU, the density is issued as a job (md_gto_gpu_job_t) the frame loop
 // completes (gpu_volume_jobs_poll), where the launch would wait for its counting pass
-bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, str_t density_path,
+bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op, bool async = false);
 
 // density_evaluate over a matrix the caller already holds - see density_matrix_evaluate_gl.
@@ -2985,7 +2985,7 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
 // stream instead of reading it back. False when the GPU backend is unavailable, in which case there
 // is no scratch volume to run anything over and the caller wants the GL path instead.
-bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, str_t density_path,
+bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
 
 // The same, over a matrix the caller already holds - see density_matrix_evaluate_gl.
@@ -3215,7 +3215,7 @@ void point_set_region_mask_compute(
 // File Queue
 bool file_queue_empty(const FileQueue* queue);
 bool file_queue_full(const FileQueue* queue);
-void file_queue_push(FileQueue* queue, str_t path, FileFlags flags = FileFlags_None);
+void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags = FileFlags_None);
 
 FileQueue::Entry file_queue_front(const FileQueue* queue);
 FileQueue::Entry file_queue_pop(FileQueue* queue);
@@ -3264,7 +3264,7 @@ void assembly_subsets_free(ApplicationState* app);
 // and releases it when it is done (from any thread): the evaluation task the IR it evaluates, the visualization job
 // the IR it draws until the job is freed. script_ir_collect frees an IR that neither field (script.ir,
 // script.eval_ir) points at and no task holds. Main thread, once per frame.
-script::Program* script_ir_create(ApplicationState* state, str_t src, const script::CompileDesc& desc);
+script::Program* script_ir_create(ApplicationState* state, md_str_t src, const script::CompileDesc& desc);
 
 // Sets the workspace's script language: the editor's highlighting and completion follow, the script is compiled
 // again, and every filter is evaluated again in it. The text is kept as it is.
@@ -3284,9 +3284,9 @@ const script::Program* script_ir_of(const ApplicationState* state, script::Ref r
 void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, uint32_t flags = 0);
 // What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
 // beside the type. Empty while it is computed, and for a visualization of an expression.
-str_t script_vis_value_text(ApplicationState* state);
+md_str_t script_vis_value_text(ApplicationState* state);
 // Sets an expression, compiled against the script being edited (its identifiers)
-void script_visualize_str(ApplicationState* state, str_t str, uint32_t flags = 0);
+void script_visualize_str(ApplicationState* state, md_str_t str, uint32_t flags = 0);
 // Clears what is set. Start of every frame, before anything sets one.
 void script_vis_begin_frame(ApplicationState* state);
 // Takes a finished computation, starts one for what is set if it is not computed yet, and decides what is
@@ -3298,4 +3298,4 @@ uint64_t script_vis_shown_key(const ApplicationState* state);
 static inline void render_invalidate(ApplicationState* state) { state->render.version += 1; }
 // Drops every result, waiting for a running computation. Before the system goes.
 void script_vis_reset(ApplicationState* state);
-void script_set_hovered_property(ApplicationState* state, str_t label, int population_idx = -1);
+void script_set_hovered_property(ApplicationState* state, md_str_t label, int population_idx = -1);

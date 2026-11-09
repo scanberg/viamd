@@ -98,8 +98,8 @@ public:
 
     // An empty label keeps it out of the overlay. Restarting a job which is still under way cancels and waits for
     // it first, and drops its pending on_main.
-    void start    (str_t label, Body body, OnMain on_main = {});
-    void start_for(str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main = {});
+    void start    (md_str_t label, Body body, OnMain on_main = {});
+    void start_for(md_str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main = {});
 
     Status status() const;
     bool   running() const { return status() == Status::Running; }
@@ -119,7 +119,7 @@ private:
 
 // Runs whatever happens: cancel_all does not reach it (it is for work which must be done, such as giving memory
 // back), and wait_all waits for it.
-void detach(str_t label, std::function<void()> body);
+void detach(md_str_t label, std::function<void()> body);
 
 // Every job at once: a load stops all work which reads what it is about to replace
 void cancel_all();
@@ -143,7 +143,7 @@ struct Activity {
     bool                 listed = false;
 };
 
-void activity_begin(Activity* a, str_t label);
+void activity_begin(Activity* a, md_str_t label);
 void activity_end(Activity* a);
 
 struct ActivityInfo {

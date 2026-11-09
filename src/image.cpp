@@ -19,7 +19,7 @@ static void write_func(void* context, void* data, int size) {
     md_file_write(*file, data, size);
 }
 
-static inline md_file_t open_file(str_t filename) {
+static inline md_file_t open_file(md_str_t filename) {
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
         MD_LOG_ERROR("Failed to open file");
@@ -27,14 +27,14 @@ static inline md_file_t open_file(str_t filename) {
     return file;
 }
 
-ImageFormat image_format_from_ext(str_t ext) {
-    if (str_eq_cstr_ignore_case(ext, "jpg") || str_eq_cstr_ignore_case(ext, "jpeg")) return ImageFormat_JPG;
-    if (str_eq_cstr_ignore_case(ext, "png")) return ImageFormat_PNG;
-    if (str_eq_cstr_ignore_case(ext, "bmp")) return ImageFormat_BMP;
+ImageFormat image_format_from_ext(md_str_t ext) {
+    if (md_str_eq_cstr_ignore_case(ext, "jpg") || md_str_eq_cstr_ignore_case(ext, "jpeg")) return ImageFormat_JPG;
+    if (md_str_eq_cstr_ignore_case(ext, "png")) return ImageFormat_PNG;
+    if (md_str_eq_cstr_ignore_case(ext, "bmp")) return ImageFormat_BMP;
     return ImageFormat_Unknown;
 }
 
-bool image_write_jpg(str_t filename, const void* rgba, int width, int height, int quality) {
+bool image_write_jpg(md_str_t filename, const void* rgba, int width, int height, int quality) {
     md_file_t file = open_file(filename);
     bool result = false;
     if (md_file_valid(file)) {
@@ -44,7 +44,7 @@ bool image_write_jpg(str_t filename, const void* rgba, int width, int height, in
     return result;
 }
 
-bool image_write_png(str_t filename, const void* rgba, int width, int height) {
+bool image_write_png(md_str_t filename, const void* rgba, int width, int height) {
     md_file_t file = open_file(filename);
     bool result = false;
     if (md_file_valid(file)) {
@@ -54,7 +54,7 @@ bool image_write_png(str_t filename, const void* rgba, int width, int height) {
     return result;
 }
 
-bool image_write_bmp(str_t filename, const void* rgba, int width, int height) {
+bool image_write_bmp(md_str_t filename, const void* rgba, int width, int height) {
     md_file_t file = open_file(filename);
     bool result = false;
     if (md_file_valid(file)) {

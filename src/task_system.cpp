@@ -41,9 +41,9 @@ static std::mutex g_activity_mutex;
 static Activity*  g_activity_head = nullptr;
 static Activity*  g_activity_tail = nullptr;
 
-void activity_begin(Activity* a, str_t label) {
+void activity_begin(Activity* a, md_str_t label) {
     MD_ASSERT(a);
-    str_copy_to_char_buf(a->label, sizeof(a->label), label);
+    md_str_copy_to_char_buf(a->label, sizeof(a->label), label);
     std::lock_guard<std::mutex> lock(g_activity_mutex);
     MD_ASSERT(!a->listed);
     a->prev = g_activity_tail;
@@ -175,7 +175,7 @@ void JobTask::ExecuteRange(enki::TaskSetPartition, uint32_t) {
     }
 }
 
-static JobState* job_create(str_t label, Job::Body body, Job::OnMain on_main, bool detached) {
+static JobState* job_create(md_str_t label, Job::Body body, Job::OnMain on_main, bool detached) {
     JobState* s = new JobState();
     s->task.state      = s;
     s->task.m_SetSize  = 1;
@@ -227,14 +227,14 @@ void Job::release() {
     m_state = nullptr;
 }
 
-void Job::start(str_t label, Body body, OnMain on_main) {
+void Job::start(md_str_t label, Body body, OnMain on_main) {
     MD_ASSERT(body);
     release();
     m_state = job_create(label, std::move(body), std::move(on_main), false);
     job_launch(m_state);
 }
 
-void Job::start_for(str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main) {
+void Job::start_for(md_str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main) {
     MD_ASSERT(body);
     auto run = [count, grain, body = std::move(body)]() {
         JobState* s = tl_ctx.job;
@@ -276,7 +276,7 @@ uint64_t Job::activity_id() const {
     return m_state ? (uint64_t)(uintptr_t)&m_state->activity : 0;
 }
 
-void detach(str_t label, std::function<void()> body) {
+void detach(md_str_t label, std::function<void()> body) {
     MD_ASSERT(body);
     reap_detached();
     JobState* s = job_create(label, std::move(body), {}, true);

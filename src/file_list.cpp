@@ -12,13 +12,13 @@ FileRole file_role(LoaderFlags flags) {
     return FileRole_None;
 }
 
-FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state) {
+FileEntry file_entry_from(md_str_t path, const loader::LoaderState& load_state) {
     FileEntry e = {};
-    str_copy_to_char_buf(e.path, sizeof(e.path), path);
+    md_str_copy_to_char_buf(e.path, sizeof(e.path), path);
     e.type = load_state.type;
     e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
-    str_copy_to_char_buf(e.arg, sizeof(e.arg), str_from_cstr(load_state.arg));
-    str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), str_from_cstr(load_state.coordinates));
+    md_str_copy_to_char_buf(e.arg, sizeof(e.arg), md_str_from_cstr(load_state.arg));
+    md_str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), md_str_from_cstr(load_state.coordinates));
     return e;
 }
 
@@ -126,23 +126,23 @@ const FileEntry* file_list_run_file(const FileList* list) {
 // ## Workspace
 
 static void write_input(viamd::serialization_state_t& state, const FileEntry& e, md_allocator_i* alloc) {
-    const str_t path = str_from_cstr(e.path);
-    str_t rel = md_path_make_relative(state.filename, path, alloc);
-    if (str_empty(rel)) {
+    const md_str_t path = md_str_from_cstr(e.path);
+    md_str_t rel = md_path_make_relative(state.filename, path, alloc);
+    if (md_str_empty(rel)) {
         rel = path;
     }
-    viamd::write_str(state, STR_LIT("Path"), rel);
+    viamd::write_str(state, MD_STR_LIT("Path"), rel);
     if (e.explicit_type) {
         // By the extension the loader is known by: a name that is the same in every build, which the enum is not
-        viamd::write_str(state, STR_LIT("Loader"), loader::type_ext(e.type));
+        viamd::write_str(state, MD_STR_LIT("Loader"), loader::type_ext(e.type));
     }
     if (e.arg[0] != '\0') {
-        viamd::write_str(state, STR_LIT("Argument"), str_from_cstr(e.arg));
+        viamd::write_str(state, MD_STR_LIT("Argument"), md_str_from_cstr(e.arg));
     }
     if (e.coordinates[0] != '\0') {
-        const str_t coords = str_from_cstr(e.coordinates);
-        str_t rel_coords = md_path_make_relative(state.filename, coords, alloc);
-        viamd::write_str(state, STR_LIT("Coordinates"), str_empty(rel_coords) ? coords : rel_coords);
+        const md_str_t coords = md_str_from_cstr(e.coordinates);
+        md_str_t rel_coords = md_path_make_relative(state.filename, coords, alloc);
+        viamd::write_str(state, MD_STR_LIT("Coordinates"), md_str_empty(rel_coords) ? coords : rel_coords);
     }
 }
 
@@ -152,29 +152,29 @@ int file_list_serialize(viamd::serialization_state_t& state, const FileList* lis
     MD_DEFER { md_temp_end(temp); };
     md_allocator_i* alloc = md_temp_allocator(temp);
 
-    viamd::write_section_header(state, STR_LIT("System"));
-    viamd::write_int(state, STR_LIT("Id"), system_id);
+    viamd::write_section_header(state, MD_STR_LIT("System"));
+    viamd::write_int(state, MD_STR_LIT("Id"), system_id);
     if (list->atom_count > 0) {
-        viamd::write_int(state, STR_LIT("AtomCount"), (int64_t)list->atom_count);
+        viamd::write_int(state, MD_STR_LIT("AtomCount"), (int64_t)list->atom_count);
     }
 
     const size_t num_runs = md_array_size(list->runs);
     for (size_t r = 0; r < num_runs; ++r) {
-        viamd::write_section_header(state, STR_LIT("Run"));
-        viamd::write_int(state, STR_LIT("Id"), first_run_id + (int)r);
-        viamd::write_int(state, STR_LIT("System"), system_id);
+        viamd::write_section_header(state, MD_STR_LIT("Run"));
+        viamd::write_int(state, MD_STR_LIT("Id"), first_run_id + (int)r);
+        viamd::write_int(state, MD_STR_LIT("System"), system_id);
         if (list->runs[r].frame_count > 0) {
-            viamd::write_int(state, STR_LIT("FrameCount"), (int64_t)list->runs[r].frame_count);
+            viamd::write_int(state, MD_STR_LIT("FrameCount"), (int64_t)list->runs[r].frame_count);
         }
     }
 
     for (size_t i = 0; i < md_array_size(list->entries); ++i) {
         const FileEntry& e = list->entries[i];
-        viamd::write_section_header(state, STR_LIT("Input"));
+        viamd::write_section_header(state, MD_STR_LIT("Input"));
         if (e.run < 0) {
-            viamd::write_int(state, STR_LIT("System"), system_id);
+            viamd::write_int(state, MD_STR_LIT("System"), system_id);
         } else {
-            viamd::write_int(state, STR_LIT("Run"), first_run_id + e.run);
+            viamd::write_int(state, MD_STR_LIT("Run"), first_run_id + e.run);
         }
         write_input(state, e, alloc);
     }
@@ -184,10 +184,10 @@ int file_list_serialize(viamd::serialization_state_t& state, const FileList* lis
 
 // A file named in the workspace: relative to it, unless it was absolute when stored. Kept when it is not
 // there: a missing file is reported, and saved again, rather than forgotten.
-static bool resolve_path(char* buf, size_t cap, str_t folder, str_t arg) {
-    str_t file;
+static bool resolve_path(char* buf, size_t cap, md_str_t folder, md_str_t arg) {
+    md_str_t file;
     viamd::extract_str(file, arg);
-    if (str_empty(file)) return false;
+    if (md_str_empty(file)) return false;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -198,13 +198,13 @@ static bool resolve_path(char* buf, size_t cap, str_t folder, str_t arg) {
         joined += folder;
     }
     joined += file;
-    const str_t joined_str = md_str_writer_to_str(&joined);
-    const str_t canonical  = md_path_make_canonical(joined_str, alloc);
-    str_copy_to_char_buf(buf, cap, str_empty(canonical) ? joined_str : canonical);
+    const md_str_t joined_str = md_str_writer_to_str(&joined);
+    const md_str_t canonical  = md_path_make_canonical(joined_str, alloc);
+    md_str_copy_to_char_buf(buf, cap, md_str_empty(canonical) ? joined_str : canonical);
     return true;
 }
 
-static bool extract_count(size_t& out, str_t arg) {
+static bool extract_count(size_t& out, md_str_t arg) {
     int64_t v;
     if (viamd::extract_int64(v, arg) && v >= 0) {
         out = (size_t)v;
@@ -219,26 +219,26 @@ static const int NO_ID     = -1;
 static const int LEGACY_ID = -2;
 static inline bool given(int id) { return id != NO_ID; }
 
-static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& state, str_t folder, md_allocator_i* alloc) {
+static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& state, md_str_t folder, md_allocator_i* alloc) {
     // The keys may come in any order; the files load in this one
-    str_t molecule = {}, trajectory = {}, energy = {};
-    md_array(str_t) series = 0;
+    md_str_t molecule = {}, trajectory = {}, energy = {};
+    md_array(md_str_t) series = 0;
 
     md_temp_scope_t temp = md_temp_begin_avoid(alloc);
     MD_DEFER { md_temp_end(temp); };
 
-    str_t ident, arg;
+    md_str_t ident, arg;
     while (viamd::next_entry(ident, arg, state)) {
-        str_t file;
+        md_str_t file;
         viamd::extract_str(file, arg);
-        if (str_empty(file)) continue;
-        if      (str_eq_cstr(ident, "MoleculeFile"))   molecule   = arg;
-        else if (str_eq_cstr(ident, "TrajectoryFile")) trajectory = arg;
-        else if (str_eq_cstr(ident, "EnergyFile"))     energy     = arg;
-        else if (str_eq_cstr(ident, "SeriesFile"))     md_array_push(series, arg, md_temp_allocator(temp));
+        if (md_str_empty(file)) continue;
+        if      (md_str_eq_cstr(ident, "MoleculeFile"))   molecule   = arg;
+        else if (md_str_eq_cstr(ident, "TrajectoryFile")) trajectory = arg;
+        else if (md_str_eq_cstr(ident, "EnergyFile"))     energy     = arg;
+        else if (md_str_eq_cstr(ident, "SeriesFile"))     md_array_push(series, arg, md_temp_allocator(temp));
         // CoarseGrained, which older workspaces have, is not read: what is coarse grained is inferred
     }
-    if (str_empty(molecule)) return;
+    if (md_str_empty(molecule)) return;
 
     files->legacy = true;
     WorkspaceFiles::System sys = { LEGACY_ID, 0 };
@@ -246,7 +246,7 @@ static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& s
     WorkspaceFiles::Run run = { LEGACY_ID, LEGACY_ID, 0 };
     md_array_push(files->runs, run, alloc);
 
-    auto add = [&](str_t a, bool of_run, FileRole role, bool opens_own_run) {
+    auto add = [&](md_str_t a, bool of_run, FileRole role, bool opens_own_run) {
         WorkspaceFiles::Input in = {};
         in.system = of_run ? NO_ID : LEGACY_ID;
         in.run    = of_run ? LEGACY_ID : NO_ID;
@@ -257,24 +257,24 @@ static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& s
         }
     };
     // Without a trajectory of its own, the run was the structure file's own frames (a multi model PDB)
-    add(molecule, false, FileRole_System, str_empty(trajectory));
-    if (!str_empty(trajectory)) add(trajectory, true, FileRole_Trajectory, false);
-    if (!str_empty(energy))     add(energy, true, FileRole_Series, false);
+    add(molecule, false, FileRole_System, md_str_empty(trajectory));
+    if (!md_str_empty(trajectory)) add(trajectory, true, FileRole_Trajectory, false);
+    if (!md_str_empty(energy))     add(energy, true, FileRole_Series, false);
     for (size_t i = 0; i < md_array_size(series); ++i) {
         add(series[i], true, FileRole_Series, false);
     }
 }
 
-bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t& state, str_t folder, md_allocator_i* alloc) {
+bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t& state, md_str_t folder, md_allocator_i* alloc) {
     MD_ASSERT(files);
-    const str_t section = viamd::section_header(state);
-    str_t ident, arg;
+    const md_str_t section = viamd::section_header(state);
+    md_str_t ident, arg;
 
-    if (str_eq_cstr(section, "System")) {
+    if (md_str_eq_cstr(section, "System")) {
         WorkspaceFiles::System sys = { NO_ID, 0 };
         while (viamd::next_entry(ident, arg, state)) {
-            if      (str_eq_cstr(ident, "Id"))        viamd::extract_int(sys.id, arg);
-            else if (str_eq_cstr(ident, "AtomCount")) extract_count(sys.atom_count, arg);
+            if      (md_str_eq_cstr(ident, "Id"))        viamd::extract_int(sys.id, arg);
+            else if (md_str_eq_cstr(ident, "AtomCount")) extract_count(sys.atom_count, arg);
         }
         if (sys.id < 0) {
             MD_LOG_INFO("Workspace: a [System] without an Id is left out");
@@ -283,12 +283,12 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
         md_array_push(files->systems, sys, alloc);
         return true;
     }
-    if (str_eq_cstr(section, "Run")) {
+    if (md_str_eq_cstr(section, "Run")) {
         WorkspaceFiles::Run run = { NO_ID, NO_ID, 0 };
         while (viamd::next_entry(ident, arg, state)) {
-            if      (str_eq_cstr(ident, "Id"))         viamd::extract_int(run.id, arg);
-            else if (str_eq_cstr(ident, "System"))     viamd::extract_int(run.system, arg);
-            else if (str_eq_cstr(ident, "FrameCount")) extract_count(run.frame_count, arg);
+            if      (md_str_eq_cstr(ident, "Id"))         viamd::extract_int(run.id, arg);
+            else if (md_str_eq_cstr(ident, "System"))     viamd::extract_int(run.system, arg);
+            else if (md_str_eq_cstr(ident, "FrameCount")) extract_count(run.frame_count, arg);
         }
         if (run.id < 0 || run.system < 0) {
             MD_LOG_INFO("Workspace: a [Run] without an Id or a System is left out");
@@ -297,31 +297,31 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
         md_array_push(files->runs, run, alloc);
         return true;
     }
-    if (str_eq_cstr(section, "Input")) {
+    if (md_str_eq_cstr(section, "Input")) {
         WorkspaceFiles::Input in = {};
         in.system = NO_ID;
         in.run = NO_ID;
         bool has_path = false;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "Path")) {
+            if (md_str_eq_cstr(ident, "Path")) {
                 has_path = resolve_path(in.entry.path, sizeof(in.entry.path), folder, arg);
-            } else if (str_eq_cstr(ident, "System")) {
+            } else if (md_str_eq_cstr(ident, "System")) {
                 if (viamd::extract_int(in.system, arg) && in.system < 0) in.system = LEGACY_ID - 1;   // given, and names nothing
-            } else if (str_eq_cstr(ident, "Run")) {
+            } else if (md_str_eq_cstr(ident, "Run")) {
                 if (viamd::extract_int(in.run, arg) && in.run < 0) in.run = LEGACY_ID - 1;
-            } else if (str_eq_cstr(ident, "Loader")) {
-                str_t ext;
+            } else if (md_str_eq_cstr(ident, "Loader")) {
+                md_str_t ext;
                 viamd::extract_str(ext, arg);
                 const LoaderType type = loader::type_from_ext(ext);
                 if (type != LoaderType_Undefined) {
                     in.entry.type = type;
                     in.entry.explicit_type = true;
                 } else {
-                    MD_LOG_INFO("Workspace: no loader '" STR_FMT "' in this build, the file is read with the one its extension picks", STR_ARG(ext));
+                    MD_LOG_INFO("Workspace: no loader '" MD_STR_FMT "' in this build, the file is read with the one its extension picks", MD_STR_ARG(ext));
                 }
-            } else if (str_eq_cstr(ident, "Argument")) {
+            } else if (md_str_eq_cstr(ident, "Argument")) {
                 viamd::extract_to_char_buf(in.entry.arg, sizeof(in.entry.arg), arg);
-            } else if (str_eq_cstr(ident, "Coordinates")) {
+            } else if (md_str_eq_cstr(ident, "Coordinates")) {
                 resolve_path(in.entry.coordinates, sizeof(in.entry.coordinates), folder, arg);
             }
         }
@@ -330,7 +330,7 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
         }
         return true;
     }
-    if (str_eq_cstr(section, "Files") || str_eq_cstr(section, "File")) {
+    if (md_str_eq_cstr(section, "Files") || md_str_eq_cstr(section, "File")) {
         // DEPRECATED: one slot per kind of file, written before version 2. "File" is an older name still.
         read_legacy(files, state, folder, alloc);
         return true;

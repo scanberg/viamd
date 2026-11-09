@@ -325,7 +325,7 @@ static void job_finalize(DensityMapJob* job) {
     job->ok = true;
 }
 
-DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done) {
+DensityMapJob* density_map_launch(md_str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done) {
     MD_ASSERT(source && done);
     md_allocator_i* heap = md_get_heap_allocator();
     DensityMapJob* job = new DensityMapJob();
@@ -394,7 +394,7 @@ void density_map_texture_free(uint32_t* tex) {
     }
 }
 
-static constexpr str_t v_fs_triangle_src = STR_LIT(R"(
+static constexpr md_str_t v_fs_triangle_src = MD_STR_LIT(R"(
 #version 150 core
 
 void main() {
@@ -408,7 +408,7 @@ void main() {
 
 // A layer over the canvas, premultiplied: contours (fills of the regions above the levels, lines along them) or a heat
 // map, of the channels weighted. Sampled with a cubic B-spline, from four bilinear fetches.
-static constexpr str_t f_layer_src = STR_LIT(R"(
+static constexpr md_str_t f_layer_src = MD_STR_LIT(R"(
 #version 330 core
 
 out vec4 out_color;

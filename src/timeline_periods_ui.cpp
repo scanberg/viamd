@@ -177,7 +177,7 @@ void period_tooltip(const TimelinePeriod& r, const TimelinePeriodAxis& a, double
 void request_rename(const TimelinePeriod& r) {
     ui.rename_id = r.id;
     ui.rename_request = true;
-    str_copy_to_char_buf(ui.rename_prev, sizeof(ui.rename_prev), str_from_cstr(r.name));
+    md_str_copy_to_char_buf(ui.rename_prev, sizeof(ui.rename_prev), md_str_from_cstr(r.name));
 }
 
 void end_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, bool commit) {
@@ -630,7 +630,7 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
                 ImGui::CloseCurrentPopup();
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                str_copy_to_char_buf(r->name, sizeof(r->name), str_from_cstr(ui.rename_prev));
+                md_str_copy_to_char_buf(r->name, sizeof(r->name), md_str_from_cstr(ui.rename_prev));
                 ImGui::CloseCurrentPopup();
             }
             ImGui::TextDisabled("Enter keeps the name");
@@ -639,7 +639,7 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     } else if (ui.rename_id) {
         // Closed, by Enter or a click elsewhere: a name is never left empty
         if (TimelinePeriod* r = timeline_periods_find(rs, ui.rename_id)) {
-            if (!r->name[0]) str_copy_to_char_buf(r->name, sizeof(r->name), str_from_cstr(ui.rename_prev));
+            if (!r->name[0]) md_str_copy_to_char_buf(r->name, sizeof(r->name), md_str_from_cstr(ui.rename_prev));
         }
         ui.rename_id = 0;
     }

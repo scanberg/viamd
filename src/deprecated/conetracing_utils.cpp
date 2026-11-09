@@ -18,7 +18,7 @@ namespace cone_trace {
 static GLuint vao = 0;
 static GLuint vbo = 0;
 
-static str_t v_shader_fs_quad_src = STR(R"(
+static md_str_t v_shader_fs_quad_src = STR(R"(
 #version 150 core
 
 out vec2 uv;
@@ -46,7 +46,7 @@ static struct {
     } uniform_location;
 } gl;
 
-static str_t v_shader_src = STR(R"(
+static md_str_t v_shader_src = STR(R"(
 #version 430 core
 
 uniform ivec3_t u_volume_dim;
@@ -152,7 +152,7 @@ static struct {
 // Modified version of
 // https://github.com/Cigg/Voxel-Cone-Tracing
 
-static str_t f_shader_src = STR(R"(
+static md_str_t f_shader_src = STR(R"(
 #version 330 core
 
 in vec2 uv;

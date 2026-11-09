@@ -43,7 +43,7 @@ static int32_t residue_of_atom(const md_system_t& sys, int32_t atom) {
 static bool is_phosphate_center(const md_system_t& sys, int32_t atom) {
     const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom);
     if (z != 0) return z == 15;
-    const str_t name = md_atom_name(&sys.atom, atom);
+    const md_str_t name = md_atom_name(&sys.atom, atom);
     if (name.len < 3 || name.ptr[0] != 'P' || name.ptr[1] != 'O') return false;
     for (size_t i = 2; i < name.len; ++i) {
         if (name.ptr[i] < '0' || name.ptr[i] > '9') return false;
@@ -263,7 +263,7 @@ static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_
 
     auto is_ring = [&](int32_t i) -> bool {
         if (atom_is_bead(sys, i)) {
-            const str_t name = md_atom_name(&sys.atom, i);
+            const md_str_t name = md_atom_name(&sys.atom, i);
             return name.len >= 2 && name.ptr[0] == 'R' && name.ptr[1] >= '0' && name.ptr[1] <= '9';
         }
         return in_ring && in_ring[i] && md_atom_atomic_number(&sys.atom, i) != MD_Z_H;
@@ -681,7 +681,7 @@ static constexpr uint32_t NUCLEOBASE_RING6[] = { 0, 1, 2, 3, 4, 5 };    // N1 C2
 static constexpr uint32_t NUCLEOBASE_RING5[] = { 3, 4, 6, 7, 8 };       // C4 C5 N7 C8 N9
 
 // The base of a nucleotide by its name: DA, A, RA, and those of a terminal one (DA5, A3). 0 for none.
-static char nucleotide_base(str_t name) {
+static char nucleotide_base(md_str_t name) {
     while (name.len > 1 && (name.ptr[name.len - 1] == '3' || name.ptr[name.len - 1] == '5')) name.len -= 1;
     char c = 0;
     if (name.len == 1) c = name.ptr[0];
@@ -713,7 +713,7 @@ static uint32_t coarse_grained_base(GlyphBuilder& b, const md_system_t& sys, int
     for (uint32_t k = 0; k < t->num_real; ++k) {
         real[k] = -1;
         for (uint32_t i = range.beg; i < range.end && real[k] < 0; ++i) {
-            if (str_eq_cstr(md_atom_name(&sys.atom, i), t->real[k])) real[k] = (int32_t)i;
+            if (md_str_eq_cstr(md_atom_name(&sys.atom, i), t->real[k])) real[k] = (int32_t)i;
         }
         if (real[k] < 0) return UINT32_MAX;
     }

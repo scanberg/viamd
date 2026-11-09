@@ -79,11 +79,11 @@ namespace loader {
     // The reason here why we don't directly provide prepackaged loaders based on extensions
     // Is to get a chance to glance into the file and see if we recognize it first.
     // And perhaps there is also some arguments or options that need to be supplied for the loader.
-    void init(LoaderState* state, str_t filepath, const md_system_t* sys = nullptr);
+    void init(LoaderState* state, md_str_t filepath, const md_system_t* sys = nullptr);
 
     // out_state receives the loaded coordinates. Set out_state->alloc before calling; it may
     // differ from sys->alloc (a temp arena for the state, a persistent one for the system).
-    bool load(md_system_t* sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state);
+    bool load(md_system_t* sys, md_system_state_t* out_state, md_str_t filepath, const LoaderState& state);
 
     // For a file that ADDS to an already loaded system rather than replacing it (LoaderFlag_
     // Supplemental, set by init above). Its data lands in the system's attribute table; the atoms
@@ -92,30 +92,30 @@ namespace loader {
     //
     // run is the "run/<name>" of the loaded trajectory. A LoaderFlag_Temporal file publishes into
     // it and fails without one; every other loader ignores it.
-    bool load_supplemental(md_system_t* sys, str_t filepath, const LoaderState& state, str_t run);
+    bool load_supplemental(md_system_t* sys, md_str_t filepath, const LoaderState& state, md_str_t run);
 
     // Publish the trajectory in filepath as the run "run/<name>" (see md_run_publish in mdlib's
     // md_system.h): frame axis, cells and positions streamed from the file. filepath is the file the
     // frames are in - the structure file itself for a multi model PDB or a multi frame XYZ. False for
     // a format that does not publish runs yet, and for a file with a single frame.
-    bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags);
+    bool publish_run(md_system_t* sys, md_str_t filepath, md_str_t run, uint32_t flags);
 
     // A topology without coordinates is loaded (load above) with the coordinates its LoaderState names. These are the
     // pieces of that, for the application which puts the two together in whatever order they come.
     //
     // The atom count of a topology, a coordinate file or a trajectory (DCD, XTC, TRR, Amber NetCDF), as its header says;
     // 0 when the format does not say up front.
-    size_t atom_count(str_t filepath, const LoaderState& state);
+    size_t atom_count(md_str_t filepath, const LoaderState& state);
 
     // The coordinates for the atoms of sys from filepath: a restart, NAMD binary coordinates, a structure file of as
     // many atoms, or the first frame of a trajectory. The file must hold as many atoms as sys. out_state->alloc set.
-    bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t filepath);
+    bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, md_str_t filepath);
 
     // To help enlist supported loader type
-    str_t       type_name(LoaderType type);
-    str_t       type_ext(LoaderType type);
+    md_str_t       type_name(LoaderType type);
+    md_str_t       type_ext(LoaderType type);
     LoaderFlags type_flags(LoaderType type);
 
-    LoaderType type_from_ext(str_t ext);
+    LoaderType type_from_ext(md_str_t ext);
 
 }  // namespace loader

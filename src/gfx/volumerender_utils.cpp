@@ -20,7 +20,7 @@
 
 #include <gfx/profiler.h>
 
-static constexpr str_t v_shader_src_fs_quad = STR_LIT(
+static constexpr md_str_t v_shader_src_fs_quad = MD_STR_LIT(
     R"(
 #version 410 core
 
@@ -235,10 +235,10 @@ static struct {
     } proxy;
 } iso;
 
-static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_t defines) {
+static void iso_program_setup(IsoProgram* p, GLuint v_shader, md_str_t source, md_str_t defines) {
     GLuint f_shader = gl::compile_shader_from_source(source, GL_FRAGMENT_SHADER, defines);
     if (!f_shader) {
-        MD_LOG_ERROR("Isosurface shader compilation failed (" STR_FMT "), keeping the previous program", STR_ARG(defines));
+        MD_LOG_ERROR("Isosurface shader compilation failed (" MD_STR_FMT "), keeping the previous program", MD_STR_ARG(defines));
         return;
     }
     if (!p->program) p->program = glCreateProgram();
@@ -269,9 +269,9 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, str_t source, str_
 }
 
 static void iso_program_compile(int mode, int variant, GLuint v_shader) {
-    const str_t source = (mode == IsoMode_Exact) ? str_t{(const char*)isosurface_frag,      isosurface_frag_size}
-                                                 : str_t{(const char*)isosurface_fast_frag, isosurface_fast_frag_size};
-    iso_program_setup(&iso.prog[mode][variant], v_shader, source, str_from_cstr(iso_variant_defines[variant]));
+    const md_str_t source = (mode == IsoMode_Exact) ? md_str_t{(const char*)isosurface_frag,      isosurface_frag_size}
+                                                 : md_str_t{(const char*)isosurface_fast_frag, isosurface_fast_frag_size};
+    iso_program_setup(&iso.prog[mode][variant], v_shader, source, md_str_from_cstr(iso_variant_defines[variant]));
     iso.prog_failed[mode][variant] = iso.prog[mode][variant].program == 0;
 }
 

@@ -259,15 +259,15 @@ struct Dataset : viamd::EventHandler {
 
         // Map particle types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
-            str_t particle_type_name = md_particle_type_name(&sys.atom.type, i);
-            str_t ff_type = md_particle_type_ff_type(&sys.atom.type, i);
+            md_str_t particle_type_name = md_particle_type_name(&sys.atom.type, i);
+            md_str_t ff_type = md_particle_type_ff_type(&sys.atom.type, i);
             DatasetItem item = { .key = i };
-            if (!str_empty(ff_type) && !str_eq(ff_type, particle_type_name)) {
+            if (!md_str_empty(ff_type) && !md_str_eq(ff_type, particle_type_name)) {
                 // The force field type is what tells apart types of the same name (a Martini SC1 is a
                 // different bead in every residue), so it is shown whenever it adds something
-                snprintf(item.label, sizeof(item.label), STR_FMT " (" STR_FMT ")", STR_ARG(particle_type_name), STR_ARG(ff_type));
+                snprintf(item.label, sizeof(item.label), MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(particle_type_name), MD_STR_ARG(ff_type));
             } else {
-                snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(particle_type_name));
+                snprintf(item.label, sizeof(item.label), MD_STR_FMT, MD_STR_ARG(particle_type_name));
             }
 
             // Snapshot what the loader assigned, so that we can tell later on what the user has changed
@@ -309,7 +309,7 @@ struct Dataset : viamd::EventHandler {
         md_array_resize(res_types, type_count, arena);
         for (size_t i = 0; i < type_count; ++i) {
             ResidueTypeItem item = {};
-            snprintf(item.label, sizeof(item.label), STR_FMT, STR_ARG(md_residue_type_name(&type, i)));
+            snprintf(item.label, sizeof(item.label), MD_STR_FMT, MD_STR_ARG(md_residue_type_name(&type, i)));
             item.load_color   = md_residue_type_color(&type, i);
             item.use_defaults = res_type_has_monomer(type, i);
             res_types[i] = item;
@@ -344,12 +344,12 @@ struct Dataset : viamd::EventHandler {
             if (!delta) continue;
 
             const ElementDefault& def = element_defaults[z];
-            viamd::write_section_header(state, STR_LIT("ElementDefault"));
-            viamd::write_int(state, STR_LIT("Element"), z);
+            viamd::write_section_header(state, MD_STR_LIT("ElementDefault"));
+            viamd::write_int(state, MD_STR_LIT("Element"), z);
 
-            if (delta.color)  viamd::write_vec4(state, STR_LIT("Color"),  def.color);
-            if (delta.radius) viamd::write_flt (state, STR_LIT("Radius"), def.radius);
-            if (delta.mass)   viamd::write_flt (state, STR_LIT("Mass"),   def.mass);
+            if (delta.color)  viamd::write_vec4(state, MD_STR_LIT("Color"),  def.color);
+            if (delta.radius) viamd::write_flt (state, MD_STR_LIT("Radius"), def.radius);
+            if (delta.mass)   viamd::write_flt (state, MD_STR_LIT("Mass"),   def.mass);
         }
     }
 
@@ -361,15 +361,15 @@ struct Dataset : viamd::EventHandler {
         vec4_t color = {};
         float radius = 0, mass = 0;
 
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "Element")) {
+            if (md_str_eq_cstr(ident, "Element")) {
                 viamd::extract_int(z, arg);
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 has_color = viamd::extract_flt_vec(color.elem, 4, arg);
-            } else if (str_eq_cstr(ident, "Radius")) {
+            } else if (md_str_eq_cstr(ident, "Radius")) {
                 has_radius = viamd::extract_flt(radius, arg);
-            } else if (str_eq_cstr(ident, "Mass")) {
+            } else if (md_str_eq_cstr(ident, "Mass")) {
                 has_mass = viamd::extract_flt(mass, arg);
             }
         }
@@ -522,7 +522,7 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ResidueTypeOverride& ovr = pending_res_type_overrides[j];
-            const md_residue_type_idx_t t = md_residue_type_find(&type, str_from_cstr(ovr.name), ovr.kind);
+            const md_residue_type_idx_t t = md_residue_type_find(&type, md_str_from_cstr(ovr.name), ovr.kind);
             if (t < 0) {
                 MD_LOG_INFO("Dataset: workspace contains overrides for residue type '%s' (%s) which is not present in the loaded system", ovr.name, md_residue_kind_name(ovr.kind));
                 continue;
@@ -541,9 +541,9 @@ struct Dataset : viamd::EventHandler {
     void serialize_monomer_defaults(viamd::serialization_state_t& state) {
         for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
             if (!compute_monomer_default_delta(m)) continue;
-            viamd::write_section_header(state, STR_LIT("MonomerDefault"));
-            viamd::write_str(state, STR_LIT("Monomer"), md_monomer_id((md_monomer_t)m));
-            viamd::write_vec4(state, STR_LIT("Color"), monomer_defaults[m].color);
+            viamd::write_section_header(state, MD_STR_LIT("MonomerDefault"));
+            viamd::write_str(state, MD_STR_LIT("Monomer"), md_monomer_id((md_monomer_t)m));
+            viamd::write_vec4(state, MD_STR_LIT("Color"), monomer_defaults[m].color);
         }
     }
 
@@ -553,11 +553,11 @@ struct Dataset : viamd::EventHandler {
         bool has_color = false;
         vec4_t color = {};
 
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "Monomer")) {
+            if (md_str_eq_cstr(ident, "Monomer")) {
                 m = md_monomer_from_id(arg);
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 has_color = viamd::extract_flt_vec(color.elem, 4, arg);
             }
         }
@@ -578,20 +578,20 @@ struct Dataset : viamd::EventHandler {
         for (size_t i = 0; i < type_count; ++i) {
             const ResidueTypeDelta delta = compute_res_type_delta(type, i);
             if (!delta) continue;
-            viamd::write_section_header(state, STR_LIT("ComponentType"));
-            viamd::write_str(state, STR_LIT("Name"), md_residue_type_name(&type, i));
-            viamd::write_int(state, STR_LIT("Kind"), (int)md_residue_type_kind(&type, i));
-            if (delta.color)    viamd::write_vec4(state, STR_LIT("Color"), vec4_from_u32(type.color[i]));
-            if (delta.defaults) viamd::write_bool(state, STR_LIT("UseDefaults"), res_types[i].use_defaults);
+            viamd::write_section_header(state, MD_STR_LIT("ComponentType"));
+            viamd::write_str(state, MD_STR_LIT("Name"), md_residue_type_name(&type, i));
+            viamd::write_int(state, MD_STR_LIT("Kind"), (int)md_residue_type_kind(&type, i));
+            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"), vec4_from_u32(type.color[i]));
+            if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"), res_types[i].use_defaults);
         }
     }
 
     // Overrides are buffered per workspace. Sections of another workspace than the one buffered never made it onto a
     // system (it failed to load) and are stale.
     void begin_pending_overrides(const viamd::deserialization_state_t& state) {
-        if (!str_eq_cstr(state.filename, pending_workspace)) {
+        if (!md_str_eq_cstr(state.filename, pending_workspace)) {
             free_pending_overrides();
-            str_copy_to_char_buf(pending_workspace, sizeof(pending_workspace), state.filename);
+            md_str_copy_to_char_buf(pending_workspace, sizeof(pending_workspace), state.filename);
         }
     }
 
@@ -599,22 +599,22 @@ struct Dataset : viamd::EventHandler {
         begin_pending_overrides(state);
         ResidueTypeOverride ovr = {};
 
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
-            } else if (str_eq_cstr(ident, "Kind")) {
+            } else if (md_str_eq_cstr(ident, "Kind")) {
                 int kind = 0;
                 if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)MD_RESIDUE_FLAG_KIND_MASK) {
                     ovr.kind = (md_residue_kind_t)kind;
                 }
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 vec4_t color = {};
                 if (viamd::extract_flt_vec(color.elem, 4, arg)) {
                     ovr.color = u32_from_vec4(color);
                     ovr.has_color = true;
                 }
-            } else if (str_eq_cstr(ident, "UseDefaults")) {
+            } else if (md_str_eq_cstr(ident, "UseDefaults")) {
                 ovr.has_use_defaults = viamd::extract_bool(ovr.use_defaults, arg);
             }
         }
@@ -646,20 +646,20 @@ struct Dataset : viamd::EventHandler {
             ParticleTypeDelta delta = compute_particle_type_delta(type, item, i);
             if (!delta) continue;
 
-            viamd::write_section_header(state, STR_LIT("AtomType"));
-            viamd::write_str(state, STR_LIT("Name"), md_particle_type_name(&type, i));
-            const str_t ff_type = md_particle_type_ff_type(&type, i);
-            if (!str_empty(ff_type)) {
-                viamd::write_str(state, STR_LIT("ForceFieldType"), ff_type);
+            viamd::write_section_header(state, MD_STR_LIT("AtomType"));
+            viamd::write_str(state, MD_STR_LIT("Name"), md_particle_type_name(&type, i));
+            const md_str_t ff_type = md_particle_type_ff_type(&type, i);
+            if (!md_str_empty(ff_type)) {
+                viamd::write_str(state, MD_STR_LIT("ForceFieldType"), ff_type);
             }
-            viamd::write_int(state, STR_LIT("LoadedElement"), item.load.z);
+            viamd::write_int(state, MD_STR_LIT("LoadedElement"), item.load.z);
 
-            if (delta.elem)     viamd::write_int (state, STR_LIT("Element"),       type.z[i]);
-            if (delta.radius)   viamd::write_flt (state, STR_LIT("Radius"),        type.radius[i]);
-            if (delta.mass)     viamd::write_flt (state, STR_LIT("Mass"),          type.mass[i]);
-            if (delta.color)    viamd::write_vec4(state, STR_LIT("Color"),         vec4_from_u32(type.color[i]));
-            if (delta.coarse)   viamd::write_bool(state, STR_LIT("CoarseGrained"), type_is_bead(type.flags[i]));
-            if (delta.defaults) viamd::write_bool(state, STR_LIT("UseDefaults"),   item.use_defaults);
+            if (delta.elem)     viamd::write_int (state, MD_STR_LIT("Element"),       type.z[i]);
+            if (delta.radius)   viamd::write_flt (state, MD_STR_LIT("Radius"),        type.radius[i]);
+            if (delta.mass)     viamd::write_flt (state, MD_STR_LIT("Mass"),          type.mass[i]);
+            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"),         vec4_from_u32(type.color[i]));
+            if (delta.coarse)   viamd::write_bool(state, MD_STR_LIT("CoarseGrained"), type_is_bead(type.flags[i]));
+            if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"),   item.use_defaults);
         }
     }
 
@@ -669,36 +669,36 @@ struct Dataset : viamd::EventHandler {
 
         ParticleTypeOverride ovr = {};
 
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
-            } else if (str_eq_cstr(ident, "ForceFieldType")) {
+            } else if (md_str_eq_cstr(ident, "ForceFieldType")) {
                 viamd::extract_to_char_buf(ovr.ff_type, sizeof(ovr.ff_type), arg);
-            } else if (str_eq_cstr(ident, "LoadedElement")) {
+            } else if (md_str_eq_cstr(ident, "LoadedElement")) {
                 int z;
                 if (viamd::extract_int(z, arg)) {
                     ovr.load_z = (md_atomic_number_t)z;
                 }
-            } else if (str_eq_cstr(ident, "Element")) {
+            } else if (md_str_eq_cstr(ident, "Element")) {
                 int z;
                 if (viamd::extract_int(z, arg)) {
                     ovr.z = (md_atomic_number_t)z;
                     ovr.has_z = true;
                 }
-            } else if (str_eq_cstr(ident, "Radius")) {
+            } else if (md_str_eq_cstr(ident, "Radius")) {
                 ovr.has_radius = viamd::extract_flt(ovr.radius, arg);
-            } else if (str_eq_cstr(ident, "Mass")) {
+            } else if (md_str_eq_cstr(ident, "Mass")) {
                 ovr.has_mass = viamd::extract_flt(ovr.mass, arg);
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 vec4_t color = {};
                 if (viamd::extract_flt_vec(color.elem, 4, arg)) {
                     ovr.color = u32_from_vec4(color);
                     ovr.has_color = true;
                 }
-            } else if (str_eq_cstr(ident, "CoarseGrained")) {
+            } else if (md_str_eq_cstr(ident, "CoarseGrained")) {
                 ovr.has_coarse_grained = viamd::extract_bool(ovr.coarse_grained, arg);
-            } else if (str_eq_cstr(ident, "UseDefaults")) {
+            } else if (md_str_eq_cstr(ident, "UseDefaults")) {
                 ovr.has_use_defaults = viamd::extract_bool(ovr.use_defaults, arg);
             }
         }
@@ -734,8 +734,8 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ParticleTypeOverride& ovr = pending_overrides[j];
-            str_t name = str_from_cstr(ovr.name);
-            str_t ff_type = str_from_cstr(ovr.ff_type);
+            md_str_t name = md_str_from_cstr(ovr.name);
+            md_str_t ff_type = md_str_from_cstr(ovr.ff_type);
 
             // Identify the type by its name, its force field type (empty for sources without one, which
             // is also what a workspace written before force field types existed holds) and the element
@@ -744,8 +744,8 @@ struct Dataset : viamd::EventHandler {
             for (size_t i = 0; i < type_count; ++i) {
                 DatasetItem& item = particle_types[i];
                 if (item.load.z != ovr.load_z) continue;
-                if (!str_eq(md_particle_type_name(&type, i), name)) continue;
-                if (!str_eq(md_particle_type_ff_type(&type, i), ff_type)) continue;
+                if (!md_str_eq(md_particle_type_name(&type, i), name)) continue;
+                if (!md_str_eq(md_particle_type_ff_type(&type, i), ff_type)) continue;
 
                 if (ovr.has_z) {
                     type.z[i] = ovr.z;
@@ -851,14 +851,14 @@ struct Dataset : viamd::EventHandler {
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t &state = *(viamd::deserialization_state_t*)e.payload;
-                str_t section = viamd::section_header(state);
-                if (str_eq_cstr(section, "ElementDefault")) {
+                md_str_t section = viamd::section_header(state);
+                if (md_str_eq_cstr(section, "ElementDefault")) {
                     deserialize_element_default(state);
-                } else if (str_eq_cstr(section, "AtomType")) {
+                } else if (md_str_eq_cstr(section, "AtomType")) {
                     deserialize_particle_type(state);
-                } else if (str_eq_cstr(section, "MonomerDefault")) {
+                } else if (md_str_eq_cstr(section, "MonomerDefault")) {
                     deserialize_monomer_default(state);
-                } else if (str_eq_cstr(section, "ComponentType")) {
+                } else if (md_str_eq_cstr(section, "ComponentType")) {
                     deserialize_residue_type(state);
                 }
                 break;
@@ -971,12 +971,12 @@ struct Dataset : viamd::EventHandler {
 
             const ElementDefault& def = elem_defs[z];
             const vec4_t color = def.color;
-            const str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
+            const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
 
 			ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.25f);
 
             if (disabled) ImGui::BeginDisabled();
-			if (element_button(str_ptr(sym), color)) {
+			if (element_button(md_str_ptr(sym), color)) {
                 res.clicked = true;
                 res.z = z;
             }
@@ -990,8 +990,8 @@ struct Dataset : viamd::EventHandler {
                 res.z = z;
             }
 
-            str_t name = md_atomic_number_name((md_atomic_number_t)z);
-            ImGui::SetItemTooltip("%d: " STR_FMT, z, STR_ARG(name));
+            md_str_t name = md_atomic_number_name((md_atomic_number_t)z);
+            ImGui::SetItemTooltip("%d: " MD_STR_FMT, z, MD_STR_ARG(name));
 
             ImGui::PopID();
         }
@@ -1003,7 +1003,7 @@ struct Dataset : viamd::EventHandler {
 
     struct FileRow {
         const char* role;
-        str_t path;
+        md_str_t path;
         char details[128];
         bool missing = false;
     };
@@ -1016,18 +1016,18 @@ struct Dataset : viamd::EventHandler {
         ImGui::TextUnformatted(row.role);
 
         ImGui::TableSetColumnIndex(1);
-        str_t name = row.path;
-        extract_file(&name, row.path);
+        md_str_t name = row.path;
+        md_extract_file(&name, row.path);
         char name_buf[256];
-        str_copy_to_char_buf(name_buf, sizeof(name_buf), name);
+        md_str_copy_to_char_buf(name_buf, sizeof(name_buf), name);
         ImGui::Selectable(name_buf, false, ImGuiSelectableFlags_SpanAllColumns);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-            ImGui::SetTooltip(STR_FMT, STR_ARG(row.path));
+            ImGui::SetTooltip(MD_STR_FMT, MD_STR_ARG(row.path));
         }
         if (ImGui::BeginPopupContextItem("##file")) {
             if (ImGui::MenuItem("Copy path")) {
                 char buf[1024];
-                str_copy_to_char_buf(buf, sizeof(buf), row.path);
+                md_str_copy_to_char_buf(buf, sizeof(buf), row.path);
                 ImGui::SetClipboardText(buf);
             }
             ImGui::EndPopup();
@@ -1071,13 +1071,13 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableSetupColumn("Holds", ImGuiTableColumnFlags_WidthStretch, 2.5f);
         ImGui::TableHeadersRow();
 
-        str_t groups[64];
+        md_str_t groups[64];
         const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
 
         for (size_t i = 0; i < file_list_count(list); ++i) {
             const FileEntry& e = *file_list_get(list, i);
             const FileRole role = file_list_role(list, i);
-            FileRow row = { file_role_label(e, role), str_from_cstr(e.path), "" };
+            FileRow row = { file_role_label(e, role), md_str_from_cstr(e.path), "" };
             row.missing = e.missing;
 
             if (!e.missing) {
@@ -1086,13 +1086,13 @@ struct Dataset : viamd::EventHandler {
                 switch (role) {
                 case FileRole_System: {
                     // A topology names the file its coordinates came from
-                    str_t coords = {};
+                    md_str_t coords = {};
                     if (e.coordinates[0]) {
-                        coords = str_from_cstr(e.coordinates);
-                        extract_file(&coords, coords);
+                        coords = md_str_from_cstr(e.coordinates);
+                        md_extract_file(&coords, coords);
                     }
-                    snprintf(d, cap, "%zu atoms%s%s" STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
-                        coords.len ? ", coordinates of " : "", STR_ARG(coords));
+                    snprintf(d, cap, "%zu atoms%s%s" MD_STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
+                        coords.len ? ", coordinates of " : "", MD_STR_ARG(coords));
                     break;
                 }
                 case FileRole_Trajectory: {
@@ -1110,14 +1110,14 @@ struct Dataset : viamd::EventHandler {
                 case FileRole_Series:
                     // The group the file published, which names its source
                     for (size_t g = 0; g < num_groups; ++g) {
-                        if (str_eq(system_series_group_source(&data, groups[g]), row.path)) {
+                        if (md_str_eq(system_series_group_source(&data, groups[g]), row.path)) {
                             snprintf(d, cap, "%zu series", system_series_members(nullptr, 0, &data, groups[g]));
                             break;
                         }
                     }
                     break;
                 case FileRole_Supplement:
-                    snprintf(d, cap, STR_FMT, STR_ARG(loader::type_name(e.type)));
+                    snprintf(d, cap, MD_STR_FMT, MD_STR_ARG(loader::type_name(e.type)));
                     break;
                 default:
                     break;
@@ -1220,7 +1220,7 @@ struct Dataset : viamd::EventHandler {
     static uint64_t composition_key(const ApplicationState& data) {
         const md_system_t& sys = data.mold.sys;
         uint64_t key = md_hash64(&sys.topology_version, sizeof(sys.topology_version), 0);
-        const md_attribute_t* charge = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"));
+        const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         const uint64_t charge_version = charge ? charge->version : 0;
         key = md_hash64(&charge_version, sizeof(charge_version), key);
         return md_hash64(&data.mold.sys.atom.type_idx, sizeof(void*), key);
@@ -1243,7 +1243,7 @@ struct Dataset : viamd::EventHandler {
 
         // Charges, when the file has them (a topology does)
         float* charge = nullptr;
-        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("atom/charge"))) {
+        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"))) {
             if (attr->format.rank == 1 && md_attribute_element_count(&attr->format) == sys.atom.count) {
                 charge = md_temp_alloc_array(temp, float, sys.atom.count + 1);
                 c.has_charge = md_attribute_extract_f32(charge, sys.atom.count, attr, md_attribute_slice_all(), md_unit_none()) == sys.atom.count;
@@ -1260,7 +1260,7 @@ struct Dataset : viamd::EventHandler {
         for (size_t t = 0; t < num_types; ++t) {
             TypeRow row = {};
             row.type = (int)t;
-            str_copy_to_char_buf(row.name, sizeof(row.name), md_system_molecule_type_name(&sys, t));
+            md_str_copy_to_char_buf(row.name, sizeof(row.name), md_system_molecule_type_name(&sys, t));
             row.res_min = UINT32_MAX;
             md_array_push(c.rows, row, alloc);
         }
@@ -1445,11 +1445,11 @@ struct Dataset : viamd::EventHandler {
             const md_chain_idx_t chain_a = first.beg < first.end ? md_system_chain_find_by_residue_idx(&sys, first.beg) : -1;
             const md_chain_idx_t chain_b = last.beg < last.end ? md_system_chain_find_by_residue_idx(&sys, last.end - 1) : -1;
             if (chain_a >= 0 && chain_b >= 0 && chain_b != chain_a) {
-                snprintf(buf, cap, "chains " STR_FMT ", " STR_FMT, STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)), STR_ARG(md_system_chain_id(&sys, (size_t)chain_b)));
+                snprintf(buf, cap, "chains " MD_STR_FMT ", " MD_STR_FMT, MD_STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)), MD_STR_ARG(md_system_chain_id(&sys, (size_t)chain_b)));
                 return;
             }
             if (chain_a >= 0) {
-                snprintf(buf, cap, "chain " STR_FMT, STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)));
+                snprintf(buf, cap, "chain " MD_STR_FMT, MD_STR_ARG(md_system_chain_id(&sys, (size_t)chain_a)));
                 return;
             }
             const uint32_t p = c.mol_part[beg];
@@ -1481,7 +1481,7 @@ struct Dataset : viamd::EventHandler {
         const uint32_t end = MD_MIN(range.end, range.beg + max_shown);
 
         for (uint32_t res_idx = range.beg; res_idx < end; ++res_idx) {
-            str_t res_name = md_system_residue_name(&sys, res_idx);
+            md_str_t res_name = md_system_residue_name(&sys, res_idx);
             const md_residue_kind_t res_kind = md_system_residue_kind(&sys, res_idx);
             const bool residue = res_kind == MD_RESIDUE_KIND_AMINO_ACID || res_kind == MD_RESIDUE_KIND_NUCLEOTIDE;
 
@@ -1491,7 +1491,7 @@ struct Dataset : viamd::EventHandler {
             const char letter[2] = { md_monomer_letter(monomer), '\0' };
             const bool short_label = short_labels && residue && monomer != MD_MONOMER_NONE && monomer != MD_MONOMER_UNK && monomer != MD_MONOMER_N;
             if (short_label) {
-                res_name = str_from_cstr(letter);
+                res_name = md_str_from_cstr(letter);
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 1));
             }
             // In the color of its type, as the Res Type coloring of the representations shows it
@@ -1503,7 +1503,7 @@ struct Dataset : viamd::EventHandler {
                 ImGui::PushStyleColor(ImGuiCol_HeaderActive, bg);
                 ImGui::PushStyleColor(ImGuiCol_Text, color_is_light(rgb) ? IM_COL32(0, 0, 0, 255) : IM_COL32(255, 255, 255, 255));
             }
-            const ImVec2 text_sz = ImGui::CalcTextSize(str_beg(res_name), str_end(res_name));
+            const ImVec2 text_sz = ImGui::CalcTextSize(md_str_beg(res_name), md_str_end(res_name));
             const ImVec2 item_sz(text_sz.x + style.ItemSpacing.x * 2.0f, text_sz.y + style.ItemSpacing.x * 2.0f);
             // Flow: stay on the same line only if it fits to the right of the previous chip
             if (res_idx != range.beg) {
@@ -1514,7 +1514,7 @@ struct Dataset : viamd::EventHandler {
                 }
             }
             char label[32];
-            str_copy_to_char_buf(label, sizeof(label), res_name);
+            md_str_copy_to_char_buf(label, sizeof(label), res_name);
             ImGui::PushID((int)res_idx);
             ImGui::Selectable(label, true, 0, text_sz);
             ImGui::PopID();
@@ -1525,8 +1525,8 @@ struct Dataset : viamd::EventHandler {
                 ImGui::PopStyleColor(3);
             }
             if (ImGui::IsItemHovered()) {
-                const str_t full = md_system_residue_name(&sys, res_idx);
-                ImGui::SetTooltip(STR_FMT " %d", STR_ARG(full), md_system_residue_seq_id(&sys, res_idx));
+                const md_str_t full = md_system_residue_name(&sys, res_idx);
+                ImGui::SetTooltip(MD_STR_FMT " %d", MD_STR_ARG(full), md_system_residue_seq_id(&sys, res_idx));
                 const md_urange_t atoms = md_system_residue_atom_range(&sys, res_idx);
                 md_bitmask_assign(&data.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
                 handle_item_click(data);
@@ -1835,9 +1835,9 @@ struct Dataset : viamd::EventHandler {
 
     uint64_t trajectory_key(const ApplicationState& data) {
         const md_attribute_t* axis = run_time_axis(&data);
-        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
+        const md_attribute_t* cell = run_attribute(&data, MD_STR_LIT("unitcell"));
         const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
-        return md_hash64(v, sizeof(v), md_hash64_str(str_from_cstr(data.mold.run), 0));
+        return md_hash64(v, sizeof(v), md_hash64_str(md_str_from_cstr(data.mold.run), 0));
     }
 
     void compute_trajectory(ApplicationState& data) {
@@ -1863,25 +1863,25 @@ struct Dataset : viamd::EventHandler {
             if (n < 2) traj.dt_min = traj.dt_max = 0;
         }
 
-        traj.has_velocity = run_attribute(&data, STR_LIT("atom/velocity")) != nullptr;
-        traj.has_force    = run_attribute(&data, STR_LIT("atom/force")) != nullptr;
+        traj.has_velocity = run_attribute(&data, MD_STR_LIT("atom/velocity")) != nullptr;
+        traj.has_force    = run_attribute(&data, MD_STR_LIT("atom/force")) != nullptr;
 
         // Sections with an axis of their own: "<run>/trr/<name>/time"
         char buf[256];
-        const str_t trr = run_attribute_path(buf, sizeof(buf), &data, STR_LIT("trr"));
-        if (!str_empty(trr)) {
+        const md_str_t trr = run_attribute_path(buf, sizeof(buf), &data, MD_STR_LIT("trr"));
+        if (!md_str_empty(trr)) {
             int len = 0;
             for (md_attribute_iter_t it = md_attributes_iter_children(attrs, trr); md_attributes_next(&it);) {
-                const md_attribute_t* axis = md_attributes_find_in(attrs, it.child_path, STR_LIT("time"));
+                const md_attribute_t* axis = md_attributes_find_in(attrs, it.child_path, MD_STR_LIT("time"));
                 if (!axis) continue;
                 const size_t m = axis->format.shape[0];
-                len += snprintf(traj.sections + len, sizeof(traj.sections) - len, "%s" STR_FMT " in %zu frames", len ? ", " : "", STR_ARG(it.child), m);
+                len += snprintf(traj.sections + len, sizeof(traj.sections) - len, "%s" MD_STR_FMT " in %zu frames", len ? ", " : "", MD_STR_ARG(it.child), m);
                 if (len >= (int)sizeof(traj.sections)) break;
             }
         }
 
         // The box, frame by frame
-        const md_attribute_t* cell = run_attribute(&data, STR_LIT("unitcell"));
+        const md_attribute_t* cell = run_attribute(&data, MD_STR_LIT("unitcell"));
         if (cell && cell->data && md_attribute_element_count(&cell->format) == n * 9 && n > 0) {
             md_temp_scope_t temp = md_temp_begin();
             float* m = md_temp_alloc_array(temp, float, n * 9);
@@ -1971,10 +1971,10 @@ struct Dataset : viamd::EventHandler {
         }
 
         // What was loaded along the frames, and how it lines up with them
-        str_t groups[64];
+        md_str_t groups[64];
         const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
         for (size_t g = 0; g < num_groups; ++g) {
-            const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], STR_LIT("time"));
+            const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], MD_STR_LIT("time"));
             char label[256];
             system_series_group_label(label, sizeof(label), &data, groups[g]);
             if (!axis || axis->format.shape[0] < 1) {
@@ -1997,11 +1997,11 @@ struct Dataset : viamd::EventHandler {
     }
 
     // ASCII case insensitive 'needle occurs in haystack'
-    static bool contains_ignore_case(str_t haystack, str_t needle) {
+    static bool contains_ignore_case(md_str_t haystack, md_str_t needle) {
         if (needle.len == 0) return true;
         if (needle.len > haystack.len) return false;
         for (size_t i = 0; i + needle.len <= haystack.len; ++i) {
-            if (str_eq_ignore_case(str_substr(haystack, i, needle.len), needle)) return true;
+            if (md_str_eq_ignore_case(md_str_substr(haystack, i, needle.len), needle)) return true;
         }
         return false;
     }
@@ -2012,7 +2012,7 @@ struct Dataset : viamd::EventHandler {
     // from its context menu. Dragged into the Script Editor, it goes in as the expression that reads
     // it, attr("edr/potential").
     void draw_series(ApplicationState& data) {
-        str_t groups[64];
+        md_str_t groups[64];
         const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), &data), MD_COUNTOF(groups));
         if (num_groups == 0) return;
 
@@ -2020,7 +2020,7 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputTextWithHint("##series_filter", "Filter by name", series_filter, sizeof(series_filter));
-        const str_t filter = str_from_cstr(series_filter);
+        const md_str_t filter = md_str_from_cstr(series_filter);
 
         const md_attributes_t* table = &data.mold.sys.attributes;
 
@@ -2029,7 +2029,7 @@ struct Dataset : viamd::EventHandler {
             MD_DEFER { md_temp_end(temp); };
 
             const size_t num = system_series_members(nullptr, 0, &data, groups[g]);
-            str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+            md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
             system_series_members(paths, num, &data, groups[g]);
 
             char group_label[256];
@@ -2060,7 +2060,7 @@ struct Dataset : viamd::EventHandler {
                 const SeriesKey key = series_key(SeriesSource_System, paths[i]);
                 char name[64];
                 series_label(name, sizeof(name), &data, key);
-                if (!contains_ignore_case(str_from_cstr(name), filter) && !contains_ignore_case(md_attribute_leaf(attr), filter)) {
+                if (!contains_ignore_case(md_str_from_cstr(name), filter) && !contains_ignore_case(md_attribute_leaf(attr), filter)) {
                     continue;
                 }
 
@@ -2097,10 +2097,10 @@ struct Dataset : viamd::EventHandler {
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(name);
-                    if (!str_empty(attr->description)) {
-                        ImGui::TextDisabled(STR_FMT, STR_ARG(attr->description));
+                    if (!md_str_empty(attr->description)) {
+                        ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr->description));
                     }
-                    ImGui::TextDisabled(STR_FMT, STR_ARG(attr->path));
+                    ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr->path));
                     if (expr[0]) ImGui::TextDisabled("In the script: %s", expr);
                     ImGui::Separator();
                     ImGui::TextUnformatted(expr[0] ? "Drag into a timeline or distribution subplot or into the script editor,\ndouble click to toggle it in the first timeline"
@@ -2348,15 +2348,15 @@ struct Dataset : viamd::EventHandler {
         const md_particle_type_data_t& type = data.mold.sys.atom.type;
         const DatasetItem& item = particle_types[i];
         const bool cg = type_is_bead(type.flags[i]);
-        const str_t name    = md_particle_type_name(&type, i);
-        const str_t ff_type = md_particle_type_ff_type(&type, i);
+        const md_str_t name    = md_particle_type_name(&type, i);
+        const md_str_t ff_type = md_particle_type_ff_type(&type, i);
         char num[32];
 
         ImGui::BeginTooltip();
-        ImGui::Text(STR_FMT, STR_ARG(name));
-        if (!str_empty(ff_type) && !str_eq(ff_type, name)) {
+        ImGui::Text(MD_STR_FMT, MD_STR_ARG(name));
+        if (!md_str_empty(ff_type) && !md_str_eq(ff_type, name)) {
             ImGui::SameLine();
-            ImGui::TextDisabled("force field type " STR_FMT, STR_ARG(ff_type));
+            ImGui::TextDisabled("force field type " MD_STR_FMT, MD_STR_ARG(ff_type));
         }
         ImGui::Separator();
 
@@ -2366,7 +2366,7 @@ struct Dataset : viamd::EventHandler {
                 ImGui::TextUnformatted("None, coarse grained bead");
             } else {
                 const md_atomic_number_t z = type.z[i];
-                ImGui::Text(STR_FMT " (" STR_FMT ", %d)", STR_ARG(md_atomic_number_name(z)), STR_ARG(md_atomic_number_symbol(z)), (int)z);
+                ImGui::Text(MD_STR_FMT " (" MD_STR_FMT ", %d)", MD_STR_ARG(md_atomic_number_name(z)), MD_STR_ARG(md_atomic_number_symbol(z)), (int)z);
             }
             info_row("Radius");
             ImGui::Text("%.3f \xC3\x85", type.radius[i]);
@@ -2483,10 +2483,10 @@ struct Dataset : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::TextUnformatted("Element");
             ImGui::SameLine();
-            if (element_button(str_ptr(md_atomic_number_symbol(z)), element_defaults[z].color)) {
+            if (element_button(md_str_ptr(md_atomic_number_symbol(z)), element_defaults[z].color)) {
                 ImGui::OpenPopup("##element_popup");
             }
-            ImGui::SetItemTooltip(STR_FMT ", click to change", STR_ARG(md_atomic_number_name(z)));
+            ImGui::SetItemTooltip(MD_STR_FMT ", click to change", MD_STR_ARG(md_atomic_number_name(z)));
             if (ImGui::BeginPopup("##element_popup")) {
                 const PeriodicTableResult res = periodic_table_widget(element_defaults);
                 if (res.clicked && res.z >= 0) {
@@ -2624,13 +2624,13 @@ struct Dataset : viamd::EventHandler {
                 optimize_particle_type_colors(data, color_changed);
             }
         }
-        const str_t filter = show_filter ? str_trim(str_from_cstr(particle_type_filter)) : STR_LIT("");
+        const md_str_t filter = show_filter ? md_str_trim(md_str_from_cstr(particle_type_filter)) : MD_STR_LIT("");
 
         auto passes_filter = [&](size_t i) {
             if (i < first) return false;
-            if (str_empty(filter)) return true;
+            if (md_str_empty(filter)) return true;
             const bool cg = type_is_bead(type.flags[i]);
-            return contains_ignore_case(str_from_cstr(particle_types[i].label), filter) || (!cg && str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
+            return contains_ignore_case(md_str_from_cstr(particle_types[i].label), filter) || (!cg && md_str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
         };
 
         size_t num_rows = 0;
@@ -2789,7 +2789,7 @@ struct Dataset : viamd::EventHandler {
                     if (cg) {
                         ImGui::TextDisabled("CG");
                     } else {
-                        ImGui::Text(STR_FMT, STR_ARG(md_atomic_number_symbol(type.z[i])));
+                        ImGui::Text(MD_STR_FMT, MD_STR_ARG(md_atomic_number_symbol(type.z[i])));
                     }
                 }
 
@@ -2858,9 +2858,9 @@ struct Dataset : viamd::EventHandler {
 
         if (element_popup_z >= 0 && element_popup_z < MD_Z_Count && ImGui::BeginPopup("##element_default_popup")) {
             const int z = element_popup_z;
-            const str_t sym  = md_atomic_number_symbol((md_atomic_number_t)z);
-            const str_t name = md_atomic_number_name((md_atomic_number_t)z);
-            ImGui::Text("%d: " STR_FMT " (" STR_FMT ")", z, STR_ARG(name), STR_ARG(sym));
+            const md_str_t sym  = md_atomic_number_symbol((md_atomic_number_t)z);
+            const md_str_t name = md_atomic_number_name((md_atomic_number_t)z);
+            ImGui::Text("%d: " MD_STR_FMT " (" MD_STR_FMT ")", z, MD_STR_ARG(name), MD_STR_ARG(sym));
             ImGui::Separator();
 
             ElementDefault& def = element_defaults[z];
@@ -2947,14 +2947,14 @@ struct Dataset : viamd::EventHandler {
         char num[32];
 
         ImGui::BeginTooltip();
-        ImGui::Text(STR_FMT, STR_ARG(md_residue_type_name(&type, i)));
+        ImGui::Text(MD_STR_FMT, MD_STR_ARG(md_residue_type_name(&type, i)));
         ImGui::Separator();
         if (ImGui::BeginTable("##comp_type_info", 2, ImGuiTableFlags_SizingFixedFit)) {
             info_row("Kind");
             ImGui::TextUnformatted(md_residue_kind_name(md_residue_type_kind(&type, i)));
             info_row("Standard");
             if (m != MD_MONOMER_NONE) {
-                ImGui::Text(STR_FMT " (" STR_FMT ", %c)", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
+                ImGui::Text(MD_STR_FMT " (" MD_STR_FMT ", %c)", MD_STR_ARG(md_monomer_id(m)), MD_STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
             } else {
                 ImGui::TextDisabled("None");
             }
@@ -3035,7 +3035,7 @@ struct Dataset : viamd::EventHandler {
 
         if (m != MD_MONOMER_NONE) {
             ImGui::AlignTextToFramePadding();
-            ImGui::Text("Standard residue " STR_FMT " (" STR_FMT ")", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)));
+            ImGui::Text("Standard residue " MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(md_monomer_id(m)), MD_STR_ARG(md_monomer_name(m)));
             ImGui::SameLine();
             if (ImGui::Checkbox("Use residue defaults", &item.use_defaults) && item.use_defaults) {
                 // Relinking takes the defaults as they currently are, including the user's edits of them
@@ -3196,8 +3196,8 @@ struct Dataset : viamd::EventHandler {
                     ImGui::SameLine();
                     ImGui::AlignTextToFramePadding();
                     if (m != MD_MONOMER_NONE) {
-                        if (item.use_defaults) ImGui::TextDisabled(STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
-                        else                   ImGui::Text(STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
+                        if (item.use_defaults) ImGui::TextDisabled(MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
+                        else                   ImGui::Text(MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_id(m)), md_monomer_letter(m));
                     } else {
                         ImGui::TextDisabled("-");
                     }
@@ -3301,15 +3301,15 @@ struct Dataset : viamd::EventHandler {
                 optimize_res_type_colors(data, color_changed);
             }
         }
-        const str_t filter = show_filter ? str_trim(str_from_cstr(res_type_filter)) : STR_LIT("");
+        const md_str_t filter = show_filter ? md_str_trim(md_str_from_cstr(res_type_filter)) : MD_STR_LIT("");
 
         auto passes_filter = [&](size_t i) {
             if (!in_use(i)) return false;
-            if (str_empty(filter)) return true;
+            if (md_str_empty(filter)) return true;
             const md_monomer_t m = md_residue_type_monomer(&type, i);
-            return contains_ignore_case(str_from_cstr(res_types[i].label), filter) ||
-                   (m != MD_MONOMER_NONE && str_eq_ignore_case(md_monomer_id(m), filter)) ||
-                   contains_ignore_case(str_from_cstr(md_residue_kind_name(md_residue_type_kind(&type, i))), filter);
+            return contains_ignore_case(md_str_from_cstr(res_types[i].label), filter) ||
+                   (m != MD_MONOMER_NONE && md_str_eq_ignore_case(md_monomer_id(m), filter)) ||
+                   contains_ignore_case(md_str_from_cstr(md_residue_kind_name(md_residue_type_kind(&type, i))), filter);
         };
 
         size_t num_rows = 0;
@@ -3382,7 +3382,7 @@ struct Dataset : viamd::EventHandler {
                     if (ImGui::GetItemRectMax().x + spacing + width <= max_x) ImGui::SameLine(0, spacing);
                 }
                 char lbl[16];
-                snprintf(lbl, sizeof(lbl), STR_FMT "##monomer", STR_ARG(md_monomer_id((md_monomer_t)m)));
+                snprintf(lbl, sizeof(lbl), MD_STR_FMT "##monomer", MD_STR_ARG(md_monomer_id((md_monomer_t)m)));
                 ImGui::BeginDisabled(!used[m]);
                 if (monomer_button(lbl, monomer_defaults[m].color, width) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
                     monomer_popup = m;
@@ -3401,7 +3401,7 @@ struct Dataset : viamd::EventHandler {
                         }
                     }
                     handle_item_click(data);
-                    ImGui::SetTooltip(STR_FMT " (%c)", STR_ARG(md_monomer_name((md_monomer_t)m)), md_monomer_letter((md_monomer_t)m));
+                    ImGui::SetTooltip(MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_name((md_monomer_t)m)), md_monomer_letter((md_monomer_t)m));
                 }
             }
         };
@@ -3411,7 +3411,7 @@ struct Dataset : viamd::EventHandler {
 
         if (monomer_popup > MD_MONOMER_NONE && monomer_popup < MD_MONOMER_COUNT && ImGui::BeginPopup("##monomer_default_popup")) {
             const md_monomer_t m = (md_monomer_t)monomer_popup;
-            ImGui::Text(STR_FMT ": " STR_FMT " (%c)", STR_ARG(md_monomer_id(m)), STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
+            ImGui::Text(MD_STR_FMT ": " MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_id(m)), MD_STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
             ImGui::Separator();
 
             MonomerDefault& def = monomer_defaults[m];

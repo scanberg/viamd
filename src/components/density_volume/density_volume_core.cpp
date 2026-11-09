@@ -36,10 +36,10 @@ struct Reader {
     const char* end;
 };
 
-static str_t next_line(Reader* r) {
+static md_str_t next_line(Reader* r) {
     const char* b = r->p;
     while (r->p < r->end && *r->p != '\n') ++r->p;
-    str_t s = {b, (size_t)(r->p - b)};
+    md_str_t s = {b, (size_t)(r->p - b)};
     if (r->p < r->end) ++r->p;
     if (s.len && s.ptr[s.len - 1] == '\r') s.len -= 1;
     return s;
@@ -62,7 +62,7 @@ static bool next_number(Reader* r, double* out) {
 }
 
 // The numbers of one line
-static size_t line_numbers(str_t line, double* out, size_t cap) {
+static size_t line_numbers(md_str_t line, double* out, size_t cap) {
     Reader r = {line.ptr, line.ptr + line.len};
     size_t n = 0;
     double x;
@@ -70,12 +70,12 @@ static size_t line_numbers(str_t line, double* out, size_t cap) {
     return n;
 }
 
-bool cube_parse(Cube* out, str_t text, md_allocator_i* alloc, char* err, size_t err_cap) {
+bool cube_parse(Cube* out, md_str_t text, md_allocator_i* alloc, char* err, size_t err_cap) {
     *out = Cube{};
     out->bulk = NAN;
     out->alloc = alloc;
     Reader r = {text.ptr, text.ptr + text.len};
-    const str_t c1 = next_line(&r);
+    const md_str_t c1 = next_line(&r);
     next_line(&r);
     // viamd's own: its bulk density in the first line
     for (size_t i = 0; i + 5 <= c1.len; ++i) {
@@ -134,9 +134,9 @@ bool cube_parse(Cube* out, str_t text, md_allocator_i* alloc, char* err, size_t 
     return true;
 }
 
-bool cube_read(Cube* out, str_t path, md_allocator_i* alloc, char* err, size_t err_cap) {
+bool cube_read(Cube* out, md_str_t path, md_allocator_i* alloc, char* err, size_t err_cap) {
     md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
-    const str_t text = load_textfile(path, temp);
+    const md_str_t text = md_load_textfile(path, temp);
     bool ok = false;
     if (!text.len) {
         *out = Cube{};
@@ -172,7 +172,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
         int n = snprintf(line, sizeof(line), "%zu\ncube\n", other.num_atoms);
         md_array_push_array(text, line, (size_t)n, temp);
         for (size_t i = 0; i < other.num_atoms; ++i) {
-            const str_t sym = md_util_element_symbol((md_element_t)other.atomic_numbers[i]);
+            const md_str_t sym = md_util_element_symbol((md_element_t)other.atomic_numbers[i]);
             n = snprintf(line, sizeof(line), "%.*s %.6f %.6f %.6f\n", (int)sym.len, sym.ptr, other.xyz[i].x, other.xyz[i].y, other.xyz[i].z);
             md_array_push_array(text, line, (size_t)n, temp);
         }

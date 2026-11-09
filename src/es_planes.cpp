@@ -907,8 +907,8 @@ void main() {
 static bool outline_gl_init() {
     if (outline_gl.program || outline_gl.failed) return outline_gl.program != 0;
     GLuint sh[2] = {
-        gl::compile_shader_from_source(str_from_cstr(outline_vs), GL_VERTEX_SHADER),
-        gl::compile_shader_from_source(str_from_cstr(outline_fs), GL_FRAGMENT_SHADER),
+        gl::compile_shader_from_source(md_str_from_cstr(outline_vs), GL_VERTEX_SHADER),
+        gl::compile_shader_from_source(md_str_from_cstr(outline_fs), GL_FRAGMENT_SHADER),
     };
     if (!sh[0] || !sh[1]) {
         outline_gl.failed = true;

@@ -23,7 +23,7 @@ struct deserialization_state_t;
 // --- Representations ---
 
 // Appended at the end of 'group' (0 for the top level)
-Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
+Representation* create_representation(ApplicationState* app, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, md_str_t filter = {}, uint32_t group = 0);
 // Placed just after the original, in the same group
 Representation* clone_representation(ApplicationState* app, const Representation& rep);
 void remove_representation(ApplicationState* app, size_t idx);
@@ -78,7 +78,7 @@ Representation* create_representation_of_target(ApplicationState* app, const Rep
 // --- Groups ---
 
 // Appended at the end of 'parent' (0 for the top level)
-RepresentationGroup* create_representation_group(ApplicationState* app, str_t name = STR_LIT("group"), uint32_t parent = 0);
+RepresentationGroup* create_representation_group(ApplicationState* app, md_str_t name = MD_STR_LIT("group"), uint32_t parent = 0);
 // The group and everything within it, placed just after the original
 void clone_representation_group(ApplicationState* app, uint32_t id);
 // The group and everything within it
@@ -174,9 +174,9 @@ void representations_serialize(viamd::serialization_state_t& state, const Applic
 // The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
 // when it is not one of them
 void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app, const Representation& rep);
-bool representation_read_entry(Representation* rep, str_t ident, str_t arg);
+bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg);
 // True when the section was one of the above, which it has then read
-bool representations_deserialize(ApplicationState* app, str_t section, viamd::deserialization_state_t& state);
+bool representations_deserialize(ApplicationState* app, md_str_t section, viamd::deserialization_state_t& state);
 
 // --- UI ---
 

@@ -390,12 +390,12 @@ struct Ramachandran : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                const str_t section = viamd::section_header(state);
-                if (str_eq(section, STR_LIT("Ramachandran"))) {
+                const md_str_t section = viamd::section_header(state);
+                if (md_str_eq(section, MD_STR_LIT("Ramachandran"))) {
                     deserialize_settings(state);
-                } else if (str_eq(section, STR_LIT("RamachandranLayer"))) {
+                } else if (md_str_eq(section, MD_STR_LIT("RamachandranLayer"))) {
                     deserialize_layer(state);
-                } else if (str_eq(section, STR_LIT("RamachandranGroup"))) {
+                } else if (md_str_eq(section, MD_STR_LIT("RamachandranGroup"))) {
                     deserialize_group(state);
                 }
                 break;
@@ -941,7 +941,7 @@ struct Ramachandran : viamd::EventHandler {
             layer->shown_hash = hash;
         };
         l.want_hash = hash;
-        l.job = density_map_launch(STR_LIT("Ramachandran density"), rama_domain, l.bandwidth, num_chunks, source, done);
+        l.job = density_map_launch(MD_STR_LIT("Ramachandran density"), rama_domain, l.bandwidth, num_chunks, source, done);
     }
 
     // ## Update
@@ -1109,7 +1109,7 @@ struct Ramachandran : viamd::EventHandler {
 
         char path_buf[256];
         const uint64_t angle_version = md_attributes_version(&app->mold.sys.attributes,
-            md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), app, STR_LIT("backbone/angle"))));
+            md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), app, MD_STR_LIT("backbone/angle"))));
         const bool available = angles_available();
 
         if (tree_dirty) apply_tree();
@@ -1154,12 +1154,12 @@ struct Ramachandran : viamd::EventHandler {
     // ## Workspace
 
     void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("Ramachandran"));
-        viamd::write_int(state, STR_LIT("View"), view);
-        viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
-        viamd::write_bool(state, STR_LIT("ShowTicks"), show_ticks);
+        viamd::write_section_header(state, MD_STR_LIT("Ramachandran"));
+        viamd::write_int(state, MD_STR_LIT("View"), view);
+        viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
+        viamd::write_bool(state, MD_STR_LIT("ShowTicks"), show_ticks);
         // Said even when there are none, so that none stays none (rather than the defaults) once read again
-        viamd::write_int(state, STR_LIT("Layers"), num_layers);
+        viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
 
         // In the order of the list: a group, then what is in it
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
@@ -1172,7 +1172,7 @@ struct Ramachandran : viamd::EventHandler {
                 continue;
             }
             const LayerGroup& g = groups[top[k] - num_layers];
-            layer_group_serialize(state, STR_LIT("RamachandranGroup"), g);
+            layer_group_serialize(state, MD_STR_LIT("RamachandranGroup"), g);
             int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
             const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, n, g.node.id);
             for (size_t c = 0; c < nk; ++c) {
@@ -1183,75 +1183,75 @@ struct Ramachandran : viamd::EventHandler {
 
     void serialize_layer(viamd::serialization_state_t& state, const Layer& l) {
         {
-            viamd::write_section_header(state, STR_LIT("RamachandranLayer"));
-            if (l.node.parent) viamd::write_int(state, STR_LIT("Group"), (int64_t)l.node.parent);
-            if (l.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(l.name));
-            viamd::write_bool(state, STR_LIT("Visible"), l.visible);
-            viamd::write_str(state, STR_LIT("Source"), l.source == LayerSource_Reference ? STR_LIT("reference") : STR_LIT("system"));
+            viamd::write_section_header(state, MD_STR_LIT("RamachandranLayer"));
+            if (l.node.parent) viamd::write_int(state, MD_STR_LIT("Group"), (int64_t)l.node.parent);
+            if (l.name[0]) viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(l.name));
+            viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
+            viamd::write_str(state, MD_STR_LIT("Source"), l.source == LayerSource_Reference ? MD_STR_LIT("reference") : MD_STR_LIT("system"));
             if (l.source == LayerSource_System) {
-                static const str_t frames[LayerFrames_Count] = { STR_LIT("current"), STR_LIT("all"), STR_LIT("period") };
-                viamd::write_str(state, STR_LIT("Frames"), frames[l.frames]);
-                if (l.frames == LayerFrames_Period) viamd::write_int(state, STR_LIT("Period"), (int)l.period);
-                if (l.filter.text[0]) viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(l.filter.text));
-                viamd::write_bool(state, STR_LIT("FollowSelection"), l.follow_selection);
+                static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
+                viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
+                if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
+                if (l.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(l.filter.text));
+                viamd::write_bool(state, MD_STR_LIT("FollowSelection"), l.follow_selection);
             }
-            static const str_t styles[LayerStyle_Count] = { STR_LIT("points"), STR_LIT("contours"), STR_LIT("heatmap") };
-            viamd::write_str(state, STR_LIT("Style"), styles[l.style]);
-            viamd::write_vec4(state, STR_LIT("Color"), l.color);
-            viamd::write_flt(state, STR_LIT("Opacity"), l.opacity);
-            viamd::write_bool(state, STR_LIT("Fill"), l.fill);
-            viamd::write_bool(state, STR_LIT("Lines"), l.lines);
-            viamd::write_flt(state, STR_LIT("LineWidth"), l.line_width);
-            viamd::write_flt_vec(state, STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
-            viamd::write_flt(state, STR_LIT("Bandwidth"), l.bandwidth);
-            viamd::write_str(state, STR_LIT("Colormap"), str_from_cstr(ImPlot::GetColormapName(l.colormap)));
-            viamd::write_bool(state, STR_LIT("LogScale"), l.log_scale);
-            static const str_t colorings[PointColoring_Count] = { STR_LIT("layer"), STR_LIT("region"), STR_LIT("time") };
-            viamd::write_str(state, STR_LIT("PointColoring"), colorings[l.point_coloring]);
-            viamd::write_flt(state, STR_LIT("PointSize"), l.point_size);
+            static const md_str_t styles[LayerStyle_Count] = { MD_STR_LIT("points"), MD_STR_LIT("contours"), MD_STR_LIT("heatmap") };
+            viamd::write_str(state, MD_STR_LIT("Style"), styles[l.style]);
+            viamd::write_vec4(state, MD_STR_LIT("Color"), l.color);
+            viamd::write_flt(state, MD_STR_LIT("Opacity"), l.opacity);
+            viamd::write_bool(state, MD_STR_LIT("Fill"), l.fill);
+            viamd::write_bool(state, MD_STR_LIT("Lines"), l.lines);
+            viamd::write_flt(state, MD_STR_LIT("LineWidth"), l.line_width);
+            viamd::write_flt_vec(state, MD_STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
+            viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
+            viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
+            static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("region"), MD_STR_LIT("time") };
+            viamd::write_str(state, MD_STR_LIT("PointColoring"), colorings[l.point_coloring]);
+            viamd::write_flt(state, MD_STR_LIT("PointSize"), l.point_size);
         }
     }
 
     void deserialize_settings(viamd::deserialization_state_t& state) {
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "View")) {
+            if (md_str_eq_cstr(ident, "View")) {
                 int v = -1;
                 if (viamd::extract_int(v, arg)) view = MD_CLAMP(v, -1, NUM_PANELS - 1);
-            } else if (str_eq_cstr(ident, "ShowLayers")) {
+            } else if (md_str_eq_cstr(ident, "ShowLayers")) {
                 viamd::extract_bool(show_sidebar, arg);
-            } else if (str_eq_cstr(ident, "ShowTicks")) {
+            } else if (md_str_eq_cstr(ident, "ShowTicks")) {
                 viamd::extract_bool(show_ticks, arg);
-            } else if (str_eq_cstr(ident, "Layers")) {
+            } else if (md_str_eq_cstr(ident, "Layers")) {
                 layers_declared = true;
             }
             // From before there were layers
-            else if (str_eq_cstr(ident, "BlurSigma")) {
+            else if (md_str_eq_cstr(ident, "BlurSigma")) {
                 legacy.present = true;
                 viamd::extract_flt(legacy.blur_sigma, arg);
-            } else if (str_eq_cstr(ident, "LayerAlpha")) {
+            } else if (md_str_eq_cstr(ident, "LayerAlpha")) {
                 legacy.present = true;
                 viamd::extract_flt_vec(legacy.alpha, 3, arg);
-            } else if (str_eq_cstr(ident, "LayerDisplayMode")) {
+            } else if (md_str_eq_cstr(ident, "LayerDisplayMode")) {
                 legacy.present = true;
                 viamd::extract_int_vec(legacy.mode, 3, arg);
-            } else if (str_eq_cstr(ident, "LayerColormap")) {
+            } else if (md_str_eq_cstr(ident, "LayerColormap")) {
                 legacy.present = true;
                 viamd::extract_int_vec(legacy.colormap, 3, arg);
-            } else if (str_eq_cstr(ident, "ShowLayer")) {
+            } else if (md_str_eq_cstr(ident, "ShowLayer")) {
                 legacy.present = true;
                 viamd::extract_int_vec(legacy.show, 4, arg);
-            } else if (str_eq_cstr(ident, "LayoutMode")) {
+            } else if (md_str_eq_cstr(ident, "LayoutMode")) {
                 legacy.present = true;
                 viamd::extract_int(legacy.layout, arg);
-            } else if (str_eq_cstr(ident, "LayerPeriod")) {
+            } else if (md_str_eq_cstr(ident, "LayerPeriod")) {
                 legacy.present = true;
                 viamd::extract_int(legacy.period, arg);
             } else {
                 for (int i = 0; i < 3; ++i) {
                     char key[32];
                     snprintf(key, sizeof(key), "LayerIsolineColor%d", i);
-                    if (str_eq_cstr(ident, key)) {
+                    if (md_str_eq_cstr(ident, key)) {
                         legacy.present = true;
                         viamd::extract_vec4(legacy.isoline_color[i], arg);
                         break;
@@ -1267,7 +1267,7 @@ struct Ramachandran : viamd::EventHandler {
             clear_layers();
             read_layers = true;
         }
-        str_t ident, arg;
+        md_str_t ident, arg;
         LayerGroup* g = add_group(LAYER_TREE_LAST);
         if (!g) {
             while (viamd::next_entry(ident, arg, state)) {}
@@ -1291,17 +1291,17 @@ struct Ramachandran : viamd::EventHandler {
             read_layers = true;
         }
         Layer* l = add_layer(LayerSource_System, LayerFrames_Current, LayerStyle_Points);
-        str_t ident, arg;
+        md_str_t ident, arg;
         if (!l) {
             while (viamd::next_entry(ident, arg, state)) {}
             return;
         }
         l->point_coloring = PointColoring_Layer;
         while (viamd::next_entry(ident, arg, state)) {
-            str_t s = {};
-            if (str_eq_cstr(ident, "Name")) {
+            md_str_t s = {};
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(l->name, sizeof(l->name), arg);
-            } else if (str_eq_cstr(ident, "Group")) {
+            } else if (md_str_eq_cstr(ident, "Group")) {
                 int file_id = 0;
                 if (viamd::extract_int(file_id, arg)) {
                     for (int k = 0; k < num_read_groups; ++k) {
@@ -1311,32 +1311,32 @@ struct Ramachandran : viamd::EventHandler {
                         }
                     }
                 }
-            } else if (str_eq_cstr(ident, "Visible")) {
+            } else if (md_str_eq_cstr(ident, "Visible")) {
                 viamd::extract_bool(l->visible, arg);
-            } else if (str_eq_cstr(ident, "Source") && viamd::extract_str(s, arg)) {
-                l->source = str_eq_cstr(s, "reference") ? LayerSource_Reference : LayerSource_System;
-            } else if (str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
-                l->frames = str_eq_cstr(s, "all") ? LayerFrames_All : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_Current;
-            } else if (str_eq_cstr(ident, "Period")) {
+            } else if (md_str_eq_cstr(ident, "Source") && viamd::extract_str(s, arg)) {
+                l->source = md_str_eq_cstr(s, "reference") ? LayerSource_Reference : LayerSource_System;
+            } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
+                l->frames = md_str_eq_cstr(s, "all") ? LayerFrames_All : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_Current;
+            } else if (md_str_eq_cstr(ident, "Period")) {
                 int id = 0;
                 if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
-            } else if (str_eq_cstr(ident, "Filter")) {
+            } else if (md_str_eq_cstr(ident, "Filter")) {
                 viamd::extract_to_char_buf(l->filter.text, sizeof(l->filter.text), arg);
-            } else if (str_eq_cstr(ident, "FollowSelection")) {
+            } else if (md_str_eq_cstr(ident, "FollowSelection")) {
                 viamd::extract_bool(l->follow_selection, arg);
-            } else if (str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
-                l->style = str_eq_cstr(s, "contours") ? LayerStyle_Contours : str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
+                l->style = md_str_eq_cstr(s, "contours") ? LayerStyle_Contours : md_str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 viamd::extract_vec4(l->color, arg);
-            } else if (str_eq_cstr(ident, "Opacity")) {
+            } else if (md_str_eq_cstr(ident, "Opacity")) {
                 viamd::extract_flt(l->opacity, arg);
-            } else if (str_eq_cstr(ident, "Fill")) {
+            } else if (md_str_eq_cstr(ident, "Fill")) {
                 viamd::extract_bool(l->fill, arg);
-            } else if (str_eq_cstr(ident, "Lines")) {
+            } else if (md_str_eq_cstr(ident, "Lines")) {
                 viamd::extract_bool(l->lines, arg);
-            } else if (str_eq_cstr(ident, "LineWidth")) {
+            } else if (md_str_eq_cstr(ident, "LineWidth")) {
                 viamd::extract_flt(l->line_width, arg);
-            } else if (str_eq_cstr(ident, "Levels")) {
+            } else if (md_str_eq_cstr(ident, "Levels")) {
                 // As many as there are, up to MAX_LEVELS
                 float v[MAX_LEVELS];
                 int n = 0;
@@ -1350,18 +1350,18 @@ struct Ramachandran : viamd::EventHandler {
                     l->num_levels = n;
                     MD_MEMCPY(l->levels, v, sizeof(float) * n);
                 }
-            } else if (str_eq_cstr(ident, "Bandwidth")) {
+            } else if (md_str_eq_cstr(ident, "Bandwidth")) {
                 viamd::extract_flt(l->bandwidth, arg);
-            } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
+            } else if (md_str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
                 char name[64];
-                str_copy_to_char_buf(name, sizeof(name), s);
+                md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
-            } else if (str_eq_cstr(ident, "LogScale")) {
+            } else if (md_str_eq_cstr(ident, "LogScale")) {
                 viamd::extract_bool(l->log_scale, arg);
-            } else if (str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
-                l->point_coloring = str_eq_cstr(s, "region") ? PointColoring_Region : str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Layer;
-            } else if (str_eq_cstr(ident, "PointSize")) {
+            } else if (md_str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
+                l->point_coloring = md_str_eq_cstr(s, "region") ? PointColoring_Region : md_str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Layer;
+            } else if (md_str_eq_cstr(ident, "PointSize")) {
                 viamd::extract_flt(l->point_size, arg);
             }
         }
@@ -1620,11 +1620,11 @@ struct Ramachandran : viamd::EventHandler {
         const md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[h.seg];
         ImGui::BeginTooltip();
         if (res_idx >= 0) {
-            const str_t name = md_system_residue_name(&sys, res_idx);
+            const md_str_t name = md_system_residue_name(&sys, res_idx);
             const md_sequence_id_t seq_id = md_system_residue_seq_id(&sys, res_idx);
             const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, (size_t)res_idx);
             if (chain >= 0) {
-                const str_t chain_id = md_system_chain_id(&sys, (size_t)chain);
+                const md_str_t chain_id = md_system_chain_id(&sys, (size_t)chain);
                 ImGui::Text("%.*s %d  \xc2\xb7  chain %.*s", (int)name.len, name.ptr, seq_id, (int)chain_id.len, chain_id.ptr);
             } else {
                 ImGui::Text("%.*s %d", (int)name.len, name.ptr, seq_id);

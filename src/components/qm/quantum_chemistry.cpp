@@ -164,7 +164,7 @@ struct CriticalPointsExport {
     double rho_min   = 0.0;     // analytic: the threshold of the search
     bool   complete  = false;   // analytic: every critical point above the threshold is there
     bool   cancelled = false;
-    str_t  field     = {};      // the density's attribute path
+    md_str_t  field     = {};      // the density's attribute path
 };
 
 // The Morse index (negative eigenvalues of the Hessian): TTK's CellDimension of a critical point
@@ -206,7 +206,7 @@ static void critical_points_write_json(md_file_t f, const CriticalPointsExport& 
     md_file_printf(f, "  \"description\": \"Critical points of the electron density and the paths between them, as VIAMD found them (QTAIM terms; md_topo's in topology)\",\n");
     md_file_printf(f, "  \"units\": {\"length\": \"bohr\", \"density\": \"e bohr^-3\", \"hessian\": \"e bohr^-5\"},\n");
     md_file_printf(f, "  \"precision\": \"%s\",\n", f64 ? "float64" : "float32");
-    md_file_printf(f, "  \"field\": \"" STR_FMT "\",\n", STR_ARG(ex.field));
+    md_file_printf(f, "  \"field\": \"" MD_STR_FMT "\",\n", MD_STR_ARG(ex.field));
     md_file_printf(f, "  \"method\": \"%s\",\n", ex.analytic ? "analytic" : "volume");
     if (ex.analytic) {
         md_file_printf(f, "  \"rho_min\": ");
@@ -286,7 +286,7 @@ static void critical_points_write_vtp(md_file_t f, const CriticalPointsExport& e
     const char* real = f64 ? "Float64" : "Float32";
 
     md_file_printf(f, "<?xml version=\"1.0\"?>\n");
-    md_file_printf(f, "<!-- Critical points of the electron density (" STR_FMT ") and the paths between them, as VIAMD found them\n", STR_ARG(ex.field));
+    md_file_printf(f, "<!-- Critical points of the electron density (" MD_STR_FMT ") and the paths between them, as VIAMD found them\n", MD_STR_ARG(ex.field));
     md_file_printf(f, "     (%s). Lengths in bohr, the density in au (e bohr^-3), the Hessian in e bohr^-5; %s.\n",
                    ex.analytic ? "the analytic search" : "the volume pipeline", f64 ? "every number in double, to 17 digits" : "in float, to 9 digits");
     if (ex.analytic) {
@@ -675,7 +675,7 @@ struct FlowData {
 // The density whose critical points are reported. QTAIM is defined on the total density; a
 // calculation that publishes a single spin channel publishes only the alpha one, and that one is then
 // the total.
-static str_t critical_points_density_path(const md_system_t& sys) {
+static md_str_t critical_points_density_path(const md_system_t& sys) {
     return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
 }
 
@@ -730,11 +730,11 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         return nullptr;
     }
 
-    const str_t path = critical_points_density_path(sys);
+    const md_str_t path = critical_points_density_path(sys);
     size_t dim = 0;
     const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
     if (!density || dim != num_ao) {
-        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" STR_FMT "'", num_ao, STR_ARG(path));
+        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" MD_STR_FMT "'", num_ao, MD_STR_ARG(path));
         return nullptr;
     }
 
@@ -1578,12 +1578,12 @@ struct QuantumChemistry : viamd::EventHandler {
                         const CriticalPointStyle& style = critical_point_style(type);
                         char type_str[32];
                         const int type_len = snprintf(type_str, sizeof(type_str), "%s", style.name);
-                        convert_to_lower(type_str, (size_t)MD_CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
+                        md_convert_to_lower(type_str, (size_t)MD_CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
                         tooltip_title(req, "%s", type_str);
-                        tooltip_row(req, STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
-                        tooltip_row(req, STR_LIT("density"), "%.6g au", v.value);
+                        tooltip_row(req, MD_STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
+                        tooltip_row(req, MD_STR_LIT("density"), "%.6g au", v.value);
                         // The graph is in bohr
-                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
+                        tooltip_row(req, MD_STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
                                     v.x * BOHR_TO_ANGSTROM, v.y * BOHR_TO_ANGSTROM, v.z * BOHR_TO_ANGSTROM);
                     }
                 }
@@ -1624,7 +1624,7 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdDeserialize: {
                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_DeserializationState);
                 viamd::deserialization_state_t& deser = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(deser), STR_LIT("QuantumChemistry"))) {
+                if (md_str_eq(viamd::section_header(deser), MD_STR_LIT("QuantumChemistry"))) {
                     deserialize_workspace(deser);
                 }
                 break;
@@ -2091,8 +2091,8 @@ struct QuantumChemistry : viamd::EventHandler {
             {
                 md_temp_scope_t temp = md_temp_begin();
                 MD_DEFER { md_temp_end(temp); };
-                max_len = (float)MD_MAX(dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/electric_transition/vector")),
-                                     dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector")));
+                max_len = (float)MD_MAX(dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")),
+                                     dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")));
             }
             if (max_len > 0.0f) {
                 nto.dipole.vector_scale = MD_CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
@@ -2110,14 +2110,14 @@ struct QuantumChemistry : viamd::EventHandler {
         // RSP. Oscillator strengths are what a linear response calculation produces and
         // what the absorption plot draws, so their presence is the question - a reader
         // with no response type of its own answers it just by publishing them.
-        if (md_attributes_find(&state.mold.sys.attributes, STR_LIT("vlx/rsp/oscillator_strength"))) {
+        if (md_attributes_find(&state.mold.sys.attributes, MD_STR_LIT("vlx/rsp/oscillator_strength"))) {
             rsp.hovered = -1;
             rsp.selected = 0;
         }
 
         // OPT. Opens on the last step, which is the converged geometry.
         size_t num_opt_steps = 0;
-        if (attribute_series_f64(&num_opt_steps, state.mold.sys, STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
+        if (attribute_series_f64(&num_opt_steps, state.mold.sys, MD_STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
             opt.selected = (int)(num_opt_steps - 1);
         }
 
@@ -2153,13 +2153,13 @@ struct QuantumChemistry : viamd::EventHandler {
     // slice, which is the only part that was ever ours.
 
     bool evaluate_nto(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, ElectronicStructureNtoComponent type, md_gto_op_t op) {
-        const str_t path = (type == ElectronicStructureNtoComponent::Hole) ? es_path::nto_hole : es_path::nto_particle;
+        const md_str_t path = (type == ElectronicStructureNtoComponent::Hole) ? es_path::nto_hole : es_path::nto_particle;
         const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)nto_idx, (uint32_t)lambda_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
     bool evaluate_mo(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, SpinChannel mo_type, size_t mo_idx, md_gto_op_t op) {
-        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
@@ -2540,7 +2540,7 @@ struct QuantumChemistry : viamd::EventHandler {
             char label[16];
             snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
             const ImVec2 pos = aligned_text_pos(label, flow_labels[i].pos, { 0.5f, 0.5f });
-            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
+            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, md_str_from_cstr(label));
         }
 
         bool* show_start_text = md_temp_alloc_array(temp, bool, nto->group.count);
@@ -2624,15 +2624,15 @@ struct QuantumChemistry : viamd::EventHandler {
             md_vg_add_rect_filled(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), vg_color_from_imvec4(bar_color), 0.0f);
             md_vg_add_rect(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), outline_color, 0.0f, 1.0f);
             if (show_start_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, str_from_cstr(start_label));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, md_str_from_cstr(start_label));
             }
 
             md_vg_add_rect_filled(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), vg_color_from_imvec4(bar_color), 0.0f);
             md_vg_add_rect(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), outline_color, 0.0f, 1.0f);
             if (show_end_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, str_from_cstr(end_label));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, md_str_from_cstr(end_label));
             }
         }
     }
@@ -2644,7 +2644,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         char path_buf[1024] = {};
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("svg"))) {
             return false;
         }
 
@@ -2654,7 +2654,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
         vg_sankey_diagram(&scene, { 0.0f, 0.0f, size.x, size.y }, nto, hide_text_overlaps);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported transition diagram to '%s'", path_buf);
         } else {
@@ -3470,16 +3470,16 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t num_core     = 0;
         size_t num_core_osc = 0;
 
-        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, STR_LIT("vlx/rsp/rixs/photon_energy"));
-        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
-        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, STR_LIT("vlx/rsp/rixs/core_energy"));
-        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
-        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
+        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy"));
+        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
+        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, MD_STR_LIT("vlx/rsp/rixs/core_energy"));
+        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
+        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
 
         size_t cs_rows = 0, cs_cols = 0;
         size_t el_rows = 0, el_cols = 0;
-        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, STR_LIT("vlx/rsp/rixs/cross_section"));
-        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, STR_LIT("vlx/rsp/rixs/energy_loss"));
+        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"));
+        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"));
 
         // The map itself needs the photon energies, the cross sections and the energy losses.
         if (!out.photon_energies_au || !out.cross_sections || !out.energy_losses_au) return false;
@@ -4192,15 +4192,15 @@ struct QuantumChemistry : viamd::EventHandler {
     static bool xps_table_gather(XpsTable* out, const md_system_t& sys) {
         size_t num_energy = 0;
         size_t num_element = 0;
-        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
-        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
+        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, MD_STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
+        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, MD_STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
         if (!energy || !element || num_energy == 0 || num_element != num_energy) {
             return false;
         }
 
         // A sibling whose length disagrees with the index space is dropped rather than trusted: it
         // would be read at an index that means something else in it.
-        auto column_of = [&](str_t path, md_attribute_type_t type) -> const void* {
+        auto column_of = [&](md_str_t path, md_attribute_type_t type) -> const void* {
             size_t count = 0;
             const void* data = attribute_column(&count, sys, path, type);
             return (data && count == num_energy) ? data : nullptr;
@@ -4209,10 +4209,10 @@ struct QuantumChemistry : viamd::EventHandler {
         out->count             = num_energy;
         out->ionization_energy = energy;
         out->element           = element;
-        out->contribution      = (const double*) column_of(STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
-        out->atom_index        = (const int32_t*)column_of(STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
-        out->mo_index          = (const int32_t*)column_of(STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
-        out->is_delocalized    = (const uint8_t*)column_of(STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
+        out->contribution      = (const double*) column_of(MD_STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
+        out->atom_index        = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
+        out->mo_index          = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
+        out->is_delocalized    = (const uint8_t*)column_of(MD_STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
         return true;
     }
 
@@ -4398,14 +4398,14 @@ struct QuantumChemistry : viamd::EventHandler {
         // The group list is exactly the set of elements that were computed, so listing it offers no
         // element that would draw an empty plot.
         {
-            const str_t cur_sym = md_util_element_symbol(grp->element);
+            const md_str_t cur_sym = md_util_element_symbol(grp->element);
             char preview[8];
             snprintf(preview, sizeof(preview), "%.*s", (int)cur_sym.len, cur_sym.ptr);
             if (ImGui::BeginCombo("Element", preview)) {
                 for (size_t g = 0; g < num_groups; ++g) {
                     const XpsGroup* it = &groups[g];
                     if (it->count == 0) continue;
-                    const str_t sym = md_util_element_symbol(it->element);
+                    const md_str_t sym = md_util_element_symbol(it->element);
                     char item[32];
                     snprintf(item, sizeof(item), "%.*s (%i)", (int)sym.len, sym.ptr, (int)it->count);
                     if (ImGui::Selectable(item, it->element == xps.element)) {
@@ -4545,7 +4545,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             if (plot_hovered && hov >= 0) {
                 const int32_t hov_atom_index = tbl.atom_index ? tbl.atom_index[hov] : -1;
-                const str_t sym = md_util_element_symbol(tbl.element[hov]);
+                const md_str_t sym = md_util_element_symbol(tbl.element[hov]);
                 if (ImGui::BeginTooltip()) {
                     // Atom index is shown 1-based to match the labels VeloxChem prints.
                     if (hov_atom_index >= 0) {
@@ -4616,7 +4616,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // same units as the nuclear term it is subtracted from, and a conversion here would be a
     // silent change of what that subtraction means.
     static dvec3_t dipole_ground_state(const md_system_t& sys) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("dipole/ground_state/vector"));
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("dipole/ground_state/vector"));
         if (!attr) return {0, 0, 0};
         double v[3] = {0, 0, 0};
         if (md_attribute_extract_f64(v, MD_COUNTOF(v), attr, md_attribute_slice_all(), md_unit_none()) != MD_COUNTOF(v)) {
@@ -4627,7 +4627,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The longest vector in a {N,3} dipole attribute, or 0 when it is absent. Only the magnitude is
     // wanted - it sets an arrow scale - so the vectors themselves never have to come back.
-    static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, str_t path) {
+    static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || attr->format.components != 3) {
             return 0.0;
@@ -4646,7 +4646,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // One string out of the table, or empty when the path is absent. Pool strings are NUL
     // terminated, so str_ptr goes straight into a "%s".
-    static str_t attribute_str(const md_system_t& sys, str_t path) {
+    static md_str_t attribute_str(const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
         return md_attribute_str(&sys.attributes, attr, 0);
@@ -4658,7 +4658,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // are resident F64 and this panel prints total energies to ten decimals, which a float does not
     // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
     // the null return covers every case where it is not.
-    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, str_t path) {
+    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
         if (values && out_count) *out_count = attr->format.shape[0];
@@ -4668,14 +4668,14 @@ struct QuantumChemistry : viamd::EventHandler {
     // True when the table carries this path at all. "Does this file have X" is a question about the
     // table and nothing else: a block a file does not contain publishes nothing, so there is no
     // separate "was it parsed" to ask alongside it.
-    static bool attribute_exists(const md_system_t& sys, str_t path) {
+    static bool attribute_exists(const md_system_t& sys, md_str_t path) {
         return md_attributes_find(&sys.attributes, path) != nullptr;
     }
 
     // One single valued attribute as a double, or 'fallback' when the path is absent. Anything that
     // is not single valued returns the fallback too: md_attribute_extract_f64 refuses a cap smaller
     // than the attribute, which is exactly the guard wanted here.
-    static double attribute_scalar_f64(const md_system_t& sys, str_t path, double fallback = 0.0) {
+    static double attribute_scalar_f64(const md_system_t& sys, md_str_t path, double fallback = 0.0) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr) return fallback;
         double value = 0.0;
@@ -4686,7 +4686,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // The length of a rank 1 series without reading it. Zero when the path is absent, which is how
     // "how many optimisation steps / response frequencies / normal modes does this file carry" is
     // asked now that there is no reader to ask it of.
-    static size_t attribute_series_count(const md_system_t& sys, str_t path) {
+    static size_t attribute_series_count(const md_system_t& sys, md_str_t path) {
         size_t count = 0;
         return attribute_series_f64(&count, sys, path) ? count : 0;
     }
@@ -4696,7 +4696,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
     // shorter column - or a reader that fills it differently - would otherwise be read past its end.
     // NULL when absent, not a plain F64 series, or shorter than 'required'.
-    static const double* attribute_series_f64_covering(const md_system_t& sys, str_t path, size_t required) {
+    static const double* attribute_series_f64_covering(const md_system_t& sys, md_str_t path, size_t required) {
         size_t count = 0;
         const double* data = attribute_series_f64(&count, sys, path);
         return (data && count >= required) ? data : nullptr;
@@ -4705,7 +4705,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
     // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
     // same reason: these are resident F64 and the callers want them at that precision.
-    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 2);
         if (!values) return nullptr;
@@ -4718,7 +4718,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
     // selection index left over from a previously loaded file needs - rather than a read past the
     // end that looks like data.
-    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, str_t path, size_t row) {
+    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, md_str_t path, size_t row) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const double* data = attribute_matrix_f64(&num_rows, &num_cols, sys, path);
@@ -4731,7 +4731,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
     // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
     // this is not the matrix above with C*3 columns.
-    static const dvec3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+    static const dvec3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -4745,7 +4745,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
     // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
     // the row over the QM atoms, so a row that does not cover them is not one to read.
-    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row, size_t min_cols) {
+    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const dvec3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
@@ -4754,7 +4754,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
-    static const dvec3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, str_t path) {
+    static const dvec3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -4767,7 +4767,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
     // Typed rather than converted: an atom index is an index, and a widened double of one is a
     // number that has lost the only thing that made it an index.
-    static const void* attribute_column(size_t* out_count, const md_system_t& sys, str_t path, md_attribute_type_t type) {
+    static const void* attribute_column(size_t* out_count, const md_system_t& sys, md_str_t path, md_attribute_type_t type) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != type) return nullptr;
@@ -4798,13 +4798,13 @@ struct QuantumChemistry : viamd::EventHandler {
     };
 
     static RspType response_type(const md_system_t& sys) {
-        const str_t s = attribute_str(sys, STR_LIT("vlx/rsp/type"));
-        if (str_eq(s, STR_LIT("linear")))         return RSP_LINEAR;
-        if (str_eq(s, STR_LIT("cpp")))            return RSP_CPP;
-        if (str_eq(s, STR_LIT("c6")))             return RSP_C6;
-        if (str_eq(s, STR_LIT("tpa")))            return RSP_TPA;
-        if (str_eq(s, STR_LIT("tpa_transition"))) return RSP_TPA_TRANSITION;
-        if (str_eq(s, STR_LIT("rixs")))           return RSP_RIXS;
+        const md_str_t s = attribute_str(sys, MD_STR_LIT("vlx/rsp/type"));
+        if (md_str_eq(s, MD_STR_LIT("linear")))         return RSP_LINEAR;
+        if (md_str_eq(s, MD_STR_LIT("cpp")))            return RSP_CPP;
+        if (md_str_eq(s, MD_STR_LIT("c6")))             return RSP_C6;
+        if (md_str_eq(s, MD_STR_LIT("tpa")))            return RSP_TPA;
+        if (md_str_eq(s, MD_STR_LIT("tpa_transition"))) return RSP_TPA_TRANSITION;
+        if (md_str_eq(s, MD_STR_LIT("rixs")))           return RSP_RIXS;
         return RSP_NONE;
     }
 
@@ -4817,11 +4817,11 @@ struct QuantumChemistry : viamd::EventHandler {
     };
 
     static OptType optimization_type(const md_system_t& sys) {
-        const str_t s = attribute_str(sys, STR_LIT("vlx/opt/type"));
-        if (str_eq(s, STR_LIT("geometry")))         return OPT_GEOMETRY;
-        if (str_eq(s, STR_LIT("constrained")))      return OPT_CONSTRAINED;
-        if (str_eq(s, STR_LIT("transition_state"))) return OPT_TS;
-        if (str_eq(s, STR_LIT("irc")))              return OPT_IRC;
+        const md_str_t s = attribute_str(sys, MD_STR_LIT("vlx/opt/type"));
+        if (md_str_eq(s, MD_STR_LIT("geometry")))         return OPT_GEOMETRY;
+        if (md_str_eq(s, MD_STR_LIT("constrained")))      return OPT_CONSTRAINED;
+        if (md_str_eq(s, MD_STR_LIT("transition_state"))) return OPT_TS;
+        if (md_str_eq(s, MD_STR_LIT("irc")))              return OPT_IRC;
         return OPT_NONE;
     }
 
@@ -5408,22 +5408,22 @@ struct QuantumChemistry : viamd::EventHandler {
     // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
     void critical_points_export(const ApplicationState& state) {
         char path_buf[2048];
-        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("json,vtp"))) {
-            critical_points_write(state, str_from_cstr(path_buf));
+        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("json,vtp"))) {
+            critical_points_write(state, md_str_from_cstr(path_buf));
         }
     }
 
     // The critical points and the paths between them, in the file at path: .vtp for VTK PolyData as the Topology
     // ToolKit writes a Morse-Smale complex (ParaView, TTK), anything else as JSON. No format for this is standard:
     // QTAIM programs have their own (AIMAll's .sum), and VTK is what topological data analysis exchanges.
-    bool critical_points_write(const ApplicationState& state, str_t path) {
+    bool critical_points_write(const ApplicationState& state, md_str_t path) {
         const CriticalPoints& cp = critical_points;
-        str_t ext = {};
-        const bool vtp = extract_ext(&ext, path) && str_eq_cstr_ignore_case(ext, "vtp");
+        md_str_t ext = {};
+        const bool vtp = md_extract_ext(&ext, path) && md_str_eq_cstr_ignore_case(ext, "vtp");
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-            MD_LOG_ERROR("Critical points: could not open '" STR_FMT "' for writing", STR_ARG(path));
+            MD_LOG_ERROR("Critical points: could not open '" MD_STR_FMT "' for writing", MD_STR_ARG(path));
             return false;
         }
         MD_DEFER { md_file_close(&file); };
@@ -5440,7 +5440,7 @@ struct QuantumChemistry : viamd::EventHandler {
         } else {
             critical_points_write_json(file, ex);
         }
-        MD_LOG_INFO("Critical points: %u points and %u paths written to '" STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, STR_ARG(path));
+        MD_LOG_INFO("Critical points: %u points and %u paths written to '" MD_STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, MD_STR_ARG(path));
         return true;
     }
 
@@ -5455,7 +5455,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!summary.show_window) {
             // Parked on the converged geometry while the window is closed, so re-opening it does not
             // step the molecule back to wherever the last session left the slider.
-            opt.selected = (int)attribute_series_count(sys, STR_LIT("vlx/opt/energy")) - 1;
+            opt.selected = (int)attribute_series_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
             return;
         }
 
@@ -5475,8 +5475,8 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::TreeNode("Level of Calculation")) {
-                const str_t basis_set = attribute_str(sys, STR_LIT("vlx/basis_set"));
-                const str_t dft_func   = attribute_str(sys, STR_LIT("vlx/dft_functional"));
+                const md_str_t basis_set = attribute_str(sys, MD_STR_LIT("vlx/basis_set"));
+                const md_str_t dft_func   = attribute_str(sys, MD_STR_LIT("vlx/dft_functional"));
 
                 // Named from the same two questions the orbital grid branches on, so the label
                 // cannot disagree with the layout it describes. A reader with no word of its own for
@@ -5485,9 +5485,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
                 const char* scf_type = unrestricted ? "Unrestricted" : open_shell ? "Restricted Open-Shell" : "Restricted";
 
-                ImGui::Text("Method: %s", str_ptr(dft_func));
+                ImGui::Text("Method: %s", md_str_ptr(dft_func));
                 ImGui::Text("SCF Type: %s", scf_type);
-                ImGui::Text("Basis Set: %s", str_ptr(basis_set));
+                ImGui::Text("Basis Set: %s", md_str_ptr(basis_set));
                 ImGui::Spacing();
                 
                 ImGui::TreePop();
@@ -5501,10 +5501,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
-                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, STR_LIT("vlx/molecular_charge")));
+                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, MD_STR_LIT("vlx/molecular_charge")));
                 ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
                 if (rsp_type == RSP_C6) {
-                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/rsp/c6")));
+                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/c6")));
                 }
                 ImGui::Spacing();
                 ImGui::TreePop();
@@ -5517,8 +5517,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // parsed" question to ask alongside it.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = attribute_series_f64(&num_iter, sys, STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = attribute_series_f64(&num_grad, sys, STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_series_f64(&num_iter, sys, MD_STR_LIT("vlx/scf/history/energy"));
+                const double* grad_norm = attribute_series_f64(&num_grad, sys, MD_STR_LIT("vlx/scf/history/gradient_norm"));
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -5603,14 +5603,14 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/nuclear_repulsion_energy")));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy")));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
             {
                 size_t num_steps = 0;
-                const double* opt_energies = attribute_series_f64(&num_steps, sys, STR_LIT("vlx/opt/energy"));
+                const double* opt_energies = attribute_series_f64(&num_steps, sys, MD_STR_LIT("vlx/opt/energy"));
                 if (opt_energies && num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         // FitPadding is pushed once for the whole window, at the top of this function.
@@ -5618,7 +5618,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Published for an IRC only, where it names the step the path was walked out
                         // from. num_steps is out of range on purpose everywhere else, so the branch
                         // below falls through to the minimum without a second test for the kind.
-                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
+                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
                         const double* energies = opt_energies;
                         const char* y_axis_label = "Relative Energy [kJ/mol]";
                         const char* plot_label = "OPT";
@@ -5706,7 +5706,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
+                        set_atom_coordinates(state, attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -5719,7 +5719,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
+                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
                     const dvec3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -5772,8 +5772,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Both columns are optional members of the QM atom domain (see es_qm_atoms).
                         ImGui::TableNextColumn();
                         if (atom_nr) {
-                            str_t sym = md_util_element_symbol(atom_nr[row_n]);
-                            ImGui::Text(STR_FMT, STR_ARG(sym));
+                            md_str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                            ImGui::Text(MD_STR_FMT, MD_STR_ARG(sym));
                         } else {
                             ImGui::TextUnformatted("-");
                         }
@@ -5819,26 +5819,26 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_ASSERT(&state);
 
         struct ExportFormat {
-            str_t lbl;
-            str_t ext;
+            md_str_t lbl;
+            md_str_t ext;
         };
 
         ExportFormat table_formats[]{
-            {STR_INIT("XVG"), STR_INIT("xvg")},
-            {STR_INIT("CSV"), STR_INIT("csv")}
+            {MD_STR_INIT("XVG"), MD_STR_INIT("xvg")},
+            {MD_STR_INIT("CSV"), MD_STR_INIT("csv")}
         };
 
         struct ExportProperty {
             double* x = 0;
             double* y = 0;
-            str_t lable;
-            str_t y_unit;
+            md_str_t lable;
+            md_str_t y_unit;
         };
 
         ExportProperty properties[]{
-            {rsp.x_spectra, rsp.y_spectra_abs,   STR_INIT("Absorption"), STR_INIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_spectra, rsp.y_spectra_ecd,   STR_INIT("ECD"),        STR_INIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
-            {rsp.vib_x,          rsp.vib_y, STR_INIT("Vibration"),  STR_INIT("IR Intensity (km/mol)")}
+            {rsp.x_spectra, rsp.y_spectra_abs,   MD_STR_INIT("Absorption"), MD_STR_INIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_spectra, rsp.y_spectra_ecd,   MD_STR_INIT("ECD"),        MD_STR_INIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x,          rsp.vib_y, MD_STR_INIT("Vibration"),  MD_STR_INIT("IR Intensity (km/mol)")}
         };
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
@@ -5850,7 +5850,7 @@ struct QuantumChemistry : viamd::EventHandler {
             
             ImGui::PushItemWidth(200);
 
-            str_t file_extension = {};
+            md_str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
                 for (int i = 0; i < (int)MD_COUNTOF(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
@@ -5885,8 +5885,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (export_valid) {
                     char path_buf[1024];
                     md_array(const float*)  column_data = 0;
-                    md_array(str_t)   column_labels = 0;
-                    md_array(str_t)         legends = 0;
+                    md_array(md_str_t)   column_labels = 0;
+                    md_array(md_str_t)         legends = 0;
 
                     md_array(float) x_values = md_array_create(float, 1024, arena);
                     md_array(float) y_values = md_array_create(float, 1024, arena);
@@ -5896,21 +5896,21 @@ struct QuantumChemistry : viamd::EventHandler {
                         y_values[i] = (float)properties[property_idx].y[i];
                     }
 
-                    //str_t x_label = str_from_cstr(x_unit);
-                    md_array_push(column_labels, str_from_cstr(x_unit), arena);
-                    //str_t y_label = str_from_cstr("Y");
+                    //md_str_t x_label = md_str_from_cstr(x_unit);
+                    md_array_push(column_labels, md_str_from_cstr(x_unit), arena);
+                    //md_str_t y_label = md_str_from_cstr("Y");
                     md_array_push(column_labels, properties[property_idx].y_unit, arena);
 
                     md_array_push(column_data, x_values, arena);
                     md_array_push(column_data, y_values, arena);
 
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-                        str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+                        md_str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
                         if (table_format == 0) {
                             //md_xvg_write
                             //TODO: Implement md_xvg_write_to_file
-                            str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
-                            str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
+                            md_str_t header = md_xvg_format_header(properties[property_idx].lable, md_str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
+                            md_str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
                             md_file_t file = { 0 };
                             if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                                 const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
@@ -5968,17 +5968,17 @@ struct QuantumChemistry : viamd::EventHandler {
         // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
         // Its own length is the frequency count - there is no separate number to disagree with it.
         size_t num_frequencies = 0;
-        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, STR_LIT("vlx/rsp/frequency"));
+        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency"));
         if (!x_freq_au) num_frequencies = 0;
 
-        const size_t num_normal_modes = attribute_series_count(sys, STR_LIT("vlx/vib/frequency"));
+        const size_t num_normal_modes = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency"));
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
         // XPS is a delta-SCF property and can be the only thing in the file, so it has to be able to
         // keep this window alive on its own. Its ionization energies are the column everything else
         // in that section is indexed against, so their presence is the question.
-        const bool has_xps = attribute_exists(sys, STR_LIT("vlx/xps/ionization_energy"));
+        const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
 
         if (num_frequencies == 0 && num_normal_modes == 0 && !has_xps) return;
 
@@ -6080,18 +6080,18 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
-                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
-                const double* y_samples_ord = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
-                const double* y_samples_cs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
+                const double* y_samples_sigma = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
+                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
+                const double* y_samples_ord = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
+                const double* y_samples_cs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
-                const double* y_peaks_cgs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
+                const double* y_peaks_osc = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
+                const double* y_peaks_cgs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
+                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
+                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
 
                 bool refit = false;
 
@@ -6672,12 +6672,12 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    const double* x_peaks_raw = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/frequency"), num_normal_modes);
                     // Optional, and indexed over the normal modes - dropped when it does not cover them.
-                    const double* y_peaks_ir = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
+                    const double* y_peaks_ir = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
 
                     size_t num_external_frequencies = 0;
-                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, STR_LIT("vlx/vib/external_frequency"));
+                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, MD_STR_LIT("vlx/vib/external_frequency"));
                     if (!external_frequencies) num_external_frequencies = 0;
 
                     // {E,M}: one row of per mode activities per external frequency, so a row IS the
@@ -6687,7 +6687,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // spectrum, and dropping both is better than plotting one against the other.
                     size_t num_raman_rows = 0;
                     size_t num_raman_cols = 0;
-                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, STR_LIT("vlx/vib/raman_activity"));
+                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, MD_STR_LIT("vlx/vib/raman_activity"));
                     const double** y_raman_activities = NULL;
                     if (raman_activities && num_raman_rows == num_external_frequencies && num_raman_cols == num_normal_modes && num_external_frequencies > 0) {
                         y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
@@ -6953,7 +6953,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
+                        const dvec3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -7606,7 +7606,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         key = key ? key : 1;
                     }
                     panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
-                        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+                        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
                         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
                         return iso_field_create_orbital(&state, path, &slice);
                     });
@@ -8082,7 +8082,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 EXPORT_FILE_FORMAT_COUNT,
             };
             const char* file_format_str[] = {"cube", "raw + mhd + xyz"};
-            str_t file_format_ext[] = {STR_INIT("cube"), STR_INIT("raw")};
+            md_str_t file_format_ext[] = {MD_STR_INIT("cube"), MD_STR_INIT("raw")};
 
             MD_STATIC_ASSERT(MD_COUNTOF(file_format_str) == EXPORT_FILE_FORMAT_COUNT);
             MD_STATIC_ASSERT(MD_COUNTOF(file_format_ext) == EXPORT_FILE_FORMAT_COUNT);
@@ -8094,14 +8094,14 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SetItemTooltip("Use Oriented Bounding Box for volume (rotate and fit the volume to the data)");
 
             if (ImGui::Button("Export")) {
-                str_t ext = file_format_ext[file_format];
+                md_str_t ext = file_format_ext[file_format];
                 char path_buf[2048];
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
-                    str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+                    md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
                     md_file_t file = { 0 };
                     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                        MD_LOG_ERROR("Failed to open file for writing: '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_ERROR("Failed to open file for writing: '" MD_STR_FMT "'", MD_STR_ARG(path));
                         return;
                     }
 
@@ -8212,7 +8212,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 }
                             }
                         }
-                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_INFO("Successfully exported electronic structure to '" MD_STR_FMT "'", MD_STR_ARG(path));
                         break;
                     }
                     case EXPORT_FILE_FORMAT_RAW_MHD_XYZ: {
@@ -8228,20 +8228,20 @@ struct QuantumChemistry : viamd::EventHandler {
                         ElementDataFile = image.raw
                         */
 
-                        str_t basepath;
-                        if (!extract_file_path_without_ext(&basepath, path)) {
+                        md_str_t basepath;
+                        if (!md_extract_file_path_without_ext(&basepath, path)) {
                             MD_LOG_ERROR("Failed to extract base path");
                             goto done;
                         }
 
-                        str_t filename_raw;
-                        if (!extract_file(&filename_raw, path)) {
+                        md_str_t filename_raw;
+                        if (!md_extract_file(&filename_raw, path)) {
                             MD_LOG_ERROR("Failed to extract filename raw");
                             goto done;
                         }
 
-                        str_t filename;
-                        if (!extract_file_path_without_ext(&filename, filename_raw)) {
+                        md_str_t filename;
+                        if (!md_extract_file_path_without_ext(&filename, filename_raw)) {
                             MD_LOG_ERROR("Failed to extract filename");
                             goto done;
                         }
@@ -8249,8 +8249,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_file_write(file, data, num_samples * sizeof(float));
 
                         md_allocator_i* temp_arena = md_temp_allocator(temp);
-                        str_t mhd_path = str_printf(temp_arena, STR_FMT ".mhd", STR_ARG(basepath));
-                        str_t xyz_path = str_printf(temp_arena, STR_FMT ".xyz", STR_ARG(basepath));
+                        md_str_t mhd_path = md_str_printf(temp_arena, MD_STR_FMT ".mhd", MD_STR_ARG(basepath));
+                        md_str_t xyz_path = md_str_printf(temp_arena, MD_STR_FMT ".xyz", MD_STR_ARG(basepath));
 
                         md_file_t mhd_file = { 0 };
                         if (!md_file_open(&mhd_file, mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -8268,7 +8268,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_file_printf(mhd_file, "HeaderSize = -1\n");
                         md_file_printf(mhd_file, "ElementSpacing = %12.6f %12.6f %12.6f\n", step.x, step.y, step.z);
                         md_file_printf(mhd_file, "ElementByteOrderMSB = False\n");
-                        md_file_printf(mhd_file, "ElementDataFile = " STR_FMT "\n", STR_ARG(filename_raw));
+                        md_file_printf(mhd_file, "ElementDataFile = " MD_STR_FMT "\n", MD_STR_ARG(filename_raw));
                         md_file_printf(mhd_file, "Position = %12.6f %12.6f %12.6f\n", pos.x, pos.y, pos.z);
                         md_file_printf(mhd_file, "Orientation =\n");
                         md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", grid.orientation[0].x, grid.orientation[0].y, grid.orientation[0].z);
@@ -8289,11 +8289,11 @@ struct QuantumChemistry : viamd::EventHandler {
                         const FileEntry* system_file = file_list_system_file(&state.files.list);
                         md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
-                            str_t sym = md_util_element_symbol(qm_numbers[i]);
+                            md_str_t sym = md_util_element_symbol(qm_numbers[i]);
                             md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, qm_coords[i].x, qm_coords[i].y, qm_coords[i].z);
                         }
 
-                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_INFO("Successfully exported electronic structure to '" MD_STR_FMT "'", MD_STR_ARG(path));
 
                         break;
                     }
@@ -8894,8 +8894,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const dvec3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector"));
-                        const dvec3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, STR_LIT("dipole/electric_transition/vector"));
+                        const dvec3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
+                        const dvec3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
@@ -9398,27 +9398,27 @@ struct QuantumChemistry : viamd::EventHandler {
         // spelling on read: this section holds nothing but window flags and an NTO group
         // assignment, both of which a user re-makes in a minute, and one name in the file beats a
         // compatibility branch that has to be carried forever.
-        viamd::write_section_header(ser, STR_LIT("QuantumChemistry"));
+        viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
 
-        viamd::write_bool(ser, STR_LIT("ShowTransitionAnalysis"), nto.show_window);
-        viamd::write_bool(ser, STR_LIT("ShowChargeTransfer"),     flow.show_window);
-        viamd::write_int (ser, STR_LIT("FlowMode"),               (int64_t)flow.mode);
-        viamd::write_flt (ser, STR_LIT("FlowThreshold"),          flow.cut.threshold);
-        viamd::write_flt (ser, STR_LIT("FlowOthersCap"),          flow.cut.other_max);
-        viamd::write_flt (ser, STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
-        viamd::write_int (ser, STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
-        viamd::write_flt (ser, STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
-        viamd::write_int (ser, STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
-        viamd::write_int (ser, STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
-        viamd::write_flt (ser, STR_LIT("FlowBorderWidth"),        flow.style.border_width);
-        viamd::write_bool(ser, STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+        viamd::write_bool(ser, MD_STR_LIT("ShowTransitionAnalysis"), nto.show_window);
+        viamd::write_bool(ser, MD_STR_LIT("ShowChargeTransfer"),     flow.show_window);
+        viamd::write_int (ser, MD_STR_LIT("FlowMode"),               (int64_t)flow.mode);
+        viamd::write_flt (ser, MD_STR_LIT("FlowThreshold"),          flow.cut.threshold);
+        viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
+        viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
+        viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
+        viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
+        viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
+        viamd::write_flt (ser, MD_STR_LIT("FlowBorderWidth"),        flow.style.border_width);
+        viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
 
-        viamd::write_int(ser, STR_LIT("GroupCount"), (int64_t)nto.group.count);
+        viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
 
         // One bitfield per group rather than one index per atom: the same information, but it
         // survives being looked at in a text editor.
@@ -9434,9 +9434,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             const md_bitset_t mask = md_bitmask_view(&b);
-            viamd::write_str(ser, STR_LIT("GroupLabel"), str_from_cstr(nto.group.label[g]));
-            viamd::write_vec4(ser, STR_LIT("GroupColor"), nto.group.color[g]);
-            viamd::write_bitset(ser, STR_LIT("GroupAtoms"), &mask);
+            viamd::write_str(ser, MD_STR_LIT("GroupLabel"), md_str_from_cstr(nto.group.label[g]));
+            viamd::write_vec4(ser, MD_STR_LIT("GroupColor"), nto.group.color[g]);
+            viamd::write_bitset(ser, MD_STR_LIT("GroupAtoms"), &mask);
         }
     }
 
@@ -9455,68 +9455,68 @@ struct QuantumChemistry : viamd::EventHandler {
         // index only advances on a label, so a malformed section cannot walk off the end.
         int64_t group_idx = -1;
 
-        str_t ident = {};
-        str_t arg   = {};
+        md_str_t ident = {};
+        md_str_t arg   = {};
         while (viamd::next_entry(ident, arg, deser)) {
-            if (str_eq_cstr(ident, "ShowTransitionAnalysis")) {
+            if (md_str_eq_cstr(ident, "ShowTransitionAnalysis")) {
                 viamd::extract_bool(nto.show_window, arg);
-            } else if (str_eq_cstr(ident, "ShowChargeTransfer")) {
+            } else if (md_str_eq_cstr(ident, "ShowChargeTransfer")) {
                 viamd::extract_bool(flow.show_window, arg);
-            } else if (str_eq_cstr(ident, "FlowMode")) {
+            } else if (md_str_eq_cstr(ident, "FlowMode")) {
                 int mode = FLOW_MODE_NTO;
                 if (viamd::extract_int(mode, arg)) {
                     flow.mode = (flow_mode_t)MD_CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
                 }
-            } else if (str_eq_cstr(ident, "FlowThreshold")) {
+            } else if (md_str_eq_cstr(ident, "FlowThreshold")) {
                 viamd::extract_flt(flow.cut.threshold, arg);
-            } else if (str_eq_cstr(ident, "FlowOthersCap")) {
+            } else if (md_str_eq_cstr(ident, "FlowOthersCap")) {
                 viamd::extract_flt(flow.cut.other_max, arg);
-            } else if (str_eq_cstr(ident, "FlowSizeNormalize")) {
+            } else if (md_str_eq_cstr(ident, "FlowSizeNormalize")) {
                 viamd::extract_flt(flow.size_normalize, arg);
-            } else if (str_eq_cstr(ident, "FlowOthersExpanded")) {
+            } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
                 int mask = 0;
                 if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
-            } else if (str_eq_cstr(ident, "FlowNodeThickness")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeThickness")) {
                 viamd::extract_flt(flow.params.node_thickness, arg);
-            } else if (str_eq_cstr(ident, "FlowNodeGap")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
                 viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (str_eq_cstr(ident, "FlowRibbonAlpha")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonAlpha")) {
                 viamd::extract_flt(flow.style.ribbon_alpha, arg);
-            } else if (str_eq_cstr(ident, "FlowRibbonCurvature")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
                 viamd::extract_flt(flow.style.ribbon_curvature, arg);
-            } else if (str_eq_cstr(ident, "FlowOrder")) {
+            } else if (md_str_eq_cstr(ident, "FlowOrder")) {
                 int order = MD_FLOW_ORDER_WEIGHT;
                 if (viamd::extract_int(order, arg)) {
                     flow.params.order = (md_flow_order_t)MD_CLAMP(order, 0, 1);
                 }
-            } else if (str_eq_cstr(ident, "FlowRibbonMinPx")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
                 viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (str_eq_cstr(ident, "FlowNodeFillTint")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeFillTint")) {
                 viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (str_eq_cstr(ident, "FlowBorderWidth")) {
+            } else if (md_str_eq_cstr(ident, "FlowBorderWidth")) {
                 viamd::extract_flt(flow.style.border_width, arg);
-            } else if (str_eq_cstr(ident, "FlowColorLabels")) {
+            } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
                 viamd::extract_bool(flow.style.color_labels, arg);
-            } else if (str_eq_cstr(ident, "FlowSweeps")) {
+            } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
                 int sweeps = 2;
                 if (viamd::extract_int(sweeps, arg)) {
                     flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
                 }
-            } else if (str_eq_cstr(ident, "GroupCount")) {
+            } else if (md_str_eq_cstr(ident, "GroupCount")) {
                 int count = 0;
                 if (viamd::extract_int(count, arg)) {
                     pending_groups.count = (size_t)MD_CLAMP(count, 0, MAX_NTO_GROUPS);
                 }
-            } else if (str_eq_cstr(ident, "GroupLabel")) {
+            } else if (md_str_eq_cstr(ident, "GroupLabel")) {
                 group_idx += 1;
                 if (group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
                 }
-            } else if (str_eq_cstr(ident, "GroupColor")) {
+            } else if (md_str_eq_cstr(ident, "GroupColor")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_vec4(pending_groups.color[group_idx], arg);
                 }
-            } else if (str_eq_cstr(ident, "GroupAtoms")) {
+            } else if (md_str_eq_cstr(ident, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
                     viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
@@ -9635,7 +9635,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (size_t i = 0; i < num_atoms; ++i) {
             char* dst = flow.atom_labels + i * FLOW_ATOM_LABEL_STRIDE;
-            const str_t sym = z ? md_util_element_symbol(z[i]) : str_from_cstr("X");
+            const md_str_t sym = z ? md_util_element_symbol(z[i]) : md_str_from_cstr("X");
             // One-based, matching how the rest of VIAMD numbers atoms to the user.
             snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
         }
@@ -9677,7 +9677,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 .level  = 0,
                 .weight = w,
                 .color  = nto.group.color[i],
-                .label  = str_from_cstr(nto.group.label[i]),
+                .label  = md_str_from_cstr(nto.group.label[i]),
                 .key    = flow_node_key(0, FLOW_LEVEL_GROUP, (uint32_t)i),
             };
             src_node[i] = md_flow_graph_add_node(&flow.graph, &node);
@@ -9691,7 +9691,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 .level  = 0,
                 .weight = w,
                 .color  = nto.group.color[i],
-                .label  = str_from_cstr(nto.group.label[i]),
+                .label  = md_str_from_cstr(nto.group.label[i]),
                 .key    = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)i),
             };
             dst_node[i] = md_flow_graph_add_node(&flow.graph, &node);
@@ -9939,7 +9939,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_ATOM,
                     .weight = (float)weight[a],
                     .color  = flow_atom_color((uint32_t)a, column),
-                    .label  = str_from_cstr(flow_atom_label((uint32_t)a)),
+                    .label  = md_str_from_cstr(flow_atom_label((uint32_t)a)),
                     .key    = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
                 };
                 atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
@@ -9958,7 +9958,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 md_flow_node_t group_node = {
                     .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                     .weight = (float)group_weight, .color = nto.group.color[g],
-                    .label = str_from_cstr(nto.group.label[g]),
+                    .label = md_str_from_cstr(nto.group.label[g]),
                     .key = flow_node_key(column, FLOW_LEVEL_GROUP, (uint32_t)g),
                 };
                 const uint32_t parent = md_flow_graph_add_node(&flow.graph, &group_node);
@@ -9972,7 +9972,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_flow_node_t node = {
                         .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
                         .weight = (float)weight[a], .color = nto.group.color[g],
-                        .label = str_from_cstr(flow_atom_label((uint32_t)a)),
+                        .label = md_str_from_cstr(flow_atom_label((uint32_t)a)),
                         .key = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
                     };
                     atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
@@ -9987,8 +9987,8 @@ struct QuantumChemistry : viamd::EventHandler {
             md_flow_node_t node = {
                 .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                 .weight = (float)lambda_keep[k], .color = vec_cast(c),
-                .label = str_from_cstr(flow.nto_label[k]),
-                .sublabel = str_from_cstr(flow.nto_character[k]),
+                .label = md_str_from_cstr(flow.nto_label[k]),
+                .sublabel = md_str_from_cstr(flow.nto_character[k]),
                 .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
             };
             mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
@@ -10213,7 +10213,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 .level  = FLOW_LEVEL_MO,
                 .weight = (float)w,
                 .color  = occupied ? vec4_t{0.78f, 0.24f, 0.22f, 1.0f} : vec4_t{0.13f, 0.56f, 0.35f, 1.0f},
-                .label  = str_from_cstr(dst),
+                .label  = md_str_from_cstr(dst),
                 .key    = flow_node_key(occupied ? 0u : 2u, FLOW_LEVEL_MO, (uint32_t)mo),
             };
             (occupied ? occ_node : vir_node)[mo] = md_flow_graph_add_node(&flow.graph, &node);
@@ -10224,8 +10224,8 @@ struct QuantumChemistry : viamd::EventHandler {
             md_flow_node_t node = {
                 .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                 .weight = (float)lambda_keep[k], .color = vec_cast(c),
-                .label = str_from_cstr(flow.nto_label[k]),
-                .sublabel = str_from_cstr(flow.nto_character[k]),
+                .label = md_str_from_cstr(flow.nto_label[k]),
+                .sublabel = md_str_from_cstr(flow.nto_character[k]),
                 .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
             };
             mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
@@ -11044,7 +11044,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         char path_buf[1024] = {};
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("svg"))) {
             return false;
         }
 
@@ -11068,7 +11068,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported charge transfer diagram to '%s'", path_buf);
         } else {
@@ -11208,7 +11208,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Particle, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
                         compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Hole,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
                     {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
+                        task_system::ID compute_matrix_task = task_system::create_main_task(MD_STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
                             // Print out the groups and the values for debugging
 #if 1

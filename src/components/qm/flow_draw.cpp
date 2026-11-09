@@ -422,7 +422,7 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
             leftmost ? (MD_MIN(x0, x1) - style.band_label_gap_px - text_w) : (MD_MAX(x0, x1) + style.band_label_gap_px),
             (min.y + max.y) * 0.5f + font_size * 0.35f,
         };
-        md_vg_add_text(scene, pos, font_size, MD_VG_COLOR_RGB(0, 0, 0), str_from_cstr(buf));
+        md_vg_add_text(scene, pos, font_size, MD_VG_COLOR_RGB(0, 0, 0), md_str_from_cstr(buf));
     }
 
     const size_t num_nodes = md_array_size(layout->nodes);
@@ -451,6 +451,6 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
         const vec2_t pos = { (min.x + max.x) * 0.5f - text_w * 0.5f, (min.y + max.y) * 0.5f + font_size * 0.35f };
         md_vg_add_text(scene, pos, font_size,
                        style.color_labels ? flow_color_vg(flow_readable_text(node->color), 1.0f) : MD_VG_COLOR_RGB(0, 0, 0),
-                       str_from_cstr(buf));
+                       md_str_from_cstr(buf));
     }
 }

@@ -119,8 +119,8 @@ mat4_t iso_meshes_model_matrix();
 double iso_meshes_cell_size(VolumeResolution resolution);
 
 // Fields at the atoms of the current frame. NULL on failure. Free with iso_field_release once given to meshes.
-md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, str_t coefficient_path, const md_attribute_slice_t* slice);
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_t density_path, const md_attribute_slice_t* slice);
+md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice);
+md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
 md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim);
 
 // The surfaces of an electronic structure representation as meshes: the field its volume is evaluated from,

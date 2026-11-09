@@ -34,22 +34,22 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
     }
 }
 
-bool build_shader_src(md_writer_i* w, str_t src, str_t base_include_dir, md_allocator_i* alloc) {
-    str_t line;
-    while (str_extract_line(&line, &src)) {
-        if (str_eq_cstr_n(line, "#include ", 9)) {
-            str_t file = str_trim(str_substr(line, 9));
+bool build_shader_src(md_writer_i* w, md_str_t src, md_str_t base_include_dir, md_allocator_i* alloc) {
+    md_str_t line;
+    while (md_str_extract_line(&line, &src)) {
+        if (md_str_eq_cstr_n(line, "#include ", 9)) {
+            md_str_t file = md_str_trim(md_str_substr(line, 9));
             if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
                 MD_LOG_ERROR("Failed to parse include file");
                 return false;
             }
-            file = str_substr(file, 1, file.len - 2);
-            str_t path = str_printf(alloc, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+            file = md_str_substr(file, 1, file.len - 2);
+            md_str_t path = md_str_printf(alloc, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
-            str_t inc_src = load_textfile(path, alloc);
+            md_str_t inc_src = md_load_textfile(path, alloc);
             if (inc_src) {
-                str_t base = {};
-                extract_folder_path(&base, path);
+                md_str_t base = {};
+                md_extract_folder_path(&base, path);
                 build_shader_src(w, inc_src, base, alloc);
             } else {
                 MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
@@ -64,7 +64,7 @@ bool build_shader_src(md_writer_i* w, str_t src, str_t base_include_dir, md_allo
     return true;
 }
 
-GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str_t base_include_dir) {
+GLuint gl::compile_shader_from_source(md_str_t src, GLenum type, md_str_t defines, md_str_t base_include_dir) {
     MD_ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
            type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
     md_temp_scope_t temp = md_temp_begin();
@@ -75,9 +75,9 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
     md_str_writer_t sb = md_str_writer_create(alloc);
     
     if (defines) {
-        str_t version_str = {};
-        if (str_eq_cstr_n(src, "#version ", 9)) {
-            if (!str_extract_line(&version_str, &src)) {
+        md_str_t version_str = {};
+        if (md_str_eq_cstr_n(src, "#version ", 9)) {
+            if (!md_str_extract_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
@@ -94,7 +94,7 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
 
     build_shader_src(&sb.w, src, base_include_dir, alloc);
 
-    str_t final_src = md_str_writer_to_str(&sb);
+    md_str_t final_src = md_str_writer_to_str(&sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
 
     glCompileShader(shader);
@@ -111,14 +111,14 @@ GLuint gl::compile_shader_from_source(str_t src, GLenum type, str_t defines, str
     return shader;
 }
 
-GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) {
+GLuint gl::compile_shader_from_file(md_str_t filename, GLenum type, md_str_t defines) {
     MD_ASSERT(type == GL_VERTEX_SHADER || type == GL_GEOMETRY_SHADER || type == GL_FRAGMENT_SHADER || type == GL_COMPUTE_SHADER ||
         type == GL_TESS_CONTROL_SHADER || type == GL_TESS_EVALUATION_SHADER);
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
     MD_DEFER { md_temp_end(temp); };
 
-    str_t src = load_textfile(filename, alloc);
+    md_str_t src = md_load_textfile(filename, alloc);
     if (!src) {
         MD_LOG_ERROR("Failed to open source file for shader '%.*s'", (int)src.len, src.ptr);
         return 0;
@@ -128,9 +128,9 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
     md_str_writer_t sb = md_str_writer_create(alloc);
 
     if (defines) {
-        str_t version_str = {};
-        if (str_eq_cstr_n(src, "#version ", 9)) {
-            if (!str_extract_line(&version_str, &src)) {
+        md_str_t version_str = {};
+        if (md_str_eq_cstr_n(src, "#version ", 9)) {
+            if (!md_str_extract_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
@@ -145,11 +145,11 @@ GLuint gl::compile_shader_from_file(str_t filename, GLenum type, str_t defines) 
         }
     }
 
-    str_t folder_path;
-    extract_folder_path(&folder_path, filename);
+    md_str_t folder_path;
+    md_extract_folder_path(&folder_path, filename);
     build_shader_src(&sb.w, src, folder_path, alloc);
 
-    str_t final_src = md_str_writer_to_str(&sb);
+    md_str_t final_src = md_str_writer_to_str(&sb);
     glShaderSource(shader, 1, &final_src.ptr, 0);
     md_str_writer_free(&sb);
 

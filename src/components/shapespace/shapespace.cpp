@@ -388,12 +388,12 @@ struct Shapespace : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                const str_t section = viamd::section_header(state);
-                if (str_eq(section, STR_LIT("ShapeSpace"))) {
+                const md_str_t section = viamd::section_header(state);
+                if (md_str_eq(section, MD_STR_LIT("ShapeSpace"))) {
                     deserialize_settings(state);
-                } else if (str_eq(section, STR_LIT("ShapeSpaceLayer"))) {
+                } else if (md_str_eq(section, MD_STR_LIT("ShapeSpaceLayer"))) {
                     deserialize_layer(state);
-                } else if (str_eq(section, STR_LIT("ShapeSpaceGroup"))) {
+                } else if (md_str_eq(section, MD_STR_LIT("ShapeSpaceGroup"))) {
                     deserialize_group(state);
                 }
                 break;
@@ -850,7 +850,7 @@ struct Shapespace : viamd::EventHandler {
         };
         l.want_hash = hash;
         // The bandwidth is of the triangle's side, which is 1
-        l.job = density_map_launch(STR_LIT("Shapespace density"), shape_domain, sigma, num_chunks, source, done);
+        l.job = density_map_launch(MD_STR_LIT("Shapespace density"), shape_domain, sigma, num_chunks, source, done);
     }
 
     // ## Update
@@ -934,7 +934,7 @@ struct Shapespace : viamd::EventHandler {
 
         Evaluation* ev = e.get();
         ApplicationState* state = app;
-        e->task.start_for(STR_LIT("Shapespace"), (uint32_t)num_frames, 1, [ev, state](uint32_t beg, uint32_t end) {
+        e->task.start_for(MD_STR_LIT("Shapespace"), (uint32_t)num_frames, 1, [ev, state](uint32_t beg, uint32_t end) {
             const md_system_t& sys = state->mold.sys;
             md_temp_scope_t temp = md_temp_begin();
             MD_DEFER { md_temp_end(temp); };
@@ -945,8 +945,8 @@ struct Shapespace : viamd::EventHandler {
                 md_atom_extract_masses(masses, 0, sys.atom.count, &sys.atom);
             }
             // One context for the range, so the run's files stay open across its frames
-            const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-            md_system_extract_t* ex = md_system_extract_begin(&sys, str_from_cstr(state->mold.run), paths, MD_COUNTOF(paths), md_get_heap_allocator());
+            const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
+            md_system_extract_t* ex = md_system_extract_begin(&sys, md_str_from_cstr(state->mold.run), paths, MD_COUNTOF(paths), md_get_heap_allocator());
             if (!ex) {
                 // Nothing to read them from: done, without shapes
                 ev->frames_done.fetch_add(end - beg);
@@ -1107,10 +1107,10 @@ struct Shapespace : viamd::EventHandler {
     // ## Workspace
 
     void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("ShapeSpace"));
-        viamd::write_bool(state, STR_LIT("ShowLayers"), show_sidebar);
-        viamd::write_bool(state, STR_LIT("ShowGrid"), show_grid);
-        viamd::write_int(state, STR_LIT("Layers"), num_layers);
+        viamd::write_section_header(state, MD_STR_LIT("ShapeSpace"));
+        viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
+        viamd::write_bool(state, MD_STR_LIT("ShowGrid"), show_grid);
+        viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
         // In the order of the list: a group, then what is in it
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
         const size_t n = tree_nodes(nodes);
@@ -1122,7 +1122,7 @@ struct Shapespace : viamd::EventHandler {
                 continue;
             }
             const LayerGroup& g = groups[top[k] - num_layers];
-            layer_group_serialize(state, STR_LIT("ShapeSpaceGroup"), g);
+            layer_group_serialize(state, MD_STR_LIT("ShapeSpaceGroup"), g);
             int kids[MAX_LAYERS + LAYER_MAX_GROUPS];
             const size_t nk = representation_tree_children(kids, MD_COUNTOF(kids), nodes, n, g.node.id);
             for (size_t c = 0; c < nk; ++c) {
@@ -1133,54 +1133,54 @@ struct Shapespace : viamd::EventHandler {
 
     void serialize_layer(viamd::serialization_state_t& state, const Layer& l) {
         {
-            viamd::write_section_header(state, STR_LIT("ShapeSpaceLayer"));
-            if (l.node.parent) viamd::write_int(state, STR_LIT("Group"), (int64_t)l.node.parent);
-            if (l.name[0]) viamd::write_str(state, STR_LIT("Name"), str_from_cstr(l.name));
-            viamd::write_bool(state, STR_LIT("Visible"), l.visible);
-            if (l.filter.text[0]) viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(l.filter.text));
-            viamd::write_bool(state, STR_LIT("UseMass"), l.use_mass);
-            static const str_t frames[LayerFrames_Count] = { STR_LIT("current"), STR_LIT("all"), STR_LIT("period") };
-            viamd::write_str(state, STR_LIT("Frames"), frames[l.frames]);
-            if (l.frames == LayerFrames_Period) viamd::write_int(state, STR_LIT("Period"), (int)l.period);
-            static const str_t styles[LayerStyle_Count] = { STR_LIT("points"), STR_LIT("contours"), STR_LIT("heatmap") };
-            viamd::write_str(state, STR_LIT("Style"), styles[l.style]);
-            viamd::write_vec4(state, STR_LIT("Color"), vec4_set(l.color.x, l.color.y, l.color.z, l.color.w));
-            viamd::write_flt(state, STR_LIT("Opacity"), l.opacity);
-            viamd::write_bool(state, STR_LIT("Fill"), l.fill);
-            viamd::write_bool(state, STR_LIT("Lines"), l.lines);
-            viamd::write_flt(state, STR_LIT("LineWidth"), l.line_width);
-            viamd::write_flt_vec(state, STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
-            if (l.bandwidth > 0.0f) viamd::write_flt(state, STR_LIT("Bandwidth"), l.bandwidth);
-            else                    viamd::write_str(state, STR_LIT("Bandwidth"), STR_LIT("auto"));
-            viamd::write_str(state, STR_LIT("Colormap"), str_from_cstr(ImPlot::GetColormapName(l.colormap)));
-            viamd::write_bool(state, STR_LIT("LogScale"), l.log_scale);
-            static const str_t colorings[PointColoring_Count] = { STR_LIT("layer"), STR_LIT("structure"), STR_LIT("time") };
-            viamd::write_str(state, STR_LIT("PointColoring"), colorings[l.point_coloring]);
-            viamd::write_flt(state, STR_LIT("PointSize"), l.point_size);
+            viamd::write_section_header(state, MD_STR_LIT("ShapeSpaceLayer"));
+            if (l.node.parent) viamd::write_int(state, MD_STR_LIT("Group"), (int64_t)l.node.parent);
+            if (l.name[0]) viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(l.name));
+            viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
+            if (l.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(l.filter.text));
+            viamd::write_bool(state, MD_STR_LIT("UseMass"), l.use_mass);
+            static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
+            viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
+            if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
+            static const md_str_t styles[LayerStyle_Count] = { MD_STR_LIT("points"), MD_STR_LIT("contours"), MD_STR_LIT("heatmap") };
+            viamd::write_str(state, MD_STR_LIT("Style"), styles[l.style]);
+            viamd::write_vec4(state, MD_STR_LIT("Color"), vec4_set(l.color.x, l.color.y, l.color.z, l.color.w));
+            viamd::write_flt(state, MD_STR_LIT("Opacity"), l.opacity);
+            viamd::write_bool(state, MD_STR_LIT("Fill"), l.fill);
+            viamd::write_bool(state, MD_STR_LIT("Lines"), l.lines);
+            viamd::write_flt(state, MD_STR_LIT("LineWidth"), l.line_width);
+            viamd::write_flt_vec(state, MD_STR_LIT("Levels"), l.levels, (size_t)l.num_levels);
+            if (l.bandwidth > 0.0f) viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
+            else                    viamd::write_str(state, MD_STR_LIT("Bandwidth"), MD_STR_LIT("auto"));
+            viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
+            static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("structure"), MD_STR_LIT("time") };
+            viamd::write_str(state, MD_STR_LIT("PointColoring"), colorings[l.point_coloring]);
+            viamd::write_flt(state, MD_STR_LIT("PointSize"), l.point_size);
         }
     }
 
     void deserialize_settings(viamd::deserialization_state_t& state) {
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "ShowLayers")) {
+            if (md_str_eq_cstr(ident, "ShowLayers")) {
                 viamd::extract_bool(show_sidebar, arg);
-            } else if (str_eq_cstr(ident, "ShowGrid")) {
+            } else if (md_str_eq_cstr(ident, "ShowGrid")) {
                 viamd::extract_bool(show_grid, arg);
-            } else if (str_eq_cstr(ident, "Layers")) {
+            } else if (md_str_eq_cstr(ident, "Layers")) {
                 layers_declared = true;
             }
             // From before there were layers
-            else if (str_eq_cstr(ident, "Filter")) {
+            else if (md_str_eq_cstr(ident, "Filter")) {
                 legacy.present = true;
                 viamd::extract_to_char_buf(legacy.filter, sizeof(legacy.filter), arg);
-            } else if (str_eq_cstr(ident, "MarkerSize")) {
+            } else if (md_str_eq_cstr(ident, "MarkerSize")) {
                 legacy.present = true;
                 viamd::extract_flt(legacy.marker_size, arg);
-            } else if (str_eq_cstr(ident, "UseMass")) {
+            } else if (md_str_eq_cstr(ident, "UseMass")) {
                 legacy.present = true;
                 viamd::extract_bool(legacy.use_mass, arg);
-            } else if (str_eq_cstr(ident, "Period")) {
+            } else if (md_str_eq_cstr(ident, "Period")) {
                 legacy.present = true;
                 viamd::extract_int(legacy.period, arg);
             }
@@ -1193,7 +1193,7 @@ struct Shapespace : viamd::EventHandler {
             clear_layers();
             read_layers = true;
         }
-        str_t ident, arg;
+        md_str_t ident, arg;
         LayerGroup* g = add_group(LAYER_TREE_LAST);
         if (!g) {
             while (viamd::next_entry(ident, arg, state)) {}
@@ -1216,16 +1216,16 @@ struct Shapespace : viamd::EventHandler {
             read_layers = true;
         }
         Layer* l = add_layer(LayerFrames_All, LayerStyle_Points);
-        str_t ident, arg;
+        md_str_t ident, arg;
         if (!l) {
             while (viamd::next_entry(ident, arg, state)) {}
             return;
         }
         while (viamd::next_entry(ident, arg, state)) {
-            str_t s = {};
-            if (str_eq_cstr(ident, "Name")) {
+            md_str_t s = {};
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(l->name, sizeof(l->name), arg);
-            } else if (str_eq_cstr(ident, "Group")) {
+            } else if (md_str_eq_cstr(ident, "Group")) {
                 int file_id = 0;
                 if (viamd::extract_int(file_id, arg)) {
                     for (int k = 0; k < num_read_groups; ++k) {
@@ -1235,31 +1235,31 @@ struct Shapespace : viamd::EventHandler {
                         }
                     }
                 }
-            } else if (str_eq_cstr(ident, "Visible")) {
+            } else if (md_str_eq_cstr(ident, "Visible")) {
                 viamd::extract_bool(l->visible, arg);
-            } else if (str_eq_cstr(ident, "Filter")) {
+            } else if (md_str_eq_cstr(ident, "Filter")) {
                 viamd::extract_to_char_buf(l->filter.text, sizeof(l->filter.text), arg);
-            } else if (str_eq_cstr(ident, "UseMass")) {
+            } else if (md_str_eq_cstr(ident, "UseMass")) {
                 viamd::extract_bool(l->use_mass, arg);
-            } else if (str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
-                l->frames = str_eq_cstr(s, "current") ? LayerFrames_Current : str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
-            } else if (str_eq_cstr(ident, "Period")) {
+            } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
+                l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
+            } else if (md_str_eq_cstr(ident, "Period")) {
                 int id = 0;
                 if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
-            } else if (str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
-                l->style = str_eq_cstr(s, "contours") ? LayerStyle_Contours : str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
-            } else if (str_eq_cstr(ident, "Color")) {
+            } else if (md_str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
+                l->style = md_str_eq_cstr(s, "contours") ? LayerStyle_Contours : md_str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
+            } else if (md_str_eq_cstr(ident, "Color")) {
                 vec4_t c;
                 if (viamd::extract_vec4(c, arg)) l->color = ImVec4(c.x, c.y, c.z, c.w);
-            } else if (str_eq_cstr(ident, "Opacity")) {
+            } else if (md_str_eq_cstr(ident, "Opacity")) {
                 viamd::extract_flt(l->opacity, arg);
-            } else if (str_eq_cstr(ident, "Fill")) {
+            } else if (md_str_eq_cstr(ident, "Fill")) {
                 viamd::extract_bool(l->fill, arg);
-            } else if (str_eq_cstr(ident, "Lines")) {
+            } else if (md_str_eq_cstr(ident, "Lines")) {
                 viamd::extract_bool(l->lines, arg);
-            } else if (str_eq_cstr(ident, "LineWidth")) {
+            } else if (md_str_eq_cstr(ident, "LineWidth")) {
                 viamd::extract_flt(l->line_width, arg);
-            } else if (str_eq_cstr(ident, "Levels")) {
+            } else if (md_str_eq_cstr(ident, "Levels")) {
                 float v[MAX_LEVELS];
                 for (int k = MAX_LEVELS; k > 0; --k) {
                     if (viamd::extract_flt_vec(v, (size_t)k, arg)) {
@@ -1268,18 +1268,18 @@ struct Shapespace : viamd::EventHandler {
                         break;
                     }
                 }
-            } else if (str_eq_cstr(ident, "Bandwidth")) {
+            } else if (md_str_eq_cstr(ident, "Bandwidth")) {
                 if (!viamd::extract_flt(l->bandwidth, arg)) l->bandwidth = 0.0f;  // auto
-            } else if (str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
+            } else if (md_str_eq_cstr(ident, "Colormap") && viamd::extract_str(s, arg)) {
                 char name[64];
-                str_copy_to_char_buf(name, sizeof(name), s);
+                md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
-            } else if (str_eq_cstr(ident, "LogScale")) {
+            } else if (md_str_eq_cstr(ident, "LogScale")) {
                 viamd::extract_bool(l->log_scale, arg);
-            } else if (str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
-                l->point_coloring = str_eq_cstr(s, "structure") ? PointColoring_Structure : str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Layer;
-            } else if (str_eq_cstr(ident, "PointSize")) {
+            } else if (md_str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
+                l->point_coloring = md_str_eq_cstr(s, "structure") ? PointColoring_Structure : md_str_eq_cstr(s, "time") ? PointColoring_Time : PointColoring_Layer;
+            } else if (md_str_eq_cstr(ident, "PointSize")) {
                 viamd::extract_flt(l->point_size, arg);
             }
         }
@@ -1805,12 +1805,12 @@ struct Shapespace : viamd::EventHandler {
 
     // ### The window
 
-    void export_layer(const Layer& l, str_t ext) {
+    void export_layer(const Layer& l, md_str_t ext) {
         const EvaluationRef& eval = l.eval;
         if (!eval || !eval->complete()) return;
         char path_buf[2048];
         if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) return;
-        const str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+        const md_str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
 
         md_temp_scope_t temp_scope = md_temp_begin();
         md_allocator_i* temp = md_temp_allocator(temp_scope);
@@ -1818,22 +1818,22 @@ struct Shapespace : viamd::EventHandler {
 
         // The time column is timeline.x_values, held in display units: its label is from the same place
         const md_unit_t time_unit = app->timeline.time_unit;
-        str_t x_label = STR_INIT("Frame");
+        md_str_t x_label = MD_STR_INIT("Frame");
         if (!md_unit_is_none(time_unit)) {
             char unit_buf[64];
             md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-            x_label = str_printf(temp, "Time (%s)", unit_buf);
+            x_label = md_str_printf(temp, "Time (%s)", unit_buf);
         }
-        md_array(str_t)  labels = 0;
+        md_array(md_str_t)  labels = 0;
         md_array(float*) values = 0;
         md_array_push(labels, x_label, temp);
         md_array_push(values, NULL, temp);
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
         for (size_t s = 0; s < ns; ++s) {
-            md_array_push(labels, ns > 1 ? str_printf(temp, "linear %zu", s + 1)    : STR_LIT("linear"),    temp);
-            md_array_push(labels, ns > 1 ? str_printf(temp, "planar %zu", s + 1)    : STR_LIT("planar"),    temp);
-            md_array_push(labels, ns > 1 ? str_printf(temp, "isotropic %zu", s + 1) : STR_LIT("isotropic"), temp);
+            md_array_push(labels, ns > 1 ? md_str_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
+            md_array_push(labels, ns > 1 ? md_str_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
+            md_array_push(labels, ns > 1 ? md_str_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
         const float* time = app->timeline.x_values;
@@ -1848,11 +1848,11 @@ struct Shapespace : viamd::EventHandler {
             }
         }
         const size_t num_cols = ns * 3 + 1;
-        if (str_eq(ext, STR_LIT("csv"))) {
+        if (md_str_eq(ext, MD_STR_LIT("csv"))) {
             md_csv_write_to_file(values, labels, num_cols, nf, path);
         } else {
-            const str_t header = md_xvg_format_header(STR_LIT("Shape Space"), x_label, STR_LIT("Shape Weight"), num_cols - 1, labels + 1, temp);
-            const str_t xvg = md_xvg_format(header, num_cols, nf, values, temp);
+            const md_str_t header = md_xvg_format_header(MD_STR_LIT("Shape Space"), x_label, MD_STR_LIT("Shape Weight"), num_cols - 1, labels + 1, temp);
+            const md_str_t xvg = md_xvg_format(header, num_cols, nf, values, temp);
             md_file_t file = {0};
             if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                 md_file_write(file, xvg.ptr, xvg.len);
@@ -1872,8 +1872,8 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::Button("Export " ICON_FA_CARET_DOWN)) ImGui::OpenPopup("##export");
         if (ImGui::BeginPopup("##export")) {
             ImGui::TextDisabled("The shapes of the selected layer's structures, every frame");
-            if (ImGui::MenuItem("CSV", nullptr, false, can_export)) export_layer(*sel, STR_LIT("csv"));
-            if (ImGui::MenuItem("XVG", nullptr, false, can_export)) export_layer(*sel, STR_LIT("xvg"));
+            if (ImGui::MenuItem("CSV", nullptr, false, can_export)) export_layer(*sel, MD_STR_LIT("csv"));
+            if (ImGui::MenuItem("XVG", nullptr, false, can_export)) export_layer(*sel, MD_STR_LIT("xvg"));
             if (!can_export) ImGui::TextDisabled("Select a layer over frames, once evaluated");
             ImGui::EndPopup();
         }

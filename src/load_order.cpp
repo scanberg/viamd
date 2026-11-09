@@ -7,7 +7,7 @@
 
 static bool pending_has(const FileEntry& e) { return e.path[0] != '\0'; }
 
-static size_t count_of(const LoadOps& ops, str_t path, const loader::LoaderState& ls) {
+static size_t count_of(const LoadOps& ops, md_str_t path, const loader::LoaderState& ls) {
     return ops.atom_count ? ops.atom_count(ops.user, path, ls) : loader::atom_count(path, ls);
 }
 
@@ -17,7 +17,7 @@ loader::LoaderState load_order_loader_state(const FileEntry& e) {
         ls.type  = e.type;
         ls.flags = loader::type_flags(e.type) | LoaderFlag_ExplicitType;
     } else {
-        loader::init(&ls, str_from_cstr(e.path), nullptr);
+        loader::init(&ls, md_str_from_cstr(e.path), nullptr);
     }
     if (e.arg[0] != '\0') ls.arg = e.arg;
     return ls;
@@ -31,18 +31,18 @@ static LoadResult build_from_topology(const LoadOps& ops, const FileEntry& topol
     const FileEntry coordinates = coordinates_in;
     loader::LoaderState ls = load_order_loader_state(topology);
     const loader::LoaderState cs = load_order_loader_state(coordinates);
-    const size_t a = count_of(ops, str_from_cstr(topology.path), ls);
-    const size_t b = count_of(ops, str_from_cstr(coordinates.path), cs);
+    const size_t a = count_of(ops, md_str_from_cstr(topology.path), ls);
+    const size_t b = count_of(ops, md_str_from_cstr(coordinates.path), cs);
     if (a && b && a != b) {
         MD_LOG_ERROR("'%s' has %zu atoms and '%s' %zu: they are not of the same system", topology.path, a, coordinates.path, b);
         return LoadResult_Failed;
     }
     ls.coordinates = coordinates.path;
-    const LoadResult result = ops.load(ops.user, str_from_cstr(topology.path), ls, FileRole_System, false);
+    const LoadResult result = ops.load(ops.user, md_str_from_cstr(topology.path), ls, FileRole_System, false);
     if (result != LoadResult_System) return result;
 
     if ((cs.flags & LoaderFlag_Trajectory) && !(cs.flags & LoaderFlag_System)) {
-        ops.load(ops.user, str_from_cstr(coordinates.path), cs, FileRole_Trajectory, false);
+        ops.load(ops.user, md_str_from_cstr(coordinates.path), cs, FileRole_Trajectory, false);
     }
     return result;
 }
@@ -54,25 +54,25 @@ static void pending_resolve(PendingFiles* pending, const LoadOps& ops) {
     *pending = {};
     if (pending_has(trajectory) && ops.run_frames(ops.user) == 0) {
         const loader::LoaderState ts = load_order_loader_state(trajectory);
-        const size_t n = count_of(ops, str_from_cstr(trajectory.path), ts);
+        const size_t n = count_of(ops, md_str_from_cstr(trajectory.path), ts);
         if (n == 0 || n == ops.system_atoms(ops.user)) {
-            ops.load(ops.user, str_from_cstr(trajectory.path), ts, FileRole_Trajectory, false);
+            ops.load(ops.user, md_str_from_cstr(trajectory.path), ts, FileRole_Trajectory, false);
         } else {
             MD_LOG_INFO("'%s' does not have the atoms of the loaded system and no longer waits", trajectory.path);
         }
     }
 }
 
-static LoadResult pending_wait(FileEntry* slot, const LoadOps& ops, str_t path, const loader::LoaderState& load_state, const char* what) {
+static LoadResult pending_wait(FileEntry* slot, const LoadOps& ops, md_str_t path, const loader::LoaderState& load_state, const char* what) {
     *slot = file_entry_from(path, load_state);
     const size_t n = count_of(ops, path, load_state);
     char count[64] = "";
     if (n) snprintf(count, sizeof(count), " of %zu atoms", n);
-    MD_LOG_INFO("'" STR_FMT "'%s is waiting for %s", STR_ARG(path), count, what);
+    MD_LOG_INFO("'" MD_STR_FMT "'%s is waiting for %s", MD_STR_ARG(path), count, what);
     return LoadResult_Pending;
 }
 
-LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, str_t filepath, const loader::LoaderState& load_state) {
+LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, md_str_t filepath, const loader::LoaderState& load_state) {
     MD_ASSERT(pending);
     MD_ASSERT(ops.load && ops.system_atoms && ops.run_frames && ops.files);
 
@@ -130,7 +130,7 @@ LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, str_t filepa
             }
             const LoadResult result = build_from_topology(ops, topology, coords);
             if (result == LoadResult_System && pending_has(run)) {
-                ops.load(ops.user, str_from_cstr(run.path), load_order_loader_state(run), FileRole_Trajectory, false);
+                ops.load(ops.user, md_str_from_cstr(run.path), load_order_loader_state(run), FileRole_Trajectory, false);
             }
             return result;
         }
@@ -179,9 +179,9 @@ LoadResult load_in_order(PendingFiles* pending, const LoadOps& ops, str_t filepa
             const FileEntry topology = pending->topology;
             pending->topology = {};
             loader::LoaderState ts = load_order_loader_state(topology);
-            if (count_of(ops, str_from_cstr(topology.path), ts) == ops.system_atoms(ops.user)) {
+            if (count_of(ops, md_str_from_cstr(topology.path), ts) == ops.system_atoms(ops.user)) {
                 ts.flags |= LoaderFlag_Supplemental;
-                ops.load(ops.user, str_from_cstr(topology.path), ts, FileRole_Supplement, false);
+                ops.load(ops.user, md_str_from_cstr(topology.path), ts, FileRole_Supplement, false);
             } else {
                 MD_LOG_INFO("'%s' does not have the atoms of the loaded system and no longer waits", topology.path);
             }

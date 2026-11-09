@@ -10,7 +10,7 @@ using namespace display_units;
 
 static md_unit_t U(const char* s) {
     md_unit_t u;
-    if (!md_unit_parse(&u, str_from_cstr(s))) return md_unit_none();
+    if (!md_unit_parse(&u, md_str_from_cstr(s))) return md_unit_none();
     return u;
 }
 
@@ -133,7 +133,7 @@ UTEST(display_units, ini) {
 UTEST(display_units, mark_text) {
     reset();
     script::Mark m = {};
-    m.text = STR_LIT("int km/s -> 10");
+    m.text = MD_STR_LIT("int km/s -> 10");
     m.unit = U("nm/ps");
     m.unit_at = 4;
     m.unit_len = 4;
@@ -141,11 +141,11 @@ UTEST(display_units, mark_text) {
     m.has_number = true;
     m.number = 10.0;
     char buf[128];
-    str_t t = script::mark_text(buf, sizeof(buf), m);
+    md_str_t t = script::mark_text(buf, sizeof(buf), m);
     { const std::string got_(t.ptr, t.len); EXPECT_STREQ("int Å/ps -> 100", got_.c_str()); }
 
     // Known per frame, no value
-    m.text = STR_LIT("float[3] km/s, frame");
+    m.text = MD_STR_LIT("float[3] km/s, frame");
     m.unit_at = 9;
     m.type_len = (uint32_t)m.text.len;
     m.has_number = false;
@@ -154,7 +154,7 @@ UTEST(display_units, mark_text) {
 
     // No unit: as it came
     script::Mark n = {};
-    n.text = STR_LIT("int -> 3");
+    n.text = MD_STR_LIT("int -> 3");
     t = script::mark_text(buf, sizeof(buf), n);
     { const std::string got_(t.ptr, t.len); EXPECT_STREQ("int -> 3", got_.c_str()); }
 }
