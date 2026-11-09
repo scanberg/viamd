@@ -1491,6 +1491,8 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t    num_units = 0;
         double*   atom_xyz = nullptr;      // [N*3] the QM atoms, Angstrom
         bool      show_strip = true;
+        bool      show_legend = true;
+        float     bar_width = 0.03f;    // the layout's node thickness, graph units: thin bars, labels outside
 
         // The orbital pairs (block NTOs) of every visible ribbon, as shares of it: see FlowStripes
         md_array(uint32_t) stripe_offset = nullptr;
@@ -9823,16 +9825,19 @@ struct QuantumChemistry : viamd::EventHandler {
         viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
         viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
         viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
+        viamd::write_flt (ser, MD_STR_LIT("FlowBarWidth"),           flow.params.node_thickness);
         viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonOpacity"),      flow.style.ribbon_alpha);
         viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
         viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
         viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
         viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
-        viamd::write_flt (ser, MD_STR_LIT("FlowBorderWidth"),        flow.style.border_width);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeTint"),           flow.style.node_fill_tint);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeBorder"),         flow.style.border_width);
         viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowColorBySide"),        flow.style.color_by_side);
+        viamd::write_bool(ser, MD_STR_LIT("FlowRibbonLabels"),       flow.style.show_ribbon_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowLegend"),             flow.show_legend);
 
         viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
 
@@ -9901,11 +9906,14 @@ struct QuantumChemistry : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
                 int mask = 0;
                 if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
-            } else if (md_str_eq_cstr(ident, "FlowNodeThickness")) {
-                viamd::extract_flt(flow.params.node_thickness, arg);
+            } else if (md_str_eq_cstr(ident, "FlowBarWidth")) {
+                if (viamd::extract_flt(flow.bar_width, arg)) flow.params.node_thickness = flow.bar_width;
+            } else if (md_str_eq_cstr(ident, "FlowNodeThickness") || md_str_eq_cstr(ident, "FlowRibbonAlpha") ||
+                       md_str_eq_cstr(ident, "FlowNodeFillTint") || md_str_eq_cstr(ident, "FlowBorderWidth")) {
+                // the boxed style's settings: they do not carry over to the bars
             } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
                 viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonAlpha")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonOpacity")) {
                 viamd::extract_flt(flow.style.ribbon_alpha, arg);
             } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
                 viamd::extract_flt(flow.style.ribbon_curvature, arg);
@@ -9916,12 +9924,18 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
                 viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeFillTint")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeTint")) {
                 viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (md_str_eq_cstr(ident, "FlowBorderWidth")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeBorder")) {
                 viamd::extract_flt(flow.style.border_width, arg);
             } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
                 viamd::extract_bool(flow.style.color_labels, arg);
+            } else if (md_str_eq_cstr(ident, "FlowColorBySide")) {
+                viamd::extract_bool(flow.style.color_by_side, arg);
+            } else if (md_str_eq_cstr(ident, "FlowRibbonLabels")) {
+                viamd::extract_bool(flow.style.show_ribbon_labels, arg);
+            } else if (md_str_eq_cstr(ident, "FlowLegend")) {
+                viamd::extract_bool(flow.show_legend, arg);
             } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
                 int sweeps = 2;
                 if (viamd::extract_int(sweeps, arg)) {
@@ -10657,53 +10671,89 @@ struct QuantumChemistry : viamd::EventHandler {
     // and looks wrong: the layout's unit square bounds the NODES, while bands hang off the sides
     // and captions sit above the top row. Those are sized in pixels by the drawing backend, so the
     // fit has to reserve pixels for them and only then convert to a zoom.
+    // What the diagram's columns mean, for the backend to draw: captions, the state with its split into
+    // charge transfer and local excitation at the level open now, and a legend.
+    void flow_annotations(FlowAnnotations* notes, char* subtitle, size_t cap) const {
+        *notes = {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            notes->caption[0] = "Occupied";
+            notes->caption[1] = "NTO pairs";
+            notes->caption[2] = "Virtual";
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+            notes->subtitle = subtitle;
+            notes->legend_ribbon = "Ribbon = hole to particle through an orbital pair";
+            return;
+        }
+        notes->caption[0] = "Hole";
+        notes->caption[2] = "Particle";
+        float local = 0.0f, total = 0.0f;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_link_t* l = flow.cut.links + i;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (a && b && a->entity != 0 && a->entity == b->entity) local += l->weight;
+            total += l->weight;
+        }
+        if (total > 0.0f) {
+            snprintf(subtitle, cap, "S%d \xC2\xB7 CT %.0f%% \xC2\xB7 LE %.0f%%", rsp.selected + 1,
+                     100.0f * (1.0f - local / total), 100.0f * local / total);
+        } else {
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+        }
+        notes->subtitle = subtitle;
+        if (flow.show_legend) {
+            notes->legend_ribbon = "Ribbon = transfer between fragments";
+            notes->legend_local  = "Solid = local excitation";
+        }
+    }
+
+    // Pan and zoom that put the nodes' box, with the room its labels and annotations take, inside a
+    // canvas of 'canvas_size' pixels.
+    void flow_fit(vec2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
+        *pan = { 0, 0 };
+        *zoom = 1.0f;
+        if (md_array_size(layout.nodes) == 0) return;
+
+        vec2_t bb_min = { 1.0e30f,  1.0e30f };
+        vec2_t bb_max = {-1.0e30f, -1.0e30f };
+        for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
+            const md_flow_layout_node_t* n = layout.nodes + i;
+            bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
+            bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
+        }
+        const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
+        const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
+
+        // a plain margin as well, so the diagram is not welded to the window edge
+        const float margin = 12.0f;
+        const float pad_l = margin + m.left,  pad_r = margin + m.right;
+        const float pad_t = margin + m.top,   pad_b = margin + m.bottom;
+        const float avail_w = MD_MAX(canvas_size.x - pad_l - pad_r, 16.0f);
+        const float avail_h = MD_MAX(canvas_size.y - pad_t - pad_b, 16.0f);
+
+        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
+        // bb_w * zoom * canvas_size.x pixels.
+        *zoom = MD_CLAMP(MD_MIN(avail_w / (bb_w * canvas_size.x), avail_h / (bb_h * canvas_size.y)), 0.1f, 12.0f);
+
+        // Centred in what the pads leave
+        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
+        const float target_x = 0.5f + (pad_l - pad_r) * 0.5f / canvas_size.x;
+        const float target_y = 0.5f + (pad_t - pad_b) * 0.5f / canvas_size.y;
+        pan->x = target_x - bb_center.x * *zoom;
+        pan->y = target_y - bb_center.y * *zoom;
+    }
+
     void flow_fit_view(ImVec2 canvas_size) {
-        if (!flow.built || md_array_size(flow.layout.nodes) == 0) {
+        if (!flow.built) {
             flow.pan = {0, 0};
             flow.zoom = 1.0f;
             return;
         }
-
-        vec2_t bb_min = { 1.0e30f,  1.0e30f };
-        vec2_t bb_max = {-1.0e30f, -1.0e30f };
-        for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-            const md_flow_layout_node_t* n = flow.layout.nodes + i;
-            bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
-            bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
-        }
-
-        const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
-        const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
-
-        // Room for the decorations the layout knows nothing about, plus a plain margin so the
-        // diagram is not welded to the window edge.
-        const float margin   = 12.0f;
-        const float caption  = ImGui::GetTextLineHeight() + 8.0f;
-        const float band_w   = flow.style.band_offset_px + flow.style.band_width_px;
-        const float band_lbl = md_array_size(flow.layout.bands) > 0 ? 64.0f : 0.0f;
-
-        const float pad_x = margin + band_w + band_lbl;
-        const float pad_y_top = margin + caption;
-        const float pad_y_bot = margin;
-
-        const float avail_w = MD_MAX(canvas_size.x - pad_x * 2.0f, 16.0f);
-        const float avail_h = MD_MAX(canvas_size.y - pad_y_top - pad_y_bot, 16.0f);
-
-        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
-        // bb_w * zoom * canvas_size.x pixels.
-        const float zoom_x = avail_w / (bb_w * canvas_size.x);
-        const float zoom_y = avail_h / (bb_h * canvas_size.y);
-        flow.zoom = MD_CLAMP(MD_MIN(zoom_x, zoom_y), 0.25f, 12.0f);
-
-        // Centre the content in what is left after the padding. The vertical target is offset by
-        // half the difference between the top and bottom pads, so the caption band does not push
-        // the diagram off-centre.
-        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
-        const float target_x = 0.5f;
-        const float target_y = 0.5f + (pad_y_top - pad_y_bot) * 0.5f / canvas_size.y;
-
-        flow.pan.x = target_x - bb_center.x * flow.zoom;
-        flow.pan.y = target_y - bb_center.y * flow.zoom;
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
+        const FlowMargins m = flow_measure_margins(&flow.graph, &flow.cut, &flow.layout, flow.style, &notes);
+        flow_fit(&flow.pan, &flow.zoom, flow.layout, canvas_size, m);
     }
 
     // Visible nodes whose on-screen rect overlaps a region, in cut index space.
@@ -11074,6 +11124,8 @@ struct QuantumChemistry : viamd::EventHandler {
             // The same fragments in the same order on both sides: a straight band is local, a
             // slanted one is transfer.
             flow.params.order = MD_FLOW_ORDER_GRAPH;
+            // Thin bars: the labels sit outside them, and the width between belongs to the ribbons
+            flow.params.node_thickness = flow.bar_width;
             flow.cut.threshold = flow.initial_threshold;
             // Uncapped on purpose. A cap makes "Show above 1%" stop being true - folding halts
             // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
@@ -11144,17 +11196,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Settings")) {
-                    ImGui::SliderFloat("Box tint", &flow.style.node_fill_tint, 0.0f, 0.5f);
-                    ImGui::SetItemTooltip("How much of a node's colour survives in its interior.\n"
-                                          "0 is white; the colour itself lives on the border.");
-                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Colour by side", &flow.style.color_by_side);
+                    ImGui::SetItemTooltip("Hole nodes in one colour, particle nodes in another, ribbons in a third.\n"
+                                          "Off: every node in its own colour, ribbons blending between them.");
+                    ImGui::BeginDisabled(flow.style.color_by_side);
                     ImGui::Checkbox("Colour the labels", &flow.style.color_labels);
+                    ImGui::EndDisabled();
+                    ImGui::SliderFloat("Node tint", &flow.style.node_fill_tint, 0.0f, 0.6f);
+                    ImGui::SetItemTooltip("How much of a node's colour fills its interior. 0 is white.");
+                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Ribbon labels", &flow.style.show_ribbon_labels);
+                    ImGui::SetItemTooltip("The share of every ribbon thick enough to carry it, at its middle.");
+                    ImGui::Checkbox("Legend", &flow.show_legend);
                     ImGui::Separator();
                     ImGui::SliderFloat("Ribbon opacity", &flow.style.ribbon_alpha, 0.05f, 1.0f);
                     ImGui::SliderFloat("Ribbon curvature", &flow.style.ribbon_curvature, 0.0f, 1.0f);
                     ImGui::SliderInt("Ribbon segments", &flow.style.ribbon_segments, 4, 64);
                     ImGui::Separator();
-                    ImGui::SliderFloat("Node thickness", &flow.params.node_thickness, 0.01f, 0.25f);
+                    ImGui::SliderFloat("Bar width", &flow.params.node_thickness, 0.01f, 0.25f);
                     ImGui::SliderFloat("Node gap", &flow.params.node_gap, 0.0f, 0.1f);
                     ImGui::BeginDisabled(flow.params.order != MD_FLOW_ORDER_BARYCENTRE);
                     int sweeps = (int)flow.params.barycentre_sweeps;
@@ -11289,27 +11348,6 @@ struct QuantumChemistry : viamd::EventHandler {
                                   "Double click opens a node; double click on empty space refits.\n"
                                   "Right click for group actions on the selection.");
 
-            // The one number the fragment route is about, at the level currently open: how much of
-            // the excitation moves between the nodes on screen, and how much stays on them.
-            if (flow.mode == FLOW_MODE_FRAGMENTS && flow.built) {
-                float local = 0.0f, total = 0.0f;
-                for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
-                    const md_flow_link_t* l = flow.cut.links + i;
-                    const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
-                    const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
-                    if (a && b && a->entity != 0 && a->entity == b->entity) local += l->weight;
-                    total += l->weight;
-                }
-                if (total > 0.0f) {
-                    ImGui::SameLine();
-                    ImGui::Text("Transfer %.1f%%  Local %.1f%%", 100.0f * (1.0f - local / total), 100.0f * local / total);
-                    ImGui::SetItemTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
-                                          "it is local excitation, the rest is charge transfer. Opening a fragment\n"
-                                          "into atoms turns most of its local part into transfer between its atoms.%s%s",
-                                          flow.nto_dropped  > 1.0e-3f ? "\n\nNTO pairs below round off are left out." : "",
-                                          flow.link_dropped > 1.0e-3f ? "\n\nAtom pairs below 1e-6 of the total are not drawn." : "");
-                }
-            }
 
             if (flow.show_strip) {
                 draw_flow_strip(state);
@@ -11328,7 +11366,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 60));
+            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 22));
 
             if (!flow.built) {
                 const char* msg = lowdin_pending ? "Computing the Lowdin basis (once per system)..."
@@ -11485,42 +11523,22 @@ struct QuantumChemistry : viamd::EventHandler {
             stripes.frac      = flow.stripe_frac;
             stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
 
+            FlowAnnotations notes = {};
+            char subtitle[96];
+            flow_annotations(&notes, subtitle, sizeof(subtitle));
+
             draw_list->PushClipRect(canvas_p0, canvas_p1, true);
             const FlowHit hit = flow_draw_imgui(draw_list, view, &flow.graph, &flow.cut, &flow.layout,
-                                                flow.style, emphasis, &stripes);
+                                                flow.style, emphasis, &stripes, &notes);
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
-
-            // Column captions. They belong to the window rather than to the backend: the backend
-            // draws a graph and has no idea what its columns mean.
-            // Captions belong to the COLUMNS, so they live in graph space and pan and zoom with
-            // them. Pinned to the window corners they would drift away from what they name the
-            // moment anyone moved the view.
-            {
-                const ImU32 caption_col = IM_COL32(0, 0, 0, 200);
-                const char* caption_atoms[3]    = { "DONATING (hole)", "NTO PAIRS", "ACCEPTING (particle)" };
-                const char* caption_orbitals[3] = { "OCCUPIED MOs",    "NTO PAIRS", "VIRTUAL MOs" };
-                const char** caption = (flow.mode == FLOW_MODE_ORBITALS) ? caption_orbitals : caption_atoms;
-
-                for (uint32_t c = 0; c < flow.graph.num_columns; ++c) {
-                    float x0 = 0.0f, x1 = 0.0f, top = 1.0e30f;
-                    bool found = false;
-                    for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-                        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, flow.layout.nodes[i].cut_idx);
-                        if (!n || n->column != c) continue;
-                        x0 = flow.layout.nodes[i].min.x;
-                        x1 = flow.layout.nodes[i].max.x;
-                        top = MD_MIN(top, flow.layout.nodes[i].min.y);
-                        found = true;
-                    }
-                    if (!found) continue;
-
-                    const char* lbl = (flow.graph.num_columns == 2 && c == 1) ? caption[2] : caption[MD_MIN(c, 2u)];
-                    const ImVec2 mid = flow_view_to_screen(view, vec2_t{ (x0 + x1) * 0.5f, top });
-                    const ImVec2 size = ImGui::CalcTextSize(lbl);
-                    draw_list->AddText({ mid.x - size.x * 0.5f, mid.y - size.y - 6.0f }, caption_col, lbl);
-                }
+            if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
+                ImGui::SetTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
+                                  "it is local excitation (LE), the rest is charge transfer (CT). Opening a\n"
+                                  "fragment into atoms turns most of its local part into transfer between its atoms.%s%s",
+                                  flow.nto_dropped  > 1.0e-3f ? "\n\nNTO pairs below round off are left out." : "",
+                                  flow.link_dropped > 1.0e-3f ? "\n\nAtom pairs below 1e-6 of the total are not drawn." : "");
             }
 
             // ---- selection: rubber band, or a click when the band never opened ----
@@ -11775,16 +11793,25 @@ struct QuantumChemistry : viamd::EventHandler {
         md_flow_layout_init(&layout, md_temp_allocator(temp));
         md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
 
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
+
         FlowView view = {};
         view.area_min = { 0.0f, 0.0f };
         view.area_max = size;
-        view.zoom = 1.0f;
+        vec2_t pan = {};
+        flow_fit(&pan, &view.zoom, layout, size, flow_measure_margins_vg(&flow.graph, &flow.cut, &layout, flow.style, &notes));
+        view.pan = { pan.x, pan.y };
+
+        // the page under it, so the file reads the same in any viewer's theme
+        md_vg_add_rect_filled(&scene, { 0.0f, 0.0f }, { size.x, size.y }, MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
 
         FlowStripes stripes = {};
         stripes.offset    = flow.stripe_offset;
         stripes.frac      = flow.stripe_frac;
         stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
-        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes);
+        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes, &notes);
 
         const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
