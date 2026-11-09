@@ -1358,6 +1358,11 @@ struct QuantumChemistry : viamd::EventHandler {
         bool      frags_built   = false;
         int       ct_failed_state = -2;    // the state whose NTO pairs could not be read, not to be retried
 
+        // The orbital pairs (block NTOs) of every visible ribbon, as shares of it: see FlowStripes
+        md_array(uint32_t) stripe_offset = nullptr;
+        md_array(float)    stripe_frac   = nullptr;
+        uint64_t           stripe_hash   = 0;
+
         FlowDrawStyle style = {};
 
         // View transform, in graph units. Kept here rather than in the layout so that panning and
@@ -10701,6 +10706,90 @@ struct QuantumChemistry : viamd::EventHandler {
         return sum;
     }
 
+    // The QM atoms a visible node stands for; false for an "Others" and for orbitals
+    bool flow_node_qm_atoms(md_array(uint32_t)* out, uint32_t cut_idx, md_allocator_i* alloc) const {
+        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER) || !flow_level_has_atoms(node->level)) return false;
+        const uint32_t index = flow_key_index(node->key);
+        const size_t N = md_array_size(nto.atom_group_idx);
+        if (node->level == FLOW_LEVEL_ATOM) {
+            md_array_push(*out, index, alloc);
+        } else if (node->level == FLOW_LEVEL_GROUP) {
+            for (uint32_t a = 0; a < N; ++a) if (nto.atom_group_idx[a] == index) md_array_push(*out, a, alloc);
+        } else if (index < flow.frags.count) {
+            for (uint32_t k = flow.frags.atom_beg[index]; k < flow.frags.atom_end[index]; ++k) {
+                const int32_t s = flow.frags.atom_idx[k];
+                const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
+                if (a >= 0 && (size_t)a < N && nto.atom_group_idx[a] == 0) md_array_push(*out, (uint32_t)a, alloc);
+            }
+        }
+        return true;
+    }
+
+    // What each visible ribbon is made of: the singular value decomposition of its block of the Lowdin
+    // transition density (md_qm_ct_block_nto), from the K x K blocks of its two ends, which are sums of
+    // their atoms' blocks. Exact, never negative, and adding up to the ribbon. Recomputed when the
+    // visible links change.
+    void flow_update_stripes() {
+        const bool active = flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected;
+        const size_t L = md_array_size(flow.cut.links);
+        const uint64_t hash = active ? md_hash64(flow.cut.links, sizeof(md_flow_link_t) * L, flow.data_hash ^ 0x57121e5ull) : 0;
+        if (hash == flow.stripe_hash && (active || md_array_size(flow.stripe_offset) == 0)) return;
+        flow.stripe_hash = hash;
+        md_array_shrink(flow.stripe_offset, 0);
+        md_array_shrink(flow.stripe_frac, 0);
+        if (!active) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const size_t K = ct_job->K, KK = K * K;
+        const size_t cut_space = md_array_size(flow.graph.nodes) + md_array_size(flow.cut.other);
+        double** block = md_temp_alloc_zero_array(temp, double*, cut_space ? cut_space : 1);
+        auto node_block = [&](uint32_t cut_idx, const double* atom_blocks) -> const double* {
+            if (cut_idx >= cut_space) return nullptr;
+            if (block[cut_idx]) return block[cut_idx];
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, cut_idx, talloc) || md_array_size(atoms) == 0) return nullptr;
+            double* b = md_temp_alloc_zero_array(temp, double, KK);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= ct_job->num_atoms) continue;
+                const double* ab = atom_blocks + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) b[k] += ab[k];
+            }
+            return block[cut_idx] = b;
+        };
+
+        double* w = md_temp_alloc_array(temp, double, K);
+        for (size_t l = 0; l < L; ++l) {
+            md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+            const md_flow_link_t* link = flow.cut.links + l;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+            if (!a || !b || (a->entity != 0 && a->entity == b->entity)) continue;    // local: drawn in the node
+            const double* H = node_block(link->src, ct_job->hole_blocks);
+            const double* P = node_block(link->dst, ct_job->part_blocks);
+            if (!H || !P) continue;
+            const size_t n = md_qm_ct_block_nto(w, nullptr, nullptr, ct_job->lambda, K, H, P);
+            double sum = 0.0;
+            for (size_t j = 0; j < n; ++j) sum += w[j];
+            if (n < 2 || sum <= 0.0) continue;
+            // the pairs that matter, and the rest as one
+            double cum = 0.0;
+            for (size_t j = 0; j < n; ++j) {
+                const double f = w[j] / sum;
+                if (f < 0.01 || cum > 0.995) {
+                    md_array_push(flow.stripe_frac, (float)(1.0 - cum), arena);
+                    break;
+                }
+                md_array_push(flow.stripe_frac, (float)f, arena);
+                cum += f;
+            }
+        }
+        md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+    }
+
     void draw_flow_window(ApplicationState& state) {
         if (!flow.show_window) return;
 
@@ -11107,9 +11196,15 @@ struct QuantumChemistry : viamd::EventHandler {
             emphasis.hover_node = flow.hover.node;
             emphasis.hover_link = flow.hover.link;
 
+            flow_update_stripes();
+            FlowStripes stripes = {};
+            stripes.offset    = flow.stripe_offset;
+            stripes.frac      = flow.stripe_frac;
+            stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+
             draw_list->PushClipRect(canvas_p0, canvas_p1, true);
             const FlowHit hit = flow_draw_imgui(draw_list, view, &flow.graph, &flow.cut, &flow.layout,
-                                                flow.style, emphasis);
+                                                flow.style, emphasis, &stripes);
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
@@ -11344,10 +11439,25 @@ struct QuantumChemistry : viamd::EventHandler {
                 const md_flow_node_t* src = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
                 const md_flow_node_t* dst = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
                 if (src && dst) {
-                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%",
+                    // What it is made of: the orbital pairs of this transfer, when there are several
+                    char pairs[160] = "";
+                    const size_t num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+                    if ((size_t)hit.link < num_links) {
+                        const uint32_t beg = flow.stripe_offset[hit.link], end = flow.stripe_offset[hit.link + 1];
+                        if (end - beg >= 2) {
+                            int len = snprintf(pairs, sizeof(pairs), "\nCarried by %u orbital pairs:", end - beg);
+                            for (uint32_t j = beg; j < end && len > 0 && (size_t)len < sizeof(pairs); ++j) {
+                                len += snprintf(pairs + len, sizeof(pairs) - (size_t)len, " %.0f%%", 100.0f * flow.stripe_frac[j]);
+                            }
+                            if (hit.stripe >= 0 && (uint32_t)hit.stripe < end - beg && len > 0 && (size_t)len < sizeof(pairs)) {
+                                snprintf(pairs + len, sizeof(pairs) - (size_t)len, "\n(pair %d under the cursor)", hit.stripe + 1);
+                            }
+                        }
+                    }
+                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%%s",
                         (int)src->label.len, src->label.ptr,
                         (int)dst->label.len, dst->label.ptr,
-                        link->weight * 100.0f);
+                        link->weight * 100.0f, pairs);
                 }
             }
         }
@@ -11387,7 +11497,11 @@ struct QuantumChemistry : viamd::EventHandler {
         view.area_max = size;
         view.zoom = 1.0f;
 
-        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style);
+        FlowStripes stripes = {};
+        stripes.offset    = flow.stripe_offset;
+        stripes.frac      = flow.stripe_frac;
+        stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes);
 
         const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {

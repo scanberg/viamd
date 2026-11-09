@@ -190,9 +190,31 @@ static void flow_label_inside(ImDrawList* draw_list, ImVec2 min, ImVec2 max,
     }
 }
 
+// The stripes of link l to draw, or 0 when it is drawn whole
+static uint32_t flow_stripe_count(const FlowStripes* st, uint32_t l) {
+    if (!st || !st->offset || !st->frac || l >= st->num_links) return 0;
+    const uint32_t n = st->offset[l + 1] - st->offset[l];
+    if (n < 2 || st->frac[st->offset[l] + 1] < st->min_second) return 0;
+    return n;
+}
+
+// Every other stripe a little lighter, so neighbours read apart without new hues: colour still says which
+// fragments a band joins, and the stripes say what it is made of.
+static inline ImU32 flow_stripe_shade(ImU32 col, uint32_t j) {
+    if ((j & 1u) == 0) return col;
+    ImVec4 c = ImGui::ColorConvertU32ToFloat4(col);
+    c.x = c.x + (1.0f - c.x) * 0.45f;
+    c.y = c.y + (1.0f - c.y) * 0.45f;
+    c.z = c.z + (1.0f - c.z) * 0.45f;
+    return ImGui::ColorConvertFloat4ToU32(c);
+}
+
+static inline ImVec2 flow_lerp(ImVec2 a, ImVec2 b, float t) { return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t); }
+
 FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_flow_graph_t* graph,
                         const md_flow_cut_t* cut, const md_flow_layout_t* layout,
-                        const FlowDrawStyle& style, const FlowEmphasis& emphasis)
+                        const FlowDrawStyle& style, const FlowEmphasis& emphasis,
+                        const FlowStripes* stripes)
 {
     FlowHit hit = {};
     if (!draw_list || !graph || !cut || !layout) return hit;
@@ -230,12 +252,29 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
             || flow_is_emphasized(emphasis, link->dst);
 
         const float alpha = style.ribbon_alpha * (touched ? 1.0f : style.dim_factor);
-        flow_ribbon_imgui(draw_list, p0, p1, q0, q1,
-                          flow_color_u32(src->color, alpha), flow_color_u32(dst->color, alpha),
-                          style.ribbon_curvature, style.ribbon_segments);
-
-        if (hit.link < 0 && flow_ribbon_contains(p0, p1, q0, q1, style.ribbon_curvature, style.ribbon_segments, mouse)) {
-            hit.link = (int32_t)r->link_idx;
+        const ImU32 col_src = flow_color_u32(src->color, alpha);
+        const ImU32 col_dst = flow_color_u32(dst->color, alpha);
+        const uint32_t num_stripes = flow_stripe_count(stripes, r->link_idx);
+        if (num_stripes == 0) {
+            flow_ribbon_imgui(draw_list, p0, p1, q0, q1, col_src, col_dst, style.ribbon_curvature, style.ribbon_segments);
+            if (hit.link < 0 && flow_ribbon_contains(p0, p1, q0, q1, style.ribbon_curvature, style.ribbon_segments, mouse)) {
+                hit.link = (int32_t)r->link_idx;
+            }
+        } else {
+            const float* frac = stripes->frac + stripes->offset[r->link_idx];
+            float t0 = 0.0f;
+            for (uint32_t j = 0; j < num_stripes; ++j) {
+                const float t1 = (j + 1 == num_stripes) ? 1.0f : MD_MIN(1.0f, t0 + frac[j]);
+                const ImVec2 a0 = flow_lerp(p0, p1, t0), a1 = flow_lerp(p0, p1, t1);
+                const ImVec2 b0 = flow_lerp(q0, q1, t0), b1 = flow_lerp(q0, q1, t1);
+                flow_ribbon_imgui(draw_list, a0, a1, b0, b1, flow_stripe_shade(col_src, j), flow_stripe_shade(col_dst, j),
+                                  style.ribbon_curvature, style.ribbon_segments);
+                if (hit.link < 0 && flow_ribbon_contains(a0, a1, b0, b1, style.ribbon_curvature, style.ribbon_segments, mouse)) {
+                    hit.link = (int32_t)r->link_idx;
+                    hit.stripe = (int32_t)j;
+                }
+                t0 = t1;
+            }
         }
     }
 
@@ -270,6 +309,7 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
         if (mouse.x >= band_min.x && mouse.x <= band_max.x && mouse.y >= band_min.y && mouse.y <= band_max.y) {
             hit.node = (int32_t)b->node;
             hit.link = -1;
+            hit.stripe = -1;
         }
 
         if (!style.show_band_labels || (band_max.y - band_min.y) < style.label_min_px) continue;
@@ -336,6 +376,7 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
         if (mouse.x >= min.x && mouse.x <= max.x && mouse.y >= min.y && mouse.y <= max.y) {
             hit.node = (int32_t)ln->cut_idx;
             hit.link = -1;  // a node under the cursor wins over the ribbons behind it
+            hit.stripe = -1;
         }
 
         // Semantic LOD: a node too short for its label does not get one.
@@ -367,7 +408,7 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
 
 void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_graph_t* graph,
                   const md_flow_cut_t* cut, const md_flow_layout_t* layout,
-                  const FlowDrawStyle& style)
+                  const FlowDrawStyle& style, const FlowStripes* stripes)
 {
     if (!scene || !graph || !cut || !layout) return;
 
@@ -386,29 +427,42 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
         const md_flow_node_t* dst = md_flow_cut_node(cut, graph, link->dst);
         if (!src || !dst) continue;
 
-        const vec2_t p0 = to_vg(r->p0);
-        const vec2_t p1 = to_vg(r->p1);
-        const vec2_t q0 = to_vg(r->q0);
-        const vec2_t q1 = to_vg(r->q1);
+        const vec2_t P0 = to_vg(r->p0);
+        const vec2_t P1 = to_vg(r->p1);
+        const vec2_t Q0 = to_vg(r->q0);
+        const vec2_t Q1 = to_vg(r->q1);
 
         // Native cubics rather than the sampled strip the screen backend uses: an SVG viewer
         // resamples for its own resolution, so handing it curves beats handing it triangles.
-        const float dx = (q0.x - p0.x) * 0.5f * style.ribbon_curvature;
+        const uint32_t num_stripes = flow_stripe_count(stripes, r->link_idx);
+        const uint32_t pieces = num_stripes ? num_stripes : 1;
+        float t0 = 0.0f;
+        for (uint32_t j = 0; j < pieces; ++j) {
+            const float t1 = (j + 1 == pieces) ? 1.0f : MD_MIN(1.0f, t0 + stripes->frac[stripes->offset[r->link_idx] + j]);
+            const vec2_t p0 = { P0.x + (P1.x - P0.x) * t0, P0.y + (P1.y - P0.y) * t0 };
+            const vec2_t p1 = { P0.x + (P1.x - P0.x) * t1, P0.y + (P1.y - P0.y) * t1 };
+            const vec2_t q0 = { Q0.x + (Q1.x - Q0.x) * t0, Q0.y + (Q1.y - Q0.y) * t0 };
+            const vec2_t q1 = { Q0.x + (Q1.x - Q0.x) * t1, Q0.y + (Q1.y - Q0.y) * t1 };
+            t0 = t1;
+            const float dx = (q0.x - p0.x) * 0.5f * style.ribbon_curvature;
 
-        md_vg_path_clear(scene);
-        md_vg_path_move_to(scene, p0);
-        md_vg_path_bezier_cubic_curve_to(scene, vec2_t{p0.x + dx, p0.y}, vec2_t{q0.x - dx, q0.y}, q0);
-        md_vg_path_line_to(scene, q1);
-        md_vg_path_bezier_cubic_curve_to(scene, vec2_t{q1.x - dx, q1.y}, vec2_t{p1.x + dx, p1.y}, p1);
-        md_vg_path_close(scene);
+            md_vg_path_clear(scene);
+            md_vg_path_move_to(scene, p0);
+            md_vg_path_bezier_cubic_curve_to(scene, vec2_t{p0.x + dx, p0.y}, vec2_t{q0.x - dx, q0.y}, q0);
+            md_vg_path_line_to(scene, q1);
+            md_vg_path_bezier_cubic_curve_to(scene, vec2_t{q1.x - dx, q1.y}, vec2_t{p1.x + dx, p1.y}, p1);
+            md_vg_path_close(scene);
 
-        md_vg_style_t vg_style = {};
-        vg_style.fill.type = MD_VG_PAINT_LINEAR_GRADIENT;
-        vg_style.fill.data.linear_gradient.p0   = p0;
-        vg_style.fill.data.linear_gradient.p1   = q0;
-        vg_style.fill.data.linear_gradient.col0 = flow_color_vg(src->color, style.ribbon_alpha);
-        vg_style.fill.data.linear_gradient.col1 = flow_color_vg(dst->color, style.ribbon_alpha);
-        md_vg_path_fill_styled(scene, &vg_style);
+            // the screen's lighter alternate stripe, as a lower opacity here
+            const float a = style.ribbon_alpha * ((j & 1u) ? 0.6f : 1.0f);
+            md_vg_style_t vg_style = {};
+            vg_style.fill.type = MD_VG_PAINT_LINEAR_GRADIENT;
+            vg_style.fill.data.linear_gradient.p0   = p0;
+            vg_style.fill.data.linear_gradient.p1   = q0;
+            vg_style.fill.data.linear_gradient.col0 = flow_color_vg(src->color, a);
+            vg_style.fill.data.linear_gradient.col1 = flow_color_vg(dst->color, a);
+            md_vg_path_fill_styled(scene, &vg_style);
+        }
     }
 
     const size_t num_bands = md_array_size(layout->bands);

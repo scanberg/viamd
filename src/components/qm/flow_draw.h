@@ -93,6 +93,18 @@ struct FlowEmphasis {
 struct FlowHit {
     int32_t node = -1;  // cut index space
     int32_t link = -1;  // index into cut->links
+    int32_t stripe = -1;    // the stripe of that link under the cursor (FlowStripes), -1 for none
+};
+
+// What a ribbon is made of, drawn as stripes along it: for cut link l, the shares frac[offset[l] ..
+// offset[l + 1]) of its weight, largest first, summing to 1. In the charge transfer diagram these are the
+// orbital pairs (block NTOs) that carry one fragment-to-fragment transfer. A ribbon is striped only when its
+// second share reaches 'min_second', so a transfer carried by one pair looks as it always did.
+struct FlowStripes {
+    const uint32_t* offset = nullptr;   // [num_links + 1]
+    const float*    frac   = nullptr;
+    size_t          num_links = 0;
+    float           min_second = 0.05f;
 };
 
 ImVec2 flow_view_to_screen(const FlowView& view, vec2_t graph_point);
@@ -100,9 +112,10 @@ ImVec2 flow_view_to_screen(const FlowView& view, vec2_t graph_point);
 // Draws the diagram and returns what the mouse is over.
 FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_flow_graph_t* graph,
                         const md_flow_cut_t* cut, const md_flow_layout_t* layout,
-                        const FlowDrawStyle& style, const FlowEmphasis& emphasis);
+                        const FlowDrawStyle& style, const FlowEmphasis& emphasis,
+                        const FlowStripes* stripes = nullptr);
 
 // Same geometry into a vector-graphics scene, for SVG export.
 void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_graph_t* graph,
                   const md_flow_cut_t* cut, const md_flow_layout_t* layout,
-                  const FlowDrawStyle& style);
+                  const FlowDrawStyle& style, const FlowStripes* stripes = nullptr);
