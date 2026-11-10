@@ -8038,6 +8038,11 @@ bool energy_term_groups(md_edr_term_groups_t* out, const ApplicationState* state
     return md_edr_term_groups(out, &state->mold.sys, name);
 }
 
+bool energy_term_names_groups(const md_attribute_t* attr) {
+    if (!attr) return false;
+    return md_edr_term_is_of_groups(md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label);
+}
+
 size_t energy_term_groups_text(char* buf, size_t cap, const ApplicationState* state, const md_edr_term_groups_t& tg) {
     MD_ASSERT(state);
     const md_group_data_t& g = state->mold.sys.group;

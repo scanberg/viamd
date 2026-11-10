@@ -2314,6 +2314,8 @@ struct Dataset : viamd::EventHandler {
                         char text[160];
                         energy_term_groups_text(text, sizeof(text), &data, term_groups);
                         ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
+                    } else if (energy_term_names_groups(attr)) {
+                        ImGui::TextDisabled("Of groups the system does not have: load the run's .tpr or its index file (.ndx)");
                     }
                     ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr->path));
                     if (expr[0]) ImGui::TextDisabled("In the script: %s", expr);

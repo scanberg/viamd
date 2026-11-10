@@ -364,6 +364,8 @@ struct Attributes : viamd::EventHandler {
                             char text[160];
                             energy_term_groups_text(text, sizeof(text), &state, term_groups);
                             ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
+                        } else if (row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
+                            ImGui::TextDisabled("Of groups the system does not have: load the run's .tpr or its index file (.ndx)");
                         }
                         if (row.period != 0) {
                             ImGui::TextDisabled("Over the frames of %s", series_period_name(&state, row.period));

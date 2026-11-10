@@ -3311,6 +3311,9 @@ void script_vis_reset(ApplicationState* state);
 // term's name. False, and out untouched, for any other series. Its text: "Protein and SOL", "Protein".
 bool   energy_term_groups(md_edr_term_groups_t* out, const ApplicationState* state, const md_attribute_t* attr);
 size_t energy_term_groups_text(char* buf, size_t cap, const ApplicationState* state, const md_edr_term_groups_t& tg);
+// Whether the series is an energy term of groups by its name, whether or not the system has them: for saying so when it
+// does not (md_edr_term_is_of_groups)
+bool   energy_term_names_groups(const md_attribute_t* attr);
 // Highlights the groups of an energy term, each in a colour of its own (selection.highlight_groups): hovering
 // Coul-SR:Protein-SOL marks Protein and SOL apart. Every frame it is hovered, as any highlight. False when the series is
 // of no groups.
