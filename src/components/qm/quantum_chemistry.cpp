@@ -39,6 +39,7 @@
 #include <imgui_internal.h>
 
 #include "flow_draw.h"
+#include "fragment_tree.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -1470,10 +1471,12 @@ struct QuantumChemistry : viamd::EventHandler {
         // Rows per column up to which the diagram opens fragments on its own (md_flow_cut_t.max_rows)
         int max_rows = 12;
 
-        // The automatic fragments of the system (md_fragment.h) and the two atom index spaces: QM atoms
-        // (what the basis, the NTOs and the groups are over) and system atoms (what fragments and
-        // selections are over). Made once per system; the arena reset frees them.
-        md_fragments_t frags = {};
+        // The system's fragments (sys->fragment, md_fragment.h) as a tree to show (fragment_tree.h), and the
+        // two atom index spaces: QM atoms (what the basis, the NTOs and the groups are over) and system atoms
+        // (what fragments and selections are over). Made again when the topology changes (the fragments come
+        // with the system's inference, which may finish after the window opens); the arena reset frees them.
+        FragmentTree frags = {};
+        uint64_t  frags_version = 0;       // the topology version the tree was made from
         uint32_t* qm_to_sys = nullptr;     // [num_qm_atoms]
         int32_t*  sys_to_qm = nullptr;     // [num_sys_atoms], -1 for an atom outside the calculation
         size_t    num_qm_atoms  = 0;
@@ -10009,7 +10012,7 @@ struct QuantumChemistry : viamd::EventHandler {
         FLOW_LEVEL_ATOM  = 1,
         FLOW_LEVEL_MO    = 2,   // a canonical molecular orbital; owns no atoms
         FLOW_LEVEL_NTO   = 3,   // an NTO pair; owns no atoms either
-        FLOW_LEVEL_FRAGMENT = 4,   // an automatic fragment (md_fragment.h), index into flow.frags
+        FLOW_LEVEL_FRAGMENT = 4,   // a node of the fragment tree (fragment_tree.h), index into flow.frags
     };
 
     // Whether a node stands for a set of atoms. Orbital nodes - NTOs and MOs alike - do not, so
@@ -10182,8 +10185,17 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The automatic fragments and the QM <-> system atom maps, once per system
     void flow_build_fragments(const md_system_t& sys) {
-        if (flow.frags_built) return;
+        if (flow.frags_built && flow.frags_version == sys.topology_version) return;
+        const bool again = flow.frags_built;
         flow.frags_built = true;
+        flow.frags_version = sys.topology_version;
+        if (again) {
+            // what was made of the old tree: the strip's units
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+            flow.ao_unit = nullptr;
+            md_array_shrink(flow.strip, 0);
+        }
 
         QmAtoms qm = {};
         if (!es_qm_atoms(&qm, sys) || qm.count == 0) return;
@@ -10198,7 +10210,10 @@ struct QuantumChemistry : viamd::EventHandler {
             flow.qm_to_sys[a] = s;
             if (s < ns) flow.sys_to_qm[s] = (int32_t)a;
         }
-        if (!md_fragments_compute(&flow.frags, &sys, arena)) {
+        // the molecules with an atom in the calculation
+        bool* include = (bool*)md_alloc(arena, sizeof(bool) * (ns ? ns : 1));
+        for (size_t i = 0; i < ns; ++i) include[i] = flow.sys_to_qm[i] >= 0;
+        if (!frag_tree_build(&flow.frags, &sys, include, arena)) {
             MD_LOG_ERROR("Charge transfer: could not work out the fragments of the system");
         }
     }
@@ -10220,9 +10235,9 @@ struct QuantumChemistry : viamd::EventHandler {
     // A fragment's colour. Leaves (what a molecule is made of) cycle a palette; the levels above them are
     // a quiet grey-blue, so the colour on screen says which unit, not which tree level.
     vec4_t flow_fragment_color(uint32_t f) const {
-        if (!md_fragment_is_leaf(&flow.frags, f)) return vec4_t{0.42f, 0.47f, 0.58f, 1.0f};
+        if (!frag_tree_is_leaf(&flow.frags, f)) return vec4_t{0.42f, 0.47f, 0.58f, 1.0f};
         uint32_t leaf_rank = 0;
-        for (uint32_t i = 0; i < f; ++i) leaf_rank += md_fragment_is_leaf(&flow.frags, i) ? 1 : 0;
+        for (uint32_t i = 0; i < f; ++i) leaf_rank += frag_tree_is_leaf(&flow.frags, i) ? 1 : 0;
         return vec_cast(ImPlot::GetColormapColor((int)(leaf_rank % 10), ImPlotColormap_Deep));
     }
 
@@ -10252,7 +10267,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
 
-        const md_fragments_t& F = flow.frags;
+        const FragmentTree& F = flow.frags;
         const size_t num_frags = F.count;
         const size_t num_groups = MD_MIN((size_t)nto.group.count, (size_t)MAX_NTO_GROUPS);
 
@@ -10324,12 +10339,12 @@ struct QuantumChemistry : viamd::EventHandler {
                 md_flow_node_t node = {
                     .column = column, .parent = parent, .level = FLOW_LEVEL_FRAGMENT,
                     .weight = (float)frag_weight[column][f], .color = color,
-                    .label  = md_fragment_name(&F, f),
+                    .label  = frag_tree_name(&F, f),
                     .key    = flow_node_key(column, FLOW_LEVEL_FRAGMENT, (uint32_t)f),
                     .entity = flow_entity(FLOW_LEVEL_FRAGMENT, (uint32_t)f),
                 };
                 frag_node[f] = md_flow_graph_add_node(&flow.graph, &node);
-                if (frag_node[f] == MD_FLOW_INVALID_INDEX || !md_fragment_is_leaf(&F, f)) continue;
+                if (frag_node[f] == MD_FLOW_INVALID_INDEX || !frag_tree_is_leaf(&F, f)) continue;
                 for (uint32_t k = F.atom_beg[f]; k < F.atom_end[f]; ++k) {
                     const int32_t s = F.atom_idx[k];
                     const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
@@ -10984,13 +10999,13 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_build_strip_inputs(const md_system_t& sys) {
         if (flow.ao_unit || !lowdin_job_ready(lowdin)) return;
         const size_t A = lowdin->num_ao, N = lowdin->num_atoms;
-        const md_fragments_t& F = flow.frags;
+        const FragmentTree& F = flow.frags;
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         uint32_t* leaf_id = md_temp_alloc_array(temp, uint32_t, F.count ? F.count : 1);
         uint32_t U = 0;
-        for (size_t f = 0; f < F.count; ++f) leaf_id[f] = md_fragment_is_leaf(&F, f) ? U++ : MD_FRAGMENT_NONE;
+        for (size_t f = 0; f < F.count; ++f) leaf_id[f] = frag_tree_is_leaf(&F, f) ? U++ : MD_FRAGMENT_NONE;
 
         flow.ao_unit = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * A);
         for (size_t mu = 0; mu < A; ++mu) {
@@ -11142,6 +11157,7 @@ struct QuantumChemistry : viamd::EventHandler {
         hash ^= (uint64_t)nto.group.count;
         hash ^= (uint64_t)(rsp.selected + 1) << 8;
         hash ^= (uint64_t)flow.mode << 24;
+        hash ^= flow.frags_version * 0x9E3779B97F4A7C15ull;
 
         // The fragment route: the fragments and the Lowdin basis once per system, then one job per selected
         // state. Both on workers; the last diagram stays on screen while they run.

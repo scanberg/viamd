@@ -2319,8 +2319,15 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
-            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
+            if (ImGui::BeginCombo("Select by", selection_granularity_str[(int)data->selection.granularity])) {
+                for (SelectionGranularity g : selection_granularity_order) {
+                    const bool current = g == data->selection.granularity;
+                    if (ImGui::Selectable(selection_granularity_str[(int)g], current)) data->selection.granularity = g;
+                    if (current) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole fragments (a ring system, a functional group, a backbone, an alkyl chain), whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
             size_t num_selected_atoms = md_bitmask_count(&data->selection.selection_mask);
             if (ImGui::MenuItem("Invert")) {
                 md_bitmask_invert_range(&data->selection.selection_mask, 0, data->mold.sys.atom.count);

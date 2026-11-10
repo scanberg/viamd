@@ -6728,7 +6728,7 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
     md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
     md_system_topology_changed(&sys);
     // What follows from the bonds, from the same coordinates, which md_util_system_infer records as the reference
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT, task_system::executor());
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT | MD_UTIL_INFER_FRAGMENT_BIT, task_system::executor());
     system_bonds_changed(app, false);
     return true;
 }
@@ -6750,6 +6750,8 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         // are what they were, and a bond added by hand has none.
         md_util_system_infer_molecules(&sys);
         md_util_system_infer_rings(&sys);
+        // And so are its fragments, which the molecules' inference clears
+        md_util_system_infer_fragments(&sys);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
