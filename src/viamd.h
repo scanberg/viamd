@@ -131,7 +131,7 @@ enum class PlaybackMode { Stopped, Playing, Count };
 // their residues and polymer strands whole. Fragment: the fragment of the atom (md_fragment.h), a ring system, a
 // functional group, a backbone, an alkyl chain. The values are those a workspace stores, so a new one goes last;
 // selection_granularity_order is the order to offer them in, finest first.
-enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Fragment, Count };
+enum class SelectionGranularity { Atom, Residue, Part, Molecule, Fragment, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
@@ -241,7 +241,6 @@ inline const char* selection_granularity_str[(int)SelectionGranularity::Count] =
     "Atom",
     "Residue",
     "Part",
-    "Chain",
     "Molecule",
     "Fragment",
 };
@@ -251,7 +250,6 @@ inline const SelectionGranularity selection_granularity_order[(int)SelectionGran
     SelectionGranularity::Fragment,
     SelectionGranularity::Residue,
     SelectionGranularity::Part,
-    SelectionGranularity::Chain,
     SelectionGranularity::Molecule,
 };
 
@@ -2280,28 +2278,6 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
             }
         }
         break;
-    case SelectionGranularity::Chain: {
-        // The residues touched, each chain (or molecule in none) taken once: a chain's waters are many residues
-        md_allocator_i* alloc = md_get_heap_allocator();
-        md_array(int32_t) touched = 0;
-        md_bitmask_t chain_done = md_bitmask_create(0, (uint32_t)md_system_chain_count(&sys), alloc);
-        for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
-            const md_urange_t range = md_system_residue_atom_range(&sys, i);
-            if (!md_bitmask_test_any_range(mask, range.beg, range.end)) continue;
-            const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, i);
-            if (chain >= 0) {
-                if (md_bitmask_test_bit(&chain_done, (uint32_t)chain)) continue;
-                md_bitmask_set_bit(&chain_done, (uint32_t)chain);
-            }
-            md_array_push(touched, (int32_t)i, alloc);
-        }
-        for (size_t k = 0; k < md_array_size(touched); ++k) {
-            mask_set_chain_of_res(mask, (size_t)touched[k], sys);
-        }
-        md_bitmask_free(&chain_done);
-        md_array_free(touched, alloc);
-        break;
-    }
     case SelectionGranularity::Molecule: {
         // Without molecules a molecule is taken to be its part, as at Chain granularity outside a chain
         if (sys.molecule.count == 0) {
@@ -2363,14 +2339,6 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
         } else {
             const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
             if (res_idx >= 0) range = md_system_residue_atom_range(&sys, res_idx);
-        }
-        break;
-    }
-    case SelectionGranularity::Chain: {
-        const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
-        if (res_idx >= 0) {
-            mask_set_chain_of_res(mask, (size_t)res_idx, sys);
-            return;
         }
         break;
     }

@@ -1140,7 +1140,7 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
 namespace {
 
 // What a target is a whole of, at the atom it is found from
-enum class TargetUnit { Residue, Part, Chain, Molecule, Lipid, Fragment };
+enum class TargetUnit { Residue, Part, Molecule, Lipid, Fragment };
 
 // "ALA 23": the name and number the file gives the residue
 void residue_label(char* buf, size_t cap, const md_system_t& sys, size_t res_idx) {
@@ -1167,10 +1167,6 @@ int64_t target_unit_id(TargetUnit unit, size_t atom, const md_system_t& sys) {
     switch (unit) {
     case TargetUnit::Residue:  return res;
     case TargetUnit::Part:     return md_system_part_find_by_atom_idx(&sys, atom);
-    case TargetUnit::Chain: {
-        const md_chain_idx_t chain = res >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)res) : -1;
-        return chain >= 0 ? chain : -2 - (int64_t)md_system_part_find_by_atom_idx(&sys, atom);
-    }
     case TargetUnit::Molecule: return md_system_molecule_find_by_atom_idx(&sys, atom);
     case TargetUnit::Lipid:    return res >= 0 ? lipid_of_residue(sys, (size_t)res) : -1;
     case TargetUnit::Fragment: {
@@ -1200,10 +1196,6 @@ void target_unit_set(md_bitmask_t* mask, TargetUnit unit, size_t atom, const md_
         mask_set_molecule(mask, (size_t)mol, sys);
         return;
     }
-    case TargetUnit::Chain:
-        if (res < 0) break;
-        mask_set_chain_of_res(mask, (size_t)res, sys);
-        return;
     case TargetUnit::Part: {
         const md_part_idx_t part = md_system_part_find_by_atom_idx(&sys, atom);
         if (part < 0) break;
@@ -1235,17 +1227,9 @@ void target_unit_set(md_bitmask_t* mask, TargetUnit unit, size_t atom, const md_
 void target_unit_label(char* buf, size_t cap, TargetUnit unit, size_t atom, const md_system_t& sys) {
     const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, atom);
     switch (unit) {
-    case TargetUnit::Chain:
     case TargetUnit::Part: {
-        const md_chain_idx_t chain = res >= 0 ? md_system_chain_find_by_residue_idx(&sys, (size_t)res) : -1;
         const md_part_idx_t  part  = md_system_part_find_by_atom_idx(&sys, atom);
         const md_part_kind_t kind  = part >= 0 ? md_system_part_kind(&sys, (size_t)part) : MD_PART_KIND_UNKNOWN;
-        // A strand by its chain, as the files call it; a ligand by its residue, as a single one is
-        if (chain >= 0 && (unit == TargetUnit::Chain || md_part_kind_is_polymer(kind))) {
-            const md_str_t id = md_system_chain_id(&sys, (size_t)chain);
-            snprintf(buf, cap, "chain " MD_STR_FMT, MD_STR_ARG(id));
-            return;
-        }
         if (part >= 0 && md_part_kind_is_polymer(kind)) {
             // As polymer(i) counts them
             int num = 0;
@@ -1308,7 +1292,6 @@ const char* target_unit_plural(TargetUnit unit) {
     switch (unit) {
     case TargetUnit::Residue:  return "residues";
     case TargetUnit::Part:     return "parts";
-    case TargetUnit::Chain:    return "chains";
     case TargetUnit::Molecule: return "molecules";
     case TargetUnit::Lipid:    return "lipids";
     case TargetUnit::Fragment: return "fragments";
@@ -1538,7 +1521,6 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         // What a click there selects, which the highlight showed
         switch (granularity) {
         case SelectionGranularity::Part:     unit = md_system_part_count(&sys) ? TargetUnit::Part : TargetUnit::Residue; break;
-        case SelectionGranularity::Chain:    unit = TargetUnit::Chain; break;
         case SelectionGranularity::Molecule: unit = sys.molecule.count ? TargetUnit::Molecule : TargetUnit::Part; break;
         case SelectionGranularity::Fragment: unit = md_system_fragment_count(&sys) ? TargetUnit::Fragment : TargetUnit::Residue; break;
         default:                             unit = TargetUnit::Residue; break;
