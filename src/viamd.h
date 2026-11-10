@@ -128,8 +128,10 @@ enum class PlaybackMode { Stopped, Playing, Count };
 // Part: the part of the atom (md_part_data_t), a covalent piece of its molecule: a strand of a polymer with its caps, a
 // glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or its part for one in no chain (the data gives no
 // chain ids: the strand it is of). Molecule: the molecule of the atom (md_molecule_data_t), atoms joined by bonds with
-// their residues and polymer strands whole. The values are those a workspace stores.
-enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Count };
+// their residues and polymer strands whole. Fragment: the fragment of the atom (md_fragment.h), a ring system, a
+// functional group, a backbone, an alkyl chain. The values are those a workspace stores, so a new one goes last;
+// selection_granularity_order is the order to offer them in, finest first.
+enum class SelectionGranularity { Atom, Residue, Part, Chain, Molecule, Fragment, Count };
 enum class SelectionOperator { Or, And, AndNot, Set, Clear, Count };
 enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
@@ -241,6 +243,16 @@ inline const char* selection_granularity_str[(int)SelectionGranularity::Count] =
     "Part",
     "Chain",
     "Molecule",
+    "Fragment",
+};
+
+inline const SelectionGranularity selection_granularity_order[(int)SelectionGranularity::Count] = {
+    SelectionGranularity::Atom,
+    SelectionGranularity::Fragment,
+    SelectionGranularity::Residue,
+    SelectionGranularity::Part,
+    SelectionGranularity::Chain,
+    SelectionGranularity::Molecule,
 };
 
 inline const char* interpolation_mode_str[(int)InterpolationMode::Count] = {
@@ -2187,6 +2199,13 @@ static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const m
     for (size_t k = 0; k < mol.count; ++k) md_bitmask_set_bit(mask, (uint32_t)mol.atom_idx[k]);
 }
 
+// A fragment is not a range of atoms (its hydrogens are interleaved with other atoms), so its atoms are set one by one
+static inline void mask_set_fragment(md_bitmask_t* mask, md_fragment_idx_t frag, const md_system_t& sys) {
+    for (md_fragment_atom_iter_t it = md_fragment_atom_iter(&sys, frag); md_fragment_atom_iter_next(&it);) {
+        md_bitmask_set_bit(mask, (uint32_t)it.atom);
+    }
+}
+
 static inline void mask_set_chain(md_bitmask_t* mask, size_t chain_idx, const md_system_t& sys) {
     const md_urange_t* end = md_system_chain_run_end(&sys, chain_idx);
     for (const md_urange_t* it = md_system_chain_run_beg(&sys, chain_idx); it && it < end; ++it) {
@@ -2209,13 +2228,34 @@ static inline void mask_set_chain_of_res(md_bitmask_t* mask, size_t res_idx, con
     if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
 }
 
-// Grows the mask to whole residues, parts, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
+// Grows the mask to whole fragments, residues, parts, chains or molecules: those it has any atom of. A chain is not one range of atoms (the waters
 // filed under a chain come after every polymer), so what is touched is found first and set after.
 static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, SelectionGranularity granularity, const md_system_t& sys) {
     MD_ASSERT(mask);
     if (granularity == SelectionGranularity::Atom || md_bitmask_empty(mask)) return;
 
     switch(granularity) {
+    case SelectionGranularity::Fragment: {
+        // Without fragments (a system whose molecules were not inferred) a fragment is taken to be its residue
+        const size_t num_frags = md_system_fragment_count(&sys);
+        if (num_frags == 0) {
+            grow_mask_by_selection_granularity(mask, SelectionGranularity::Residue, sys);
+            break;
+        }
+        md_allocator_i* alloc = md_get_heap_allocator();
+        md_bitmask_t touched = md_bitmask_create(0, (uint32_t)num_frags, alloc);
+        md_bitset_iter_t it = md_bitmask_iter(mask);
+        while (md_bitset_iter_next(&it)) {
+            const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, it.idx);
+            if (frag != MD_FRAGMENT_NONE) md_bitmask_set_bit(&touched, frag);
+        }
+        md_bitset_iter_t fit = md_bitmask_iter(&touched);
+        while (md_bitset_iter_next(&fit)) {
+            mask_set_fragment(mask, (md_fragment_idx_t)fit.idx, sys);
+        }
+        md_bitmask_free(&touched);
+        break;
+    }
     case SelectionGranularity::Residue:
         for (size_t i = 0; i < md_system_residue_count(&sys); ++i) {
             md_urange_t range = md_system_residue_atom_range(&sys, i);
@@ -2285,8 +2325,8 @@ static inline void grow_mask_by_selection_granularity(md_bitmask_t* mask, Select
     }
 }
 
-// Sets the bits of what holds atom_idx at the granularity: the atom, its residue, its part, its chain (its part
-// where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
+// Sets the bits of what holds atom_idx at the granularity: the atom, its fragment (its residue where it is in none),
+// its residue, its part, its chain (its part where it is in no chain), or its molecule. Cheaper than setting a single bit followed by
 // grow_mask_by_selection_granularity, as it only looks up the owner.
 static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, size_t atom_idx, SelectionGranularity granularity, const md_system_t& sys) {
     MD_ASSERT(mask);
@@ -2296,6 +2336,16 @@ static inline void mask_set_atom_by_selection_granularity(md_bitmask_t* mask, si
     switch (granularity) {
     case SelectionGranularity::Atom:
         break;
+    case SelectionGranularity::Fragment: {
+        const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom_idx);
+        if (frag != MD_FRAGMENT_NONE) {
+            mask_set_fragment(mask, frag, sys);
+            return;
+        }
+        const md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
+        if (res_idx >= 0) range = md_system_residue_atom_range(&sys, res_idx);
+        break;
+    }
     case SelectionGranularity::Residue: {
         md_residue_idx_t res_idx = md_system_residue_find_by_atom_idx(&sys, atom_idx);
         if (res_idx >= 0) {

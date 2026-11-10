@@ -1140,7 +1140,7 @@ bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bon
 namespace {
 
 // What a target is a whole of, at the atom it is found from
-enum class TargetUnit { Residue, Part, Chain, Molecule, Lipid };
+enum class TargetUnit { Residue, Part, Chain, Molecule, Lipid, Fragment };
 
 // "ALA 23": the name and number the file gives the residue
 void residue_label(char* buf, size_t cap, const md_system_t& sys, size_t res_idx) {
@@ -1173,6 +1173,10 @@ int64_t target_unit_id(TargetUnit unit, size_t atom, const md_system_t& sys) {
     }
     case TargetUnit::Molecule: return md_system_molecule_find_by_atom_idx(&sys, atom);
     case TargetUnit::Lipid:    return res >= 0 ? lipid_of_residue(sys, (size_t)res) : -1;
+    case TargetUnit::Fragment: {
+        const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom);
+        return frag != MD_FRAGMENT_NONE ? (int64_t)frag : -1;
+    }
     }
     return -1;
 }
@@ -1205,6 +1209,12 @@ void target_unit_set(md_bitmask_t* mask, TargetUnit unit, size_t atom, const md_
         if (part < 0) break;
         const md_urange_t r = md_system_part_atom_range(&sys, (size_t)part);
         if (r.beg < r.end) md_bitmask_set_range(mask, r.beg, r.end);
+        return;
+    }
+    case TargetUnit::Fragment: {
+        const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom);
+        if (frag == MD_FRAGMENT_NONE) break;
+        mask_set_fragment(mask, frag, sys);
         return;
     }
     case TargetUnit::Residue:
@@ -1269,6 +1279,20 @@ void target_unit_label(char* buf, size_t cap, TargetUnit unit, size_t atom, cons
         }
         break;
     }
+    case TargetUnit::Fragment: {
+        // "phenyl, TYR 66": by its name and the residue of the atom
+        const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom);
+        if (frag == MD_FRAGMENT_NONE) break;
+        const md_str_t name = md_system_fragment_name(&sys, frag);
+        if (res >= 0) {
+            char rl[48];
+            residue_label(rl, sizeof(rl), sys, (size_t)res);
+            snprintf(buf, cap, MD_STR_FMT ", %s", MD_STR_ARG(name), rl);
+        } else {
+            snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(name));
+        }
+        return;
+    }
     case TargetUnit::Lipid:
     case TargetUnit::Residue:
         break;
@@ -1287,6 +1311,7 @@ const char* target_unit_plural(TargetUnit unit) {
     case TargetUnit::Chain:    return "chains";
     case TargetUnit::Molecule: return "molecules";
     case TargetUnit::Lipid:    return "lipids";
+    case TargetUnit::Fragment: return "fragments";
     }
     return "";
 }
@@ -1515,6 +1540,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         case SelectionGranularity::Part:     unit = md_system_part_count(&sys) ? TargetUnit::Part : TargetUnit::Residue; break;
         case SelectionGranularity::Chain:    unit = TargetUnit::Chain; break;
         case SelectionGranularity::Molecule: unit = sys.molecule.count ? TargetUnit::Molecule : TargetUnit::Part; break;
+        case SelectionGranularity::Fragment: unit = md_system_fragment_count(&sys) ? TargetUnit::Fragment : TargetUnit::Residue; break;
         default:                             unit = TargetUnit::Residue; break;
         }
         for (size_t i = 0; i < num_seeds; ++i) {
@@ -1547,14 +1573,33 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
     bool same_ok = false;
     {
         md_bitmask_t same_mask = md_bitmask_create(0, (uint32_t)sys.atom.count, md_get_heap_allocator());
-        const size_t num = target_same_name(&same_mask, (size_t)seeds[0], sys);
-        const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)seeds[0]);
-        if (num > 1 && res >= 0) {
-            const md_str_t name = md_system_residue_name(&sys, (size_t)res);
-            snprintf(same.label, sizeof(same.label), "all " MD_STR_FMT, MD_STR_ARG(name));
-            same_ok = target_finish(&same, &same_mask, app);
+        const md_fragment_idx_t frag = unit == TargetUnit::Fragment ? md_system_fragment_find_by_atom_idx(&sys, (size_t)seeds[0]) : MD_FRAGMENT_NONE;
+        if (frag != MD_FRAGMENT_NONE) {
+            // A fragment: every one of its type, "all phenyl"
+            const md_fragment_type_idx_t type = md_system_fragment_type(&sys, frag);
+            const size_t num = md_system_fragment_find_by_type(NULL, 0, &sys, type);
+            if (num > 1) {
+                md_allocator_i* alloc = md_get_heap_allocator();
+                md_fragment_idx_t* frags = (md_fragment_idx_t*)md_alloc(alloc, num * sizeof(md_fragment_idx_t));
+                md_system_fragment_find_by_type(frags, num, &sys, type);
+                for (size_t k = 0; k < num; ++k) mask_set_fragment(&same_mask, frags[k], sys);
+                md_free(alloc, frags, num * sizeof(md_fragment_idx_t));
+                const md_str_t name = md_fragment_type_name(&sys, type);
+                snprintf(same.label, sizeof(same.label), "all " MD_STR_FMT, MD_STR_ARG(name));
+                same_ok = target_finish(&same, &same_mask, app);
+            } else {
+                md_bitmask_free(&same_mask);
+            }
         } else {
-            md_bitmask_free(&same_mask);
+            const size_t num = target_same_name(&same_mask, (size_t)seeds[0], sys);
+            const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)seeds[0]);
+            if (num > 1 && res >= 0) {
+                const md_str_t name = md_system_residue_name(&sys, (size_t)res);
+                snprintf(same.label, sizeof(same.label), "all " MD_STR_FMT, MD_STR_ARG(name));
+                same_ok = target_finish(&same, &same_mask, app);
+            } else {
+                md_bitmask_free(&same_mask);
+            }
         }
     }
 

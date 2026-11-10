@@ -19,6 +19,8 @@
 #include <md_topo.h>
 #include <md_vector_graphics.h>
 #include <md_flow.h>
+#include <md_qm_ct.h>
+#include <md_fragment.h>
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <core/md_vec_math.h>
@@ -37,6 +39,7 @@
 #include <imgui_internal.h>
 
 #include "flow_draw.h"
+#include "fragment_tree.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -439,18 +442,21 @@ static const char* electronic_structure_value_mode_str(ElectronicStructureSource
     }
 }
 
-// What the Charge Transfer diagram routes its flow through.
+// What the Charge Transfer diagram shows.
 //
-// Groups is the M1 view and reproduces the old two-column diagram exactly; it is kept as the
-// comparison the NTO view can be checked against, not as a feature.
+// The two routes the prototype had besides these are gone. 'Groups only' split the group to group
+// flow proportionally from its two marginals, which is a guess. 'Atoms via NTOs' routed atoms
+// through the NTO pairs with one product per pair; that drops the interference between pairs, and
+// when two local excitations mix into delocalized NTOs it shows charge transfer that is not there
+// (a CIS state of test_data/vlx/mol.h5 with three comparable pairs: 19% amine <-> phenyl transfer
+// shown, 0.5% real). The fragment route computes the transfer exactly instead (md_qm_ct.h).
 enum flow_mode_t {
-    FLOW_MODE_GROUPS = 0,   // group -> group, via compute_transition_matrix
-    FLOW_MODE_NTO,          // atom/group -> NTO pair -> atom/group
-    FLOW_MODE_ORBITALS,     // occupied MO -> NTO pair -> virtual MO
+    FLOW_MODE_FRAGMENTS = 0,    // hole fragment -> particle fragment: the exact transfer matrix
+    FLOW_MODE_ORBITALS,         // occupied MO -> NTO pair -> virtual MO
     FLOW_MODE_COUNT,
 };
 
-static const char* flow_mode_str[] = { "Groups only", "Atoms via NTOs", "Orbitals" };
+static const char* flow_mode_str[] = { "Fragments", "Orbitals" };
 
 enum x_unit_t {
     X_UNIT_EV,
@@ -670,6 +676,9 @@ struct FlowData {
     const double* nto_lambda  = nullptr; // [K]
     const double* C_nto_hole  = nullptr; // {K,A}
     const double* C_nto_part  = nullptr; // {K,A}
+
+    // The orbitals in the Lowdin basis, {M,A} like C_mo; null until the job computing them is done
+    const double* C_lowdin    = nullptr;
 };
 
 // The density whose critical points are reported. QTAIM is defined on the total density; a
@@ -805,6 +814,360 @@ static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
     md_topo_extremum_graph_free(&job->graph);
     if (job->arena) md_arena_allocator_destroy(job->arena);
     delete job;
+}
+
+// The orbitals in the Lowdin basis (md_qm_lowdin_orbitals), which the charge transfer numbers are
+// computed in. One O(M^3) computation per system, so a job rather than a stall: for a system near
+// the top of what VIAMD is meant for (~10k AOs) it is a matter of minutes on one core, spread over
+// the task system's threads (products and eigendecomposition alike). Every excited state then
+// reuses the result, and the overlap and the AO to atom map it
+// keeps with it, so a state's own job (CtStateJob) needs nothing from the attribute table.
+struct LowdinJob {
+    double*   C        = nullptr;   // {M,A} input, owned
+    double*   C_lowdin = nullptr;   // {M,A} output, owned
+    double*   S        = nullptr;   // {A,A} owned
+    uint32_t* ao_atom  = nullptr;   // [A] QM atom of each AO, num_atoms for none
+    size_t    num_mo    = 0;
+    size_t    num_ao    = 0;
+    size_t    num_atoms = 0;        // QM atoms
+    bool      ok        = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void lowdin_job_destroy(LowdinJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (job->C)        md_free(heap, job->C,        sizeof(double) * job->num_mo * job->num_ao);
+    if (job->C_lowdin) md_free(heap, job->C_lowdin, sizeof(double) * job->num_mo * job->num_ao);
+    if (job->S)        md_free(heap, job->S,        sizeof(double) * job->num_ao * job->num_ao);
+    if (job->ao_atom)  md_free(heap, job->ao_atom,  sizeof(uint32_t) * job->num_ao);
+    delete job;
+}
+
+// Null when the system carries no orbitals, or no overlap or basis matching them
+static LowdinJob* lowdin_job_start(const md_system_t& sys, const md_gto_basis_t& basis, size_t num_qm_atoms) {
+    size_t num_mo = 0, num_ao = 0;
+    if (!es_orbital_extent(sys, &num_mo, &num_ao) || num_mo == 0 || num_ao == 0) return nullptr;
+    const md_attribute_t* coeff = md_attributes_find(&sys.attributes, es_path::alpha_coefficient);
+    const md_attribute_t* ovl   = md_attributes_find(&sys.attributes, es_path::overlap);
+    if (!coeff || !ovl || ovl->format.rank != 2 || ovl->format.shape[0] != num_ao || ovl->format.shape[1] != num_ao) {
+        MD_LOG_ERROR("Charge transfer: the system has no overlap matrix matching its orbitals");
+        return nullptr;
+    }
+    if (basis.num_shells == 0 || md_gto_basis_num_ao(&basis) != num_ao) {
+        MD_LOG_ERROR("Charge transfer: the basis does not match the orbitals");
+        return nullptr;
+    }
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    LowdinJob* job = new LowdinJob();
+    job->num_mo    = num_mo;
+    job->num_ao    = num_ao;
+    job->num_atoms = num_qm_atoms;
+    job->C        = (double*)  md_alloc(heap, sizeof(double) * num_mo * num_ao);
+    job->C_lowdin = (double*)  md_alloc(heap, sizeof(double) * num_mo * num_ao);
+    job->S        = (double*)  md_alloc(heap, sizeof(double) * num_ao * num_ao);
+    job->ao_atom  = (uint32_t*)md_alloc(heap, sizeof(uint32_t) * num_ao);
+    const bool read =
+        job->C && job->C_lowdin && job->S && job->ao_atom &&
+        md_attribute_extract_f64(job->C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao &&
+        md_attribute_extract_f64(job->S, num_ao * num_ao, ovl,   md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao &&
+        md_gto_basis_ao_to_atom(job->ao_atom, &basis) == num_ao;
+    if (!read) {
+        MD_LOG_ERROR("Charge transfer: could not read the orbitals and the overlap");
+        job->done.store(true, std::memory_order_release);
+        return job;
+    }
+    for (size_t i = 0; i < num_ao; ++i) {
+        if (job->ao_atom[i] >= num_qm_atoms) job->ao_atom[i] = (uint32_t)num_qm_atoms;
+    }
+    job->task.start(MD_STR_LIT("Lowdin basis"), [job]() {
+        job->ok = md_qm_lowdin_orbitals(job->C_lowdin, job->C, job->num_mo, job->num_ao, task_system::executor());
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+static bool lowdin_job_ready(const LowdinJob* job) {
+    return job && job->done.load(std::memory_order_acquire) && job->ok;
+}
+
+// One excited state's charge transfer numbers per QM ATOM, from its NTO pairs (md_qm_ct.h): the pairs in
+// the Lowdin basis, their K x K blocks per atom (which fragments sum, and the per ribbon orbital pairs are
+// computed from), and the atom to atom transfer matrix. Everything coarser is a sum over these, done on
+// the main thread when the diagram is built.
+struct CtStateJob {
+    int32_t state = -1;
+    const LowdinJob* lowdin = nullptr;  // outlives this job: destroyed after it
+    size_t  K = 0;
+    size_t  num_atoms = 0;
+    double* lambda = nullptr;           // [K]
+    double* hole   = nullptr;           // {K,A}, AO basis in; Lowdin basis after the run
+    double* part   = nullptr;
+    double* hole_blocks = nullptr;      // {N,K,K}
+    double* part_blocks = nullptr;
+    double* omega  = nullptr;           // {N,N}, normalized to sum 1, the tail below 1e-6 of it dropped
+    double* weight[2] = {};             // [N] per atom: hole (row sums), particle (column sums)
+    float   nto_dropped  = 0.0f;        // share of the excitation in the pairs left out
+    float   link_dropped = 0.0f;        // share in the atom pairs below the floor
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_state_job_destroy(CtStateJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0;
+    const size_t N = job->num_atoms, K = job->K;
+    if (job->lambda)      md_free(heap, job->lambda,      sizeof(double) * K);
+    if (job->hole)        md_free(heap, job->hole,        sizeof(double) * K * A);
+    if (job->part)        md_free(heap, job->part,        sizeof(double) * K * A);
+    if (job->hole_blocks) md_free(heap, job->hole_blocks, sizeof(double) * N * K * K);
+    if (job->part_blocks) md_free(heap, job->part_blocks, sizeof(double) * N * K * K);
+    if (job->omega)       md_free(heap, job->omega,       sizeof(double) * N * N);
+    for (int c = 0; c < 2; ++c) if (job->weight[c]) md_free(heap, job->weight[c], sizeof(double) * N);
+    delete job;
+}
+
+static bool ct_state_job_ready(const CtStateJob* job) {
+    return job && job->done.load(std::memory_order_acquire) && job->ok;
+}
+
+// A state's NTO pairs, read on the main thread from the attribute table into heap arrays the caller owns:
+// every pair above round off of the whole (with the cross terms in, a small pair can still move a large
+// share between two fragments). nto_dropped is the share of the excitation left out.
+struct NtoPairs {
+    size_t  K = 0;
+    double* lambda = nullptr;   // [K]
+    double* hole   = nullptr;   // {K,A}
+    double* part   = nullptr;   // {K,A}
+    float   nto_dropped = 0.0f;
+};
+
+static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int32_t state) {
+    *out = {};
+    if (state < 0 || A == 0) return false;
+    const md_attribute_t* lambda_attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+    const md_attribute_t* hole_attr   = md_attributes_find(&sys.attributes, es_path::nto_hole);
+    const md_attribute_t* part_attr   = md_attributes_find(&sys.attributes, es_path::nto_particle);
+    if (!lambda_attr || !hole_attr || !part_attr) return false;
+
+    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state);
+    const size_t L = md_attribute_slice_count(lambda_attr, slice);
+    if (L == 0 || md_attribute_slice_count(hole_attr, slice) < L * A || md_attribute_slice_count(part_attr, slice) < L * A) return false;
+
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    double* lam  = md_temp_alloc_array(temp, double, L);
+    double* hole = md_temp_alloc_array(temp, double, L * A);
+    double* part = md_temp_alloc_array(temp, double, L * A);
+    if (md_attribute_extract_f64(lam,  L,     lambda_attr, slice, md_unit_none()) < L ||
+        md_attribute_extract_f64(hole, L * A, hole_attr,   slice, md_unit_none()) < L * A ||
+        md_attribute_extract_f64(part, L * A, part_attr,   slice, md_unit_none()) < L * A) {
+        return false;
+    }
+
+    double lambda_all = 0.0;
+    for (size_t k = 0; k < L; ++k) lambda_all += MD_MAX(0.0, lam[k]);
+    if (lambda_all <= 0.0) return false;
+    size_t K = 0;
+    for (size_t k = 0; k < L; ++k) K += (lam[k] >= 1.0e-6 * lambda_all) ? 1 : 0;
+    if (K == 0) return false;
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    out->K = K;
+    out->lambda = (double*)md_alloc(heap, sizeof(double) * K);
+    out->hole   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    out->part   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    double lambda_kept = 0.0;
+    for (size_t k = 0, j = 0; k < L; ++k) {
+        if (!(lam[k] >= 1.0e-6 * lambda_all)) continue;
+        out->lambda[j] = lam[k];
+        lambda_kept += lam[k];
+        md_memcpy(out->hole + j * A, hole + k * A, sizeof(double) * A);
+        md_memcpy(out->part + j * A, part + k * A, sizeof(double) * A);
+        j++;
+    }
+    out->nto_dropped = (float)(1.0 - lambda_kept / lambda_all);
+    return true;
+}
+
+// The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
+static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
+    if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
+    NtoPairs pairs = {};
+    if (!nto_pairs_read(&pairs, sys, lowdin->num_ao, state)) return nullptr;
+
+    CtStateJob* job = new CtStateJob();
+    job->state       = state;
+    job->lowdin      = lowdin;
+    job->K           = pairs.K;
+    job->num_atoms   = lowdin->num_atoms;
+    job->lambda      = pairs.lambda;
+    job->hole        = pairs.hole;
+    job->part        = pairs.part;
+    job->nto_dropped = pairs.nto_dropped;
+
+    job->task.start({}, [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const size_t A = lw->num_ao, M = lw->num_mo, N = job->num_atoms, K = job->K;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* ht = md_temp_alloc_array(temp, double, K * A);
+        double* pt = md_temp_alloc_array(temp, double, K * A);
+        md_qm_lowdin_transform(ht, job->hole, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        md_qm_lowdin_transform(pt, job->part, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        md_memcpy(job->hole, ht, sizeof(double) * K * A);
+        md_memcpy(job->part, pt, sizeof(double) * K * A);
+
+        job->hole_blocks = (double*)md_alloc(heap, sizeof(double) * N * K * K);
+        job->part_blocks = (double*)md_alloc(heap, sizeof(double) * N * K * K);
+        job->omega       = (double*)md_alloc(heap, sizeof(double) * N * N);
+        job->weight[0]   = (double*)md_alloc(heap, sizeof(double) * N);
+        job->weight[1]   = (double*)md_alloc(heap, sizeof(double) * N);
+        if (!job->hole_blocks || !job->part_blocks || !job->omega || !job->weight[0] || !job->weight[1]) {
+            MD_LOG_ERROR("Charge transfer: out of memory (%zu atoms, %zu NTO pairs)", N, K);
+            job->done.store(true, std::memory_order_release);
+            return;
+        }
+        md_qm_ct_group_blocks(job->hole_blocks, job->hole, K, A, lw->ao_atom, N);
+        md_qm_ct_group_blocks(job->part_blocks, job->part, K, A, lw->ao_atom, N);
+        md_qm_ct_omega(job->omega, job->lambda, K, job->hole_blocks, N, job->part_blocks, N);
+
+        double total = 0.0;
+        for (size_t i = 0; i < N * N; ++i) total += job->omega[i];
+        if (total <= 0.0) { job->done.store(true, std::memory_order_release); return; }
+
+        // The atom to atom tail is not drawn below a floor. Dropping and renormalizing what is left keeps
+        // the graph exactly conserved, and what was dropped is reported.
+        const double floor = 1.0e-6 * total;
+        double kept = 0.0;
+        for (size_t i = 0; i < N * N; ++i) {
+            if (job->omega[i] < floor) job->omega[i] = 0.0;
+            kept += job->omega[i];
+        }
+        job->link_dropped = (float)(1.0 - kept / total);
+        md_memset(job->weight[0], 0, sizeof(double) * N);
+        md_memset(job->weight[1], 0, sizeof(double) * N);
+        for (size_t a = 0; a < N; ++a) {
+            for (size_t b = 0; b < N; ++b) {
+                const double w = job->omega[a * N + b] / kept;
+                job->omega[a * N + b] = w;
+                job->weight[0][a] += w;
+                job->weight[1][b] += w;
+            }
+        }
+        job->ok = true;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// One state's entry in the state strip: its charge transfer between the automatic UNITS (a fixed level,
+// so states compare), the distance between its hole and particle centroids, and how many NTO pairs it
+// takes (the participation ratio of the lambdas). A light job: the transfer matrix over units, not atoms.
+struct StripJob {
+    int32_t state = -1;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    NtoPairs pairs = {};
+    const uint32_t* ao_unit = nullptr;  // [A], owned by the caller and kept until the job is destroyed
+    size_t  num_units = 0;
+    const double* atom_xyz = nullptr;   // [N*3] Angstrom, likewise
+    float   ct = 0.0f;
+    float   distance = 0.0f;
+    float   pr = 0.0f;
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void strip_job_destroy(StripJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0, K = job->pairs.K;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    delete job;
+}
+
+static StripJob* strip_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state,
+                                 const uint32_t* ao_unit, size_t num_units, const double* atom_xyz) {
+    if (!lowdin_job_ready(lowdin) || !ao_unit || num_units == 0) return nullptr;
+    StripJob* job = new StripJob();
+    job->state     = state;
+    job->lowdin    = lowdin;
+    job->ao_unit   = ao_unit;
+    job->num_units = num_units;
+    job->atom_xyz  = atom_xyz;
+    if (!nto_pairs_read(&job->pairs, sys, lowdin->num_ao, state)) {
+        job->done.store(true, std::memory_order_release);
+        return job;
+    }
+    job->task.start({}, [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const size_t A = lw->num_ao, M = lw->num_mo, N = lw->num_atoms, U = job->num_units, K = job->pairs.K;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* ht = md_temp_alloc_array(temp, double, K * A);
+        double* pt = md_temp_alloc_array(temp, double, K * A);
+        md_qm_lowdin_transform(ht, job->pairs.hole, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        md_qm_lowdin_transform(pt, job->pairs.part, K, lw->S, lw->C, lw->C_lowdin, M, A);
+
+        double* hb = md_temp_alloc_array(temp, double, U * K * K);
+        double* pb = md_temp_alloc_array(temp, double, U * K * K);
+        double* om = md_temp_alloc_array(temp, double, U * U);
+        md_qm_ct_group_blocks(hb, ht, K, A, job->ao_unit, U);
+        md_qm_ct_group_blocks(pb, pt, K, A, job->ao_unit, U);
+        md_qm_ct_omega(om, job->pairs.lambda, K, hb, U, pb, U);
+        double total = 0.0, local = 0.0;
+        for (size_t a = 0; a < U; ++a) {
+            for (size_t b = 0; b < U; ++b) total += om[a * U + b];
+            local += om[a * U + a];
+        }
+
+        // Centroids from the per atom hole and particle, which decompose exactly per pair
+        double rh[3] = {0, 0, 0}, rp[3] = {0, 0, 0}, sh = 0.0, sp = 0.0;
+        if (job->atom_xyz) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lw->ao_atom[mu];
+                if (atom >= N) continue;
+                double qh = 0.0, qp = 0.0;
+                for (size_t k = 0; k < K; ++k) {
+                    qh += job->pairs.lambda[k] * ht[k * A + mu] * ht[k * A + mu];
+                    qp += job->pairs.lambda[k] * pt[k * A + mu] * pt[k * A + mu];
+                }
+                for (int d = 0; d < 3; ++d) {
+                    rh[d] += qh * job->atom_xyz[atom * 3 + d];
+                    rp[d] += qp * job->atom_xyz[atom * 3 + d];
+                }
+                sh += qh;
+                sp += qp;
+            }
+        }
+        double l1 = 0.0, l2 = 0.0;
+        for (size_t k = 0; k < K; ++k) { l1 += job->pairs.lambda[k]; l2 += job->pairs.lambda[k] * job->pairs.lambda[k]; }
+
+        job->ct = total > 0.0 ? (float)(1.0 - local / total) : 0.0f;
+        if (sh > 0.0 && sp > 0.0) {
+            double d2 = 0.0;
+            for (int d = 0; d < 3; ++d) { const double x = rh[d] / sh - rp[d] / sp; d2 += x * x; }
+            job->distance = (float)sqrt(d2);
+        }
+        job->pr = l2 > 0.0 ? (float)(l1 * l1 / l2) : 0.0f;
+        job->ok = total > 0.0;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
 }
 
 // Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
@@ -1062,7 +1425,7 @@ struct QuantumChemistry : viamd::EventHandler {
     struct Flow {
         bool show_window = false;
 
-        flow_mode_t mode = FLOW_MODE_NTO;
+        flow_mode_t mode = FLOW_MODE_FRAGMENTS;
 
         md_flow_graph_t  graph  = {};
         md_flow_cut_t    cut    = {};
@@ -1099,6 +1462,46 @@ struct QuantumChemistry : viamd::EventHandler {
         // Distinct from the cut threshold, which hides nodes that are still in the graph.
         float lambda_cutoff = 1.0e-3f;
 
+        // What the last Fragments build left out, so the window can say it. The pairs below a round
+        // off floor of the excitation (interference makes every other pair count), and the atom to
+        // atom entries too small to draw - between distant atoms there are many of them.
+        float nto_dropped  = 0.0f;
+        float link_dropped = 0.0f;
+
+        // Rows per column up to which the diagram opens fragments on its own (md_flow_cut_t.max_rows)
+        int max_rows = 12;
+
+        // The system's fragments (sys->fragment, md_fragment.h) as a tree to show (fragment_tree.h), and the
+        // two atom index spaces: QM atoms (what the basis, the NTOs and the groups are over) and system atoms
+        // (what fragments and selections are over). Made again when the topology changes (the fragments come
+        // with the system's inference, which may finish after the window opens); the arena reset frees them.
+        FragmentTree frags = {};
+        uint64_t  frags_version = 0;       // the topology version the tree was made from
+        uint32_t* qm_to_sys = nullptr;     // [num_qm_atoms]
+        int32_t*  sys_to_qm = nullptr;     // [num_sys_atoms], -1 for an atom outside the calculation
+        size_t    num_qm_atoms  = 0;
+        size_t    num_sys_atoms = 0;
+        bool      frags_built   = false;
+        int       ct_failed_state = -2;    // the state whose NTO pairs could not be read, not to be retried
+
+        // The state strip: one entry per excited state, filled one state at a time (StripJob)
+        struct StripEntry {
+            float ct = 0.0f, distance = 0.0f, pr = 0.0f;
+            bool  done = false, ok = false;
+        };
+        md_array(StripEntry) strip = nullptr;
+        uint32_t* ao_unit = nullptr;       // [A] the unit (leaf fragment, compacted) of each AO
+        size_t    num_units = 0;
+        double*   atom_xyz = nullptr;      // [N*3] the QM atoms, Angstrom
+        bool      show_strip = true;
+        bool      show_legend = true;
+        float     bar_width = 0.03f;    // the layout's node thickness, graph units: thin bars, labels outside
+
+        // The orbital pairs (block NTOs) of every visible ribbon, as shares of it: see FlowStripes
+        md_array(uint32_t) stripe_offset = nullptr;
+        md_array(float)    stripe_frac   = nullptr;
+        uint64_t           stripe_hash   = 0;
+
         FlowDrawStyle style = {};
 
         // View transform, in graph units. Kept here rather than in the layout so that panning and
@@ -1133,6 +1536,13 @@ struct QuantumChemistry : viamd::EventHandler {
         uint64_t data_hash = 0;
         bool built = false;
     } flow;
+
+    // Shared by every excited state of the system; made on first use by the Charge Transfer window
+    LowdinJob* lowdin = nullptr;
+    // The selected state's numbers per atom; replaced when another state is selected
+    CtStateJob* ct_job = nullptr;
+    // The state strip's current state, one at a time
+    StripJob* strip_job = nullptr;
 
     // Workspace group assignments, waiting for a molecule.
     //
@@ -1884,6 +2294,13 @@ struct QuantumChemistry : viamd::EventHandler {
         num_mos = 0;
         num_excited = 0;
         qm_version = 0;
+        // The charge transfer jobs read the arena (the strip's AO to unit map) and the Lowdin job: they go first
+        ct_state_job_destroy(ct_job);
+        ct_job = nullptr;
+        strip_job_destroy(strip_job);
+        strip_job = nullptr;
+        lowdin_job_destroy(lowdin);
+        lowdin = nullptr;
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
@@ -9405,21 +9822,25 @@ struct QuantumChemistry : viamd::EventHandler {
 
         viamd::write_bool(ser, MD_STR_LIT("ShowTransitionAnalysis"), nto.show_window);
         viamd::write_bool(ser, MD_STR_LIT("ShowChargeTransfer"),     flow.show_window);
-        viamd::write_int (ser, MD_STR_LIT("FlowMode"),               (int64_t)flow.mode);
+        viamd::write_int (ser, MD_STR_LIT("FlowRoute"),              (int64_t)flow.mode);
+        viamd::write_int (ser, MD_STR_LIT("FlowRows"),               (int64_t)flow.max_rows);
         viamd::write_flt (ser, MD_STR_LIT("FlowThreshold"),          flow.cut.threshold);
         viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
         viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
         viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
+        viamd::write_flt (ser, MD_STR_LIT("FlowBarWidth"),           flow.params.node_thickness);
         viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonOpacity"),      flow.style.ribbon_alpha);
         viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
         viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
         viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
         viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
-        viamd::write_flt (ser, MD_STR_LIT("FlowBorderWidth"),        flow.style.border_width);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeTint"),           flow.style.node_fill_tint);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeBorder"),         flow.style.border_width);
         viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowColorBySide"),        flow.style.color_by_side);
+        viamd::write_bool(ser, MD_STR_LIT("FlowRibbonLabels"),       flow.style.show_ribbon_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowLegend"),             flow.show_legend);
 
         viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
 
@@ -9465,10 +9886,19 @@ struct QuantumChemistry : viamd::EventHandler {
                 viamd::extract_bool(nto.show_window, arg);
             } else if (md_str_eq_cstr(ident, "ShowChargeTransfer")) {
                 viamd::extract_bool(flow.show_window, arg);
-            } else if (md_str_eq_cstr(ident, "FlowMode")) {
-                int mode = FLOW_MODE_NTO;
+            } else if (md_str_eq_cstr(ident, "FlowRoute")) {
+                int mode = FLOW_MODE_FRAGMENTS;
                 if (viamd::extract_int(mode, arg)) {
                     flow.mode = (flow_mode_t)MD_CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
+                }
+            } else if (md_str_eq_cstr(ident, "FlowRows")) {
+                int rows = flow.max_rows;
+                if (viamd::extract_int(rows, arg)) flow.max_rows = MD_CLAMP(rows, 2, 40);
+            } else if (md_str_eq_cstr(ident, "FlowMode")) {
+                // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
+                int mode = 0;
+                if (viamd::extract_int(mode, arg)) {
+                    flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
                 }
             } else if (md_str_eq_cstr(ident, "FlowThreshold")) {
                 viamd::extract_flt(flow.cut.threshold, arg);
@@ -9479,27 +9909,36 @@ struct QuantumChemistry : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
                 int mask = 0;
                 if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
-            } else if (md_str_eq_cstr(ident, "FlowNodeThickness")) {
-                viamd::extract_flt(flow.params.node_thickness, arg);
+            } else if (md_str_eq_cstr(ident, "FlowBarWidth")) {
+                if (viamd::extract_flt(flow.bar_width, arg)) flow.params.node_thickness = flow.bar_width;
+            } else if (md_str_eq_cstr(ident, "FlowNodeThickness") || md_str_eq_cstr(ident, "FlowRibbonAlpha") ||
+                       md_str_eq_cstr(ident, "FlowNodeFillTint") || md_str_eq_cstr(ident, "FlowBorderWidth")) {
+                // the boxed style's settings: they do not carry over to the bars
             } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
                 viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonAlpha")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonOpacity")) {
                 viamd::extract_flt(flow.style.ribbon_alpha, arg);
             } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
                 viamd::extract_flt(flow.style.ribbon_curvature, arg);
             } else if (md_str_eq_cstr(ident, "FlowOrder")) {
                 int order = MD_FLOW_ORDER_WEIGHT;
                 if (viamd::extract_int(order, arg)) {
-                    flow.params.order = (md_flow_order_t)MD_CLAMP(order, 0, 1);
+                    flow.params.order = (md_flow_order_t)MD_CLAMP(order, 0, (int)MD_FLOW_ORDER_GRAPH);
                 }
             } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
                 viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeFillTint")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeTint")) {
                 viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (md_str_eq_cstr(ident, "FlowBorderWidth")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeBorder")) {
                 viamd::extract_flt(flow.style.border_width, arg);
             } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
                 viamd::extract_bool(flow.style.color_labels, arg);
+            } else if (md_str_eq_cstr(ident, "FlowColorBySide")) {
+                viamd::extract_bool(flow.style.color_by_side, arg);
+            } else if (md_str_eq_cstr(ident, "FlowRibbonLabels")) {
+                viamd::extract_bool(flow.style.show_ribbon_labels, arg);
+            } else if (md_str_eq_cstr(ident, "FlowLegend")) {
+                viamd::extract_bool(flow.show_legend, arg);
             } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
                 int sweeps = 2;
                 if (viamd::extract_int(sweeps, arg)) {
@@ -9572,12 +10011,14 @@ struct QuantumChemistry : viamd::EventHandler {
         FLOW_LEVEL_GROUP = 0,
         FLOW_LEVEL_ATOM  = 1,
         FLOW_LEVEL_MO    = 2,   // a canonical molecular orbital; owns no atoms
+        FLOW_LEVEL_NTO   = 3,   // an NTO pair; owns no atoms either
+        FLOW_LEVEL_FRAGMENT = 4,   // a node of the fragment tree (fragment_tree.h), index into flow.frags
     };
 
     // Whether a node stands for a set of atoms. Orbital nodes - NTOs and MOs alike - do not, so
     // they take no part in atom selection, region sweeps or group assignment.
     static inline bool flow_level_has_atoms(uint32_t level) {
-        return level == FLOW_LEVEL_GROUP || level == FLOW_LEVEL_ATOM;
+        return level == FLOW_LEVEL_GROUP || level == FLOW_LEVEL_ATOM || level == FLOW_LEVEL_FRAGMENT;
     }
 
     static inline uint64_t flow_node_key(uint32_t column, uint32_t level, uint32_t index) {
@@ -9585,6 +10026,10 @@ struct QuantumChemistry : viamd::EventHandler {
     }
     static inline uint32_t flow_key_index(uint64_t key) { return (uint32_t)(key & 0xFFFFFFFFu); }
     static inline uint32_t flow_key_level(uint64_t key) { return (uint32_t)((key >> 32) & 0xFFu); }
+    // What a node stands for regardless of its column (md_flow_node_t.entity): never 0
+    static inline uint64_t flow_entity(uint32_t level, uint32_t index) {
+        return ((uint64_t)(level + 1) << 32) | (uint64_t)index;
+    }
 
     static const size_t FLOW_ATOM_LABEL_STRIDE = 12;   // "Xx" + up to 8 digits + nul
 
@@ -9644,91 +10089,6 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
-    // The M1 view: two columns of groups, exactly what the old diagram showed, but through the
-    // md_flow model. Kept so the NTO view below has something to be checked against.
-    bool build_flow_graph_groups() {
-        md_flow_graph_init(&flow.graph, 2, arena);
-
-        if (!nto.transition_matrix || nto.transition_matrix_dim != nto.group.count) return false;
-
-        const size_t num_groups = nto.group.count;
-        if (num_groups == 0) return false;
-
-        double hole_sum = 0.0;
-        double part_sum = 0.0;
-        for (size_t i = 0; i < num_groups; ++i) {
-            hole_sum += MD_MAX(0.0f, nto.transition_density_hole[i]);
-            part_sum += MD_MAX(0.0f, nto.transition_density_part[i]);
-        }
-        if (hole_sum <= 0.0 || part_sum <= 0.0) return false;
-
-        uint32_t src_node[MAX_NTO_GROUPS];
-        uint32_t dst_node[MAX_NTO_GROUPS];
-        for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
-            src_node[i] = MD_FLOW_INVALID_INDEX;
-            dst_node[i] = MD_FLOW_INVALID_INDEX;
-        }
-
-        // A group can donate without accepting (or the reverse), so the two columns hold
-        // different node sets rather than one set drawn twice.
-        for (size_t i = 0; i < num_groups; ++i) {
-            const float w = (float)(MD_MAX(0.0f, nto.transition_density_hole[i]) / hole_sum);
-            if (w <= 0.0f) continue;
-            md_flow_node_t node = {
-                .column = 0,
-                .parent = MD_FLOW_INVALID_INDEX,
-                .level  = 0,
-                .weight = w,
-                .color  = nto.group.color[i],
-                .label  = md_str_from_cstr(nto.group.label[i]),
-                .key    = flow_node_key(0, FLOW_LEVEL_GROUP, (uint32_t)i),
-            };
-            src_node[i] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-        for (size_t i = 0; i < num_groups; ++i) {
-            const float w = (float)(MD_MAX(0.0f, nto.transition_density_part[i]) / part_sum);
-            if (w <= 0.0f) continue;
-            md_flow_node_t node = {
-                .column = 1,
-                .parent = MD_FLOW_INVALID_INDEX,
-                .level  = 0,
-                .weight = w,
-                .color  = nto.group.color[i],
-                .label  = md_str_from_cstr(nto.group.label[i]),
-                .key    = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)i),
-            };
-            dst_node[i] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-
-        // compute_transition_matrix() already normalizes so that a donor's row sums to its hole
-        // share and an acceptor's column to its particle share, which is exactly invariant (4).
-        // If that ever stops being true the validation below says so instead of drawing nonsense.
-        for (size_t src = 0; src < num_groups; ++src) {
-            if (src_node[src] == MD_FLOW_INVALID_INDEX) continue;
-            for (size_t dst = 0; dst < num_groups; ++dst) {
-                if (dst_node[dst] == MD_FLOW_INVALID_INDEX) continue;
-                const float w = nto.transition_matrix[dst * num_groups + src];
-                if (w > 0.0f) {
-                    md_flow_graph_add_link(&flow.graph, src_node[src], dst_node[dst], w);
-                }
-            }
-        }
-
-        return true;
-    }
-
-    // The M2 view: group -> NTO pair -> group.
-    //
-    // This is the first version that measures the group-to-group flow instead of guessing it.
-    // compute_transition_matrix() only ever had the two marginals and split the difference
-    // proportionally; routing through the NTOs gives
-    //
-    //     flow(g1 -> g2) = sum_k lambda_k * q_hole[k][g1] * q_part[k][g2]
-    //
-    // which is a real joint distribution. It is not the FULL one - the product form asserts that
-    // hole and particle are independent once you know which NTO pair you are in, which is exactly
-    // what the NTO decomposition claims and no more. The occupied x virtual amplitude matrix (M4)
-    // drops that assumption too.
     // Fills the flow procedures' input out of the system's attribute table. Every field here is
     // either a read of a published path or a pure function of the basis - nothing reaches for
     // md_vlx - which is what lets a system published by another QM reader drive the same diagram.
@@ -9747,6 +10107,10 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_ao == 0 || num_mo == 0) return false;
 
         out->homo_idx = homo_idx[0];
+
+        if (lowdin_job_ready(lowdin) && lowdin->num_mo == num_mo && lowdin->num_ao == num_ao) {
+            out->C_lowdin = lowdin->C_lowdin;
+        }
 
         // Extracted rather than pointed at, so a producer that publishes either of these through a
         // provider instead of storing them works here unchanged.
@@ -9819,196 +10183,190 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
-    bool build_flow_graph_nto(const FlowData& qm) {
-        md_flow_graph_init(&flow.graph, 3, arena);
+    // The automatic fragments and the QM <-> system atom maps, once per system
+    void flow_build_fragments(const md_system_t& sys) {
+        if (flow.frags_built && flow.frags_version == sys.topology_version) return;
+        const bool again = flow.frags_built;
+        flow.frags_built = true;
+        flow.frags_version = sys.topology_version;
+        if (again) {
+            // what was made of the old tree: the strip's units
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+            flow.ao_unit = nullptr;
+            md_array_shrink(flow.strip, 0);
+        }
 
-        if (rsp.selected < 0 || !nto.atom_group_idx) return false;
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, sys) || qm.count == 0) return;
+        const size_t ns = md_atom_count(&sys.atom);
+        flow.num_qm_atoms  = qm.count;
+        flow.num_sys_atoms = ns;
+        flow.qm_to_sys = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * qm.count);
+        flow.sys_to_qm = (int32_t*) md_alloc(arena, sizeof(int32_t) * (ns ? ns : 1));
+        for (size_t i = 0; i < ns; ++i) flow.sys_to_qm[i] = -1;
+        for (size_t a = 0; a < qm.count; ++a) {
+            const uint32_t s = qm.system_index ? qm.system_index[a] : (uint32_t)a;
+            flow.qm_to_sys[a] = s;
+            if (s < ns) flow.sys_to_qm[s] = (int32_t)a;
+        }
+        // the molecules with an atom in the calculation
+        bool* include = (bool*)md_alloc(arena, sizeof(bool) * (ns ? ns : 1));
+        for (size_t i = 0; i < ns; ++i) include[i] = flow.sys_to_qm[i] >= 0;
+        if (!frag_tree_build(&flow.frags, &sys, include, arena)) {
+            MD_LOG_ERROR("Charge transfer: could not work out the fragments of the system");
+        }
+    }
 
-        const size_t num_groups = nto.group.count;
-        const size_t num_ao     = qm.num_ao;
-        const double* S         = qm.S;
-        const int* ao_to_atom   = qm.ao_to_atom;
+    uint32_t flow_qm_to_sys(uint32_t qm_atom) const {
+        return (flow.qm_to_sys && qm_atom < flow.num_qm_atoms) ? flow.qm_to_sys[qm_atom] : qm_atom;
+    }
 
-        if (num_groups == 0 || num_ao == 0 || !S || !ao_to_atom) return false;
+    // The leaf fragment of a QM atom, MD_FRAGMENT_NONE for none
+    uint32_t flow_fragment_of(uint32_t qm_atom) const {
+        const uint32_t s = flow_qm_to_sys(qm_atom);
+        return (s < flow.frags.num_atoms) ? flow.frags.atom_fragment[s] : MD_FRAGMENT_NONE;
+    }
+
+    uint32_t flow_group_of(uint32_t qm_atom) const {
+        return (qm_atom < md_array_size(nto.atom_group_idx)) ? nto.atom_group_idx[qm_atom] : 0u;
+    }
+
+    // A fragment's colour. Leaves (what a molecule is made of) cycle a palette; the levels above them are
+    // a quiet grey-blue, so the colour on screen says which unit, not which tree level.
+    vec4_t flow_fragment_color(uint32_t f) const {
+        if (!frag_tree_is_leaf(&flow.frags, f)) return vec4_t{0.42f, 0.47f, 0.58f, 1.0f};
+        uint32_t leaf_rank = 0;
+        for (uint32_t i = 0; i < f; ++i) leaf_rank += frag_tree_is_leaf(&flow.frags, i) ? 1 : 0;
+        return vec_cast(ImPlot::GetColormapColor((int)(leaf_rank % 10), ImPlotColormap_Deep));
+    }
+
+    // hole fragment -> particle fragment: the exact transfer matrix (md_qm_ct.h), from the selected state's
+    // job (CtStateJob), which holds it per ATOM pair.
+    //
+    // The atoms are the leaves, and every coarser node is a sum of its atoms - exact, because the blocks
+    // add - so collapsing and expanding cannot disagree. Above the atoms: the user's groups at the top
+    // level, then the automatic fragments (md_fragment.h) of whatever is in none of them.
+    //
+    // Both columns list the same nodes in the same order, and a node is the same ENTITY on both sides
+    // (md_flow_node_t.entity): a flow from a fragment to itself is local excitation, drawn inside the
+    // node, and every band that crosses the diagram is a genuine transfer. Between atoms most of any
+    // excitation crosses - neighbours in a pi system always exchange - which is why fragments open first.
+    bool build_flow_graph_fragments() {
+        md_flow_graph_init(&flow.graph, 2, arena);
+        flow.nto_dropped = 0.0f;
+        flow.link_dropped = 0.0f;
+
+        const CtStateJob* job = ct_job;
+        if (!ct_state_job_ready(job) || job->state != rsp.selected) return false;
+        const size_t N = job->num_atoms;
+        if (N == 0) return false;
+        flow.nto_dropped  = job->nto_dropped;
+        flow.link_dropped = job->link_dropped;
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
 
-        const double* lambdas = qm.nto_lambda;
-        const double* C_hole  = qm.C_nto_hole;
-        const double* C_part  = qm.C_nto_part;
-        const size_t num_nto  = qm.num_nto;
-        if (num_nto == 0 || !lambdas || !C_hole || !C_part) return false;
+        const FragmentTree& F = flow.frags;
+        const size_t num_frags = F.count;
+        const size_t num_groups = MD_MIN((size_t)nto.group.count, (size_t)MAX_NTO_GROUPS);
 
-        // Attribute to ATOMS, not to groups. The group numbers are then sums over their members,
-        // which is what makes the collapsed and expanded views incapable of disagreeing (invariant
-        // 3). Attributing per group and separately per atom would be two computations of the same
-        // thing, and the moment they diverge the diagram lies in one of its two states.
-        const size_t num_atoms = md_array_size(nto.atom_group_idx);
-        if (num_atoms == 0) return false;
-
-        int* ao_to_atom_clamped = md_temp_alloc_array(temp, int, num_ao);
-        for (size_t i = 0; i < num_ao; ++i) {
-            const int atom_idx = ao_to_atom[i];
-            ao_to_atom_clamped[i] = (atom_idx >= 0 && (size_t)atom_idx < num_atoms) ? atom_idx : 0;
-        }
-
-        double* q_hole = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
-        double* q_part = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
-
-        // Mulliken populations of a single orbital are not guaranteed non-negative - that is a
-        // known artifact of the partitioning, not a bug here. A negative share of a flow means
-        // nothing on a diagram, so clamp and renormalize, and accept that the renormalization is
-        // an approximation rather than pretending the raw numbers were clean.
-        double* lambda_keep = md_temp_alloc_zero_array(temp, double, num_nto);
-        double lambda_sum = 0.0;
-        size_t num_keep = 0;
-
-        for (size_t k = 0; k < num_nto; ++k) {
-            if (lambdas[k] < (double)flow.lambda_cutoff) continue;
-
-            attribute_orbital_density(q_hole + num_keep * num_atoms, ao_to_atom_clamped, C_hole + k * num_ao, S, num_ao);
-            attribute_orbital_density(q_part + num_keep * num_atoms, ao_to_atom_clamped, C_part + k * num_ao, S, num_ao);
-
-            double hsum = 0.0, psum = 0.0;
-            for (size_t a = 0; a < num_atoms; ++a) {
-                double* h = q_hole + num_keep * num_atoms + a;
-                double* p = q_part + num_keep * num_atoms + a;
-                *h = MD_MAX(0.0, *h);
-                *p = MD_MAX(0.0, *p);
-                hsum += *h;
-                psum += *p;
-            }
-            if (hsum <= 0.0 || psum <= 0.0) continue;
-            for (size_t a = 0; a < num_atoms; ++a) {
-                q_hole[num_keep * num_atoms + a] /= hsum;
-                q_part[num_keep * num_atoms + a] /= psum;
-            }
-
-            lambda_keep[num_keep] = lambdas[k];
-            lambda_sum += lambdas[k];
-            snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
-            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
-                               C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
-            num_keep++;
-        }
-
-        if (num_keep == 0 || lambda_sum <= 0.0) return false;
-
-        // Lambdas are truncated at MAX_NTO_LABELS and again by the cutoff, so they do not
-        // sum to one on their own. Renormalizing over what is kept is what makes the diagram add
-        // up; it also means the percentages are shares of the RETAINED transition, which the
-        // window says out loud when anything was dropped.
-        for (size_t k = 0; k < num_keep; ++k) {
-            lambda_keep[k] /= lambda_sum;
-        }
-
-        // Per-atom column weights, and the group totals they add up to.
-        double* atom_hole = md_temp_alloc_zero_array(temp, double, num_atoms);
-        double* atom_part = md_temp_alloc_zero_array(temp, double, num_atoms);
-        for (size_t a = 0; a < num_atoms; ++a) {
-            for (size_t k = 0; k < num_keep; ++k) {
-                atom_hole[a] += lambda_keep[k] * q_hole[k * num_atoms + a];
-                atom_part[a] += lambda_keep[k] * q_part[k * num_atoms + a];
+        // Fragment weights per column, over the atoms in no user group
+        double* frag_weight[2] = {
+            md_temp_alloc_zero_array(temp, double, num_frags ? num_frags : 1),
+            md_temp_alloc_zero_array(temp, double, num_frags ? num_frags : 1),
+        };
+        for (uint32_t a = 0; a < N; ++a) {
+            if (flow_group_of(a) != 0) continue;
+            const uint32_t f = flow_fragment_of(a);
+            if (f == MD_FRAGMENT_NONE) continue;
+            for (int c = 0; c < 2; ++c) {
+                for (uint32_t g = f; g != MD_FRAGMENT_NONE; g = F.parent[g]) frag_weight[c][g] += job->weight[c][a];
             }
         }
 
-        uint32_t* atom_src = md_temp_alloc_array(temp, uint32_t, num_atoms);
-        uint32_t* atom_dst = md_temp_alloc_array(temp, uint32_t, num_atoms);
-        uint32_t* mid_node = md_temp_alloc_array(temp, uint32_t, num_keep);
-        for (size_t a = 0; a < num_atoms; ++a) {
-            atom_src[a] = MD_FLOW_INVALID_INDEX;
-            atom_dst[a] = MD_FLOW_INVALID_INDEX;
-        }
+        uint32_t* atom_node[2] = {
+            md_temp_alloc_array(temp, uint32_t, N),
+            md_temp_alloc_array(temp, uint32_t, N),
+        };
+        for (size_t a = 0; a < N; ++a) atom_node[0][a] = atom_node[1][a] = MD_FLOW_INVALID_INDEX;
+        uint32_t* frag_node = md_temp_alloc_array(temp, uint32_t, num_frags ? num_frags : 1);
 
-        // md_flow requires a parent to be an EARLIER node in the same column, so each group node
-        // goes in before its atoms - which also means the group's weight has to be known first.
-        // Two passes per column, and no post-hoc fixups.
-        const int columns[2] = { 0, 2 };
-        const double* column_weight[2] = { atom_hole, atom_part };
-        uint32_t* column_atom_node[2] = { atom_src, atom_dst };
+        for (uint32_t column = 0; column < 2; ++column) {
+            const double* weight = job->weight[column];
+            uint32_t* nodes = atom_node[column];
 
-        for (int ci = 0; ci < 2; ++ci) {
-            const uint32_t column = (uint32_t)columns[ci];
-            const double* weight = column_weight[ci];
-            uint32_t* atom_node = column_atom_node[ci];
-
-            // Atoms are the fundamental level; a group is an OPTIONAL layer above them. Group 0 is
-            // the "not in any group" bucket every atom starts in, so its atoms are roots rather
-            // than children of a node standing for a group the user never made.
-            for (size_t a = 0; a < num_atoms; ++a) {
-                if (nto.atom_group_idx[a] != 0 || weight[a] <= 0.0) continue;
+            auto add_atom = [&](uint32_t a, uint32_t parent, vec4_t color) {
+                if (weight[a] <= 0.0) return;
                 md_flow_node_t node = {
-                    .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_ATOM,
-                    .weight = (float)weight[a],
-                    .color  = flow_atom_color((uint32_t)a, column),
-                    .label  = md_str_from_cstr(flow_atom_label((uint32_t)a)),
-                    .key    = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
+                    .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
+                    .weight = (float)weight[a], .color = color,
+                    .label  = md_str_from_cstr(flow_atom_label(a)),
+                    .key    = flow_node_key(column, FLOW_LEVEL_ATOM, a),
+                    .entity = flow_entity(FLOW_LEVEL_ATOM, a),
                 };
-                atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
-            }
+                nodes[a] = md_flow_graph_add_node(&flow.graph, &node);
+            };
 
-            // md_flow requires a parent to be an EARLIER node in the same column, so each group
-            // node goes in before its atoms - which also means the group's weight has to be known
-            // first. Two passes per group, and no post-hoc fixups.
-            for (size_t g = 1; g < num_groups; ++g) {
+            // The user's groups, at the top
+            for (uint32_t g = 1; g < num_groups; ++g) {
                 double group_weight = 0.0;
-                for (size_t a = 0; a < num_atoms; ++a) {
-                    if (nto.atom_group_idx[a] == (uint32_t)g) group_weight += weight[a];
-                }
+                for (uint32_t a = 0; a < N; ++a) if (flow_group_of(a) == g) group_weight += weight[a];
                 if (group_weight <= 0.0) continue;
-
                 md_flow_node_t group_node = {
                     .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                     .weight = (float)group_weight, .color = nto.group.color[g],
-                    .label = md_str_from_cstr(nto.group.label[g]),
-                    .key = flow_node_key(column, FLOW_LEVEL_GROUP, (uint32_t)g),
+                    .label  = md_str_from_cstr(nto.group.label[g]),
+                    .key    = flow_node_key(column, FLOW_LEVEL_GROUP, g),
+                    .entity = flow_entity(FLOW_LEVEL_GROUP, g),
                 };
                 const uint32_t parent = md_flow_graph_add_node(&flow.graph, &group_node);
                 if (parent == MD_FLOW_INVALID_INDEX) continue;
-
-                for (size_t a = 0; a < num_atoms; ++a) {
-                    if (nto.atom_group_idx[a] != (uint32_t)g || weight[a] <= 0.0) continue;
-
-                    // An atom inside a group wears the group's colour: the expanded view has to
-                    // read as a closer look at the collapsed one, not as a different quantity.
-                    md_flow_node_t node = {
-                        .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
-                        .weight = (float)weight[a], .color = nto.group.color[g],
-                        .label = md_str_from_cstr(flow_atom_label((uint32_t)a)),
-                        .key = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
-                    };
-                    atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
+                for (uint32_t a = 0; a < N; ++a) {
+                    if (flow_group_of(a) == g) add_atom(a, parent, nto.group.color[g]);
                 }
+            }
+
+            // The automatic fragments of the rest, in their own (pre-)order
+            for (size_t f = 0; f < num_frags; ++f) {
+                frag_node[f] = MD_FLOW_INVALID_INDEX;
+                if (frag_weight[column][f] <= 0.0) continue;
+                uint32_t parent = MD_FLOW_INVALID_INDEX;
+                for (uint32_t p = F.parent[f]; p != MD_FRAGMENT_NONE; p = F.parent[p]) {
+                    if (frag_node[p] != MD_FLOW_INVALID_INDEX) { parent = frag_node[p]; break; }
+                }
+                const vec4_t color = flow_fragment_color((uint32_t)f);
+                md_flow_node_t node = {
+                    .column = column, .parent = parent, .level = FLOW_LEVEL_FRAGMENT,
+                    .weight = (float)frag_weight[column][f], .color = color,
+                    .label  = frag_tree_name(&F, f),
+                    .key    = flow_node_key(column, FLOW_LEVEL_FRAGMENT, (uint32_t)f),
+                    .entity = flow_entity(FLOW_LEVEL_FRAGMENT, (uint32_t)f),
+                };
+                frag_node[f] = md_flow_graph_add_node(&flow.graph, &node);
+                if (frag_node[f] == MD_FLOW_INVALID_INDEX || !frag_tree_is_leaf(&F, f)) continue;
+                for (uint32_t k = F.atom_beg[f]; k < F.atom_end[f]; ++k) {
+                    const int32_t s = F.atom_idx[k];
+                    const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
+                    if (a < 0 || (size_t)a >= N || flow_group_of((uint32_t)a) != 0) continue;
+                    add_atom((uint32_t)a, frag_node[f], color);
+                }
+            }
+
+            // QM atoms in no fragment (none, when the system has its atoms): roots of their own
+            for (uint32_t a = 0; a < N; ++a) {
+                if (flow_group_of(a) != 0 || flow_fragment_of(a) != MD_FRAGMENT_NONE) continue;
+                add_atom(a, MD_FLOW_INVALID_INDEX, flow_atom_color(a, column));
             }
         }
 
-        for (size_t k = 0; k < num_keep; ++k) {
-            // Middle-column nodes take their colour from the colormap rather than from a group:
-            // an NTO belongs to the transition, not to either side of it.
-            const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
-            md_flow_node_t node = {
-                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
-                .weight = (float)lambda_keep[k], .color = vec_cast(c),
-                .label = md_str_from_cstr(flow.nto_label[k]),
-                .sublabel = md_str_from_cstr(flow.nto_character[k]),
-                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
-            };
-            mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-
-        // Links live between LEAVES - atoms here. Everything coarser is a sum over these, which is
-        // why collapsing a group can never disagree with expanding it.
-        for (size_t k = 0; k < num_keep; ++k) {
-            for (size_t a = 0; a < num_atoms; ++a) {
-                if (atom_src[a] != MD_FLOW_INVALID_INDEX) {
-                    const float w = (float)(lambda_keep[k] * q_hole[k * num_atoms + a]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_src[a], mid_node[k], w);
-                }
-                if (atom_dst[a] != MD_FLOW_INVALID_INDEX) {
-                    const float w = (float)(lambda_keep[k] * q_part[k * num_atoms + a]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, mid_node[k], atom_dst[a], w);
-                }
+        for (size_t a = 0; a < N; ++a) {
+            if (atom_node[0][a] == MD_FLOW_INVALID_INDEX) continue;
+            const double* row = job->omega + a * N;
+            for (size_t b = 0; b < N; ++b) {
+                if (atom_node[1][b] == MD_FLOW_INVALID_INDEX) continue;
+                const float w = (float)row[b];
+                if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_node[0][a], atom_node[1][b], w);
             }
         }
 
@@ -10225,11 +10583,11 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t k = 0; k < num_keep; ++k) {
             const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
             md_flow_node_t node = {
-                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_NTO,
                 .weight = (float)lambda_keep[k], .color = vec_cast(c),
                 .label = md_str_from_cstr(flow.nto_label[k]),
                 .sublabel = md_str_from_cstr(flow.nto_character[k]),
-                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
+                .key = flow_node_key(1, FLOW_LEVEL_NTO, (uint32_t)k),
             };
             mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
         }
@@ -10250,30 +10608,45 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
-    void rebuild_flow_graph(const FlowData& qm) {
+    static int flow_key_cmp(const void* a, const void* b) {
+        const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+        return x < y ? -1 : x > y ? 1 : 0;
+    }
+    static bool flow_key_in(const md_array(uint64_t) sorted, uint64_t key) {
+        return sorted && bsearch(&key, sorted, md_array_size(sorted), sizeof(uint64_t), flow_key_cmp) != nullptr;
+    }
+
+    // qm: what the Orbitals route is built from; the Fragments route reads the state's job instead
+    void rebuild_flow_graph(const FlowData* qm) {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
 
-        // The cut stores expansion by node INDEX, and a rebuild renumbers every node - a new
-        // excited state, a regroup or a route change would otherwise leave the user's open groups
-        // pointing at whatever now happens to sit at those indices. Carry the state across by KEY,
-        // which is what the key field exists for.
-        md_array(uint64_t) expanded_keys = 0;
+        // The cut stores what the user opened, closed and unfolded by node INDEX, and a rebuild renumbers
+        // every node - a new excited state or a regroup would otherwise leave the pins on whatever now
+        // happens to sit at those indices. Carried across by KEY, which is what the key field exists for.
+        md_array(uint64_t) pinned_open = 0;
+        md_array(uint64_t) pinned_closed = 0;
+        md_array(uint64_t) others_open = 0;
         md_array(uint64_t) known_keys = 0;
         for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
-            md_array_push(known_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
-            if (md_flow_cut_is_expanded(&flow.cut, (uint32_t)i)) {
-                md_array_push(expanded_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
-            }
+            const uint64_t key = flow.graph.nodes[i].key;
+            md_array_push(known_keys, key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.expanded,   (uint32_t)i)) md_array_push(pinned_open,   key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.collapsed,  (uint32_t)i)) md_array_push(pinned_closed, key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.other_open, (uint32_t)i)) md_array_push(others_open,   key, talloc);
+        }
+        md_array(uint64_t) lists[4] = { pinned_open, pinned_closed, others_open, known_keys };
+        for (int l = 0; l < 4; ++l) {
+            if (lists[l]) qsort(lists[l], md_array_size(lists[l]), sizeof(uint64_t), flow_key_cmp);
         }
 
         md_flow_graph_free(&flow.graph);
         flow.built = false;
         flow.hover = FlowHit{};     // a cut index, and stale now (selection is by key, so it lives)
 
-        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? build_flow_graph_orbitals(qm)
-                      : (flow.mode == FLOW_MODE_NTO)      ? build_flow_graph_nto(qm)
-                                                          : build_flow_graph_groups();
+        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? (qm && build_flow_graph_orbitals(*qm))
+                                                          : build_flow_graph_fragments();
         if (!ok) {
             md_flow_graph_free(&flow.graph);
             return;
@@ -10288,25 +10661,18 @@ struct QuantumChemistry : viamd::EventHandler {
             return;
         }
 
-        // Atoms are the level the diagram is about, so a group opens by default and its band
-        // brackets its members. A group the user has deliberately closed stays closed - which is
-        // why "was this key expanded" and "did this key exist at all" are different questions.
-        md_flow_cut_collapse_all(&flow.cut);
+        // Fragments: what opens is the row budget's call unless the user pinned it, and the pins live.
+        // Orbitals has no hierarchy; everything new opens.
+        const bool fragments = flow.mode == FLOW_MODE_FRAGMENTS;
+        flow.cut.mirror   = fragments;
+        flow.cut.max_rows = fragments ? (uint32_t)MD_MAX(flow.max_rows, 0) : 0u;
+        md_flow_cut_clear_pins(&flow.cut);
+        md_bitmask_clear(&flow.cut.other_open);
         for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
             const uint64_t key = flow.graph.nodes[i].key;
-
-            bool was_expanded = false;
-            for (size_t k = 0; k < md_array_size(expanded_keys); ++k) {
-                if (key == expanded_keys[k]) { was_expanded = true; break; }
-            }
-            bool was_known = false;
-            for (size_t k = 0; k < md_array_size(known_keys); ++k) {
-                if (key == known_keys[k]) { was_known = true; break; }
-            }
-
-            if (was_expanded || !was_known) {
-                md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
-            }
+            if (flow_key_in(lists[0], key) || (!fragments && !flow_key_in(lists[3], key))) md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
+            if (flow_key_in(lists[1], key)) md_bitmask_set_bit(&flow.cut.collapsed,  (uint32_t)i);
+            if (flow_key_in(lists[2], key)) md_bitmask_set_bit(&flow.cut.other_open, (uint32_t)i);
         }
 
         flow.built = true;
@@ -10320,53 +10686,89 @@ struct QuantumChemistry : viamd::EventHandler {
     // and looks wrong: the layout's unit square bounds the NODES, while bands hang off the sides
     // and captions sit above the top row. Those are sized in pixels by the drawing backend, so the
     // fit has to reserve pixels for them and only then convert to a zoom.
+    // What the diagram's columns mean, for the backend to draw: captions, the state with its split into
+    // charge transfer and local excitation at the level open now, and a legend.
+    void flow_annotations(FlowAnnotations* notes, char* subtitle, size_t cap) const {
+        *notes = {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            notes->caption[0] = "Occupied";
+            notes->caption[1] = "NTO pairs";
+            notes->caption[2] = "Virtual";
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+            notes->subtitle = subtitle;
+            notes->legend_ribbon = "Ribbon = hole to particle through an orbital pair";
+            return;
+        }
+        notes->caption[0] = "Hole";
+        notes->caption[2] = "Particle";
+        float local = 0.0f, total = 0.0f;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_link_t* l = flow.cut.links + i;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (a && b && a->entity != 0 && a->entity == b->entity) local += l->weight;
+            total += l->weight;
+        }
+        if (total > 0.0f) {
+            snprintf(subtitle, cap, "S%d \xC2\xB7 CT %.0f%% \xC2\xB7 LE %.0f%%", rsp.selected + 1,
+                     100.0f * (1.0f - local / total), 100.0f * local / total);
+        } else {
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+        }
+        notes->subtitle = subtitle;
+        if (flow.show_legend) {
+            notes->legend_ribbon = "Ribbon = transfer between fragments";
+            notes->legend_local  = "Solid = local excitation";
+        }
+    }
+
+    // Pan and zoom that put the nodes' box, with the room its labels and annotations take, inside a
+    // canvas of 'canvas_size' pixels.
+    void flow_fit(vec2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
+        *pan = { 0, 0 };
+        *zoom = 1.0f;
+        if (md_array_size(layout.nodes) == 0) return;
+
+        vec2_t bb_min = { 1.0e30f,  1.0e30f };
+        vec2_t bb_max = {-1.0e30f, -1.0e30f };
+        for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
+            const md_flow_layout_node_t* n = layout.nodes + i;
+            bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
+            bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
+        }
+        const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
+        const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
+
+        // a plain margin as well, so the diagram is not welded to the window edge
+        const float margin = 12.0f;
+        const float pad_l = margin + m.left,  pad_r = margin + m.right;
+        const float pad_t = margin + m.top,   pad_b = margin + m.bottom;
+        const float avail_w = MD_MAX(canvas_size.x - pad_l - pad_r, 16.0f);
+        const float avail_h = MD_MAX(canvas_size.y - pad_t - pad_b, 16.0f);
+
+        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
+        // bb_w * zoom * canvas_size.x pixels.
+        *zoom = MD_CLAMP(MD_MIN(avail_w / (bb_w * canvas_size.x), avail_h / (bb_h * canvas_size.y)), 0.1f, 12.0f);
+
+        // Centred in what the pads leave
+        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
+        const float target_x = 0.5f + (pad_l - pad_r) * 0.5f / canvas_size.x;
+        const float target_y = 0.5f + (pad_t - pad_b) * 0.5f / canvas_size.y;
+        pan->x = target_x - bb_center.x * *zoom;
+        pan->y = target_y - bb_center.y * *zoom;
+    }
+
     void flow_fit_view(ImVec2 canvas_size) {
-        if (!flow.built || md_array_size(flow.layout.nodes) == 0) {
+        if (!flow.built) {
             flow.pan = {0, 0};
             flow.zoom = 1.0f;
             return;
         }
-
-        vec2_t bb_min = { 1.0e30f,  1.0e30f };
-        vec2_t bb_max = {-1.0e30f, -1.0e30f };
-        for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-            const md_flow_layout_node_t* n = flow.layout.nodes + i;
-            bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
-            bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
-        }
-
-        const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
-        const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
-
-        // Room for the decorations the layout knows nothing about, plus a plain margin so the
-        // diagram is not welded to the window edge.
-        const float margin   = 12.0f;
-        const float caption  = ImGui::GetTextLineHeight() + 8.0f;
-        const float band_w   = flow.style.band_offset_px + flow.style.band_width_px;
-        const float band_lbl = md_array_size(flow.layout.bands) > 0 ? 64.0f : 0.0f;
-
-        const float pad_x = margin + band_w + band_lbl;
-        const float pad_y_top = margin + caption;
-        const float pad_y_bot = margin;
-
-        const float avail_w = MD_MAX(canvas_size.x - pad_x * 2.0f, 16.0f);
-        const float avail_h = MD_MAX(canvas_size.y - pad_y_top - pad_y_bot, 16.0f);
-
-        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
-        // bb_w * zoom * canvas_size.x pixels.
-        const float zoom_x = avail_w / (bb_w * canvas_size.x);
-        const float zoom_y = avail_h / (bb_h * canvas_size.y);
-        flow.zoom = MD_CLAMP(MD_MIN(zoom_x, zoom_y), 0.25f, 12.0f);
-
-        // Centre the content in what is left after the padding. The vertical target is offset by
-        // half the difference between the top and bottom pads, so the caption band does not push
-        // the diagram off-centre.
-        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
-        const float target_x = 0.5f;
-        const float target_y = 0.5f + (pad_y_top - pad_y_bot) * 0.5f / canvas_size.y;
-
-        flow.pan.x = target_x - bb_center.x * flow.zoom;
-        flow.pan.y = target_y - bb_center.y * flow.zoom;
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
+        const FlowMargins m = flow_measure_margins(&flow.graph, &flow.cut, &flow.layout, flow.style, &notes);
+        flow_fit(&flow.pan, &flow.zoom, flow.layout, canvas_size, m);
     }
 
     // Visible nodes whose on-screen rect overlaps a region, in cut index space.
@@ -10397,7 +10799,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
         if (group_idx >= nto.group.count) return;
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
+            if (md_bitmask_test_bit(&state.selection.selection_mask, flow_qm_to_sys((uint32_t)i))) {
                 nto.atom_group_idx[i] = group_idx;
             }
         }
@@ -10470,23 +10872,258 @@ struct QuantumChemistry : viamd::EventHandler {
         // Orbitals own no atoms; selecting "all the atoms an NTO touches" would be the whole
         // molecule and mean nothing. Gated on the LEVEL rather than the column, because in the
         // Orbitals route the outer columns are orbitals too.
-        const md_flow_node_t* n = node;
-        if (!flow_level_has_atoms(n->level)) return md_bitset_empty_set();
+        if (!flow_level_has_atoms(node->level)) return md_bitset_empty_set();
 
-        const uint32_t index = flow_key_index(n->key);
-        if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
-            return md_bitset_range(index, index + 1);
+        // Atoms are QM atoms here and system atoms in the mask
+        const uint32_t index = flow_key_index(node->key);
+        if (node->level == FLOW_LEVEL_ATOM) {
+            const uint32_t s = flow_qm_to_sys(index);
+            return md_bitset_range(s, s + 1);
         }
         md_temp_scope_t temp = md_temp_begin_avoid(alloc);
         md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
-        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (nto.atom_group_idx[i] == index) {
-                md_bitmask_set_bit(&b, (uint32_t)i);
+        for (size_t a = 0; a < md_array_size(nto.atom_group_idx); ++a) {
+            bool in = false;
+            if (node->level == FLOW_LEVEL_GROUP) {
+                in = nto.atom_group_idx[a] == index;
+            } else if (node->level == FLOW_LEVEL_FRAGMENT && nto.atom_group_idx[a] == 0) {
+                for (uint32_t f = flow_fragment_of((uint32_t)a); f != MD_FRAGMENT_NONE && !in; f = flow.frags.parent[f]) in = f == index;
             }
+            if (in) md_bitmask_set_bit(&b, flow_qm_to_sys((uint32_t)a));
         }
         const md_bitset_t result = md_bitmask_extract(&b, alloc);
         md_temp_end(temp);
         return result;
+    }
+
+    // The part of a visible node's weight that flows to the same entity on the other side: local
+    // excitation, in the fragment route.
+    float flow_node_self_weight(uint32_t cut_idx) const {
+        float sum = 0.0f;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_link_t* l = flow.cut.links + i;
+            if (l->src != cut_idx && l->dst != cut_idx) continue;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (a && b && a->entity != 0 && a->entity == b->entity) sum += l->weight;
+        }
+        return sum;
+    }
+
+    // The QM atoms a visible node stands for; false for an "Others" and for orbitals
+    bool flow_node_qm_atoms(md_array(uint32_t)* out, uint32_t cut_idx, md_allocator_i* alloc) const {
+        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER) || !flow_level_has_atoms(node->level)) return false;
+        const uint32_t index = flow_key_index(node->key);
+        const size_t N = md_array_size(nto.atom_group_idx);
+        if (node->level == FLOW_LEVEL_ATOM) {
+            md_array_push(*out, index, alloc);
+        } else if (node->level == FLOW_LEVEL_GROUP) {
+            for (uint32_t a = 0; a < N; ++a) if (nto.atom_group_idx[a] == index) md_array_push(*out, a, alloc);
+        } else if (index < flow.frags.count) {
+            for (uint32_t k = flow.frags.atom_beg[index]; k < flow.frags.atom_end[index]; ++k) {
+                const int32_t s = flow.frags.atom_idx[k];
+                const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
+                if (a >= 0 && (size_t)a < N && nto.atom_group_idx[a] == 0) md_array_push(*out, (uint32_t)a, alloc);
+            }
+        }
+        return true;
+    }
+
+    // What each visible ribbon is made of: the singular value decomposition of its block of the Lowdin
+    // transition density (md_qm_ct_block_nto), from the K x K blocks of its two ends, which are sums of
+    // their atoms' blocks. Exact, never negative, and adding up to the ribbon. Recomputed when the
+    // visible links change.
+    void flow_update_stripes() {
+        const bool active = flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected;
+        const size_t L = md_array_size(flow.cut.links);
+        const uint64_t hash = active ? md_hash64(flow.cut.links, sizeof(md_flow_link_t) * L, flow.data_hash ^ 0x57121e5ull) : 0;
+        if (hash == flow.stripe_hash && (active || md_array_size(flow.stripe_offset) == 0)) return;
+        flow.stripe_hash = hash;
+        md_array_shrink(flow.stripe_offset, 0);
+        md_array_shrink(flow.stripe_frac, 0);
+        if (!active) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const size_t K = ct_job->K, KK = K * K;
+        const size_t cut_space = md_array_size(flow.graph.nodes) + md_array_size(flow.cut.other);
+        double** block = md_temp_alloc_zero_array(temp, double*, cut_space ? cut_space : 1);
+        auto node_block = [&](uint32_t cut_idx, const double* atom_blocks) -> const double* {
+            if (cut_idx >= cut_space) return nullptr;
+            if (block[cut_idx]) return block[cut_idx];
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, cut_idx, talloc) || md_array_size(atoms) == 0) return nullptr;
+            double* b = md_temp_alloc_zero_array(temp, double, KK);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= ct_job->num_atoms) continue;
+                const double* ab = atom_blocks + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) b[k] += ab[k];
+            }
+            return block[cut_idx] = b;
+        };
+
+        double* w = md_temp_alloc_array(temp, double, K);
+        for (size_t l = 0; l < L; ++l) {
+            md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+            const md_flow_link_t* link = flow.cut.links + l;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+            if (!a || !b || (a->entity != 0 && a->entity == b->entity)) continue;    // local: drawn in the node
+            const double* H = node_block(link->src, ct_job->hole_blocks);
+            const double* P = node_block(link->dst, ct_job->part_blocks);
+            if (!H || !P) continue;
+            const size_t n = md_qm_ct_block_nto(w, nullptr, nullptr, ct_job->lambda, K, H, P);
+            double sum = 0.0;
+            for (size_t j = 0; j < n; ++j) sum += w[j];
+            if (n < 2 || sum <= 0.0) continue;
+            // the pairs that matter, and the rest as one
+            double cum = 0.0;
+            for (size_t j = 0; j < n; ++j) {
+                const double f = w[j] / sum;
+                if (f < 0.01 || cum > 0.995) {
+                    md_array_push(flow.stripe_frac, (float)(1.0 - cum), arena);
+                    break;
+                }
+                md_array_push(flow.stripe_frac, (float)f, arena);
+                cum += f;
+            }
+        }
+        md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+    }
+
+    // The strip's inputs, once the fragments and the Lowdin basis are there: the unit of every AO (the leaf
+    // fragments, numbered compactly) and the QM atoms' positions
+    void flow_build_strip_inputs(const md_system_t& sys) {
+        if (flow.ao_unit || !lowdin_job_ready(lowdin)) return;
+        const size_t A = lowdin->num_ao, N = lowdin->num_atoms;
+        const FragmentTree& F = flow.frags;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        uint32_t* leaf_id = md_temp_alloc_array(temp, uint32_t, F.count ? F.count : 1);
+        uint32_t U = 0;
+        for (size_t f = 0; f < F.count; ++f) leaf_id[f] = frag_tree_is_leaf(&F, f) ? U++ : MD_FRAGMENT_NONE;
+
+        flow.ao_unit = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * A);
+        for (size_t mu = 0; mu < A; ++mu) {
+            const uint32_t atom = lowdin->ao_atom[mu];
+            const uint32_t f = atom < N ? flow_fragment_of(atom) : MD_FRAGMENT_NONE;
+            flow.ao_unit[mu] = (f != MD_FRAGMENT_NONE) ? leaf_id[f] : U;    // U and above: in no unit, left out
+        }
+        flow.num_units = U;
+
+        QmAtoms qm = {};
+        if (es_qm_atoms(&qm, sys) && qm.coordinate && qm.count == N) {
+            flow.atom_xyz = (double*)md_alloc(arena, sizeof(double) * 3 * N);
+            for (size_t a = 0; a < N; ++a) {
+                flow.atom_xyz[a * 3 + 0] = qm.coordinate[a].x;
+                flow.atom_xyz[a * 3 + 1] = qm.coordinate[a].y;
+                flow.atom_xyz[a * 3 + 2] = qm.coordinate[a].z;
+            }
+        }
+        md_array_resize(flow.strip, num_excited, arena);
+        for (size_t s = 0; s < num_excited; ++s) flow.strip[s] = {};
+    }
+
+    // One state at a time: collect what finished, start the next (the selected one first). Asking for a
+    // state's NTOs starts reading them on a worker (es_nto_ready); the strip job starts once they are in.
+    void flow_step_strip(ApplicationState& state) {
+        flow_build_strip_inputs(state.mold.sys);
+        if (!flow.ao_unit || md_array_size(flow.strip) == 0) return;
+
+        if (strip_job && strip_job->done.load(std::memory_order_acquire)) {
+            if ((size_t)strip_job->state < md_array_size(flow.strip)) {
+                QuantumChemistry::Flow::StripEntry& e = flow.strip[strip_job->state];
+                e.done = true;
+                e.ok = strip_job->ok;
+                e.ct = strip_job->ct;
+                e.distance = strip_job->distance;
+                e.pr = strip_job->pr;
+            }
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+        }
+        if (strip_job) return;
+
+        int32_t next = -1;
+        if (rsp.selected >= 0 && (size_t)rsp.selected < md_array_size(flow.strip) && !flow.strip[rsp.selected].done) {
+            next = rsp.selected;
+        } else {
+            for (size_t s = 0; s < md_array_size(flow.strip); ++s) {
+                if (!flow.strip[s].done) { next = (int32_t)s; break; }
+            }
+        }
+        if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
+        strip_job = strip_job_start(state.mold.sys, lowdin, next, flow.ao_unit, flow.num_units, flow.atom_xyz);
+        if (!strip_job) flow.strip[next].done = true;   // nothing to compute it from: not to be retried
+    }
+
+    // Every excited state at a glance, above the diagram: bar height the oscillator strength, colour the
+    // charge transfer between units (grey-blue local, orange transfer), hollow while not yet computed.
+    // Click to select a state.
+    void draw_flow_strip(ApplicationState& state) {
+        const size_t S = md_array_size(flow.strip);
+        if (S == 0) return;
+        size_t num_f = 0, num_e = 0;
+        const double* osc = attribute_series_f64(&num_f, state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength"));
+        const double* ene = attribute_series_f64(&num_e, state.mold.sys, MD_STR_LIT("vlx/rsp/frequency"));
+        double f_max = 0.0;
+        for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
+
+        const float h = 46.0f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = MD_MAX(ImGui::GetContentRegionAvail().x, 64.0f);
+        ImGui::InvisibleButton("##state_strip", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p0, p0 + ImVec2(w, h), IM_COL32(250, 250, 250, 255));
+
+        const float slot = w / (float)S;
+        const float bar_w = MD_CLAMP(slot * 0.6f, 2.0f, 14.0f);
+        const float base_y = p0.y + h - 12.0f;
+        const float max_h = h - 16.0f;
+        const vec4_t local_col = { 0.55f, 0.60f, 0.70f, 1.0f };
+        const vec4_t ct_col    = { 0.88f, 0.42f, 0.12f, 1.0f };
+        const ImVec2 mouse = ImGui::GetMousePos();
+        int32_t hover = -1;
+
+        for (size_t s = 0; s < S; ++s) {
+            const float cx = p0.x + slot * ((float)s + 0.5f);
+            const double f = (s < num_f && f_max > 0.0) ? osc[s] / f_max : 0.0;
+            // square root: a dark state is still a visible stub, a bright one does not flatten the rest
+            const float bh = MD_MAX(3.0f, (float)sqrt(MD_MAX(f, 0.0)) * max_h);
+            const ImVec2 b0 = { cx - bar_w * 0.5f, base_y - bh };
+            const ImVec2 b1 = { cx + bar_w * 0.5f, base_y };
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[s];
+            if (e.done && e.ok) {
+                const vec4_t c = vec4_lerp(local_col, ct_col, MD_CLAMP(e.ct, 0.0f, 1.0f));
+                dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 1.5f);
+            } else {
+                dl->AddRect(b0, b1, IM_COL32(150, 150, 150, 255), 1.5f);
+            }
+            if ((int32_t)s == rsp.selected) {
+                dl->AddTriangleFilled({ cx, base_y + 2.0f }, { cx - 4.0f, base_y + 9.0f }, { cx + 4.0f, base_y + 9.0f }, IM_COL32(30, 30, 30, 255));
+            }
+            if (hovered && mouse.x >= p0.x + slot * (float)s && mouse.x < p0.x + slot * (float)(s + 1)) hover = (int32_t)s;
+        }
+
+        if (hover >= 0) {
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[hover];
+            char details[160] = "computing...";
+            if (e.done && e.ok) {
+                snprintf(details, sizeof(details), "Charge transfer %.0f%% (between units)\nHole to particle %.2f \xc3\x85\nNTO pairs %.1f",
+                         100.0f * e.ct, e.distance, e.pr);
+            } else if (e.done) {
+                snprintf(details, sizeof(details), "no NTO pairs");
+            }
+            const double ev = (size_t)hover < num_e ? ene[hover] * HARTREE_TO_EV : 0.0;
+            const double fo = (size_t)hover < num_f ? osc[hover] : 0.0;
+            ImGui::SetTooltip("S%d   %.3f eV   f = %.4f\n%s\n\nClick to select", hover + 1, ev, fo, details);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rsp.selected = hover;
+        }
     }
 
     void draw_flow_window(ApplicationState& state) {
@@ -10499,6 +11136,11 @@ struct QuantumChemistry : viamd::EventHandler {
             md_flow_cut_init(&flow.cut, arena);
             md_flow_layout_init(&flow.layout, arena);
             flow.params = md_flow_layout_params_default();
+            // The same fragments in the same order on both sides: a straight band is local, a
+            // slanted one is transfer.
+            flow.params.order = MD_FLOW_ORDER_GRAPH;
+            // Thin bars: the labels sit outside them, and the width between belongs to the ribbons
+            flow.params.node_thickness = flow.bar_width;
             flow.cut.threshold = flow.initial_threshold;
             // Uncapped on purpose. A cap makes "Show above 1%" stop being true - folding halts
             // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
@@ -10515,24 +11157,49 @@ struct QuantumChemistry : viamd::EventHandler {
         hash ^= (uint64_t)nto.group.count;
         hash ^= (uint64_t)(rsp.selected + 1) << 8;
         hash ^= (uint64_t)flow.mode << 24;
-        if (nto.transition_matrix) {
-            const size_t dim = nto.transition_matrix_dim;
-            hash = md_hash64(nto.transition_matrix, sizeof(float) * dim * (dim + 2), hash);
+        hash ^= flow.frags_version * 0x9E3779B97F4A7C15ull;
+
+        // The fragment route: the fragments and the Lowdin basis once per system, then one job per selected
+        // state. Both on workers; the last diagram stays on screen while they run.
+        const bool nto_pending = rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
+        bool lowdin_pending = false;
+        bool ct_pending = false;
+        if (flow.mode == FLOW_MODE_FRAGMENTS || flow.show_strip) {
+            flow_build_fragments(state.mold.sys);
+            if (!lowdin && flow.num_qm_atoms > 0) {
+                lowdin = lowdin_job_start(state.mold.sys, basis, flow.num_qm_atoms);
+            }
         }
-        // the NTO diagram not until the state's NTOs have been read (on a worker thread): the last one stays
-        const bool nto_pending = flow.mode == FLOW_MODE_NTO && rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
-        if (hash != flow.data_hash && !nto_pending) {
+        if (flow.show_strip) {
+            flow_step_strip(state);
+        }
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+            lowdin_pending = lowdin && !lowdin->done.load(std::memory_order_acquire);
+            if (lowdin_job_ready(lowdin) && rsp.selected >= 0 && !nto_pending && (!ct_job || ct_job->state != rsp.selected) &&
+                flow.ct_failed_state != rsp.selected) {
+                ct_state_job_destroy(ct_job);
+                ct_job = ct_state_job_start(state.mold.sys, lowdin, rsp.selected);
+                if (!ct_job) flow.ct_failed_state = rsp.selected;   // no NTO pairs to read: do not ask every frame
+            }
+            ct_pending = ct_job && (!ct_job->done.load(std::memory_order_acquire) || ct_job->state != rsp.selected);
+            hash ^= (uint64_t)lowdin_job_ready(lowdin) << 32;
+            if (ct_job) hash ^= ((uint64_t)(ct_job->state + 1) << 40) ^ ((uint64_t)ct_state_job_ready(ct_job) << 56);
+        }
+
+        const bool waiting = nto_pending || lowdin_pending || ct_pending;
+        if (hash != flow.data_hash && !waiting) {
             flow.data_hash = hash;
-
-            // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
-            // know nothing about a system, an attribute table or a reader. This is the one place
-            // that has to, and it is the place that already holds the system.
-            md_temp_scope_t temp = md_temp_begin();
-            MD_DEFER { md_temp_end(temp); };
-
-            FlowData qm = {};
-            flow_qm_data_gather(&qm, temp, state.mold.sys);
-            rebuild_flow_graph(qm);
+            if (flow.mode == FLOW_MODE_ORBITALS) {
+                // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
+                // know nothing about a system, an attribute table or a reader.
+                md_temp_scope_t temp = md_temp_begin();
+                MD_DEFER { md_temp_end(temp); };
+                FlowData qm = {};
+                flow_qm_data_gather(&qm, temp, state.mold.sys);
+                rebuild_flow_graph(&qm);
+            } else {
+                rebuild_flow_graph(nullptr);
+            }
         }
 
         bool export_requested = false;
@@ -10545,17 +11212,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Settings")) {
-                    ImGui::SliderFloat("Box tint", &flow.style.node_fill_tint, 0.0f, 0.5f);
-                    ImGui::SetItemTooltip("How much of a node's colour survives in its interior.\n"
-                                          "0 is white; the colour itself lives on the border.");
-                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Colour by side", &flow.style.color_by_side);
+                    ImGui::SetItemTooltip("Hole nodes in one colour, particle nodes in another, ribbons in a third.\n"
+                                          "Off: every node in its own colour, ribbons blending between them.");
+                    ImGui::BeginDisabled(flow.style.color_by_side);
                     ImGui::Checkbox("Colour the labels", &flow.style.color_labels);
+                    ImGui::EndDisabled();
+                    ImGui::SliderFloat("Node tint", &flow.style.node_fill_tint, 0.0f, 0.6f);
+                    ImGui::SetItemTooltip("How much of a node's colour fills its interior. 0 is white.");
+                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Ribbon labels", &flow.style.show_ribbon_labels);
+                    ImGui::SetItemTooltip("The share of every ribbon thick enough to carry it, at its middle.");
+                    ImGui::Checkbox("Legend", &flow.show_legend);
                     ImGui::Separator();
                     ImGui::SliderFloat("Ribbon opacity", &flow.style.ribbon_alpha, 0.05f, 1.0f);
                     ImGui::SliderFloat("Ribbon curvature", &flow.style.ribbon_curvature, 0.0f, 1.0f);
                     ImGui::SliderInt("Ribbon segments", &flow.style.ribbon_segments, 4, 64);
                     ImGui::Separator();
-                    ImGui::SliderFloat("Node thickness", &flow.params.node_thickness, 0.01f, 0.25f);
+                    ImGui::SliderFloat("Bar width", &flow.params.node_thickness, 0.01f, 0.25f);
                     ImGui::SliderFloat("Node gap", &flow.params.node_gap, 0.0f, 0.1f);
                     ImGui::BeginDisabled(flow.params.order != MD_FLOW_ORDER_BARYCENTRE);
                     int sweeps = (int)flow.params.barycentre_sweeps;
@@ -10565,6 +11239,21 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndDisabled();
                     ImGui::SetItemTooltip("Only used by the 'Fewest crossings' row order.");
                     ImGui::Separator();
+                    ImGui::Checkbox("State strip", &flow.show_strip);
+                    ImGui::SetItemTooltip("Every excited state above the diagram: bar height the oscillator strength,\n"
+                                          "colour the charge transfer between the automatic units.");
+                    ImGui::SliderFloat("Local fill opacity", &flow.style.self_alpha, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("How strongly the local excitation inside a node is filled in.");
+                    {
+                        float other_pct = flow.cut.other_max * 100.0f;
+                        if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
+                            flow.cut.other_max = other_pct * 0.01f;
+                            md_flow_cut_resolve(&flow.cut, &flow.graph);
+                        }
+                        ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
+                                              "which means rows under 'Fold below' STAY on screen. Leave it at 100%%\n"
+                                              "unless you want that.");
+                    }
                     ImGui::SliderFloat("Hide ribbons under", &flow.style.ribbon_min_px, 0.0f, 6.0f, "%.1f px");
                     ImGui::SetItemTooltip("A ribbon thinner than this is not drawn - it reads as noise rather\n"
                                           "than as a quantity. The flow is still in the model and still counted.");
@@ -10586,77 +11275,85 @@ struct QuantumChemistry : viamd::EventHandler {
             if (ImGui::Combo("Route", &mode, flow_mode_str, FLOW_MODE_COUNT)) {
                 flow.mode = (flow_mode_t)mode;
             }
-            ImGui::SetItemTooltip("'Groups only' reproduces the old two-column diagram, where the\n"
-                                  "group-to-group flow is inferred from the two marginals.\n"
-                                  "'Atoms via NTOs' measures it instead.\n"
-                                  "'Orbitals' drops atoms entirely and shows which canonical MOs the\n"
-                                  "NTOs are built from - every band there is exact.");
+            ImGui::SetItemTooltip("'Fragments': where the excitation takes its electron from (left) and\n"
+                                  "where it puts it (right), as the exact charge transfer numbers in the\n"
+                                  "Lowdin basis. Local excitation fills the nodes; bands are transfer.\n"
+                                  "'Orbitals': which canonical MOs the NTO pairs are built from.\n"
+                                  "Every band there is exact too.");
             ImGui::PopItemWidth();
 
+            const bool fragments = flow.mode == FLOW_MODE_FRAGMENTS;
+            if (fragments) {
+                ImGui::SameLine();
+                ImGui::PushItemWidth(120.0f);
+                if (ImGui::SliderInt("Rows", &flow.max_rows, 2, 40)) {
+                    flow.cut.max_rows = (uint32_t)flow.max_rows;
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SetItemTooltip("How many rows a column may show. Fragments open on their own, the\n"
+                                      "heaviest first, until the next would not fit - so the detail goes where\n"
+                                      "the hole and the particle are. What you open or close yourself stays so.");
+                ImGui::PopItemWidth();
+            }
+
             ImGui::SameLine();
-            ImGui::PushItemWidth(160.0f);
+            ImGui::PushItemWidth(120.0f);
             float threshold_pct = flow.cut.threshold * 100.0f;
-            if (ImGui::SliderFloat("Show above", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
+            if (ImGui::SliderFloat("Fold below", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
                 flow.cut.threshold = threshold_pct * 0.01f;
                 md_flow_cut_resolve(&flow.cut, &flow.graph);
             }
-            ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Everything below folds\n"
-                                  "into 'Others'; double click that to draw its members individually.");
+            ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Siblings below it fold into\n"
+                                  "an 'Others' inside their parent; double click that to draw them.");
             ImGui::PopItemWidth();
 
-            ImGui::SameLine();
-            ImGui::PushItemWidth(140.0f);
-            float other_pct = flow.cut.other_max * 100.0f;
-            if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
-                flow.cut.other_max = other_pct * 0.01f;
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            if (!fragments) {
+                ImGui::SameLine();
+                ImGui::PushItemWidth(120.0f);
+                ImGui::SliderFloat("Even sizes", &flow.size_normalize, 0.0f, 1.0f, "%.2f");
+                ImGui::SetItemTooltip("Flattens the orbital columns' heights so a 1%% channel is still big\n"
+                                      "enough to read and click. Ribbons keep their true widths and simply\n"
+                                      "taper into the column.");
+                ImGui::PopItemWidth();
             }
-            ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
-                                  "which means sub-threshold rows STAY on screen - so 'Show above' no\n"
-                                  "longer means what it says. Leave it at 100%% unless you want that.");
-            ImGui::PopItemWidth();
 
-            ImGui::SameLine();
-            ImGui::PushItemWidth(140.0f);
-            ImGui::SliderFloat("Even sizes", &flow.size_normalize, 0.0f, 1.0f, "%.2f");
-            ImGui::SetItemTooltip("Flattens the ORBITAL columns' heights so a 1%% channel is still big\n"
-                                  "enough to read and click. Atom columns stay strictly proportional -\n"
-                                  "their sizes are the charge transfer itself.\n"
-                                  "Ribbons keep their true widths and simply taper into the column.");
-            ImGui::PopItemWidth();
-
-            ImGui::SameLine();
-            // 'Groups only' has no atom level to open. Its links come from the two marginals and
-            // carry no information about which ATOM within a group donated to which - splitting
-            // them proportionally would invent detail one level finer than the data supports,
-            // which is the exact failure this window exists to stop doing.
-            const bool expandable = (flow.mode == FLOW_MODE_NTO);   // only that route has a hierarchy
-            ImGui::BeginDisabled(!expandable);
-            if (ImGui::Button("Expand all")) {
-                md_flow_cut_expand_all(&flow.cut, &flow.graph);
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Collapse all")) {
-                md_flow_cut_collapse_all(&flow.cut);
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
-            }
-            ImGui::EndDisabled();
-            if (!expandable) {
-                ImGui::SetItemTooltip("Only 'Atoms via NTOs' has a hierarchy to open.\n"
-                                      "'Groups only' infers its flow from the two marginals and says\n"
-                                      "nothing about which atom went where; 'Orbitals' has no atoms.");
+            if (fragments) {
+                ImGui::SameLine();
+                if (ImGui::Button("Expand all")) {
+                    md_flow_cut_expand_all(&flow.cut, &flow.graph);
+                    md_bitmask_clear(&flow.cut.collapsed);
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Collapse all")) {
+                    md_bitmask_clear(&flow.cut.expanded);
+                    for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                        if (!md_flow_node_is_leaf(&flow.graph, (uint32_t)i)) md_bitmask_set_bit(&flow.cut.collapsed, (uint32_t)i);
+                    }
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Auto")) {
+                    md_flow_cut_clear_pins(&flow.cut);
+                    md_bitmask_clear(&flow.cut.other_open);
+                    flow.cut.other_expanded = 0;
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SetItemTooltip("Forget what was opened and closed by hand: the row budget decides again.");
             }
 
             ImGui::SameLine();
             ImGui::PushItemWidth(150.0f);
             int order = (int)flow.params.order;
-            static const char* order_str[] = { "By contribution", "Fewest crossings" };
+            // In md_flow_order_t's order
+            static const char* order_str[] = { "By contribution", "Fewest crossings", "As listed" };
             if (ImGui::Combo("Order", &order, order_str, IM_ARRAYSIZE(order_str))) {
                 flow.params.order = (md_flow_order_t)order;
             }
-            ImGui::SetItemTooltip("Rows within a column. 'By contribution' puts the largest at the top;\n"
-                                  "either way a group's atoms stay together inside the group's slot.");
+            ImGui::SetItemTooltip("Rows within a column. 'As listed' keeps the fragments in the same order\n"
+                                  "on both sides, so a straight band is local and a slanted one is transfer.\n"
+                                  "'By contribution' puts the largest at the top. Either way a group's\n"
+                                  "atoms stay together inside the group's slot.");
             ImGui::PopItemWidth();
 
             ImGui::SameLine();
@@ -10666,6 +11363,11 @@ struct QuantumChemistry : viamd::EventHandler {
                                   "or drag a box over several. Shift+right on empty space clears.\n"
                                   "Double click opens a node; double click on empty space refits.\n"
                                   "Right click for group actions on the selection.");
+
+
+            if (flow.show_strip) {
+                draw_flow_strip(state);
+            }
 
             const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
@@ -10680,10 +11382,15 @@ struct QuantumChemistry : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 60));
+            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 22));
 
             if (!flow.built) {
-                const char* msg = "No transition data for this state";
+                const char* msg = lowdin_pending ? "Computing the Lowdin basis (once per system)..."
+                                : nto_pending    ? "Computing the natural transition orbitals..."
+                                : ct_pending     ? "Computing the charge transfer numbers..."
+                                : (flow.mode == FLOW_MODE_FRAGMENTS && lowdin && !lowdin_job_ready(lowdin))
+                                                 ? "The Lowdin basis could not be computed (see the log)"
+                                                 : "No transition data for this state";
                 draw_list->AddText(canvas_p0 + (canvas_sz - ImGui::CalcTextSize(msg)) * 0.5f, IM_COL32(0, 0, 0, 160), msg);
                 ImGui::End();
                 return;
@@ -10714,15 +11421,12 @@ struct QuantumChemistry : viamd::EventHandler {
                 flow.pan.y += io.MouseDelta.y / canvas_sz.y;
             }
 
-            // Map the slider onto a per-column exponent. Orbital columns get it; atom columns stay
-            // proportional. In the Orbitals route every column is orbitals.
+            // Map the slider onto a per-column exponent. Orbital columns get it; fragment columns stay
+            // proportional, because their proportions ARE the charge transfer.
             {
                 const float e = 1.0f - flow.size_normalize * 0.85f;   // 1.0 .. 0.15
-                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) flow.params.weight_exponent[c] = 1.0f;
-                flow.params.weight_exponent[1] = e;
-                if (flow.mode == FLOW_MODE_ORBITALS) {
-                    flow.params.weight_exponent[0] = e;
-                    flow.params.weight_exponent[2] = e;
+                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) {
+                    flow.params.weight_exponent[c] = (flow.mode == FLOW_MODE_ORBITALS) ? e : 1.0f;
                 }
             }
 
@@ -10753,44 +11457,71 @@ struct QuantumChemistry : viamd::EventHandler {
 
             const size_t num_atoms = md_array_size(nto.atom_group_idx);
 
-            // One pass over the atoms gives both the per-atom answer and the per-group tallies, so
-            // a group node is a lookup rather than a rescan.
+            // One pass over the atoms gives the per-atom answer and the tallies per group and per
+            // fragment (summed up the fragment tree), so a group or fragment node is a lookup.
+            // Atoms are QM atoms; the masks are over system atoms.
             uint32_t* group_total = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
             uint32_t* group_sel   = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
             uint32_t* group_hi    = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
+            const size_t num_frags = flow.frags.count;
+            uint32_t* frag_total = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            uint32_t* frag_sel   = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            uint32_t* frag_hi    = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            bool* atom_sel = md_temp_alloc_zero_array(draw_temp, bool, num_atoms ? num_atoms : 1);
+            bool* atom_hi  = md_temp_alloc_zero_array(draw_temp, bool, num_atoms ? num_atoms : 1);
             bool selection_touches_atoms = false;
 
             for (size_t a = 0; a < num_atoms; ++a) {
                 const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
-                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, a);
-                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, a);
+                const uint32_t s = flow_qm_to_sys((uint32_t)a);
+                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, s);
+                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, s);
+                atom_sel[a] = sel;
+                atom_hi[a]  = hi;
                 group_total[g] += 1;
                 group_sel[g]   += sel ? 1 : 0;
                 group_hi[g]    += hi  ? 1 : 0;
                 selection_touches_atoms |= sel;
+                if (g == 0) {
+                    for (uint32_t f = flow_fragment_of((uint32_t)a); f != MD_FRAGMENT_NONE; f = flow.frags.parent[f]) {
+                        frag_total[f] += 1;
+                        frag_sel[f]   += sel ? 1 : 0;
+                        frag_hi[f]    += hi  ? 1 : 0;
+                    }
+                }
             }
+
+            // A set is only "selected" when all of it is. Anything less is partial - otherwise one
+            // selected atom would claim the whole group, and there would be no way to see the difference.
+            auto set_state = [](uint32_t total, uint32_t sel, uint32_t hi) -> uint8_t {
+                uint8_t st = 0;
+                if (total == 0) return st;
+                if (sel == total) st |= FlowNodeState_Selected;
+                else if (sel > 0) st |= FlowNodeState_Partial;
+                if (hi > 0)       st |= FlowNodeState_Highlight;
+                return st;
+            };
 
             for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
                 const md_flow_node_t* n = flow.graph.nodes + i;
                 uint8_t st = 0;
-
-                if (!flow_level_has_atoms(n->level)) {
-                    if (flow_orbital_is_selected(n->key)) st |= FlowNodeState_Selected;
-                } else {
-                    const uint32_t index = flow_key_index(n->key);
-                    if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
-                        if (index < num_atoms) {
-                            if (md_bitmask_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
-                            if (md_bitmask_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
-                        }
-                    } else if (index < MAX_NTO_GROUPS && group_total[index] > 0) {
-                        // A group is only "selected" when all of it is. Anything less is partial -
-                        // otherwise one selected atom would claim the whole group, and there would
-                        // be no way to see the difference.
-                        if (group_sel[index] == group_total[index])  st |= FlowNodeState_Selected;
-                        else if (group_sel[index] > 0)               st |= FlowNodeState_Partial;
-                        if (group_hi[index] > 0)                     st |= FlowNodeState_Highlight;
+                const uint32_t index = flow_key_index(n->key);
+                switch (n->level) {
+                case FLOW_LEVEL_ATOM:
+                    if (index < num_atoms) {
+                        if (atom_sel[index]) st |= FlowNodeState_Selected;
+                        if (atom_hi[index])  st |= FlowNodeState_Highlight;
                     }
+                    break;
+                case FLOW_LEVEL_GROUP:
+                    if (index < MAX_NTO_GROUPS) st = set_state(group_total[index], group_sel[index], group_hi[index]);
+                    break;
+                case FLOW_LEVEL_FRAGMENT:
+                    if (index < num_frags) st = set_state(frag_total[index], frag_sel[index], frag_hi[index]);
+                    break;
+                default:    // orbitals
+                    if (flow_orbital_is_selected(n->key)) st |= FlowNodeState_Selected;
+                    break;
                 }
                 node_state[i] = st;
             }
@@ -10802,42 +11533,28 @@ struct QuantumChemistry : viamd::EventHandler {
             emphasis.hover_node = flow.hover.node;
             emphasis.hover_link = flow.hover.link;
 
+            flow_update_stripes();
+            FlowStripes stripes = {};
+            stripes.offset    = flow.stripe_offset;
+            stripes.frac      = flow.stripe_frac;
+            stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+
+            FlowAnnotations notes = {};
+            char subtitle[96];
+            flow_annotations(&notes, subtitle, sizeof(subtitle));
+
             draw_list->PushClipRect(canvas_p0, canvas_p1, true);
             const FlowHit hit = flow_draw_imgui(draw_list, view, &flow.graph, &flow.cut, &flow.layout,
-                                                flow.style, emphasis);
+                                                flow.style, emphasis, &stripes, &notes);
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
-
-            // Column captions. They belong to the window rather than to the backend: the backend
-            // draws a graph and has no idea what its columns mean.
-            // Captions belong to the COLUMNS, so they live in graph space and pan and zoom with
-            // them. Pinned to the window corners they would drift away from what they name the
-            // moment anyone moved the view.
-            {
-                const ImU32 caption_col = IM_COL32(0, 0, 0, 200);
-                const char* caption_atoms[3]    = { "DONATING (hole)", "NTO PAIRS", "ACCEPTING (particle)" };
-                const char* caption_orbitals[3] = { "OCCUPIED MOs",    "NTO PAIRS", "VIRTUAL MOs" };
-                const char** caption = (flow.mode == FLOW_MODE_ORBITALS) ? caption_orbitals : caption_atoms;
-
-                for (uint32_t c = 0; c < flow.graph.num_columns; ++c) {
-                    float x0 = 0.0f, x1 = 0.0f, top = 1.0e30f;
-                    bool found = false;
-                    for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-                        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, flow.layout.nodes[i].cut_idx);
-                        if (!n || n->column != c) continue;
-                        x0 = flow.layout.nodes[i].min.x;
-                        x1 = flow.layout.nodes[i].max.x;
-                        top = MD_MIN(top, flow.layout.nodes[i].min.y);
-                        found = true;
-                    }
-                    if (!found) continue;
-
-                    const char* lbl = (flow.graph.num_columns == 2 && c == 1) ? caption[2] : caption[MD_MIN(c, 2u)];
-                    const ImVec2 mid = flow_view_to_screen(view, vec2_t{ (x0 + x1) * 0.5f, top });
-                    const ImVec2 size = ImGui::CalcTextSize(lbl);
-                    draw_list->AddText({ mid.x - size.x * 0.5f, mid.y - size.y - 6.0f }, caption_col, lbl);
-                }
+            if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
+                ImGui::SetTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
+                                  "it is local excitation (LE), the rest is charge transfer (CT). Opening a\n"
+                                  "fragment into atoms turns most of its local part into transfer between its atoms.%s%s",
+                                  flow.nto_dropped  > 1.0e-3f ? "\n\nNTO pairs below round off are left out." : "",
+                                  flow.link_dropped > 1.0e-3f ? "\n\nAtom pairs below 1e-6 of the total are not drawn." : "");
             }
 
             // ---- selection: rubber band, or a click when the band never opened ----
@@ -10966,18 +11683,28 @@ struct QuantumChemistry : viamd::EventHandler {
                                       "Double click to draw them individually",
                                       node->weight * 100.0f, count, flow.cut.threshold * 100.0f);
                 } else if (node) {
-                    const char* what = (node->column == 0) ? "detachment"
-                                     : (node->column == 1) ? "transition" : "attachment";
+                    const bool two_columns = flow.graph.num_columns == 2;
+                    const char* what = (node->column == 0) ? (two_columns ? "hole" : "detachment")
+                                     : (node->column == 1 && !two_columns) ? "transition"
+                                     : (two_columns ? "particle" : "attachment");
                     const bool has_children = (uint32_t)hit.node < md_array_size(flow.graph.nodes)
                                               && !md_flow_node_is_leaf(&flow.graph, (uint32_t)hit.node);
+                    // Of a fragment's share, what stays on it (drawn inside the node) and what moves
+                    char local[96] = "";
+                    if (flow.mode == FLOW_MODE_FRAGMENTS && node->weight > 0.0f) {
+                        const float self = flow_node_self_weight((uint32_t)hit.node);
+                        snprintf(local, sizeof(local), "\n%.1f%% of it local, %.1f%% %s",
+                                 100.0f * self / node->weight, 100.0f * (1.0f - self / node->weight),
+                                 node->column == 0 ? "transferred away" : "transferred in");
+                    }
                     if (has_children) {
-                        const bool open = md_flow_cut_is_expanded(&flow.cut, (uint32_t)hit.node);
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s\n\nDouble click to %s",
-                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what,
-                            open ? "collapse" : "show its atoms");
+                        const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\nDouble click to %s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local,
+                            open ? "collapse" : "open it");
                     } else {
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s",
-                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what);
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local);
                     }
                 }
                 // Hovering previews in the viewport; committing to a selection takes shift, so a
@@ -10988,21 +11715,24 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_bitmask_assign(&state.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
                 }
 
-                // Double click opens or closes a node - including an "Others", which opens by
-                // suspending the threshold for its column. That is what lets the threshold hide
-                // things honestly: everything below it goes, and you can still look.
+                // Double click opens or closes a node - including an "Others", which opens by drawing
+                // its members individually. That is what lets the threshold hide things honestly:
+                // everything below it goes, and you can still look. What the user opens or closes is
+                // PINNED, so the row budget leaves it as it is; a fragment is pinned on both sides.
                 if (!io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     const uint32_t idx = (uint32_t)hit.node;
                     const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
                     if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
-                        md_flow_cut_set_other_expanded(&flow.cut, n->column, true);
+                        md_flow_cut_open_other(&flow.cut, &flow.graph, n, true);
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
                     } else if (idx < md_array_size(flow.graph.nodes) && !md_flow_node_is_leaf(&flow.graph, idx)) {
-                        md_flow_cut_set_expanded(&flow.cut, idx, !md_flow_cut_is_expanded(&flow.cut, idx));
+                        md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
-                    } else if (n && md_flow_cut_is_other_expanded(&flow.cut, n->column)) {
-                        // Double clicking a node in an opened column closes it again - the pair of
+                    } else if (n && md_flow_cut_is_other_open_for(&flow.cut, n)) {
+                        // Double clicking a member of an opened "Others" folds it again - the pair of
                         // gestures is symmetric, since the "Others" itself is gone while open.
+                        const md_flow_node_t other = { .column = n->column, .parent = n->parent };
+                        md_flow_cut_open_other(&flow.cut, &flow.graph, &other, false);
                         md_flow_cut_set_other_expanded(&flow.cut, n->column, false);
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
                     }
@@ -11026,10 +11756,25 @@ struct QuantumChemistry : viamd::EventHandler {
                 const md_flow_node_t* src = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
                 const md_flow_node_t* dst = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
                 if (src && dst) {
-                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%",
+                    // What it is made of: the orbital pairs of this transfer, when there are several
+                    char pairs[160] = "";
+                    const size_t num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+                    if ((size_t)hit.link < num_links) {
+                        const uint32_t beg = flow.stripe_offset[hit.link], end = flow.stripe_offset[hit.link + 1];
+                        if (end - beg >= 2) {
+                            int len = snprintf(pairs, sizeof(pairs), "\nCarried by %u orbital pairs:", end - beg);
+                            for (uint32_t j = beg; j < end && len > 0 && (size_t)len < sizeof(pairs); ++j) {
+                                len += snprintf(pairs + len, sizeof(pairs) - (size_t)len, " %.0f%%", 100.0f * flow.stripe_frac[j]);
+                            }
+                            if (hit.stripe >= 0 && (uint32_t)hit.stripe < end - beg && len > 0 && (size_t)len < sizeof(pairs)) {
+                                snprintf(pairs + len, sizeof(pairs) - (size_t)len, "\n(pair %d under the cursor)", hit.stripe + 1);
+                            }
+                        }
+                    }
+                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%%s",
                         (int)src->label.len, src->label.ptr,
                         (int)dst->label.len, dst->label.ptr,
-                        link->weight * 100.0f);
+                        link->weight * 100.0f, pairs);
                 }
             }
         }
@@ -11064,12 +11809,25 @@ struct QuantumChemistry : viamd::EventHandler {
         md_flow_layout_init(&layout, md_temp_allocator(temp));
         md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
 
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
+
         FlowView view = {};
         view.area_min = { 0.0f, 0.0f };
         view.area_max = size;
-        view.zoom = 1.0f;
+        vec2_t pan = {};
+        flow_fit(&pan, &view.zoom, layout, size, flow_measure_margins_vg(&flow.graph, &flow.cut, &layout, flow.style, &notes));
+        view.pan = { pan.x, pan.y };
 
-        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style);
+        // the page under it, so the file reads the same in any viewer's theme
+        md_vg_add_rect_filled(&scene, { 0.0f, 0.0f }, { size.x, size.y }, MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
+
+        FlowStripes stripes = {};
+        stripes.offset    = flow.stripe_offset;
+        stripes.frac      = flow.stripe_frac;
+        stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes, &notes);
 
         const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
