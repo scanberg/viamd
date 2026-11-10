@@ -7,6 +7,7 @@
 #include <core/md_array.h>
 #include <core/md_common.h>
 
+#include <algorithm>
 #include <stdio.h>
 #include <string.h>
 
@@ -101,23 +102,30 @@ int64_t residue_chain(const md_system_t* sys, int32_t r) {
     return (int64_t)md_system_chain_find_by_residue_idx(sys, (size_t)r);
 }
 
-// Numbers the names repeated among the children [first, last) of one parent, in order
+// Numbers the names repeated among the children of one parent, in their order: sorted by name, so a molecule of
+// thousands of fragments is not compared pair by pair
 void number_repeats(Builder& b, const uint32_t* nodes, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        char* ni = b.name + (size_t)nodes[i] * FRAG_TREE_NAME_CAP;
-        size_t total = 0;
-        for (size_t j = 0; j < count; ++j) total += strcmp(ni, b.name + (size_t)nodes[j] * FRAG_TREE_NAME_CAP) == 0;
-        if (total < 2) continue;
-        char base[FRAG_TREE_NAME_CAP];
-        snprintf(base, sizeof(base), "%s", ni);
-        uint32_t k = 0;
-        for (size_t j = i; j < count; ++j) {
-            char* nj = b.name + (size_t)nodes[j] * FRAG_TREE_NAME_CAP;
-            if (strcmp(nj, base) != 0) continue;
-            char tmp[FRAG_TREE_NAME_CAP + 12];
-            snprintf(tmp, sizeof(tmp), "%s %u", base, ++k);
-            snprintf(nj, FRAG_TREE_NAME_CAP, "%s", tmp);
+    if (count < 2) return;
+    uint32_t* order = (uint32_t*)md_alloc(b.temp, sizeof(uint32_t) * count);
+    for (size_t i = 0; i < count; ++i) order[i] = nodes[i];
+    const char* names = b.name;
+    std::sort(order, order + count, [names](uint32_t x, uint32_t y) {
+        const int c = strcmp(names + (size_t)x * FRAG_TREE_NAME_CAP, names + (size_t)y * FRAG_TREE_NAME_CAP);
+        return c < 0 || (c == 0 && x < y);
+    });
+    for (size_t beg = 0; beg < count;) {
+        size_t end = beg + 1;
+        while (end < count && strcmp(b.name + (size_t)order[beg] * FRAG_TREE_NAME_CAP, b.name + (size_t)order[end] * FRAG_TREE_NAME_CAP) == 0) ++end;
+        if (end - beg > 1) {
+            char base[FRAG_TREE_NAME_CAP];
+            snprintf(base, sizeof(base), "%s", b.name + (size_t)order[beg] * FRAG_TREE_NAME_CAP);
+            for (size_t k = beg; k < end; ++k) {
+                char tmp[FRAG_TREE_NAME_CAP + 12];
+                snprintf(tmp, sizeof(tmp), "%s %u", base, (unsigned)(k - beg + 1));
+                snprintf(b.name + (size_t)order[k] * FRAG_TREE_NAME_CAP, FRAG_TREE_NAME_CAP, "%s", tmp);
+            }
         }
+        beg = end;
     }
 }
 
@@ -134,19 +142,18 @@ md_array(int32_t) molecule_residues(const Builder& b, size_t m) {
     const md_molecule_t mol = md_system_molecule(b.sys, m);
     md_array(int32_t) residues = nullptr;
     if (b.atom_res) {
+        // A molecule's residues are each a range of atoms: a residue is new where its atom's is not the last seen
+        // nor one seen before (sorted after)
+        int32_t last = -1;
         for (size_t k = 0; k < mol.count; ++k) {
             const int32_t r = b.atom_res[mol.atom_idx[k]];
-            if (r < 0) continue;
-            bool have = false;
-            for (size_t j = 0; j < md_array_size(residues) && !have; ++j) have = residues[j] == r;
-            if (!have) md_array_push(residues, r, b.temp);
+            if (r < 0 || r == last) continue;
+            last = r;
+            md_array_push(residues, r, b.temp);
         }
-        for (size_t i = 1; i < md_array_size(residues); ++i) {
-            const int32_t v = residues[i];
-            size_t j = i;
-            while (j > 0 && residues[j - 1] > v) { residues[j] = residues[j - 1]; --j; }
-            residues[j] = v;
-        }
+        const size_t n = md_array_size(residues);
+        std::sort(residues, residues + n);
+        md_array_shrink(residues, (size_t)(std::unique(residues, residues + n) - residues));
     }
     return residues;
 }
@@ -200,31 +207,42 @@ void emit_molecule(Builder& b, size_t m, uint32_t par, const char* name_override
     const size_t num_frags = f_end - f_beg;
     const size_t num_res = md_array_size(residues);
 
-    // The fragments, whole, in the molecule's order: by the first residue they are of, then by their first atom,
-    // one that reaches on to a later residue (a peptide group to the next) after those of its first residue alone.
-    // Of a protein: the N-terminus, then for each residue its alpha carbon, its side chain and the peptide group.
-    md_fragment_idx_t* order = (md_fragment_idx_t*)md_alloc(b.temp, sizeof(md_fragment_idx_t) * num_frags);
-    uint64_t* key = (uint64_t*)md_alloc(b.temp, sizeof(uint64_t) * num_frags);
-    md_residue_idx_t of[4];
+    // Each fragment once: its atoms (into one pool), its first atom and its residues (up to two, and how many)
+    struct Frag { uint32_t atom_beg, atom_end; int32_t res[2]; uint32_t num_res; uint64_t key; };
+    Frag* fr = (Frag*)md_alloc(b.temp, sizeof(Frag) * num_frags);
+    md_array(int32_t) pool = nullptr;
     for (size_t i = 0; i < num_frags; ++i) {
         const md_fragment_idx_t f = (md_fragment_idx_t)(f_beg + i);
+        Frag& x = fr[i];
+        x.atom_beg = (uint32_t)md_array_size(pool);
+        x.num_res = 0;
+        x.res[0] = x.res[1] = -1;
         uint32_t first_atom = UINT32_MAX;
+        int32_t extra[8];
+        uint32_t num_extra = 0;
         for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) {
+            md_array_push(pool, it.atom, b.temp);
             first_atom = MD_MIN(first_atom, (uint32_t)it.atom);
+            const int32_t r = b.atom_res ? b.atom_res[it.atom] : -1;
+            if (r < 0) continue;
+            bool have = false;
+            for (uint32_t k = 0; k < num_extra && !have; ++k) have = extra[k] == r;
+            if (!have && num_extra < MD_COUNTOF(extra)) extra[num_extra++] = r;
         }
-        const size_t no = md_system_fragment_residues(of, MD_COUNTOF(of), sys, f);
-        const uint64_t first_res = no > 0 ? (uint64_t)of[0] : 0xFFFFFFull;  // of no residue: last
-        order[i] = f;
-        key[i] = (first_res << 33) | ((uint64_t)(no > 1) << 32) | first_atom;
+        x.atom_end = (uint32_t)md_array_size(pool);
+        std::sort(extra, extra + num_extra);
+        x.num_res = num_extra;
+        if (num_extra > 0) x.res[0] = extra[0];
+        if (num_extra > 1) x.res[1] = extra[1];
+        // The molecule's order: by the first residue each is of (of none: last), then by its first atom, one that
+        // reaches on to a later residue (a peptide group to the next) after those of its first residue alone. Of a
+        // protein: the N-terminus, then for each residue its alpha carbon, its side chain and the peptide group.
+        const uint64_t first_res = num_extra > 0 ? (uint64_t)extra[0] : 0xFFFFFFull;
+        x.key = (first_res << 33) | ((uint64_t)(num_extra > 1) << 32) | first_atom;
     }
-    for (size_t i = 1; i < num_frags; ++i) {
-        const uint64_t k = key[i];
-        const md_fragment_idx_t f = order[i];
-        size_t q = i;
-        for (; q > 0 && key[q - 1] > k; --q) { key[q] = key[q - 1]; order[q] = order[q - 1]; }
-        key[q] = k;
-        order[q] = f;
-    }
+    uint32_t* order = (uint32_t*)md_alloc(b.temp, sizeof(uint32_t) * num_frags);
+    for (size_t i = 0; i < num_frags; ++i) order[i] = (uint32_t)i;
+    std::sort(order, order + num_frags, [fr](uint32_t x, uint32_t y) { return fr[x].key < fr[y].key; });
 
     // In a molecule of residues a fragment says where it is: "alpha carbon, ALA 3", "peptide, ALA 3 / ALA 4". Of
     // several chains (joined by a disulfide), the residues say their chain, as their numbers repeat.
@@ -233,19 +251,20 @@ void emit_molecule(Builder& b, size_t m, uint32_t par, const char* name_override
 
     md_array(uint32_t) kids = nullptr;
     for (size_t i = 0; i < num_frags; ++i) {
-        const md_fragment_idx_t f = order[i];
+        const Frag& x = fr[order[i]];
+        const md_fragment_idx_t f = (md_fragment_idx_t)(f_beg + order[i]);
         const md_str_t fn = md_system_fragment_name(sys, f);
-        const size_t no = num_res > 1 ? md_system_fragment_residues(of, MD_COUNTOF(of), sys, f) : 0;
+        const uint32_t no = num_res > 1 ? x.num_res : 0;
         if (no == 0) {
             snprintf(nm, sizeof(nm), "%.*s", (int)fn.len, fn.ptr);
         } else {
             char r0[FRAG_TREE_NAME_CAP];
-            residue_label(r0, sizeof(r0), sys, of[0], chains);
+            residue_label(r0, sizeof(r0), sys, x.res[0], chains);
             if (no == 1) {
                 snprintf(nm, sizeof(nm), "%.*s, %s", (int)fn.len, fn.ptr, r0);
             } else {
                 char r1[FRAG_TREE_NAME_CAP];
-                residue_label(r1, sizeof(r1), sys, of[1], chains && residue_chain(sys, of[1]) != residue_chain(sys, of[0]));
+                residue_label(r1, sizeof(r1), sys, x.res[1], chains && residue_chain(sys, x.res[1]) != residue_chain(sys, x.res[0]));
                 char tmp[3 * FRAG_TREE_NAME_CAP];
                 snprintf(tmp, sizeof(tmp), "%.*s, %s / %s%s", (int)fn.len, fn.ptr, r0, r1, no > 2 ? " / ..." : "");
                 snprintf(nm, sizeof(nm), "%s", tmp);
@@ -253,8 +272,7 @@ void emit_molecule(Builder& b, size_t m, uint32_t par, const char* name_override
         }
         const uint32_t leaf = b.push(mnode, FRAG_TREE_FRAGMENT, md_system_fragment_kind(sys, f), nm);
         md_array_push(kids, leaf, b.temp);
-        fragment_atoms(&scratch, b, f, -1);
-        for (size_t k = 0; k < md_array_size(scratch); ++k) b.add_atom(leaf, scratch[k]);
+        for (uint32_t k = x.atom_beg; k < x.atom_end; ++k) b.add_atom(leaf, pool[k]);
         b.close(leaf);
     }
     number_repeats(b, kids, md_array_size(kids));
