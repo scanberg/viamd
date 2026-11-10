@@ -15,13 +15,15 @@ struct md_allocator_i;
 //
 //   set        molecules alike (one template), two or more: "water x24"
 //   molecule   one molecule of several fragments: named by its residue, "protein", "nucleic acid", or its formula
-//   residue    a residue of a molecule of several residues, when it has several fragments
-//   fragment   a leaf: a fragment, or the part of it in one residue
+//   residue    a residue of a molecule of several residues, with the fragments it is the first of
+//   fragment   a leaf: a fragment, whole
 //
-// A level of one child is not made: a molecule of one fragment is that fragment, a residue of one fragment is
-// a leaf. A fragment over residues is shown under each of its residues with that residue's atoms only, its name
-// saying the other ("ester, with LYS 13"), so that every atom is in one leaf and the tree's quantities, which add up
-// over its atoms, are right. Names repeated under one parent are numbered ("phenyl 1", "phenyl 2").
+// A level of one child is not made: a molecule of one fragment is that fragment, a residue which is one fragment is
+// a leaf. A fragment over residues (a peptide group, a phosphate, a disulfide) is shown whole under the first of them,
+// its name saying the next ("peptide, with ALA 4"): every atom is in one leaf, so the tree's quantities, which add up
+// over its atoms, are right, but a residue's node is its fragments, not its atoms (of a protein: its alpha carbon,
+// its side chain and the peptide group to the next residue). Names repeated under one parent are numbered
+// ("phenyl 1", "phenyl 2").
 //
 // The nodes are in pre-order, a parent before its children, and their atoms are ordered so that every node is one
 // contiguous range of atom_idx, its children's ranges inside its own.
