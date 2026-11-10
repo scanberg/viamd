@@ -569,6 +569,9 @@ struct DipoleGroup {
 // the attribute table rather than at a copy - so it is good for as long as the system is loaded and
 // must not outlive it.
 struct DensityProperty {
+    // How many a caller gathers into a buffer on its stack: well past what any file carries
+    static constexpr size_t MaxCount = 512;
+
     uint64_t key    = 0;    // attribute id, stable across a reload
     md_str_t label     = { 0 };
 };

@@ -5931,7 +5931,7 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
     // The same rule the representation window applies when it draws: a key naming none of the
     // properties this system has is replaced by the first one.
     if (es->source == ElectronicStructureSource::DensityProperty) {
-        DensityProperty props[64];
+        DensityProperty props[DensityProperty::MaxCount];
         const size_t num_props = MD_MIN(density_properties_gather(props, MD_COUNTOF(props), sys), MD_COUNTOF(props));
         bool found = false;
         for (size_t i = 0; i < num_props; ++i) {

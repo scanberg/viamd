@@ -2907,7 +2907,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (electronic_structure_is_density_property(es)) {
             // Gathered here rather than kept in a list somewhere: it is a handful of entries borrowed
             // from the attribute table, and a stored copy would be one more thing to invalidate on load.
-            DensityProperty density_props[64];
+            DensityProperty density_props[DensityProperty::MaxCount];
             const int num_density_props = (int)MD_MIN(density_properties_gather(density_props, MD_COUNTOF(density_props), state->mold.sys), MD_COUNTOF(density_props));
             if (num_density_props > 0) {
                 // A key that names nothing in the current list - a fresh representation, or a workspace
