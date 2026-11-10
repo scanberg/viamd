@@ -2186,7 +2186,7 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
-        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Localization) {
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Length) {
             rep->electronic_structure.volume.map_kind = kind;
             rep->electronic_structure.volume.map_init = true;
         }
@@ -3146,6 +3146,12 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             }
         }
 
+        if (es.source == ElectronicStructureSource::DensityScaleLength) {
+            prop::hint((const char*)u8"ρ/|∇ρ| of the total density, in bohr: the distance over which the density changes by a "
+                       u8"factor e. Short near the nuclei and in the far tails, infinite at the critical points (capped at %.0f).",
+                       ES_DENSITY_SCALE_LENGTH_MAX);
+        }
+
         if (electronic_structure_uses_magnitude_toggle(es)) {
             const bool density = es.source == ElectronicStructureSource::ElectronDensity;
             prop::row("magnitude", density ? (const char*)u8"The surfaces of |ρ| instead of ρ" : (const char*)u8"The surfaces of |Ψ| instead of Ψ");
@@ -3167,8 +3173,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
             for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
                 const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
-                // ELF and LOL are about how they vary through space, which a surface of one value does not show
-                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
+                // ELF and LOL are about how they vary through space, which a surface of one value does not show; nor are
+                // these fields what the mesh isosurfaces are extracted from (md_gto_iso)
+                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_gradient_field(es);
                 ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
@@ -3180,7 +3187,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     rep.needs_update = true;
                 }
                 ImGui::EndDisabled();
-                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
+                if (disabled) ImGui::SetItemTooltip("Not for ELF, LOL and the density scale length: a volume or a plane shows how they vary");
                 if (es.display == d) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
