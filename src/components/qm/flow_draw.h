@@ -58,10 +58,11 @@ struct FlowDrawStyle {
     float ribbon_label_min_px     = 22.0f;  // a ribbon this thick at its middle carries its share
     float ribbon_sublabel_min_px  = 44.0f;  // and this thick, what it is made of
 
-    // Group bands: brackets outboard of the labels of the rows they hold.
-    float band_offset_px    = 8.0f;   // gap between the labels and the band, and between nested bands
-    float band_width_px     = 3.0f;
-    float band_label_gap_px = 5.0f;
+    // Group bands: an expanded molecule (set, user group) as a bar of its own against the bars of its rows, spanning
+    // them, its name along it; nested ones outward, the labels outside them all.
+    float band_offset_px    = 3.0f;   // gap between the bars and the band, and between nested bands
+    float band_width_px     = 15.0f;
+    float band_fill_tint    = 0.12f;  // of the side's colour over white: paler than the bars
     bool  show_band_labels  = true;
 
     // A node's interior is this much of its colour over white, its border its colour darkened.
