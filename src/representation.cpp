@@ -2186,7 +2186,7 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
-        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Length) {
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Localization) {
             rep->electronic_structure.volume.map_kind = kind;
             rep->electronic_structure.volume.map_init = true;
         }
@@ -2607,6 +2607,7 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                                       "the electrostatic potential needs a basis, a ground state density and the QM atoms' nuclear charges,\n"
                                       "the local ionization energy a basis and canonical orbitals with their occupations and energies,\n"
                                       "the local electron attachment energy the same and at least one virtual orbital below zero,\n"
+                                      "the density scale length a basis and orbitals with their occupations,\n"
                                       "the embedding potential classical charges (atom/charge) on atoms outside the QM region");
             }
         }
@@ -2690,6 +2691,12 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                               "electron density. Never positive; lowest where a nucleophile attacks or a halogen bond forms (the\n"
                               "sigma hole). Defined for hybrid DFT orbitals and read on the 0.004 au isodensity surface; it depends\n"
                               "strongly on the method and basis, and is 0 everywhere with Hartree-Fock virtuals.");
+    } else if (es.field_kind == SurfaceFieldKind::DensityScaleLength) {
+        ImGui::SetItemTooltip((const char*)u8"The density scale length ρ/|∇ρ| of the QM region's ground state density on the surface: the\n"
+                              u8"distance over which the density changes by a factor e. On an isodensity surface it is how far the\n"
+                              u8"surface moves along its normal per relative change of the density (dρ/ρ moves it by ρ/|∇ρ| dρ/ρ):\n"
+                              u8"long where the boundary of the electron cloud is soft, short where it is stiff, as when the density\n"
+                              u8"is compressed under pressure (GOSTSHYP). About 0.3-1 bohr on the 0.001 au surface.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
@@ -3146,12 +3153,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             }
         }
 
-        if (es.source == ElectronicStructureSource::DensityScaleLength) {
-            prop::hint((const char*)u8"ρ/|∇ρ| of the total density, in bohr: the distance over which the density changes by a "
-                       u8"factor e. Short near the nuclei and in the far tails, infinite at the critical points (capped at %.0f).",
-                       ES_DENSITY_SCALE_LENGTH_MAX);
-        }
-
         if (electronic_structure_uses_magnitude_toggle(es)) {
             const bool density = es.source == ElectronicStructureSource::ElectronDensity;
             prop::row("magnitude", density ? (const char*)u8"The surfaces of |ρ| instead of ρ" : (const char*)u8"The surfaces of |Ψ| instead of Ψ");
@@ -3173,9 +3174,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
             for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
                 const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
-                // ELF and LOL are about how they vary through space, which a surface of one value does not show; nor are
-                // these fields what the mesh isosurfaces are extracted from (md_gto_iso)
-                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_gradient_field(es);
+                // ELF and LOL are about how they vary through space, which a surface of one value does not show
+                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
                 ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
@@ -3187,7 +3187,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     rep.needs_update = true;
                 }
                 ImGui::EndDisabled();
-                if (disabled) ImGui::SetItemTooltip("Not for ELF, LOL and the density scale length: a volume or a plane shows how they vary");
+                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
                 if (es.display == d) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();

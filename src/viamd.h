@@ -164,7 +164,6 @@ enum class ElectronicStructureSource {
     DensityProperty,
     ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
     LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
-    DensityScaleLength,         // rho / |grad rho| of the total density (md_qm_density_scale_length), bohr: likewise
     Count
 };
 
@@ -315,7 +314,6 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Density Property",
     "Electron Localization (ELF)",
     "Localized Orbital Locator (LOL)",
-    (const char*)u8"Density Scale Length (ρ/|∇ρ|)",
 };
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -326,7 +324,6 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
     ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
     ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
-    ElectronicStructureSourceFlag_DensityScaleLength        = 1u << (int)ElectronicStructureSource::DensityScaleLength,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -786,7 +783,6 @@ enum class ElectronicStructureValueKind {
     Density,        // >= 0, largest at the nuclei
     Signed,         // an orbital, a difference: about 0
     Localization,   // in [0, 1]: ELF, LOL
-    Length,         // >= 0, a length (bohr), up to a cap: the density scale length, largest at the critical points
 };
 
 // ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
@@ -795,19 +791,6 @@ static inline bool electronic_structure_is_localization(const ElectronicStructur
     return rep.source == ElectronicStructureSource::ElectronLocalization ||
            rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
-
-// The fields made of the density and its gradient at each point (and tau, for ELF and LOL): ELF, LOL and the density
-// scale length, of both spins together. Evaluated by one kernel from the spins' density matrices
-// (md_gto_gpu_localization_launch), or on the CPU by a pool task, and drawn as a volume or on a plane only (the mesh
-// isosurfaces are extracted from a density or an orbital, md_gto_iso, not from these).
-static inline bool electronic_structure_is_gradient_field(const ElectronicStructureRepresentation& rep) {
-    return electronic_structure_is_localization(rep) || rep.source == ElectronicStructureSource::DensityScaleLength;
-}
-
-// The density scale length is infinite where the gradient vanishes (every critical point, and the nuclei with a
-// gaussian basis); it is capped at this (bohr), well beyond what a grid shows of it, so the volume stays finite under
-// interpolation
-#define ES_DENSITY_SCALE_LENGTH_MAX 100.0
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
     return rep.source == ElectronicStructureSource::MolecularOrbital;
@@ -846,7 +829,6 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
 
 static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
-    if (rep.source == ElectronicStructureSource::DensityScaleLength) return ElectronicStructureValueKind::Length;
     return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
@@ -986,7 +968,6 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         break;
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
-    case ElectronicStructureSource::DensityScaleLength:
         // of both spins together, and drawn only as a volume or on a plane
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
@@ -1089,7 +1070,6 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     case ElectronicStructureSource::DensityProperty:
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
-    case ElectronicStructureSource::DensityScaleLength:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
         MD_ASSERT(false);

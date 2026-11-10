@@ -64,6 +64,8 @@ static const SurfaceFieldKindInfo* kind_table() {
         { "Local Ionization Energy", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
         // LocalElectronAttachmentEnergy: never positive, 0 where nothing attracts; lowest (most reactive) dark, as above
         { "Local Electron Attachment Energy", md_unit_hartree(),                                  SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
+        // DensityScaleLength: short (stiff) dark, long (soft) bright
+        { "Density Scale Length",    md_unit_bohr_radius(),                                       SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS },
     };
     return table;
 }
@@ -395,15 +397,30 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
 // rho ~1e-3, far above this.
 #define RATIO_RHO_FLOOR 1.0e-10
 
+// The density scale length rho / |grad rho| is taken the same way, from the density field alone with its gradient:
+// no numerator (num is NULL). It is infinite where the gradient vanishes, which on a surface happens only where it
+// passes through a critical point of the density: capped there (bohr), far beyond what a surface has (0.3 - 1 bohr on
+// an isodensity surface of 0.001 au). 0 where rho is below RATIO_RHO_FLOOR.
+#define SCALE_LENGTH_MAX 100.0
+
 struct OrbitalRatio {
     md_gto_basis_t      basis = {};         // from the heap: the fields and the GPU set are made of it
     float*              atom_xyz = nullptr; // bohr, packed, one per basis atom
     size_t              num_atoms = 0;
     md_gto_iso_field_t* rho = nullptr;      // the denominator: the electron density
-    md_gto_iso_field_t* num = nullptr;      // the numerator, hartree times density
-    size_t              num_orbitals = 0;   // in the numerator
+    md_gto_iso_field_t* num = nullptr;      // the numerator, hartree times density; NULL for the scale length
+    size_t              num_orbitals = 0;   // in the numerator (the scale length: in the density)
     double              floor_value = 0.0;  // where rho is below RATIO_RHO_FLOOR, hartree
 };
+
+// The density scale length: rho / |grad rho| of the density field, without a numerator
+static inline bool ratio_is_scale_length(const OrbitalRatio* a) {
+    return a && !a->num;
+}
+
+static inline float scale_length_value(double rho, double g2) {
+    return (float)md_qm_density_scale_length(rho, g2, RATIO_RHO_FLOOR, SCALE_LENGTH_MAX);
+}
 
 static inline bool basis_published(const md_system_t& sys) {
     return md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
@@ -465,7 +482,25 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
 
     // denominator and numerator
     OrbitalRows den, nom;
-    if (desc.kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
+    if (desc.kind == SurfaceFieldKind::DensityScaleLength) {
+        // the density alone, with its gradient
+        den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, MD_STR_LIT("orbital/total/density"), heap);
+        if (!den.count || den.num_ao != num_ao) {
+            MD_LOG_ERROR("%s: no orbitals with occupations over the %zu atomic orbitals of the basis", what, num_ao);
+            rows_free(&den);
+            ratio_destroy(a);
+            return nullptr;
+        }
+        a->num_orbitals = den.count;
+        a->rho = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, den.rows, nullptr, den.w, den.count, heap);
+        rows_free(&den);
+        if (!a->rho) {
+            MD_LOG_ERROR("%s: could not make the density field", what);
+            ratio_destroy(a);
+            return nullptr;
+        }
+        return a;
+    } else if (desc.kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
         double* we = nullptr;
         den.count = md_qm_alie_orbitals(&den.rows, &den.w, &we, &den.num_ao, &sys, heap);
         if (den.count) {
@@ -505,6 +540,12 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
 // The ratio at n <= 8 points, packed float3
 static void ratio_evaluate(double* out, const float* xyz, size_t n, const OrbitalRatio* a) {
     double r[8], q[8];
+    if (ratio_is_scale_length(a)) {
+        double g[3 * 8];
+        md_gto_iso_field_evaluate(a->rho, xyz, n, 0, r, g);
+        for (size_t i = 0; i < n; ++i) out[i] = scale_length_value(r[i], g[3 * i] * g[3 * i] + g[3 * i + 1] * g[3 * i + 1] + g[3 * i + 2] * g[3 * i + 2]);
+        return;
+    }
     md_gto_iso_field_evaluate(a->rho, xyz, n, 0, r, nullptr);
     md_gto_iso_field_evaluate(a->num, xyz, n, 0, q, nullptr);
     for (size_t i = 0; i < n; ++i) out[i] = ratio_value(q[i], r[i], a->floor_value);
@@ -524,6 +565,8 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
         return basis_published(sys) && md_qm_alie_available(&sys);
     case SurfaceFieldKind::LocalElectronAttachmentEnergy:
         return basis_published(sys) && md_qm_attachment_available(&sys);
+    case SurfaceFieldKind::DensityScaleLength:
+        return basis_published(sys) && md_qm_density_available(&sys);
     default:
         return false;
     }
@@ -739,7 +782,8 @@ static void build_run(FieldBuild* b) {
     desc.num_basis_atoms = b->num_basis_atoms;
     desc.source_hash     = b->hash;
     md_allocator_i* heap = md_get_heap_allocator();
-    if (b->kind == SurfaceFieldKind::AverageLocalIonizationEnergy || b->kind == SurfaceFieldKind::LocalElectronAttachmentEnergy) {
+    if (b->kind == SurfaceFieldKind::AverageLocalIonizationEnergy || b->kind == SurfaceFieldKind::LocalElectronAttachmentEnergy ||
+        b->kind == SurfaceFieldKind::DensityScaleLength) {
         b->data.ratio = build_ratio(desc);
         b->ok = b->data.ratio != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
@@ -833,6 +877,9 @@ static bool source_poll(FieldSource* fs, uint64_t wanted, md_gpu_stream_t stream
                 if (const md_gto_int_charges_t* q = fs->data.charges) {
                     MD_LOG_DEBUG("Surface field '%s': %u gaussians and %u points, %llu steps per point, made in %.1f ms on a worker thread", what,
                                  q->num_gaussians, q->num_points, (unsigned long long)md_gto_int_charges_work_per_point(q), b->seconds * 1.0e3);
+                } else if (const OrbitalRatio* a = fs->data.ratio; a && ratio_is_scale_length(a)) {
+                    MD_LOG_DEBUG("Surface field '%s': the density of %zu orbitals over %zu atomic orbitals, made in %.1f ms on a worker thread", what,
+                                 a->num_orbitals, md_gto_basis_num_ao(&a->basis), b->seconds * 1.0e3);
                 } else if (const OrbitalRatio* a = fs->data.ratio) {
                     MD_LOG_DEBUG("Surface field '%s': %zu orbitals in the numerator over %zu atomic orbitals, %.4f Eh where there is no density, made in %.1f ms on a worker thread", what,
                                  a->num_orbitals, md_gto_basis_num_ao(&a->basis), a->floor_value, b->seconds * 1.0e3);
@@ -878,39 +925,66 @@ static md_gto_int_gpu_charges_t source_gpu(FieldSource* fs, md_gpu_stream_t stre
     return (md_gto_int_gpu_charges_t)fs->gpu;
 }
 
-// An orbital ratio's two fields on the device, as one set: field 0 the density, field 1 the numerator
+// An orbital ratio's two fields on the device, as one set: field 0 the density, field 1 the numerator (the scale
+// length: the density alone)
 static md_gto_iso_gpu_set_t* source_ratio_gpu(FieldSource* fs, md_gpu_stream_t stream) {
     const OrbitalRatio* a = fs->data.ratio;
     if (!a || !stream) return nullptr;
     if (!fs->gpu && !fs->gpu_failed) {
         const md_gto_iso_field_t* fields[2] = { a->rho, a->num };
-        fs->gpu = md_gto_iso_gpu_set_create(stream, &a->basis, a->atom_xyz, 0, fields, 2, md_get_heap_allocator());
+        fs->gpu = md_gto_iso_gpu_set_create(stream, &a->basis, a->atom_xyz, 0, fields, a->num ? 2 : 1, md_get_heap_allocator());
         fs->gpu_failed = fs->gpu == nullptr;
     }
     return (md_gto_iso_gpu_set_t*)fs->gpu;
 }
 
+// The floats per point ratio_gpu_launch writes: the two fields of a ratio, or the density's gradient and value (float4)
+// for the scale length
+static inline size_t ratio_gpu_floats(const OrbitalRatio* a) {
+    return ratio_is_scale_length(a) ? 4 : 2;
+}
+
+// The bytes ratio_gpu_launch writes for count points, the count of failures included
+static inline size_t ratio_gpu_bytes(const OrbitalRatio* a, size_t count) {
+    return sizeof(float) * ratio_gpu_floats(a) * count + 16;
+}
+
 // An orbital ratio's two fields at count points on the device (xyz, stride bytes apart, 0 packed) into out: rho at
-// [0, count), the numerator at [count, 2 count), then the count of failures (uint32). False when nothing was issued.
-static bool ratio_gpu_launch(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, md_gpu_addr_t xyz, uint32_t stride, size_t count, md_gpu_addr_t out) {
+// [0, count), the numerator at [count, 2 count); for the scale length the density's gradient and value, float4 per
+// point. Then the count of failures (uint32). False when nothing was issued.
+static bool ratio_gpu_launch(md_gpu_stream_t stream, md_gto_iso_gpu_set_t* set, md_gpu_addr_t xyz, uint32_t stride, size_t count, md_gpu_addr_t out,
+                             const OrbitalRatio* a) {
     if (!set || !xyz || !out || count == 0 || count > UINT32_MAX) return false;
     md_gto_iso_gpu_eval_desc_t ed = {};
     ed.xyz        = xyz;
     ed.xyz_stride = stride;
     ed.num_xyz    = (uint32_t)count;
-    ed.num_fields = 2;
-    ed.fields[0]  = 0;
-    ed.fields[1]  = 1;
-    ed.out_value  = out;
-    ed.out_failed = out + sizeof(float) * 2 * count;
+    if (ratio_is_scale_length(a)) {
+        ed.num_fields   = 1;
+        ed.fields[0]    = 0;
+        ed.out_gradient = out;
+    } else {
+        ed.num_fields = 2;
+        ed.fields[0]  = 0;
+        ed.fields[1]  = 1;
+        ed.out_value  = out;
+    }
+    ed.out_failed = out + sizeof(float) * ratio_gpu_floats(a) * count;
     return md_gto_iso_gpu_evaluate_launch(stream, set, &ed);
 }
 
 // What ratio_gpu_launch wrote, read back: the ratio at point i into out[i], NaN where the GPU could not make it
 static void ratio_gpu_values(float* out, const void* rb, size_t count, const OrbitalRatio* a) {
     const float* v = (const float*)rb;
-    const uint32_t failed = *(const uint32_t*)(v + 2 * count);
+    const uint32_t failed = *(const uint32_t*)(v + ratio_gpu_floats(a) * count);
     if (failed) MD_LOG_INFO("Surface field: %u values could not be made on the GPU (too many shells reach their points)", failed);
+    if (ratio_is_scale_length(a)) {
+        for (size_t i = 0; i < count; ++i) {
+            const float* g = v + 4 * i;     // df/dx, df/dy, df/dz, f
+            out[i] = scale_length_value(g[3], (double)g[0] * g[0] + (double)g[1] * g[1] + (double)g[2] * g[2]);
+        }
+        return;
+    }
     const double floor_value = a ? a->floor_value : 0.0;
     for (size_t i = 0; i < count; ++i) out[i] = ratio_value(v[count + i], v[i], floor_value);
 }
@@ -1291,13 +1365,13 @@ static bool start_gpu_ratio(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     md_gto_iso_gpu_set_t* set = source_ratio_gpu(&w->source, stream);
     if (!set || !collect_wanted(vol, w)) return false;
     const size_t m = w->cpu_count;
-    const size_t out_bytes = sizeof(float) * 2 * m + 16;
+    const size_t out_bytes = ratio_gpu_bytes(w->source.data.ratio, m);
     w->pts_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, sizeof(float) * 3 * MD_MAX(m, (size_t)1));
     w->out_gpu = md_gpu_malloc(stream, MD_GPU_MEM_DEVICE, out_bytes);
     w->rb      = md_gpu_malloc(stream, MD_GPU_MEM_HOST_READ, out_bytes);
     bool ok = m > 0 && w->pts_gpu.gpu && w->out_gpu.gpu && w->rb.cpu;
     ok = ok && md_gpu_upload(stream, w->pts_gpu.gpu, w->cpu_xyz, sizeof(float) * 3 * m);
-    ok = ok && ratio_gpu_launch(stream, set, w->pts_gpu.gpu, 0, m, w->out_gpu.gpu);
+    ok = ok && ratio_gpu_launch(stream, set, w->pts_gpu.gpu, 0, m, w->out_gpu.gpu, w->source.data.ratio);
     ok = ok && md_gpu_copy(stream, w->rb.gpu, w->out_gpu.gpu, out_bytes);
     if (!ok) {
         if (w->rb.gpu) md_gpu_free(stream, w->rb.gpu);
@@ -1774,12 +1848,12 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
     }
     if (ratio) {
         // where the points are, no job: issued at once, then read back with the count of failures
-        const size_t out_bytes = sizeof(float) * 2 * w->count + 16;
+        const size_t out_bytes = ratio_gpu_bytes(w->source.data.ratio, w->count);
         if (w->gpu_out.gpu) md_gpu_free(w->stream, w->gpu_out.gpu);
         w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, out_bytes);
         w->rb      = md_gpu_malloc(w->stream, MD_GPU_MEM_HOST_READ, out_bytes);
         bool ok = w->gpu_out.gpu && w->rb.cpu;
-        ok = ok && ratio_gpu_launch(w->stream, set, xyz, stride, w->count, w->gpu_out.gpu);
+        ok = ok && ratio_gpu_launch(w->stream, set, xyz, stride, w->count, w->gpu_out.gpu, w->source.data.ratio);
         ok = ok && md_gpu_copy(w->stream, w->rb.gpu, w->gpu_out.gpu, out_bytes);
         if (!ok) {
             if (w->rb.gpu) md_gpu_free(w->stream, w->rb.gpu);
