@@ -5632,6 +5632,15 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
 // The backend choice, over a density matrix the caller already holds. density_evaluate below is
 // this plus the extract, and a caller which has cached the matrix - the QM residue does, because
 // the transition densities are rebuilt on every read - calls this one and skips the rebuild.
+bool gpu_volume_evaluation_available(const ApplicationState* state) {
+#if MD_ENABLE_GPU
+    return state && gpu_evaluation_ready(state);
+#else
+    (void)state;
+    return false;
+#endif
+}
+
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
                              const double* density_matrix, size_t dim, md_gto_op_t op) {
     MD_ASSERT(state);

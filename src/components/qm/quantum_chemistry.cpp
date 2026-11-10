@@ -102,6 +102,7 @@
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
+constexpr uint64_t interaction_surface_flow = HASH_STR_LIT64("interaction surface flow");
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
@@ -996,6 +997,78 @@ static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int3
     return true;
 }
 
+// The hole and particle densities of one excited state for the charge transfer window's side views, from its NTO
+// pairs: D_hole = sum_k lambda_k h_k h_k^T, D_particle = sum_k lambda_k p_k p_k^T, in the AO basis. The same pairs the
+// diagram partitions, so the views show what its columns count (for TDA these are the detachment and attachment
+// densities; for RPA they differ slightly, which is why the views say "hole" and "particle"). The pairs are read on the
+// main thread once they are resident (es_nto_ready), the matrices made on a worker: switching state never waits.
+struct CtDensityJob {
+    int32_t state = -1;
+    size_t  A = 0;
+    NtoPairs pairs = {};
+    double* D[2] = {};          // {A,A} hole, particle
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_density_job_destroy(CtDensityJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t K = job->pairs.K, A = job->A;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    for (int i = 0; i < 2; ++i) if (job->D[i]) md_free(heap, job->D[i], sizeof(double) * A * A);
+    delete job;
+}
+
+// The number of AOs the NTOs are written in: the last axis of the {S,L,A} coefficients
+static size_t nto_num_ao(const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_hole);
+    if (!attr || attr->format.rank < 1) return 0;
+    return attr->format.shape[attr->format.rank - 1];
+}
+
+// Null when the state's pairs cannot be read (yet: ask es_nto_ready first)
+static CtDensityJob* ct_density_job_start(const md_system_t& sys, int32_t state) {
+    const size_t A = nto_num_ao(sys);
+    if (state < 0 || A == 0) return nullptr;
+    CtDensityJob* job = new CtDensityJob();
+    job->state = state;
+    job->A = A;
+    if (!nto_pairs_read(&job->pairs, sys, A, state)) {
+        delete job;
+        return nullptr;
+    }
+    job->task.start({}, [job]() {
+        const size_t A = job->A, K = job->pairs.K;
+        md_allocator_i* heap = md_get_heap_allocator();
+        const double* src[2] = { job->pairs.hole, job->pairs.part };
+        for (int c = 0; c < 2; ++c) {
+            double* D = (double*)md_alloc(heap, sizeof(double) * A * A);
+            if (!D) { job->done.store(true, std::memory_order_release); return; }
+            md_memset(D, 0, sizeof(double) * A * A);
+            job->D[c] = D;
+            for (size_t k = 0; k < K; ++k) {
+                if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+                const double lam = MD_MAX(0.0, job->pairs.lambda[k]);
+                const double* v = src[c] + k * A;
+                for (size_t i = 0; i < A; ++i) {
+                    const double vi = lam * v[i];
+                    if (vi == 0.0) continue;
+                    double* row = D + i * A;
+                    for (size_t j = 0; j < A; ++j) row[j] += vi * v[j];
+                }
+            }
+        }
+        job->ok = true;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
 // The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
 static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
     if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
@@ -1416,6 +1489,64 @@ struct QuantumChemistry : viamd::EventHandler {
         double* attach    = nullptr;
         double* detach    = nullptr;
     } td_cache;
+
+    // The charge transfer window's side views: the molecule with the hole density beside the diagram's hole column and
+    // the particle density beside its particle column, one camera for both. Optional (they take room).
+    //
+    // Nothing here waits. A state's two densities are made from its NTO pairs on a worker (CtDensityJob) and evaluated
+    // into volumes on the GPU, at half the resolution of the main grid (the views are small). The volumes are kept in a
+    // cache of a set budget, least recently used out first, and while nothing else is asked the cache is filled with
+    // the other states, the selected one's neighbours first: switching state shows what is cached at once, and what is
+    // not yet keeps the last picture until it is.
+    struct CtViews {
+        bool   show = false;
+        float  width_frac = 0.26f;      // of the window's canvas, each side
+        double iso_val = 0.05;          // drawn at iso_val^2, as the transition analysis draws its densities
+        int    budget_mb = 256;
+        md_grid_t grid = {};
+        bool   initialized = false;
+
+        struct Entry {
+            int32_t  state = -1;
+            Volume   vol[2] = {};       // hole, particle
+            uint64_t v0[2] = {};        // their data versions when made: filled once both have moved on
+            uint64_t used = 0;
+            bool     failed = false;    // no densities to show for the state (no NTO pairs, or the evaluation failed)
+        };
+        md_array(Entry) cache = nullptr;    // heap
+        uint64_t tick = 0;
+        CtDensityJob* job = nullptr;
+        int32_t shown = -1;             // the state whose volumes the views show
+
+        GBuffer  gbuf = {};
+        uint32_t iso_tex[2] = {};
+        uint32_t out_tex[2] = {};
+        uint32_t out_fbo = 0;
+        uint64_t render_hash = 0;
+        PickingSurface picking_surface = {};
+        Camera camera = {};
+        ViewTransform target = {};
+        md_gl_rep_t gl_rep = {};
+    } ctv;
+
+    void ctv_free() {
+        ct_density_job_destroy(ctv.job);
+        ctv.job = nullptr;
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+            for (int c = 0; c < 2; ++c) if (ctv.cache[i].vol[c].tex_id) gl::free_texture(&ctv.cache[i].vol[c].tex_id);
+        }
+        md_array_free(ctv.cache, md_get_heap_allocator());
+        for (int i = 0; i < 2; ++i) {
+            if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+            if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+        }
+        if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
+        if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
+        md_gl_rep_destroy(ctv.gl_rep);
+        const bool show = ctv.show;
+        ctv = CtViews{};
+        ctv.show = show;     // a preference, not data
+    }
 
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
     //
@@ -2290,6 +2421,7 @@ struct QuantumChemistry : viamd::EventHandler {
         gl_rep = {};
         // Zeroed with nto below, which would leave its slot taken for good: one for each system loaded
         md_gl_rep_destroy(nto.gl_rep);
+        ctv_free();
         num_qm_atoms = 0;
         num_mos = 0;
         num_excited = 0;
@@ -2525,6 +2657,30 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
             nto.target = default_view;
             nto.camera = nto.target;
+
+            // The charge transfer window's side views: the same view to start from, the molecule in its element
+            // colours, a grid at half the density of the main one. What a previous system left goes first.
+            ctv_free();
+            picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
+            ctv.target = default_view;
+            ctv.camera = ctv.target;
+            ctv.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            {
+                QmAtoms qm = {};
+                if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
+                    md_temp_scope_t temp = md_temp_begin();
+                    MD_DEFER { md_temp_end(temp); };
+                    uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
+                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_util_element_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
+                    md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
+                }
+            }
+#if USE_AABB_GRID
+            init_grid(&ctv.grid, mat3_ident(), aabb.min_ext, aabb.max_ext, 0.5 * DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+#else
+            init_grid(&ctv.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, 0.5 * DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+#endif
+            ctv.initialized = true;
         }
 
         // RSP. Oscillator strengths are what a linear response calculation produces and
@@ -11126,6 +11282,381 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // The side views of the charge transfer window (CtViews)
+    // ---------------------------------------------------------------------------
+
+    size_t ctv_entry_bytes() const {
+        // two volumes of half floats
+        return (size_t)ctv.grid.dim[0] * (size_t)ctv.grid.dim[1] * (size_t)ctv.grid.dim[2] * 2 * 2;
+    }
+
+    CtViews::Entry* ctv_find(int32_t s) {
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+            if (ctv.cache[i].state == s) return &ctv.cache[i];
+        }
+        return nullptr;
+    }
+
+    // Both volumes filled: a GPU evaluation lands in its texture frames after it was asked for, and every landing
+    // moves the texture's data version on from the one it had when it was made
+    static bool ctv_entry_ready(const CtViews::Entry& e) {
+        if (e.failed) return false;
+        for (int c = 0; c < 2; ++c) {
+            if (!e.vol[c].tex_id || volume::data_version(e.vol[c].tex_id) == e.v0[c]) return false;
+        }
+        return true;
+    }
+
+    static void ctv_entry_free(CtViews::Entry* e) {
+        for (int c = 0; c < 2; ++c) if (e->vol[c].tex_id) gl::free_texture(&e->vol[c].tex_id);
+    }
+
+    // Room for one more state: the least recently used ready entries out, never the one asked for or the one on
+    // screen, never one whose evaluation is still under way (its readback would land in a texture gone). With
+    // evict false nothing goes, which is what a prefetch asks: it is never worth what is already there.
+    bool ctv_make_room(int32_t keep, bool evict) {
+        const size_t budget = (size_t)MD_MAX(ctv.budget_mb, 16) << 20;
+        const size_t entry = ctv_entry_bytes();
+        for (;;) {
+            size_t used = 0;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) if (!ctv.cache[i].failed) used += entry;
+            if (used + entry <= budget || md_array_size(ctv.cache) == 0) return true;
+            if (!evict) return false;
+            int64_t victim = -1;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                const CtViews::Entry& e = ctv.cache[i];
+                if (e.failed || e.state == keep || e.state == ctv.shown || !ctv_entry_ready(e)) continue;
+                if (victim < 0 || e.used < ctv.cache[victim].used) victim = (int64_t)i;
+            }
+            if (victim < 0) return true;    // over the budget by what is in use: one more state, for a while
+            ctv_entry_free(&ctv.cache[victim]);
+            md_array_swap_back_and_pop(ctv.cache, (size_t)victim);
+        }
+    }
+
+    // Once a frame while the views are on. Collects the density job that finished and puts its matrices on the
+    // GPU, then starts the next: the selected state when it is not cached, otherwise, when nothing is asked and
+    // the evaluation runs off this thread, the uncached state nearest the selected one that fits in the budget.
+    void ctv_update(ApplicationState& state) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        if (ctv.job && ctv.job->done.load(std::memory_order_acquire)) {
+            CtDensityJob* job = ctv.job;
+            ctv.job = nullptr;
+            if (!ctv_find(job->state) && ctv_make_room(job->state, job->state == rsp.selected)) {
+                CtViews::Entry e = {};
+                e.state = job->state;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) {
+                        init_volume(&e.vol[c], ctv.grid, GL_R16F);
+                        e.v0[c] = volume::data_version(e.vol[c].tex_id);
+                        if (!density_matrix_evaluate(&state, e.vol[c].tex_id, ctv.grid, job->D[c], job->A, MD_GTO_OP_SET)) e.failed = true;
+                    }
+                    if (e.failed) ctv_entry_free(&e);
+                }
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_density_job_destroy(job);
+        }
+        if (ctv.job) return;
+
+        const int32_t S = (int32_t)num_excited;
+        int32_t next = -1;
+        if (rsp.selected >= 0 && rsp.selected < S && !ctv_find(rsp.selected)) {
+            next = rsp.selected;
+        } else if (rsp.selected >= 0 && gpu_volume_evaluation_available(&state)) {
+            // nothing waiting on its evaluation: one state at a time, and only with room to spare
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                if (!ctv.cache[i].failed && !ctv_entry_ready(ctv.cache[i])) return;
+            }
+            if (!ctv_make_room(-1, false)) return;
+            for (int32_t d = 1; d < S && next < 0; ++d) {
+                const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
+                for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
+            }
+        }
+        if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
+        ctv.job = ct_density_job_start(state.mold.sys, next);
+        if (!ctv.job) {
+            // nothing to make the densities of: remembered, so that it is not asked again every frame
+            CtViews::Entry e = {};
+            e.state = next;
+            e.failed = true;
+            md_array_push(ctv.cache, e, heap);
+        }
+    }
+
+    // The two views, hole and particle, in r[0] and r[1]: the molecule, the selection and highlight marks over it,
+    // and each its own density. One camera for both, so they turn together and read side by side.
+    void draw_ct_views(ApplicationState& state, const ImRect r[2]) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 sz = r[0].GetSize();
+        if (sz.x < 16.0f || sz.y < 16.0f || !ctv.initialized) return;
+
+        camera_animate(&ctv.camera, ctv.target, state.app.timing.delta_s);
+
+        // What to show: the selected state when its volumes are in, the last state shown until then
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        if (sel && ctv_entry_ready(*sel)) {
+            ctv.shown = rsp.selected;
+        }
+        CtViews::Entry* shown = ctv.shown >= 0 ? ctv_find(ctv.shown) : nullptr;
+        if (shown && !ctv_entry_ready(*shown)) shown = nullptr;
+        if (sel && sel->failed) shown = nullptr;    // the last state's densities would read as this one's
+        if (shown) shown->used = ++ctv.tick;
+        const bool updating = ctv.shown != rsp.selected && !(sel && sel->failed);
+
+        const float aspect = sz.x / sz.y;
+        const mat4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
+        const mat4_t proj_mat     = camera_view_to_clip_matrix_persp(ctv.camera, aspect);
+        const mat4_t inv_view_mat = camera_view_to_world_matrix(ctv.camera);
+        const mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(ctv.camera, aspect);
+        const mat4_t world_to_clip = proj_mat * view_mat;
+        const mat4_t clip_to_world = inv_view_mat * inv_proj_mat;
+
+        const int width  = MD_MAX(1, (int)(sz.x * io.DisplayFramebufferScale.x));
+        const int height = MD_MAX(1, (int)(sz.y * io.DisplayFramebufferScale.y));
+        // Sized before the images go into the draw list, which records the texture names
+        if ((int)ctv.gbuf.width != width || (int)ctv.gbuf.height != height) {
+            gbuffer_init(&ctv.gbuf, width, height);
+            for (int i = 0; i < 2; ++i) {
+                if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+                if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            }
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (!ctv.iso_tex[i]) gl::init_texture_2D(&ctv.iso_tex[i], width, height, GL_RGBA16F);
+            if (!ctv.out_tex[i]) gl::init_texture_2D(&ctv.out_tex[i], width, height, GL_RGBA8);
+        }
+
+        vec4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
+        colors[0].w = colors[1].w = 0.75f;
+        const float iso_value = (float)(ctv.iso_val * ctv.iso_val);
+
+        // Camera control in either view; the picking reads the shared buffer, the same in both
+        for (int i = 0; i < 2; ++i) {
+            ImGui::PushID(i + 0x5c7);
+            ImGui::SetCursorScreenPos(r[i].Min);
+            InteractionSurfaceState surface = interaction_surface(interaction_surface_flow, vec_cast(sz));
+            InteractionSurfaceViewTransformArgs view_args = {
+                .camera = ctv.camera,
+                .trackball_param = state.view.trackball_param,
+            };
+            InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&ctv.target, surface, view_args);
+            if (view_result.reset_requested) ctv.target = default_view;
+            if (surface.hovered) {
+                InteractionSurfaceHitArgs hit_args = {
+                    .picking_surface = &ctv.picking_surface,
+                    .picking_handler = state.picking_handler,
+                    .fbo = ctv.gbuf.fbo,
+                    .width = ctv.gbuf.width,
+                    .height = ctv.gbuf.height,
+                    .clip_to_world = clip_to_world,
+                };
+                PickingHit hit = {};
+                interaction_surface_hit_extract(&hit, surface, hit_args);
+                InteractionSurfaceEvent event = {};
+                interaction_surface_event_extract(&event, surface, hit);
+                event.clip_to_world = clip_to_world;
+                event.world_to_clip = world_to_clip;
+                if (event.kind != InteractionSurfaceEventKind::ContextMenu && event.kind != InteractionSurfaceEventKind::RegionSelect) {
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+                }
+            }
+            ImGui::PopID();
+        }
+
+        uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)ctv.gl_rep.id);
+        {
+            const int layout[2] = { width, height };
+            render_hash = md_hash64(layout, sizeof(layout), render_hash);
+            render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
+            const int32_t s = shown ? shown->state : -1;
+            render_hash = md_hash64(&s, sizeof(s), render_hash);
+            if (shown) {
+                for (int c = 0; c < 2; ++c) {
+                    const uint64_t v = volume::data_version(shown->vol[c].tex_id);
+                    render_hash = md_hash64(&shown->vol[c].tex_id, sizeof(shown->vol[c].tex_id), render_hash);
+                    render_hash = md_hash64(&v, sizeof(v), render_hash);
+                }
+            }
+            render_hash = md_hash64(colors, sizeof(colors), render_hash);
+            render_hash = md_hash64(&iso_value, sizeof(iso_value), render_hash);
+            render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
+            render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
+            render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+            render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
+            render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
+            render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+            render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
+            render_hash = render_hash ? render_hash : 1;
+        }
+
+        if (render_hash != ctv.render_hash) {
+            ctv.render_hash = render_hash;
+            GBuffer& gbuf = ctv.gbuf;
+            gbuffer_clear(&gbuf);
+
+            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                                            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
+
+            auto draw_rep = [&state, &view_mat, &proj_mat](md_gl_rep_t rep, md_gl_shaders_t& shaders, uint32_t atom_mask) {
+                md_gl_draw_op_t draw_op = {};
+                draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.args.ball_and_stick.bond_orders  = true;
+                draw_op.rep = rep;
+                md_gl_draw_args_t draw_args = {
+                    .shaders = shaders,
+                    .draw_operations = { .count = 1, .ops = &draw_op },
+                    .view_transform = {
+                        .view_matrix = (const float*)view_mat.elem,
+                        .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                    .picking_offset = gl_picking_offset(state),
+                    .atom_mask = atom_mask,
+                };
+                md_gl_draw(&draw_args);
+            };
+            draw_rep(ctv.gl_rep, state.gl.shaders, 0);
+
+            const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+            if (draw_marks) {
+                gbuffer_marks_begin(&gbuf);
+                draw_rep(ctv.gl_rep, state.gl.shaders_marks, AtomBit_Marked);
+                gbuffer_marks_end(&gbuf);
+            }
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDepthFunc(GL_LESS);
+            glDepthMask(0);
+            glColorMask(1, 1, 1, 1);
+
+            postprocess_pipeline::Settings pp = {};
+            postprocess_pipeline::Inputs in = {};
+            pp.background_color   = state.visuals.background.color;
+            pp.shading.mode       = state.visuals.shading.mode;
+            pp.shading.ambient    = state.visuals.shading.ambient;
+            pp.shading.specular   = state.visuals.shading.specular;
+            pp.shading.colors     = state.visuals.shading.colors;
+            pp.shading.light      = state.visuals.shading.light;
+            pp.shading.environment = state.visuals.shading.environment;
+            pp.tonemap.enabled    = state.visuals.tonemapping.enabled;
+            pp.tonemap.mode       = state.visuals.tonemapping.tonemapper;
+            pp.tonemap.exposure   = state.visuals.tonemapping.exposure;
+            pp.tonemap.gamma      = state.visuals.tonemapping.gamma;
+            pp.shadows.enabled = false;
+            pp.ssao.enabled    = false;
+            pp.dof.enabled     = false;
+            pp.fxaa.enabled    = true;
+            pp.taa.enabled     = false;
+            pp.sharpen.enabled = false;
+            in.depth        = gbuf.tex.depth;
+            in.color        = gbuf.tex.color;
+            in.normal       = gbuf.tex.normal;
+            in.velocity     = gbuf.tex.velocity;
+            in.transparency = gbuf.tex.transparency;
+            if (draw_marks) {
+                in.marks       = gbuf.tex.marks;
+                in.marks_group = gbuf.tex.marks_group;
+                marks_settings(&pp, state, 1.0f, MD_MAX(1, (int)roundf(io.DisplayFramebufferScale.x)));
+            }
+            ViewParam view_param = {
+                .matrix = {
+                    .curr = { .view = view_mat, .proj = proj_mat, .norm = view_mat },
+                    .inv  = { .proj = inv_proj_mat },
+                },
+                .clip_planes = { .near = ctv.camera.near_plane, .far = ctv.camera.far_plane },
+                .resolution = { sz.x, sz.y },
+                .fov_y = ctv.camera.fov_y,
+            };
+
+            glDisable(GL_SCISSOR_TEST);
+            if (!ctv.out_fbo) glGenFramebuffers(1, &ctv.out_fbo);
+            for (int i = 0; i < 2; ++i) {
+                bool iso_written = false;
+                if (shown) {
+                    volume::IsoRenderDesc desc = {
+                        .render_target = {
+                            .depth  = gbuf.tex.depth,
+                            .color  = ctv.iso_tex[i],
+                            .width  = gbuf.width,
+                            .height = gbuf.height,
+                            .clear_color = true,
+                        },
+                        .texture = { .density_volume = shown->vol[i].tex_id },
+                        .matrix = {
+                            .model = shown->vol[i].texture_to_world,
+                            .view  = view_mat,
+                            .proj  = proj_mat,
+                            .inv_proj = inv_proj_mat,
+                        },
+                        .iso = {
+                            .count  = 1,
+                            .values = &iso_value,
+                            .colors = &colors[i],
+                            .exact  = state.settings.exact_isosurfaces,
+                        },
+                        .shading = {
+                            .roughness = 0.3f,
+                            .ior = 1.5f,
+                            .mode = pp.shading.mode,
+                            .ambient = pp.shading.ambient,
+                            .specular = pp.shading.specular,
+                            .colors = pp.shading.colors,
+                            .light = pp.shading.light,
+                            .environment = pp.shading.environment,
+                        },
+                    };
+                    iso_written = volume::render_isosurfaces(desc);
+                }
+                in.transparency_hdr = iso_written ? ctv.iso_tex[i] : 0;
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctv.out_fbo);
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctv.out_tex[i], 0);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                postprocess_pipeline::execute(in, pp, view_param);
+            }
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glDisable(GL_SCISSOR_TEST);
+        }
+
+        static const char* lbl[2] = { "Hole", "Particle" };
+        for (int i = 0; i < 2; ++i) {
+            dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
+            dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
+            const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
+            dl->AddText(tp, ImGui::ColorConvertFloat4ToU32(vec_cast(vec4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f })), lbl[i]);
+            const char* status = (sel && sel->failed) ? "no NTO pairs" : updating ? "updating..." : nullptr;
+            if (status) {
+                const ImVec2 ts = ImGui::CalcTextSize(status);
+                dl->AddText(ImVec2(r[i].Max.x - ts.x - 6.0f, r[i].Min.y + 4.0f), IM_COL32(0, 0, 0, 140), status);
+            }
+        }
+    }
+
     void draw_flow_window(ApplicationState& state) {
         if (!flow.show_window) return;
 
@@ -11257,6 +11788,18 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::SliderFloat("Hide ribbons under", &flow.style.ribbon_min_px, 0.0f, 6.0f, "%.1f px");
                     ImGui::SetItemTooltip("A ribbon thinner than this is not drawn - it reads as noise rather\n"
                                           "than as a quantity. The flow is still in the model and still counted.");
+                    ImGui::Separator();
+                    ImGui::Checkbox("3D views", &ctv.show);
+                    ImGui::BeginDisabled(!ctv.show);
+                    ImGui::SliderFloat("View width", &ctv.width_frac, 0.1f, 0.4f, "%.2f");
+                    ImGui::SetItemTooltip("Of the window's width, each side.");
+                    float iso = (float)ctv.iso_val;
+                    if (ImGui::SliderFloat("Iso value", &iso, 0.005f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic)) ctv.iso_val = iso;
+                    ImGui::SetItemTooltip("The densities are drawn at its square, as the transition analysis draws them.");
+                    ImGui::SliderInt("Cache", &ctv.budget_mb, 32, 2048, "%d MB");
+                    ImGui::SetItemTooltip("GPU memory for the states' densities, kept so that switching state shows them at once.\n"
+                                          "%zu states fit.", ctv.initialized && ctv_entry_bytes() ? ((size_t)ctv.budget_mb << 20) / ctv_entry_bytes() : (size_t)0);
+                    ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -11357,6 +11900,12 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::PopItemWidth();
 
             ImGui::SameLine();
+            ImGui::Checkbox("3D", &ctv.show);
+            ImGui::SetItemTooltip("The molecule on either side of the diagram: the hole density left, the particle\n"
+                                  "density right, from the state's NTO pairs. The states are prepared in the\n"
+                                  "background, so switching between them does not wait. Sizes under Settings.");
+
+            ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             ImGui::SetItemTooltip("Left drag pans, wheel zooms at the cursor.\n"
                                   "Shift+left selects, shift+right deselects - click one item,\n"
@@ -11369,11 +11918,32 @@ struct QuantumChemistry : viamd::EventHandler {
                 draw_flow_strip(state);
             }
 
-            const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
-            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
+            // The side views, when on, take a share of the width on either side: the hole density beside the hole
+            // column, the particle density beside the particle column. Too narrow to read, they are left out.
+            const ImVec2 area_p0 = ImGui::GetCursorScreenPos();
+            const ImVec2 area_sz = ImGui::GetContentRegionAvail();
+            const float side_gap = 4.0f;
+            float side_w = 0.0f;
+            if (ctv.show && ctv.initialized) {
+                side_w = floorf(area_sz.x * MD_CLAMP(ctv.width_frac, 0.1f, 0.4f));
+                if (side_w < 96.0f || area_sz.y < 64.0f) side_w = 0.0f;
+            }
+            const float side_take = side_w > 0.0f ? side_w + side_gap : 0.0f;
+            const ImVec2 canvas_p0 = area_p0 + ImVec2(side_take, 0.0f);
+            ImVec2 canvas_sz = area_sz - ImVec2(2.0f * side_take, 0.0f);
             canvas_sz.x = MD_MAX(canvas_sz.x, 64.0f);
             canvas_sz.y = MD_MAX(canvas_sz.y, 64.0f);
             const ImVec2 canvas_p1 = canvas_p0 + canvas_sz;
+
+            if (side_w > 0.0f) {
+                const ImRect side_rect[2] = {
+                    { area_p0, area_p0 + ImVec2(side_w, canvas_sz.y) },
+                    { ImVec2(canvas_p1.x + side_gap, area_p0.y), ImVec2(canvas_p1.x + side_gap + side_w, area_p0.y + canvas_sz.y) },
+                };
+                ctv_update(state);
+                draw_ct_views(state, side_rect);
+                ImGui::SetCursorScreenPos(canvas_p0);
+            }
 
             ImGui::InvisibleButton("##flow_canvas", canvas_sz,
                 ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);

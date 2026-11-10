@@ -3008,6 +3008,10 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
                              const double* density_matrix, size_t dim, md_gto_op_t op);
 
+// Whether an evaluation above goes to the GPU, and the main thread only queues it. False means the GL fallback, which
+// evaluates on the main thread before it returns: what is evaluated ahead of being asked for should then wait.
+bool gpu_volume_evaluation_available(const ApplicationState* state);
+
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
