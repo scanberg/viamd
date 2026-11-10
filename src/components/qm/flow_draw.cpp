@@ -342,6 +342,8 @@ struct FlowLabel {
     bool   secondary[FLOW_LABEL_LINES];
 };
 
+static int flow_side_index(int side) { return side < 0 ? 0 : (side > 0 ? 2 : 1); }
+
 static int flow_column_side(uint32_t column, uint32_t num_columns) {
     if (num_columns <= 1) return +1;
     if (column == 0) return -1;
@@ -349,16 +351,107 @@ static int flow_column_side(uint32_t column, uint32_t num_columns) {
     return 0;
 }
 
-static int flow_side_index(int side) { return side < 0 ? 0 : (side > 0 ? 2 : 1); }
+// Ancestors in the graph of a node (an "Others" counts from the parent it folds the children of)
+static uint32_t flow_depth(const md_flow_graph_t* graph, const md_flow_node_t* node) {
+    const size_t n = md_array_size(graph->nodes);
+    uint32_t d = 0;
+    for (uint32_t p = node->parent; p < n && d < 64; p = graph->nodes[p].parent) ++d;
+    return d;
+}
+
+bool flow_node_is_container(const md_flow_graph_t* graph, const md_flow_cut_t* cut, uint32_t cut_idx) {
+    const size_t n = md_array_size(graph->nodes);
+    if (cut_idx >= n) return false;     // an "Others" opens by its own rules
+    (void)cut;
+    for (size_t j = 0; j < n; ++j) {
+        const uint32_t p = graph->nodes[j].parent;
+        if (p < n && graph->nodes[p].parent == cut_idx) return true;    // a grandchild
+    }
+    return false;
+}
+
+// The same for every graph node at once: out[i] for graph node i
+static void flow_containers(bool* out, const md_flow_graph_t* graph) {
+    const size_t n = md_array_size(graph->nodes);
+    for (size_t i = 0; i < n; ++i) out[i] = false;
+    for (size_t j = 0; j < n; ++j) {
+        const uint32_t p = graph->nodes[j].parent;
+        if (p < n && graph->nodes[p].parent < n) out[graph->nodes[p].parent] = true;
+    }
+}
+
+void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, const md_flow_cut_t* cut, float gap) {
+    if (!layout || !graph || !cut) return;
+    const uint32_t C = graph->num_columns;
+    const size_t num_nodes = md_array_size(layout->nodes);
+    if (num_nodes == 0 || C < 2) return;
+
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+
+    // The deepest row of each side, and a level's pitch (a bar and the gap)
+    uint32_t* depth = md_temp_alloc_array(temp, uint32_t, num_nodes);
+    int32_t max_depth[3] = { -1, -1, -1 };
+    float pitch[3] = { 0, 0, 0 };
+    for (size_t i = 0; i < num_nodes; ++i) {
+        const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+        depth[i] = node ? flow_depth(graph, node) : 0;
+        const int s = node ? flow_side_index(flow_column_side(node->column, C)) : 1;
+        max_depth[s] = MD_MAX(max_depth[s], (int32_t)depth[i]);
+        pitch[s] = (layout->nodes[i].max.x - layout->nodes[i].min.x) * (1.0f + gap);
+    }
+    for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
+        const md_flow_layout_band_t* b = layout->bands + i;
+        const int s = flow_side_index(flow_column_side(b->column, C));
+        max_depth[s] = MD_MAX(max_depth[s], (int32_t)b->depth);
+    }
+    auto shift = [&](int side, uint32_t d) -> float {
+        if (side == 0) return 0.0f;
+        const int s = flow_side_index(side);
+        const float levels = (float)MD_MAX(max_depth[s] - (int32_t)d, 0);
+        return (float)side * levels * pitch[s];
+    };
+
+    // The rows, and where they are by cut index for the ribbons
+    const size_t cut_space = md_array_size(graph->nodes) + md_array_size(cut->other);
+    float* dx = md_temp_alloc_zero_array(temp, float, cut_space ? cut_space : 1);
+    for (size_t i = 0; i < num_nodes; ++i) {
+        md_flow_layout_node_t* ln = layout->nodes + i;
+        const md_flow_node_t* node = md_flow_cut_node(cut, graph, ln->cut_idx);
+        if (!node) continue;
+        const float d = shift(flow_column_side(node->column, C), depth[i]);
+        ln->min.x += d;
+        ln->max.x += d;
+        if (ln->cut_idx < cut_space) dx[ln->cut_idx] = d;
+    }
+    for (size_t i = 0; i < md_array_size(layout->ribbons); ++i) {
+        md_flow_layout_ribbon_t* r = layout->ribbons + i;
+        const md_flow_link_t* l = cut->links + r->link_idx;
+        const float ds = l->src < cut_space ? dx[l->src] : 0.0f;
+        const float dd = l->dst < cut_space ? dx[l->dst] : 0.0f;
+        r->p0.x += ds; r->p1.x += ds;
+        r->q0.x += dd; r->q1.x += dd;
+    }
+    for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
+        md_flow_layout_band_t* b = layout->bands + i;
+        const float d = shift(flow_column_side(b->column, C), b->depth);
+        b->min.x += d;
+        b->max.x += d;
+    }
+}
+
 
 // The lines of a node's label for a node 'h' pixels tall: name over share (and what it is made of, when
 // there is room), or one small line when there is not.
-static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_node_t* node, float h, const char* name_override = nullptr) {
-    char name[FLOW_LABEL_CAP], share[32], sub[FLOW_LABEL_CAP];
-    if (name_override) snprintf(name, sizeof(name), "%s", name_override);
-    else snprintf(name, sizeof(name), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
+static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_node_t* node, float h, const char* share_suffix = nullptr) {
+    char name[FLOW_LABEL_CAP], share[FLOW_LABEL_CAP], sub[FLOW_LABEL_CAP];
+    snprintf(name, sizeof(name), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
     snprintf(sub, sizeof(sub), "%.*s", (int)node->sublabel.len, node->sublabel.ptr ? node->sublabel.ptr : "");
     flow_format_share(share, sizeof(share), node->weight);
+    if (share_suffix && share_suffix[0]) {
+        const size_t len = strlen(share);
+        snprintf(share + len, sizeof(share) - len, " \xC2\xB7 %s", share_suffix);
+    }
 
     lb->num_lines = 0;
     const float two = flow_line_h(cv.base_size) + flow_line_h(cv.small_size);
@@ -385,11 +478,27 @@ static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_
 }
 
 // The widest a node's label can be, whichever form it takes
-static float flow_label_width_any(const FlowCanvas& cv, const md_flow_node_t* node) {
+static float flow_label_width_any(const FlowCanvas& cv, const md_flow_node_t* node, const char* share_suffix = nullptr) {
     FlowLabel a = {}, b = {};
-    flow_label_lines(&a, cv, node, 1.0e6f);
-    flow_label_lines(&b, cv, node, 0.0f);
+    flow_label_lines(&a, cv, node, 1.0e6f, share_suffix);
+    flow_label_lines(&b, cv, node, 0.0f, share_suffix);
     return MD_MAX(a.width, b.width);
+}
+
+// What a collapsed group holds, after its share: "4 fragments"
+static void flow_member_count(char* buf, size_t cap, const FlowDrawStyle& style, uint32_t n) {
+    const char* noun = style.member_noun[n == 1 ? 0 : 1];
+    snprintf(buf, cap, "%u %s", n, noun ? noun : "");
+}
+
+// The children of every graph node, counted
+static void flow_child_counts(uint32_t* out, const md_flow_graph_t* graph) {
+    const size_t n = md_array_size(graph->nodes);
+    for (size_t i = 0; i < n; ++i) out[i] = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t p = graph->nodes[i].parent;
+        if (p < n) out[p] += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -401,16 +510,11 @@ static vec4_t flow_node_base_color(const FlowDrawStyle& style, const md_flow_nod
     return node->color.w > 0.0f ? node->color : flow_vec4(style.node_border_color);
 }
 
-// The bands of one side stand against its bars, the innermost (deepest) next to them, and push the labels out:
-// how far they reach from the bars
-static float flow_band_reach(const FlowDrawStyle& style, uint32_t max_depth) {
-    return (float)(max_depth + 1) * (style.band_width_px + style.band_offset_px);
-}
-
-// Whether a band 'length' pixels long (less its arrow) holds the name along it
-static bool flow_band_label_fits(const FlowCanvas& cv, const FlowDrawStyle& style, const char* name, float length) {
+// The size of the text along a band 'width' pixels wide, and whether a name fits along 'length' of it
+static float flow_band_text_size(const FlowCanvas& cv, float width) { return MD_MIN(cv.small_size, width - 3.0f); }
+static bool flow_band_label_fits(const FlowCanvas& cv, const FlowDrawStyle& style, const char* name, float width, float length) {
     if (!style.show_band_labels || !cv.text_up) return false;
-    const float size = MD_MIN(cv.small_size, style.band_width_px - 2.0f);
+    const float size = flow_band_text_size(cv, width);
     return size >= 6.0f && cv.measure(cv.user, name, size) + 8.0f <= length;
 }
 
@@ -418,13 +522,21 @@ static void flow_node_name(char* buf, size_t cap, const md_flow_node_t* node) {
     snprintf(buf, cap, "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
 }
 
-// The deepest band of each side (FLOW side index), -1 for none
-static void flow_band_depths(int32_t out[3], const md_flow_graph_t* graph, const md_flow_layout_t* layout) {
-    out[0] = out[1] = out[2] = -1;
-    for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
-        const md_flow_layout_band_t* b = layout->bands + i;
-        const int s = flow_side_index(flow_column_side(b->column, graph->num_columns));
-        out[s] = MD_MAX(out[s], (int32_t)b->depth);
+// A collapsed group's arrow beside its row, between the bars and the label: its size, at a text size
+static float flow_arrow_box(const FlowCanvas& cv) { return MD_MAX(8.0f, cv.small_size * 0.9f); }
+static const float FLOW_ARROW_PAD = 4.0f;
+
+// Whether any row of a side has an arrow beside it (container: flow_containers): that side's labels stand out by its room
+static void flow_sides_with_arrows(bool out[3], const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+                                   const bool* container) {
+    out[0] = out[1] = out[2] = false;
+    const size_t n = md_array_size(graph->nodes);
+    for (size_t i = 0; i < md_array_size(layout->nodes); ++i) {
+        const uint32_t c = layout->nodes[i].cut_idx;
+        const md_flow_node_t* node = md_flow_cut_node(cut, graph, c);
+        if (!node || c >= n || !container[c]) continue;
+        const int side = flow_column_side(node->column, graph->num_columns);
+        if (side != 0) out[flow_side_index(side)] = true;
     }
 }
 
@@ -448,24 +560,35 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     const uint32_t num_columns = graph->num_columns;
 
     // ---- the nodes on screen, their sides, their labels ----
-    int32_t band_depth[3];
-    flow_band_depths(band_depth, graph, layout);
-    float band_reach[3];
-    for (int s = 0; s < 3; ++s) band_reach[s] = band_depth[s] >= 0 ? flow_band_reach(style, (uint32_t)band_depth[s]) : 0.0f;
     FlowLabel* labels = md_temp_alloc_zero_array(temp, FlowLabel, num_nodes ? num_nodes : 1);
     float label_w[3] = { 0, 0, 0 };    // the widest label placed, per side
 
-    // The collapsed groups (their bands) and how many rows each holds: a row whose band carries its name says that
-    const size_t num_graph_nodes = md_array_size(graph->nodes);
-    bool*     collapsed_band = md_temp_alloc_zero_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
-    uint32_t* num_children   = md_temp_alloc_zero_array(temp, uint32_t, num_graph_nodes ? num_graph_nodes : 1);
+    // How far out each outer side reaches (rows at their levels, bands): the labels stand beyond, in one line, after
+    // the arrows of the collapsed groups where a side has any
+    float outer[3] = { 1.0e30f, 0.0f, -1.0e30f };
+    for (size_t i = 0; i < num_nodes; ++i) {
+        const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+        if (!node) continue;
+        const int side = flow_column_side(node->column, num_columns);
+        if (side < 0) outer[0] = ImMin(outer[0], flow_view_to_screen(view, layout->nodes[i].min).x);
+        if (side > 0) outer[2] = ImMax(outer[2], flow_view_to_screen(view, layout->nodes[i].max).x);
+    }
     for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
-        if (layout->bands[i].flags & MD_FLOW_BAND_FLAG_COLLAPSED) collapsed_band[layout->bands[i].node] = true;
+        const int side = flow_column_side(layout->bands[i].column, num_columns);
+        if (side < 0) outer[0] = ImMin(outer[0], flow_view_to_screen(view, layout->bands[i].min).x);
+        if (side > 0) outer[2] = ImMax(outer[2], flow_view_to_screen(view, layout->bands[i].max).x);
     }
-    for (size_t i = 0; i < num_graph_nodes; ++i) {
-        const uint32_t p = graph->nodes[i].parent;
-        if (p < num_graph_nodes) num_children[p] += 1;
-    }
+    const size_t num_graph_nodes = md_array_size(graph->nodes);
+    bool* container = md_temp_alloc_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
+    flow_containers(container, graph);
+    bool arrows[3];
+    flow_sides_with_arrows(arrows, graph, cut, layout, container);
+    const float arrow_box = flow_arrow_box(cv);
+    auto label_out = [&](int s) { return style.label_gap_px + ((arrows[s] && cv.fill_tri) ? arrow_box + FLOW_ARROW_PAD : 0.0f); };
+
+    // A collapsed group's rows, counted for its label
+    uint32_t* num_children = md_temp_alloc_array(temp, uint32_t, num_graph_nodes ? num_graph_nodes : 1);
+    flow_child_counts(num_children, graph);
     {
         int32_t prev_col = -1;
         float prev_bottom = -1.0e30f;
@@ -478,19 +601,11 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             const float h = max.y - min.y;
             FlowLabel* lb = labels + i;
             lb->side = flow_column_side(node->column, num_columns);
-            const char* name_override = nullptr;
-            char count[FLOW_LABEL_CAP];
-            if (lb->side != 0 && ln->cut_idx < num_graph_nodes && collapsed_band[ln->cut_idx]) {
-                char name[FLOW_LABEL_CAP];
-                flow_node_name(name, sizeof(name), node);
-                const float arrow = cv.fill_tri ? style.band_width_px : 0.0f;
-                if (flow_band_label_fits(cv, style, name, MD_MAX(h, arrow) - arrow)) {
-                    const uint32_t n = num_children[ln->cut_idx];
-                    snprintf(count, sizeof(count), "%u %s", n, style.member_noun[n == 1 ? 0 : 1] ? style.member_noun[n == 1 ? 0 : 1] : "");
-                    name_override = count;
-                }
+            char count[FLOW_LABEL_CAP] = "";
+            if (lb->side != 0 && ln->cut_idx < num_graph_nodes && container[ln->cut_idx]) {
+                flow_member_count(count, sizeof(count), style, num_children[ln->cut_idx]);
             }
-            flow_label_lines(lb, cv, node, h, name_override);
+            flow_label_lines(lb, cv, node, h, count);
             const float centre = (min.y + max.y) * 0.5f;
             if (lb->side == 0) {
                 // on the bar: only when it fits its height
@@ -505,8 +620,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             // pushed off its own node: it would name the wrong row
             if (top > max.y + 1.0f) continue;
             lb->top = top;
-            const float out = style.label_gap_px + band_reach[flow_side_index(lb->side)];
-            lb->anchor_x = lb->side < 0 ? min.x - out : max.x + out;
+            const int s = flow_side_index(lb->side);
+            lb->anchor_x = lb->side < 0 ? outer[0] - label_out(s) : outer[2] + label_out(s);
             lb->visible = true;
             prev_bottom = top + lb->height;
             label_w[flow_side_index(lb->side)] = MD_MAX(label_w[flow_side_index(lb->side)], lb->width);
@@ -592,22 +707,16 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         const int side = flow_column_side(b->column, num_columns);
         if (side == 0) continue;     // a middle column has no free side
 
-        ImVec2 min = flow_view_to_screen(view, b->min);
-        ImVec2 max = flow_view_to_screen(view, b->max);
-        // never shorter than its arrow is wide: a small collapsed group is still a thing to click
-        const bool collapsed = (b->flags & MD_FLOW_BAND_FLAG_COLLAPSED) != 0;
-        if (cv.fill_tri && max.y - min.y < style.band_width_px) {
-            const float c = (min.y + max.y) * 0.5f;
-            min.y = c - style.band_width_px * 0.5f;
-            max.y = c + style.band_width_px * 0.5f;
+        // at its level (flow_layout_indent), as wide as a bar
+        ImVec2 band_min = flow_view_to_screen(view, b->min);
+        ImVec2 band_max = flow_view_to_screen(view, b->max);
+        const float band_w = band_max.x - band_min.x;
+        // never shorter than its arrow: a group of one small row is still a thing to close
+        if (cv.fill_tri && band_max.y - band_min.y < band_w) {
+            const float c = (band_min.y + band_max.y) * 0.5f;
+            band_min.y = c - band_w * 0.5f;
+            band_max.y = c + band_w * 0.5f;
         }
-        // the deepest next to the bars
-        const uint32_t slot = (uint32_t)MD_MAX(band_depth[flow_side_index(side)] - (int32_t)b->depth, 0);
-        const float out = style.band_offset_px + (float)slot * (style.band_width_px + style.band_offset_px);
-        const float x_in  = side < 0 ? min.x - out : max.x + out;
-        const float x_out = side < 0 ? x_in - style.band_width_px : x_in + style.band_width_px;
-        const ImVec2 band_min = { ImMin(x_in, x_out), min.y };
-        const ImVec2 band_max = { ImMax(x_in, x_out), max.y };
 
         const bool hovered = (int32_t)b->node == emphasis.hover_node;
         const bool touched = !has_highlight || hovered || flow_is_emphasized(emphasis, b->node);
@@ -625,32 +734,25 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             hit.stripe = -1;
         }
 
-        // Its arrow, at the top: pointing at the band when open, sideways when closed. One click on it opens or
-        // closes the group, where it is, on both sides.
+        // Its arrow, at the top, pointing down along it: open. One click on it closes the group, on both sides.
         float label_top = band_min.y;
         if (cv.fill_tri) {
-            const float aw = band_max.x - band_min.x;
-            const ImVec2 a0 = band_min, a1 = { band_max.x, band_min.y + aw };
+            const ImVec2 a0 = band_min, a1 = { band_max.x, band_min.y + band_w };
             const bool arrow_hovered = mouse.x >= a0.x && mouse.x <= a1.x && mouse.y >= a0.y && mouse.y <= a1.y;
             if (arrow_hovered) hit.toggle = (int32_t)b->node;
             const ImVec2 c = (a0 + a1) * 0.5f;
-            const float r = aw * (arrow_hovered ? 0.30f : 0.25f);
+            const float r = MD_MIN(band_w, 16.0f) * (arrow_hovered ? 0.30f : 0.25f);
             const vec4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
-            if (collapsed) {    // pointing right
-                cv.fill_tri(cv.user, ImVec2(c.x - r * 0.6f, c.y - r), ImVec2(c.x + r * 0.9f, c.y), ImVec2(c.x - r * 0.6f, c.y + r), col);
-            } else {            // pointing down
-                cv.fill_tri(cv.user, ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), ImVec2(c.x, c.y + r * 0.9f), col);
-            }
+            cv.fill_tri(cv.user, ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), ImVec2(c.x, c.y + r * 0.9f), col);
             label_top = a1.y;
         }
 
-        // its name along it, where the band is long enough to hold it (else the row's label or the tooltip has it)
+        // its name along it, where the band is long enough to hold it (else the tooltip has it)
         char buf[FLOW_LABEL_CAP];
         flow_node_name(buf, sizeof(buf), node);
-        if (!flow_band_label_fits(cv, style, buf, band_max.y - label_top)) continue;
-        const float size = MD_MIN(cv.small_size, style.band_width_px - 2.0f);
+        if (!flow_band_label_fits(cv, style, buf, band_w, band_max.y - label_top)) continue;
         const ImVec2 c = { (band_min.x + band_max.x) * 0.5f, (label_top + band_max.y) * 0.5f };
-        cv.text_up(cv.user, c, size, flow_with_alpha(text_col, alpha), buf);
+        cv.text_up(cv.user, c, flow_band_text_size(cv, band_w), flow_with_alpha(text_col, alpha), buf);
     }
 
     // ---- nodes ----
@@ -701,8 +803,30 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             hit.stripe = -1;
         }
 
-        // ---- its label ----
+        // ---- a collapsed group's arrow: between the bars and its label, pointing the way it opens (in, towards the
+        // ribbons). One click on it opens the group, on both sides. ----
         const FlowLabel* lb = labels + i;
+        if (cv.fill_tri && side != 0 && ln->cut_idx < num_graph_nodes && container[ln->cut_idx]) {
+            const int s = flow_side_index(side);
+            const float cx = side < 0 ? outer[0] - style.label_gap_px * 0.5f - arrow_box * 0.5f
+                                      : outer[2] + style.label_gap_px * 0.5f + arrow_box * 0.5f;
+            const float cy = lb->visible ? lb->top + flow_line_h(lb->size[0]) * 0.5f : (min.y + max.y) * 0.5f;
+            const ImVec2 a0 = { cx - arrow_box * 0.5f, cy - arrow_box * 0.5f }, a1 = { cx + arrow_box * 0.5f, cy + arrow_box * 0.5f };
+            const bool arrow_hovered = mouse.x >= a0.x && mouse.x <= a1.x && mouse.y >= a0.y && mouse.y <= a1.y;
+            if (arrow_hovered) {
+                hit.toggle = (int32_t)ln->cut_idx;
+                hit.node = (int32_t)ln->cut_idx;
+                hit.link = -1;
+                hit.stripe = -1;
+            }
+            const float r = arrow_box * (arrow_hovered ? 0.42f : 0.34f);
+            const float d = (float)-side;   // the way in: right on the left side, left on the right
+            const vec4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
+            cv.fill_tri(cv.user, ImVec2(cx - d * r * 0.6f, cy - r), ImVec2(cx + d * r * 0.9f, cy), ImVec2(cx - d * r * 0.6f, cy + r), col);
+            (void)s;
+        }
+
+        // ---- its label ----
         if (!lb->visible) continue;
         const vec4_t name_col = (!style.color_by_side && style.color_labels) ? flow_readable_text(node->color) : text_col;
         if (lb->side == 0) {
@@ -836,18 +960,31 @@ static FlowMargins flow_measure_common(const FlowCanvas& cv, const md_flow_graph
     FlowMargins m = {};
     if (!graph || !cut || !layout) return m;
 
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    const size_t num_graph_nodes = md_array_size(graph->nodes);
+    bool*     container    = md_temp_alloc_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
+    uint32_t* num_children = md_temp_alloc_array(temp, uint32_t, num_graph_nodes ? num_graph_nodes : 1);
+    flow_containers(container, graph);
+    flow_child_counts(num_children, graph);
+
     float label_w[3] = { 0, 0, 0 };
     for (size_t i = 0; i < md_array_size(layout->nodes); ++i) {
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+        const uint32_t c = layout->nodes[i].cut_idx;
+        const md_flow_node_t* node = md_flow_cut_node(cut, graph, c);
         if (!node) continue;
-        const int s = flow_side_index(flow_column_side(node->column, graph->num_columns));
-        label_w[s] = MD_MAX(label_w[s], flow_label_width_any(cv, node));
+        const int side = flow_column_side(node->column, graph->num_columns);
+        char count[FLOW_LABEL_CAP] = "";
+        if (side != 0 && c < num_graph_nodes && container[c]) flow_member_count(count, sizeof(count), style, num_children[c]);
+        const int s = flow_side_index(side);
+        label_w[s] = MD_MAX(label_w[s], flow_label_width_any(cv, node, count));
     }
-    int32_t depth[3];
-    flow_band_depths(depth, graph, layout);
+    // the levels are in the layout (flow_layout_indent); outside them the arrows and the labels
+    bool arrows[3];
+    flow_sides_with_arrows(arrows, graph, cut, layout, container);
     for (int s = 0; s < 3; s += 2) {
         float w = style.label_gap_px + label_w[s];
-        if (depth[s] >= 0) w += flow_band_reach(style, (uint32_t)depth[s]);
+        if (arrows[s] && cv.fill_tri) w += flow_arrow_box(cv) + FLOW_ARROW_PAD;
         (s == 0 ? m.left : m.right) = w;
     }
     if (notes) {
@@ -869,7 +1006,8 @@ FlowMargins flow_measure_margins(const md_flow_graph_t* graph, const md_flow_cut
                                  const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     const float base = ImGui::GetFontSize();
-    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, im_measure, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
+    // fill_tri only to say the screen has arrows: nothing is drawn
+    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, im_measure, nullptr, nullptr, nullptr, nullptr, nullptr, im_tri };
     return flow_measure_common(cv, graph, cut, layout, style, notes);
 }
 

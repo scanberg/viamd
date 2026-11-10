@@ -11024,6 +11024,11 @@ struct QuantumChemistry : viamd::EventHandler {
             bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
             bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
         }
+        // the bands too: an open group's level can be the outermost
+        for (size_t i = 0; i < md_array_size(layout.bands); ++i) {
+            bb_min.x = MD_MIN(bb_min.x, layout.bands[i].min.x);
+            bb_max.x = MD_MAX(bb_max.x, layout.bands[i].max.x);
+        }
         const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
         const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
 
@@ -12474,6 +12479,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             md_flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
+            flow_layout_indent(&flow.layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
             // The layout lives in graph space and knows nothing about pan or zoom, so fitting
             // after it is computed costs nothing and needs no second pass.
@@ -12769,7 +12775,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (has_children) {
                         const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
                         // a group with an arrow (its band) says so; a fragment of atoms has none
-                        bool has_arrow = false;
+                        bool has_arrow = flow_node_is_container(&flow.graph, &flow.cut, (uint32_t)hit.node);
                         for (size_t b = 0; b < md_array_size(flow.layout.bands); ++b) has_arrow |= flow.layout.bands[b].node == (uint32_t)hit.node;
                         ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\n%s to %s",
                             (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local,
@@ -12882,6 +12888,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_flow_layout_t layout = {};
         md_flow_layout_init(&layout, md_temp_allocator(temp));
         md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
+        flow_layout_indent(&layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
         FlowAnnotations notes = {};
         char subtitle[96];
