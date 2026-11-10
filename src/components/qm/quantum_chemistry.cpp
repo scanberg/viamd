@@ -997,22 +997,49 @@ static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int3
     return true;
 }
 
+// The basis atoms' positions (bohr) of the current frame, copied for a worker that makes fields at them
+struct CtGeometry {
+    const md_system_t* sys = nullptr;   // outlives the jobs (a load waits for the pool)
+    vec3_t* xyz = nullptr;              // heap
+    size_t  count = 0;
+
+    bool init(const ApplicationState& state) {
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        size_t n = 0;
+        const vec3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
+        if (!p || n == 0) return false;
+        xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), sizeof(vec3_t) * n);
+        md_memcpy(xyz, p, sizeof(vec3_t) * n);
+        count = n;
+        sys = &state.mold.sys;
+        return true;
+    }
+    void free() {
+        if (xyz) md_free(md_get_heap_allocator(), xyz, sizeof(vec3_t) * count);
+        *this = {};
+    }
+    IsoFieldGeometry iso() const { return { sys, xyz, count }; }
+};
+
 // The hole and particle densities of one excited state for the charge transfer window's side views, from its NTO
-// pairs: D_hole = sum_k lambda_k h_k h_k^T, D_particle = sum_k lambda_k p_k p_k^T, in the AO basis. The same pairs the
-// diagram partitions, so the views show what its columns count (for TDA these are the detachment and attachment
-// densities; for RPA they differ slightly, which is why the views say "hole" and "particle"). The pairs are read on the
-// main thread once they are resident (es_nto_ready), the matrices made on a worker: switching state never waits.
-struct CtDensityJob {
+// pairs: rho_hole = sum_k lambda_k h_k^2, rho_particle = sum_k lambda_k p_k^2. The same pairs the diagram partitions,
+// so the views show what its columns count (for TDA these are the detachment and attachment densities; for RPA they
+// differ slightly, which is why the views say "hole" and "particle"). As isosurface fields (md_gto_iso) of those
+// products as they are - nothing A x A is formed. The pairs are read on the main thread once they are resident
+// (es_nto_ready), the fields made on a worker: switching state never waits.
+struct CtFieldJob {
     int32_t state = -1;
     size_t  A = 0;
     NtoPairs pairs = {};
-    double* D[2] = {};          // {A,A} hole, particle
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // hole, particle: owned until taken
     bool    ok = false;
     std::atomic<bool> done = false;
     task_system::Job task;
 };
 
-static void ct_density_job_destroy(CtDensityJob* job) {
+static void ct_field_job_destroy(CtFieldJob* job) {
     if (!job) return;
     job->task.cancel_and_wait();
     md_allocator_i* heap = md_get_heap_allocator();
@@ -1020,7 +1047,8 @@ static void ct_density_job_destroy(CtDensityJob* job) {
     if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
     if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
     if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
-    for (int i = 0; i < 2; ++i) if (job->D[i]) md_free(heap, job->D[i], sizeof(double) * A * A);
+    for (int i = 0; i < 2; ++i) if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);     // never given to a pool task
+    job->geom.free();
     delete job;
 }
 
@@ -1032,38 +1060,28 @@ static size_t nto_num_ao(const md_system_t& sys) {
 }
 
 // Null when the state's pairs cannot be read (yet: ask es_nto_ready first)
-static CtDensityJob* ct_density_job_start(const md_system_t& sys, int32_t state) {
+static CtFieldJob* ct_field_job_start(const ApplicationState& state, int32_t s) {
+    const md_system_t& sys = state.mold.sys;
     const size_t A = nto_num_ao(sys);
-    if (state < 0 || A == 0) return nullptr;
-    CtDensityJob* job = new CtDensityJob();
-    job->state = state;
+    if (s < 0 || A == 0) return nullptr;
+    CtFieldJob* job = new CtFieldJob();
+    job->state = s;
     job->A = A;
-    if (!nto_pairs_read(&job->pairs, sys, A, state)) {
-        delete job;
+    if (!nto_pairs_read(&job->pairs, sys, A, s) || !job->geom.init(state)) {
+        ct_field_job_destroy(job);
         return nullptr;
     }
-    job->task.start({}, [job]() {
-        const size_t A = job->A, K = job->pairs.K;
-        md_allocator_i* heap = md_get_heap_allocator();
-        const double* src[2] = { job->pairs.hole, job->pairs.part };
-        for (int c = 0; c < 2; ++c) {
-            double* D = (double*)md_alloc(heap, sizeof(double) * A * A);
-            if (!D) { job->done.store(true, std::memory_order_release); return; }
-            md_memset(D, 0, sizeof(double) * A * A);
-            job->D[c] = D;
-            for (size_t k = 0; k < K; ++k) {
-                if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
-                const double lam = MD_MAX(0.0, job->pairs.lambda[k]);
-                const double* v = src[c] + k * A;
-                for (size_t i = 0; i < A; ++i) {
-                    const double vi = lam * v[i];
-                    if (vi == 0.0) continue;
-                    double* row = D + i * A;
-                    for (size_t j = 0; j < A; ++j) row[j] += vi * v[j];
-                }
-            }
+    for (size_t k = 0; k < job->pairs.K; ++k) job->pairs.lambda[k] = MD_MAX(0.0, job->pairs.lambda[k]);
+    job->task.start(MD_STR_LIT("Charge transfer densities"), [job]() {
+        const IsoFieldGeometry g = job->geom.iso();
+        const double* rows[2] = { job->pairs.hole, job->pairs.part };
+        bool ok = true;
+        for (int c = 0; c < 2 && ok; ++c) {
+            if (task_system::cancelled()) break;
+            job->field[c] = iso_field_create_products(g, rows[c], nullptr, job->pairs.lambda, job->pairs.K, job->A);
+            ok = job->field[c] != nullptr;
         }
-        job->ok = true;
+        job->ok = ok && job->field[0] && job->field[1];
         job->done.store(true, std::memory_order_release);
     });
     return job;
@@ -1071,12 +1089,14 @@ static CtDensityJob* ct_density_job_start(const md_system_t& sys, int32_t state)
 
 // One ribbon's orbital pair for the side views: a block NTO (md_qm_ct_block_nto), which the main thread forms
 // in the Lowdin basis from the state's charge transfer data (K x K work and a pass over K x A), and this takes
-// back to AO coefficients, C C~^T x, for the evaluation on the grid. O(M A) per vector: a worker's.
+// back to AO coefficients, C C~^T x (O(M A) per vector), and makes the isosurface fields of: a worker's.
 struct CtOrbitalJob {
     uint64_t key = 0;
     const LowdinJob* lowdin = nullptr;  // outlives this job
     double*  x[2] = {};                 // [A] hole and particle in the Lowdin basis, owned
     double*  c[2] = {};                 // [A] the same in AO coefficients, owned
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // owned until taken
     char     info[2][64] = {};
     char     sub[96] = {};
     bool     ok = false;
@@ -1092,28 +1112,38 @@ static void ct_orbital_job_destroy(CtOrbitalJob* job) {
     for (int i = 0; i < 2; ++i) {
         if (job->x[i]) md_free(heap, job->x[i], sizeof(double) * A);
         if (job->c[i]) md_free(heap, job->c[i], sizeof(double) * A);
+        if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);
     }
+    job->geom.free();
     delete job;
 }
 
-// x[0], x[1] are taken over: allocated by the caller from the heap, A doubles each
-static CtOrbitalJob* ct_orbital_job_start(const LowdinJob* lowdin, uint64_t key, double* x_hole, double* x_part) {
+// x[0], x[1] are taken over: allocated by the caller from the heap, A doubles each. Null without a geometry.
+static CtOrbitalJob* ct_orbital_job_start(const ApplicationState& state, const LowdinJob* lowdin, uint64_t key, double* x_hole, double* x_part) {
     md_allocator_i* heap = md_get_heap_allocator();
     CtOrbitalJob* job = new CtOrbitalJob();
     job->key    = key;
     job->lowdin = lowdin;
     job->x[0]   = x_hole;
     job->x[1]   = x_part;
+    if (!job->geom.init(state)) {
+        ct_orbital_job_destroy(job);
+        return nullptr;
+    }
     const size_t A = lowdin->num_ao;
     job->c[0] = (double*)md_alloc(heap, sizeof(double) * A);
     job->c[1] = (double*)md_alloc(heap, sizeof(double) * A);
     job->task.start(MD_STR_LIT("Ribbon orbitals"), [job]() {
         const LowdinJob* lw = job->lowdin;
-        for (int i = 0; i < 2; ++i) {
-            if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        const IsoFieldGeometry g = job->geom.iso();
+        bool ok = true;
+        for (int i = 0; i < 2 && ok; ++i) {
+            if (task_system::cancelled()) { ok = false; break; }
             md_qm_lowdin_inverse_transform(job->c[i], job->x[i], 1, lw->C, lw->C_lowdin, lw->num_mo, lw->num_ao);
+            job->field[i] = iso_field_create_coefficients(g, job->c[i], lw->num_ao);
+            ok = job->field[i] != nullptr;
         }
-        job->ok = true;
+        job->ok = ok;
         job->done.store(true, std::memory_order_release);
     });
     return job;
@@ -1543,36 +1573,38 @@ struct QuantumChemistry : viamd::EventHandler {
     // The charge transfer window's side views: the molecule with the hole density beside the diagram's hole column and
     // the particle density beside its particle column, one camera for both. Optional (they take room).
     //
-    // Nothing here waits. A state's two densities are made from its NTO pairs on a worker (CtDensityJob) and evaluated
-    // into volumes on the GPU, at half the resolution of the main grid (the views are small). The volumes are kept in a
-    // cache of a set budget, least recently used out first, and while nothing else is asked the cache is filled with
-    // the other states, the selected one's neighbours first: switching state shows what is cached at once, and what is
-    // not yet keeps the last picture until it is.
+    // The surfaces are meshes (md_gto_iso, iso_meshes.h): extracted from the fields themselves, sharp however close
+    // the camera comes, and drawn with the stochastic transparency of isomesh_utils.h.
+    //
+    // Nothing here waits. A state's two density fields are made from its NTO pairs on a worker (CtFieldJob), their
+    // meshes extracted on the GPU as a job over frames. Fields and meshes are kept per state in a cache of a set
+    // number of entries, least recently used out first, and while nothing else is asked the cache is filled with the
+    // other states, the selected one's neighbours first: switching state shows what is cached at once, and what is
+    // not yet keeps the last picture until it is. An iso value changed re-extracts what is shown from the fields kept.
     struct CtViews {
         bool   show = false;
         float  width_frac = 0.26f;      // of the window's canvas, each side
-        double iso_val = 0.05;          // drawn at iso_val^2, as the transition analysis draws its densities
-        int    budget_mb = 256;
-        md_grid_t grid = {};
+        double iso_val = 0.05;          // orbitals at +-iso_val, densities at iso_val^2, as the transition analysis
+        int    cache_entries = 24;      // states and orbital pairs kept
         bool   initialized = false;
 
-        // A state's two densities, or one ribbon's orbital pair (block NTO) or the state's own NTO pair: the
-        // volumes the views show, under one budget
+        // A state's two densities, or one ribbon's orbital pair (block NTO) or the state's own NTO pair
         struct Entry {
             uint64_t key = 0;           // ctv_density_key, or an orbital key (top bit set)
             int32_t  state = -1;
-            Volume   vol[2] = {};       // hole, particle
-            uint64_t v0[2] = {};        // their data versions when made: filled once both have moved on
+            md_gto_iso_field_t* field[2] = {};  // hole, particle
+            IsoMeshes* meshes = nullptr;        // heap, both fields' surfaces
             uint64_t used = 0;
-            bool     failed = false;    // nothing to show (no NTO pairs, or the evaluation failed)
-            bool     orbital = false;   // signed: drawn at +-iso rather than at iso^2
+            bool     failed = false;    // nothing to show (no NTO pairs, or no field could be made)
+            bool     orbital = false;   // signed: both sheets, at +-iso
             char     info[2][64] = {};  // per view, beside its caption: what is shown
             char     sub[96] = {};      // under both
         };
         md_array(Entry) cache = nullptr;    // heap
         uint64_t tick = 0;
-        CtDensityJob* job = nullptr;
-        int32_t shown = -1;             // the state whose volumes the views show
+        uint64_t positions_hash = 0;    // the geometry the fields are of: a new one empties the cache
+        CtFieldJob* job = nullptr;
+        int32_t shown = -1;             // the state whose densities the views show
 
         // Ribbon orbitals. Hovering a ribbon asks for its orbital pair once the cursor has rested on it for
         // hover_delay (sweeping across the diagram asks for nothing); clicking one pins it, so that the views
@@ -1595,6 +1627,8 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t iso_tex[2] = {};
         uint32_t out_tex[2] = {};
         uint32_t out_fbo = 0;
+        isomesh::Target mesh_target[2] = {};
+        bool     converged = true;      // both images final: no redraw until something changes
         uint64_t render_hash = 0;
         PickingSurface picking_surface = {};
         Camera camera = {};
@@ -1602,28 +1636,49 @@ struct QuantumChemistry : viamd::EventHandler {
         md_gl_rep_t gl_rep = {};
     } ctv;
 
-    void ctv_free() {
-        ct_density_job_destroy(ctv.job);
+    void ctv_entry_free(CtViews::Entry* e) {
+        if (e->meshes) {
+            if (app) iso_meshes_free(e->meshes, app);   // first: its extraction state holds the fields
+            delete e->meshes;
+            e->meshes = nullptr;
+        }
+        for (int c = 0; c < 2; ++c) {
+            iso_field_release(e->field[c]);
+            e->field[c] = nullptr;
+        }
+    }
+
+    void ctv_cache_clear() {
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) ctv_entry_free(&ctv.cache[i]);
+        md_array_shrink(ctv.cache, 0);
+        ct_field_job_destroy(ctv.job);
         ctv.job = nullptr;
         ct_orbital_job_destroy(ctv.orb_job);
         ctv.orb_job = nullptr;
-        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
-            for (int c = 0; c < 2; ++c) if (ctv.cache[i].vol[c].tex_id) gl::free_texture(&ctv.cache[i].vol[c].tex_id);
-        }
+        ctv.shown = -1;
+        ctv.orb_shown = 0;
+    }
+
+    void ctv_free() {
+        ctv_cache_clear();
         md_array_free(ctv.cache, md_get_heap_allocator());
         for (int i = 0; i < 2; ++i) {
             if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
             if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            isomesh::target_free(&ctv.mesh_target[i]);
         }
         if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
         if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
         md_gl_rep_destroy(ctv.gl_rep);
-        const CtViews prefs = { .show = ctv.show, .width_frac = ctv.width_frac, .iso_val = ctv.iso_val, .budget_mb = ctv.budget_mb };
+        const bool   show = ctv.show;           // preferences, not data
+        const float  width_frac = ctv.width_frac;
+        const double iso_val = ctv.iso_val;
+        const int    cache_entries = ctv.cache_entries;
         ctv = CtViews{};
-        ctv.show       = prefs.show;        // preferences, not data
-        ctv.width_frac = prefs.width_frac;
-        ctv.iso_val    = prefs.iso_val;
-        ctv.budget_mb  = prefs.budget_mb;
+        ctv.show          = show;
+        ctv.width_frac    = width_frac;
+        ctv.iso_val       = iso_val;
+        ctv.cache_entries = cache_entries;
     }
 
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
@@ -2004,6 +2059,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     panel_meshes_free(&orb.mesh, app);
                     panel_meshes_free(&nto.mesh, app);
                 }
+                ctv_free();
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
@@ -2754,11 +2810,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
                 }
             }
-#if USE_AABB_GRID
-            init_grid(&ctv.grid, mat3_ident(), aabb.min_ext, aabb.max_ext, 0.5 * DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
-#else
-            init_grid(&ctv.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, 0.5 * DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
-#endif
             ctv.initialized = true;
         }
 
@@ -11367,11 +11418,6 @@ struct QuantumChemistry : viamd::EventHandler {
     // The side views of the charge transfer window (CtViews)
     // ---------------------------------------------------------------------------
 
-    size_t ctv_entry_bytes() const {
-        // two volumes of half floats
-        return (size_t)ctv.grid.dim[0] * (size_t)ctv.grid.dim[1] * (size_t)ctv.grid.dim[2] * 2 * 2;
-    }
-
     static uint64_t ctv_density_key(int32_t s) { return (uint64_t)(uint32_t)s + 1; }    // never 0, top bit clear
     static uint64_t ctv_orbital_key(uint64_t h) { return h | (1ull << 63); }
 
@@ -11384,97 +11430,132 @@ struct QuantumChemistry : viamd::EventHandler {
     }
     CtViews::Entry* ctv_find(int32_t s) { return ctv_find_key(ctv_density_key(s)); }
 
-    // Both volumes filled: a GPU evaluation lands in its texture frames after it was asked for, and every landing
-    // moves the texture's data version on from the one it had when it was made
-    static bool ctv_entry_ready(const CtViews::Entry& e) {
-        if (e.failed) return false;
-        for (int c = 0; c < 2; ++c) {
-            if (!e.vol[c].tex_id || volume::data_version(e.vol[c].tex_id) == e.v0[c]) return false;
-        }
-        return true;
+    // The lattice the side views' meshes are extracted on: the main views' middle resolution
+    static double ctv_cell_size() { return iso_meshes_cell_size(VolumeResolution::Mid); }
+
+    // An entry's two surfaces at the current iso value: a density's positive sheet, an orbital's both
+    uint32_t ctv_slots(IsoMeshSlot out[2], const CtViews::Entry& e) const {
+        if (e.failed || !e.field[0] || !e.field[1] || !(ctv.iso_val > 0.0)) return 0;
+        const double   iso    = e.orbital ? ctv.iso_val : ctv.iso_val * ctv.iso_val;
+        const uint32_t sheets = e.orbital ? (uint32_t)MD_GTO_ISO_SHEET_BOTH : (uint32_t)MD_GTO_ISO_SHEET_POSITIVE;
+        out[0] = { e.field[0], iso, sheets };
+        out[1] = { e.field[1], iso, sheets };
+        return 2;
     }
 
-    static void ctv_entry_free(CtViews::Entry* e) {
-        for (int c = 0; c < 2; ++c) if (e->vol[c].tex_id) gl::free_texture(&e->vol[c].tex_id);
+    // Its meshes are of the current iso value
+    bool ctv_entry_current(const CtViews::Entry& e) const {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, e);
+        return n && e.meshes && iso_meshes_current(e.meshes, iso_meshes_slots_key(slots, n, ctv_cell_size(), e.key));
     }
 
-    // Room for one more entry: the least recently used ready entries out, never the one asked for or one on
-    // screen, never one whose evaluation is still under way (its readback would land in a texture gone). With
-    // evict false nothing goes, which is what a prefetch asks: it is never worth what is already there.
-    bool ctv_make_room(uint64_t keep, bool evict) {
-        const size_t budget = (size_t)MD_MAX(ctv.budget_mb, 16) << 20;
-        const size_t entry = ctv_entry_bytes();
-        for (;;) {
-            size_t used = 0;
-            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) if (!ctv.cache[i].failed) used += entry;
-            if (used + entry <= budget || md_array_size(ctv.cache) == 0) return true;
-            if (!evict) return false;
+    // It has meshes to draw: of the current iso value or of an earlier one, until the new ones are in
+    static bool ctv_entry_drawable(const CtViews::Entry& e) {
+        return !e.failed && e.meshes && e.meshes->ok && e.meshes->num_slots == 2;
+    }
+
+    // Brings its meshes on: a GPU extraction is a job that each call advances for a few milliseconds at most, the
+    // mesh shown staying the previous one until it is done. Without a GPU device the extraction is done here.
+    void ctv_mesh_update(ApplicationState& state, CtViews::Entry* e) {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, *e);
+        if (n == 0) return;
+        if (!e->meshes) e->meshes = new IsoMeshes();
+        iso_meshes_update(e->meshes, &state, slots, n, ctv_cell_size(), e->key);
+    }
+
+    // Room for one more entry: the least recently used out, never the one asked for or one on screen
+    void ctv_make_room(uint64_t keep) {
+        const size_t cap = (size_t)MD_MAX(ctv.cache_entries, 4);
+        while (md_array_size(ctv.cache) >= cap) {
             int64_t victim = -1;
             for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
                 const CtViews::Entry& e = ctv.cache[i];
-                if (e.failed || e.key == keep || e.key == ctv_density_key(ctv.shown) || e.key == ctv.orb_shown || !ctv_entry_ready(e)) continue;
+                if (e.key == keep || e.key == ctv_density_key(ctv.shown) || e.key == ctv.orb_shown) continue;
                 if (victim < 0 || e.used < ctv.cache[victim].used) victim = (int64_t)i;
             }
-            if (victim < 0) return true;    // over the budget by what is in use: one more state, for a while
+            if (victim < 0) return;
             ctv_entry_free(&ctv.cache[victim]);
             md_array_swap_back_and_pop(ctv.cache, (size_t)victim);
         }
     }
 
-    // Once a frame while the views are on. Collects the density job that finished and puts its matrices on the
-    // GPU, then starts the next: the selected state when it is not cached, otherwise, when nothing is asked and
-    // the evaluation runs off this thread, the uncached state nearest the selected one that fits in the budget.
+    // Once a frame while the views are on. Takes the fields of the density job that finished and starts the next:
+    // the selected state when it is not cached, otherwise, when nothing is asked and the extraction runs off this
+    // thread, the uncached state nearest the selected one while there is room. And brings on the meshes of one
+    // cached state a frame that are not of the current iso value, the nearest first, once the selected one's are.
     void ctv_update(ApplicationState& state) {
         if (!ctv.initialized) return;
         md_allocator_i* heap = md_get_heap_allocator();
 
+        // The fields are of one geometry
+        const uint64_t positions = panel_positions_hash(state);
+        if (positions != ctv.positions_hash) {
+            ctv_cache_clear();
+            ctv.positions_hash = positions;
+        }
+
         if (ctv.job && ctv.job->done.load(std::memory_order_acquire)) {
-            CtDensityJob* job = ctv.job;
+            CtFieldJob* job = ctv.job;
             ctv.job = nullptr;
-            if (!ctv_find(job->state) && ctv_make_room(ctv_density_key(job->state), job->state == rsp.selected)) {
+            const uint64_t key = ctv_density_key(job->state);
+            if (!ctv_find_key(key)) {
+                ctv_make_room(key);
                 CtViews::Entry e = {};
-                e.key = ctv_density_key(job->state);
+                e.key = key;
                 e.state = job->state;
                 e.used = ++ctv.tick;
                 e.failed = !job->ok;
                 if (job->ok) {
-                    for (int c = 0; c < 2; ++c) {
-                        init_volume(&e.vol[c], ctv.grid, GL_R16F);
-                        e.v0[c] = volume::data_version(e.vol[c].tex_id);
-                        if (!density_matrix_evaluate(&state, e.vol[c].tex_id, ctv.grid, job->D[c], job->A, MD_GTO_OP_SET)) e.failed = true;
-                    }
-                    if (e.failed) ctv_entry_free(&e);
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
                 }
                 md_array_push(ctv.cache, e, heap);
             }
-            ct_density_job_destroy(job);
+            ct_field_job_destroy(job);
         }
-        if (ctv.job) return;
 
         const int32_t S = (int32_t)num_excited;
-        int32_t next = -1;
-        if (rsp.selected >= 0 && rsp.selected < S && !ctv_find(rsp.selected)) {
-            next = rsp.selected;
-        } else if (rsp.selected >= 0 && gpu_volume_evaluation_available(&state)) {
-            // nothing waiting on its evaluation: one state at a time, and only with room to spare
-            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
-                if (!ctv.cache[i].failed && !ctv_entry_ready(ctv.cache[i])) return;
+        const bool gpu = gpu_volume_evaluation_available(&state);
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        const bool sel_settled = sel && (sel->failed || ctv_entry_current(*sel));
+
+        if (!ctv.job) {
+            int32_t next = -1;
+            if (rsp.selected >= 0 && rsp.selected < S && !sel) {
+                next = rsp.selected;
+            } else if (gpu && sel_settled && md_array_size(ctv.cache) + 1 < (size_t)MD_MAX(ctv.cache_entries, 4)) {
+                // nothing waiting: the nearest uncached state, with room to spare (a prefetch evicts nothing)
+                for (int32_t d = 1; d < S && next < 0; ++d) {
+                    const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
+                    for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
+                }
             }
-            if (!ctv_make_room(0, false)) return;
-            for (int32_t d = 1; d < S && next < 0; ++d) {
-                const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
-                for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
+            if (next >= 0 && es_nto_ready(&state, (size_t)next)) {
+                ctv.job = ct_field_job_start(state, next);
+                if (!ctv.job) {
+                    // nothing to make the densities of: remembered, so that it is not asked again every frame
+                    ctv_make_room(ctv_density_key(next));
+                    CtViews::Entry e = {};
+                    e.key = ctv_density_key(next);
+                    e.state = next;
+                    e.failed = true;
+                    md_array_push(ctv.cache, e, heap);
+                }
             }
         }
-        if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
-        ctv.job = ct_density_job_start(state.mold.sys, next);
-        if (!ctv.job) {
-            // nothing to make the densities of: remembered, so that it is not asked again every frame
-            CtViews::Entry e = {};
-            e.key = ctv_density_key(next);
-            e.state = next;
-            e.failed = true;
-            md_array_push(ctv.cache, e, heap);
+
+        // Meshes ahead of being asked for: on the GPU only (the CPU extraction blocks), one entry a frame
+        if (gpu && sel_settled) {
+            CtViews::Entry* best = nullptr;
+            int32_t best_d = INT32_MAX;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                CtViews::Entry& e = ctv.cache[i];
+                if (e.orbital || e.failed || e.state == rsp.selected || ctv_entry_current(e)) continue;
+                const int32_t d = abs(e.state - rsp.selected);
+                if (d < best_d) { best_d = d; best = &e; }
+            }
+            if (best) ctv_mesh_update(state, best);
         }
     }
 
@@ -11633,24 +11714,19 @@ struct QuantumChemistry : viamd::EventHandler {
     // Once a frame while the views are on, after ctv_update: collects the orbital job that finished, and starts
     // the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job: they
     // are published as AO coefficients and go straight to the evaluation.
+
+    // Once a frame while the views are on, after ctv_update: takes the fields of the orbital job that finished, and
+    // starts the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job:
+    // they are published as AO coefficients, and a field of one orbital is made in no time.
     void ctv_orbital_update(ApplicationState& state, const CtOrbReq& req) {
         if (!ctv.initialized) return;
         md_allocator_i* heap = md_get_heap_allocator();
 
-        auto evaluate = [&](CtViews::Entry* e, const double* c0, const double* c1, size_t A) {
-            const double* c[2] = { c0, c1 };
-            for (int i = 0; i < 2 && !e->failed; ++i) {
-                init_volume(&e->vol[i], ctv.grid, GL_R16F);
-                e->v0[i] = volume::data_version(e->vol[i].tex_id);
-                if (!orbital_coefficients_evaluate(&state, e->vol[i].tex_id, ctv.grid, c[i], A, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET, DEFAULT_GTO_CUTOFF_VALUE)) e->failed = true;
-            }
-            if (e->failed) ctv_entry_free(e);
-        };
-
         if (ctv.orb_job && ctv.orb_job->done.load(std::memory_order_acquire)) {
             CtOrbitalJob* job = ctv.orb_job;
             ctv.orb_job = nullptr;
-            if (!ctv_find_key(job->key) && ctv_make_room(job->key, true)) {
+            if (!ctv_find_key(job->key)) {
+                ctv_make_room(job->key);
                 CtViews::Entry e = {};
                 e.key = job->key;
                 e.state = rsp.selected;
@@ -11659,7 +11735,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 e.failed = !job->ok;
                 md_memcpy(e.info, job->info, sizeof(e.info));
                 md_memcpy(e.sub, job->sub, sizeof(e.sub));
-                if (job->ok) evaluate(&e, job->c[0], job->c[1], job->lowdin->num_ao);
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
+                }
                 md_array_push(ctv.cache, e, heap);
             }
             ct_orbital_job_destroy(job);
@@ -11667,8 +11745,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (!req.key || ctv_find_key(req.key)) return;
         if (req.nto >= 0) {
-            // the state's own NTO pair: published, so evaluated from the attribute table
-            if (!es_nto_ready(&state, (size_t)rsp.selected) || !ctv_make_room(req.key, true)) return;
+            // the state's own NTO pair, from the attribute table
+            if (!es_nto_ready(&state, (size_t)rsp.selected)) return;
+            ctv_make_room(req.key);
             CtViews::Entry e = {};
             e.key = req.key;
             e.state = rsp.selected;
@@ -11676,18 +11755,15 @@ struct QuantumChemistry : viamd::EventHandler {
             e.used = ++ctv.tick;
             snprintf(e.info[0], sizeof(e.info[0]), "NTO %d", req.nto + 1);
             snprintf(e.info[1], sizeof(e.info[1]), "NTO %d", req.nto + 1);
+            const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto);
             const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
             double lambda = 0.0;
-            if (lam && md_attribute_extract_f64(&lambda, 1, lam, md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto), md_unit_none()) == 1) {
+            if (lam && md_attribute_extract_f64(&lambda, 1, lam, slice, md_unit_none()) == 1) {
                 snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
             }
-            for (int i = 0; i < 2 && !e.failed; ++i) {
-                init_volume(&e.vol[i], ctv.grid, GL_R16F);
-                e.v0[i] = volume::data_version(e.vol[i].tex_id);
-                const ElectronicStructureNtoComponent comp = i == 0 ? ElectronicStructureNtoComponent::Hole : ElectronicStructureNtoComponent::Particle;
-                if (!evaluate_nto(state, e.vol[i].tex_id, ctv.grid, (size_t)rsp.selected, (size_t)req.nto, comp, MD_GTO_OP_SET)) e.failed = true;
-            }
-            if (e.failed) ctv_entry_free(&e);
+            e.field[0] = iso_field_create_orbital(&state, es_path::nto_hole, &slice);
+            e.field[1] = iso_field_create_orbital(&state, es_path::nto_particle, &slice);
+            e.failed = !e.field[0] || !e.field[1];
             md_array_push(ctv.cache, e, heap);
             return;
         }
@@ -11698,9 +11774,15 @@ struct QuantumChemistry : viamd::EventHandler {
         double* x_part = (double*)md_alloc(heap, sizeof(double) * A);
         char info[2][64] = {};
         char sub[96] = {};
-        if (!ctv_block_pair(x_hole, x_part, info, sub, sizeof(sub), req.link, req.pair)) {
+        CtOrbitalJob* job = nullptr;
+        if (ctv_block_pair(x_hole, x_part, info, sub, sizeof(sub), req.link, req.pair)) {
+            job = ct_orbital_job_start(state, lowdin, req.key, x_hole, x_part);     // takes x_hole and x_part
+        } else {
             md_free(heap, x_hole, sizeof(double) * A);
             md_free(heap, x_part, sizeof(double) * A);
+        }
+        if (!job) {
+            ctv_make_room(req.key);
             CtViews::Entry e = {};
             e.key = req.key;
             e.state = rsp.selected;
@@ -11709,16 +11791,11 @@ struct QuantumChemistry : viamd::EventHandler {
             md_array_push(ctv.cache, e, heap);
             return;
         }
-        ctv.orb_job = ct_orbital_job_start(lowdin, req.key, x_hole, x_part);
-        md_memcpy(ctv.orb_job->info, info, sizeof(info));
-        md_memcpy(ctv.orb_job->sub, sub, sizeof(sub));
+        md_memcpy(job->info, info, sizeof(info));
+        md_memcpy(job->sub, sub, sizeof(sub));
+        ctv.orb_job = job;
     }
 
-    // The two views, hole and particle, in r[0] and r[1]: the molecule, the selection and highlight marks over it,
-    // and each its own density - or, while an orbital is asked for (orb_key), its hole and particle orbitals.
-    // keep_orbital: the cursor is on something with orbitals, so the last orbital shown stays until the one asked
-    // for is in, rather than the densities flashing between them. One camera for both views, so they turn
-    // together and read side by side.
     void draw_ct_views(ApplicationState& state, const ImRect r[2], uint64_t orb_key, bool keep_orbital) {
         ImGuiIO& io = ImGui::GetIO();
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -11727,24 +11804,26 @@ struct QuantumChemistry : viamd::EventHandler {
 
         camera_animate(&ctv.camera, ctv.target, state.app.timing.delta_s);
 
-        // What to show: the selected state when its volumes are in, the last state shown until then
+        // What to show: the selected state once it has meshes, the last state shown until then
         CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
-        if (sel && ctv_entry_ready(*sel)) {
-            ctv.shown = rsp.selected;
+        if (sel && !sel->failed) {
+            ctv_mesh_update(state, sel);
+            if (ctv_entry_drawable(*sel)) ctv.shown = rsp.selected;
         }
         CtViews::Entry* shown = ctv.shown >= 0 ? ctv_find(ctv.shown) : nullptr;
-        if (shown && !ctv_entry_ready(*shown)) shown = nullptr;
+        if (shown && !ctv_entry_drawable(*shown)) shown = nullptr;
         if (sel && sel->failed) shown = nullptr;    // the last state's densities would read as this one's
-        bool updating = ctv.shown != rsp.selected && !(sel && sel->failed);
+        bool updating = !(sel && sel->failed) && (ctv.shown != rsp.selected || (shown && !ctv_entry_current(*shown)));
         const char* failed_status = (sel && sel->failed) ? "no NTO pairs" : nullptr;
 
         // An orbital over the densities, when one is asked for
         if (orb_key || keep_orbital) {
             CtViews::Entry* want = ctv_find_key(orb_key);
-            if (want && ctv_entry_ready(*want)) {
+            if (want && !want->failed) ctv_mesh_update(state, want);
+            if (want && ctv_entry_drawable(*want)) {
                 ctv.orb_shown = orb_key;
                 shown = want;
-                updating = false;
+                updating = !ctv_entry_current(*want);
                 failed_status = nullptr;
             } else if (want && want->failed) {
                 shown = nullptr;
@@ -11752,7 +11831,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 failed_status = "no orbital pair";
             } else {
                 CtViews::Entry* last = keep_orbital ? ctv_find_key(ctv.orb_shown) : nullptr;
-                if (last && ctv_entry_ready(*last) && last->state == rsp.selected) shown = last;
+                if (last && ctv_entry_drawable(*last) && last->state == rsp.selected) shown = last;
                 updating = orb_key != 0;
             }
         }
@@ -11784,9 +11863,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         vec4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
         colors[0].w = colors[1].w = 0.75f;
-        const float iso_value = (float)(ctv.iso_val * ctv.iso_val);
-        // orbitals in the orbital window's lobe colours, at +-iso
-        const float  orb_values[2] = { (float)ctv.iso_val, -(float)ctv.iso_val };
+        // orbitals in the orbital window's lobe colours: the positive sheet, the negative
         const vec4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
 
         // Camera control in either view; the picking reads the shared buffer, the same in both
@@ -11830,16 +11907,12 @@ struct QuantumChemistry : viamd::EventHandler {
             const uint64_t s = shown ? shown->key : 0;
             render_hash = md_hash64(&s, sizeof(s), render_hash);
             if (shown) {
-                for (int c = 0; c < 2; ++c) {
-                    const uint64_t v = volume::data_version(shown->vol[c].tex_id);
-                    render_hash = md_hash64(&shown->vol[c].tex_id, sizeof(shown->vol[c].tex_id), render_hash);
-                    render_hash = md_hash64(&v, sizeof(v), render_hash);
-                }
+                render_hash = md_hash64(&shown->meshes->mesh.version, sizeof(shown->meshes->mesh.version), render_hash);
+                render_hash = md_hash64(shown->meshes->index_offset, sizeof(shown->meshes->index_offset), render_hash);
+                render_hash = md_hash64(shown->meshes->index_count, sizeof(shown->meshes->index_count), render_hash);
             }
             render_hash = md_hash64(colors, sizeof(colors), render_hash);
-            render_hash = md_hash64(&iso_value, sizeof(iso_value), render_hash);
             render_hash = md_hash64(orb_colors, sizeof(orb_colors), render_hash);
-            render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
             render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
             render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
             render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
@@ -11850,8 +11923,10 @@ struct QuantumChemistry : viamd::EventHandler {
             render_hash = render_hash ? render_hash : 1;
         }
 
-        if (render_hash != ctv.render_hash) {
+        // Redrawn when anything it shows changed, and while the meshes' images are being refined over the frames
+        if (render_hash != ctv.render_hash || !ctv.converged) {
             ctv.render_hash = render_hash;
+            bool converged = true;
             GBuffer& gbuf = ctv.gbuf;
             gbuffer_clear(&gbuf);
 
@@ -11949,7 +12024,21 @@ struct QuantumChemistry : viamd::EventHandler {
             for (int i = 0; i < 2; ++i) {
                 bool iso_written = false;
                 if (shown) {
-                    volume::IsoRenderDesc desc = {
+                    // view i shows slot i: a density's positive sheet in the side's colour, an orbital's two
+                    const IsoMeshes& m = *shown->meshes;
+                    isomesh::Surface surfaces[2];
+                    size_t num_surfaces = 0;
+                    for (int sheet = 0; sheet < 2; ++sheet) {
+                        if (m.index_count[i][sheet] == 0) continue;
+                        isomesh::Surface& surf = surfaces[num_surfaces++];
+                        surf = {};
+                        surf.mesh = &m.mesh;
+                        surf.index_offset = m.index_offset[i][sheet];
+                        surf.index_count  = m.index_count[i][sheet];
+                        surf.model = iso_meshes_model_matrix();
+                        surf.color = orbital ? orb_colors[sheet] : colors[i];
+                    }
+                    const isomesh::RenderDesc desc = {
                         .render_target = {
                             .depth  = gbuf.tex.depth,
                             .color  = ctv.iso_tex[i],
@@ -11957,19 +12046,13 @@ struct QuantumChemistry : viamd::EventHandler {
                             .height = gbuf.height,
                             .clear_color = true,
                         },
-                        .texture = { .density_volume = shown->vol[i].tex_id },
                         .matrix = {
-                            .model = shown->vol[i].texture_to_world,
-                            .view  = view_mat,
-                            .proj  = proj_mat,
-                            .inv_proj = inv_proj_mat,
+                            .view = view_mat,
+                            .proj = proj_mat,
+                            .proj_no_jitter = proj_mat,
                         },
-                        .iso = {
-                            .count  = orbital ? 2u : 1u,
-                            .values = orbital ? orb_values : &iso_value,
-                            .colors = orbital ? orb_colors : &colors[i],
-                            .exact  = state.settings.exact_isosurfaces,
-                        },
+                        .surfaces = surfaces,
+                        .num_surfaces = num_surfaces,
                         .shading = {
                             .roughness = 0.3f,
                             .ior = 1.5f,
@@ -11980,8 +12063,11 @@ struct QuantumChemistry : viamd::EventHandler {
                             .light = pp.shading.light,
                             .environment = pp.shading.environment,
                         },
+                        .scene_hash = render_hash,
                     };
-                    iso_written = volume::render_isosurfaces(desc);
+                    bool view_converged = true;
+                    iso_written = isomesh::render(&ctv.mesh_target[i], desc, &view_converged);
+                    converged &= view_converged;
                 }
                 in.transparency_hdr = iso_written ? ctv.iso_tex[i] : 0;
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctv.out_fbo);
@@ -11993,6 +12079,7 @@ struct QuantumChemistry : viamd::EventHandler {
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             glDrawBuffer(GL_BACK);
             glDisable(GL_SCISSOR_TEST);
+            ctv.converged = converged;
         }
 
         static const char* lbl[2] = { "Hole", "Particle" };
@@ -12164,9 +12251,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (ImGui::SliderFloat("Iso value", &iso, 0.005f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic)) ctv.iso_val = iso;
                     ImGui::SetItemTooltip("Orbitals are drawn at plus and minus it, densities at its square, as the\n"
                                           "transition analysis draws them.");
-                    ImGui::SliderInt("Cache", &ctv.budget_mb, 32, 2048, "%d MB");
-                    ImGui::SetItemTooltip("GPU memory for the states' densities, kept so that switching state shows them at once.\n"
-                                          "%zu states fit.", ctv.initialized && ctv_entry_bytes() ? ((size_t)ctv.budget_mb << 20) / ctv_entry_bytes() : (size_t)0);
+                    ImGui::SliderInt("Cache", &ctv.cache_entries, 4, 128, "%d entries");
+                    ImGui::SetItemTooltip("States' densities and orbital pairs kept as meshes, so that switching between them\n"
+                                          "shows them at once. The selected state's neighbours are prepared ahead.");
                     ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
