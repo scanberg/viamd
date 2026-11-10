@@ -371,6 +371,61 @@ static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const
     }
 }
 
+// A fragment (md_fragment.h) by its name, then its kind where the name does not say it: "phenyl (ring system)",
+// "amide (functional group)", but "backbone", "C16 tail", "C3 linker"; and a fragment which is all of its molecule
+// (a water, an ion) by its name alone, as it is no piece of anything
+static void tooltip_append_fragment(md_str_writer_t* sb, const md_system_t& sys, md_fragment_idx_t frag) {
+    const md_str_t name = md_system_fragment_name(&sys, frag);
+    const size_t mol = md_system_fragment_molecule(&sys, frag);
+    if (!md_str_empty(name) && md_system_fragment_atom_count(&sys, frag) == md_system_molecule_atom_count(&sys, mol)) {
+        *sb += name;
+        return;
+    }
+    const md_str_t kind = md_str_from_cstr(md_fragment_kind_str(md_system_fragment_kind(&sys, frag)));
+    // The last word of the kind: "tail" of "lipid tail"
+    md_str_t word = kind;
+    for (size_t i = kind.len; i > 0; --i) {
+        if (kind.ptr[i - 1] == ' ') {
+            word = md_str_substr(kind, i, SIZE_MAX);
+            break;
+        }
+    }
+    if (md_str_empty(name)) {
+        *sb += kind;
+    } else if (md_str_empty(word) || md_str_find_str(NULL, name, word)) {
+        *sb += name;
+    } else {
+        md_str_writer_fmt(sb, MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(name), MD_STR_ARG(kind));
+    }
+}
+
+// The fragment row of an atom: what chemical piece of its molecule it is in, and, as fragments and residues do not
+// nest, the other residues that piece is of: "ester (functional group), with POPC 12". The fragments are of the
+// system's bonds, which the frame shown may have changed.
+static void tooltip_fragment_row(PickingTooltipTextRequest* req, const md_system_t& sys, size_t atom_idx) {
+    const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom_idx);
+    if (frag == MD_FRAGMENT_NONE) return;
+
+    md_str_writer_t sb = md_str_writer_create(req->alloc);
+    tooltip_append_fragment(&sb, sys, frag);
+
+    const md_residue_idx_t own = md_system_residue_find_by_atom_idx(&sys, atom_idx);
+    md_residue_idx_t res[4];
+    const size_t num_res = md_system_fragment_residues(res, MD_COUNTOF(res), &sys, frag);
+    size_t shown = 0;
+    for (size_t i = 0; i < MD_MIN(num_res, MD_COUNTOF(res)); ++i) {
+        if (res[i] == own) continue;
+        sb += shown == 0 ? MD_STR_LIT(", with ") : MD_STR_LIT(", ");
+        tooltip_append_residue(&sb, sys, res[i]);
+        shown += 1;
+    }
+    // Of more residues than were looked up (a residue of its own is among them)
+    if (num_res > MD_COUNTOF(res)) {
+        md_str_writer_fmt(&sb, " and %zu more", num_res - MD_COUNTOF(res));
+    }
+    tooltip_row_list(req, MD_STR_LIT("fragment"), sb);
+}
+
 // The atom's name, else its element's symbol, else its index
 static void tooltip_append_atom_name(md_str_writer_t* sb, const md_system_t& sys, size_t atom_idx) {
     md_str_t name = md_atom_name(&sys.atom, atom_idx);
@@ -493,6 +548,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     if (flags & MD_ATOM_FLAG_TERMINAL_END) tooltip_list_add(&role, nucleotide ? "3' end" : "C-terminus");
     tooltip_row_list(req, MD_STR_LIT("role"), role);
 
+    // The chemical piece of its molecule it is in
+    tooltip_fragment_row(req, sys, atom_idx);
+
     // Its chemistry
     md_str_writer_t chem = md_str_writer_create(req->alloc);
     const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
@@ -563,6 +621,21 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     default: break;
     }
     tooltip_row_list(req, MD_STR_LIT("kind"), kind);
+
+    // The fragment it is within, or the two it joins: "amine / phenyl"
+    if (!formed) {
+        const md_fragment_idx_t f0 = md_system_fragment_find_by_atom_idx(&sys, pair.idx[0]);
+        const md_fragment_idx_t f1 = md_system_fragment_find_by_atom_idx(&sys, pair.idx[1]);
+        if (f0 != MD_FRAGMENT_NONE && f0 == f1) {
+            tooltip_fragment_row(req, sys, pair.idx[0]);
+        } else if (f0 != MD_FRAGMENT_NONE && f1 != MD_FRAGMENT_NONE) {
+            md_str_writer_t frags = md_str_writer_create(req->alloc);
+            tooltip_append_fragment(&frags, sys, f0);
+            frags += " / ";
+            tooltip_append_fragment(&frags, sys, f1);
+            tooltip_row_list(req, MD_STR_LIT("fragments"), frags);
+        }
+    }
 
     // Across a periodic boundary the bond is the short way round
     vec3_t d = vec3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
@@ -749,6 +822,11 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     }
     if (flags & MD_RING_FLAG_SUGAR)    tooltip_list_add(&kind, "sugar");
     tooltip_row_list(req, MD_STR_LIT("kind"), kind);
+
+    // The ring system it is of, as a fragment: "indolyl"
+    if (!frame_ring) {
+        tooltip_fragment_row(req, sys, (size_t)atoms[0]);
+    }
 
     // The atoms in order around the ring, then its composition: C first, the other elements by atomic number
     md_str_writer_t names = md_str_writer_create(req->alloc);
