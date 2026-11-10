@@ -279,6 +279,13 @@ struct Attributes : viamd::EventHandler {
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
                     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort);
 
+                    // An energy term of groups (Coul-SR:Protein-SOL) shows its groups while it is hovered, each in a colour of its own
+                    md_edr_term_groups_t term_groups;
+                    const bool has_groups = row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
+                    if (has_groups && ImGui::IsItemHovered()) {
+                        highlight_energy_term_groups(&state, row.attr);
+                    }
+
                     // How the script reads it, if it does: an attribute of the system the script is compiled against
                     char expr[sizeof(path_buf) + 16];
                     const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
@@ -353,6 +360,11 @@ struct Attributes : viamd::EventHandler {
                     if (hovered) {
                         ImGui::BeginTooltip();
                         ImGui::TextUnformatted(attr.path.ptr, attr.path.ptr + attr.path.len);
+                        if (has_groups) {
+                            char text[160];
+                            energy_term_groups_text(text, sizeof(text), &state, term_groups);
+                            ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
+                        }
                         if (row.period != 0) {
                             ImGui::TextDisabled("Over the frames of %s", series_period_name(&state, row.period));
                         }

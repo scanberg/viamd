@@ -4710,6 +4710,9 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         if (hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                             script_set_hovered_property(data, md_str_from_cstr(views[hovered_idx].script_ident), hovered_pop_idx);
+                        } else if (hovered_idx != -1 && sp.series[hovered_idx].key.source == SeriesSource_System) {
+                            // The curve of an energy term of groups: the groups
+                            highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
                         }
                     } else if (data->hovered_property_label[0] != '\0') {
                         // Hovered in another view of it (the other plot window, a list): light up its values here
@@ -5445,6 +5448,10 @@ static void draw_distribution_window(ApplicationState* data) {
                             const SeriesHistogramView& v = views[hovered_idx];
                             // A period is not a member of a population: the property as a whole is what is shown
                             const int member = v.num_periods > 0 ? -1 : hovered_pop_idx;
+                            if (v.script_ident[0] == '\0' && sp.series[hovered_idx].key.source == SeriesSource_System) {
+                                // The bars of an energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
+                            }
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident), member);
                                 script_visualize_ref(data, v.vis_ref, member, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
