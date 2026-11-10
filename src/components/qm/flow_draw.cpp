@@ -246,6 +246,8 @@ struct FlowCanvas {
     void  (*ribbon)(void* user, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_t col_src, vec4_t col_dst, int fringe);
     // a line turned to read upwards, centred on 'centre'
     void  (*text_up)(void* user, ImVec2 centre, float size, vec4_t col, const char* text);
+    // null where nothing is clicked (the export): the controls are left out
+    void  (*fill_tri)(void* user, ImVec2 a, ImVec2 b, ImVec2 c, vec4_t col);
 };
 
 static inline float flow_line_h(float size) { return size * 1.18f; }
@@ -265,6 +267,7 @@ static void im_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_
     const FlowImCanvas* cv = (const FlowImCanvas*)u;
     flow_ribbon_imgui(cv->dl, p0, p1, q0, q1, flow_color_u32(c0, 1.0f), flow_color_u32(c1, 1.0f), cv->curvature, cv->segments, fringe);
 }
+static void im_tri(void* u, ImVec2 a, ImVec2 b, ImVec2 c, vec4_t col) { ((FlowImCanvas*)u)->dl->AddTriangleFilled(a, b, c, flow_color_u32(col, 1.0f)); }
 // ImGui draws text upright only: the glyphs' vertices, as written, turned a quarter about the centre
 static void im_text_up(void* u, ImVec2 c, float size, vec4_t col, const char* t) {
     ImDrawList* dl = ((FlowImCanvas*)u)->dl;
@@ -350,9 +353,10 @@ static int flow_side_index(int side) { return side < 0 ? 0 : (side > 0 ? 2 : 1);
 
 // The lines of a node's label for a node 'h' pixels tall: name over share (and what it is made of, when
 // there is room), or one small line when there is not.
-static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_node_t* node, float h) {
+static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_node_t* node, float h, const char* name_override = nullptr) {
     char name[FLOW_LABEL_CAP], share[32], sub[FLOW_LABEL_CAP];
-    snprintf(name, sizeof(name), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
+    if (name_override) snprintf(name, sizeof(name), "%s", name_override);
+    else snprintf(name, sizeof(name), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
     snprintf(sub, sizeof(sub), "%.*s", (int)node->sublabel.len, node->sublabel.ptr ? node->sublabel.ptr : "");
     flow_format_share(share, sizeof(share), node->weight);
 
@@ -403,6 +407,17 @@ static float flow_band_reach(const FlowDrawStyle& style, uint32_t max_depth) {
     return (float)(max_depth + 1) * (style.band_width_px + style.band_offset_px);
 }
 
+// Whether a band 'length' pixels long (less its arrow) holds the name along it
+static bool flow_band_label_fits(const FlowCanvas& cv, const FlowDrawStyle& style, const char* name, float length) {
+    if (!style.show_band_labels || !cv.text_up) return false;
+    const float size = MD_MIN(cv.small_size, style.band_width_px - 2.0f);
+    return size >= 6.0f && cv.measure(cv.user, name, size) + 8.0f <= length;
+}
+
+static void flow_node_name(char* buf, size_t cap, const md_flow_node_t* node) {
+    snprintf(buf, cap, "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
+}
+
 // The deepest band of each side (FLOW side index), -1 for none
 static void flow_band_depths(int32_t out[3], const md_flow_graph_t* graph, const md_flow_layout_t* layout) {
     out[0] = out[1] = out[2] = -1;
@@ -439,6 +454,18 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     for (int s = 0; s < 3; ++s) band_reach[s] = band_depth[s] >= 0 ? flow_band_reach(style, (uint32_t)band_depth[s]) : 0.0f;
     FlowLabel* labels = md_temp_alloc_zero_array(temp, FlowLabel, num_nodes ? num_nodes : 1);
     float label_w[3] = { 0, 0, 0 };    // the widest label placed, per side
+
+    // The collapsed groups (their bands) and how many rows each holds: a row whose band carries its name says that
+    const size_t num_graph_nodes = md_array_size(graph->nodes);
+    bool*     collapsed_band = md_temp_alloc_zero_array(temp, bool, num_graph_nodes ? num_graph_nodes : 1);
+    uint32_t* num_children   = md_temp_alloc_zero_array(temp, uint32_t, num_graph_nodes ? num_graph_nodes : 1);
+    for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
+        if (layout->bands[i].flags & MD_FLOW_BAND_FLAG_COLLAPSED) collapsed_band[layout->bands[i].node] = true;
+    }
+    for (size_t i = 0; i < num_graph_nodes; ++i) {
+        const uint32_t p = graph->nodes[i].parent;
+        if (p < num_graph_nodes) num_children[p] += 1;
+    }
     {
         int32_t prev_col = -1;
         float prev_bottom = -1.0e30f;
@@ -451,7 +478,19 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             const float h = max.y - min.y;
             FlowLabel* lb = labels + i;
             lb->side = flow_column_side(node->column, num_columns);
-            flow_label_lines(lb, cv, node, h);
+            const char* name_override = nullptr;
+            char count[FLOW_LABEL_CAP];
+            if (lb->side != 0 && ln->cut_idx < num_graph_nodes && collapsed_band[ln->cut_idx]) {
+                char name[FLOW_LABEL_CAP];
+                flow_node_name(name, sizeof(name), node);
+                const float arrow = cv.fill_tri ? style.band_width_px : 0.0f;
+                if (flow_band_label_fits(cv, style, name, MD_MAX(h, arrow) - arrow)) {
+                    const uint32_t n = num_children[ln->cut_idx];
+                    snprintf(count, sizeof(count), "%u %s", n, style.member_noun[n == 1 ? 0 : 1] ? style.member_noun[n == 1 ? 0 : 1] : "");
+                    name_override = count;
+                }
+            }
+            flow_label_lines(lb, cv, node, h, name_override);
             const float centre = (min.y + max.y) * 0.5f;
             if (lb->side == 0) {
                 // on the bar: only when it fits its height
@@ -553,8 +592,15 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         const int side = flow_column_side(b->column, num_columns);
         if (side == 0) continue;     // a middle column has no free side
 
-        const ImVec2 min = flow_view_to_screen(view, b->min);
-        const ImVec2 max = flow_view_to_screen(view, b->max);
+        ImVec2 min = flow_view_to_screen(view, b->min);
+        ImVec2 max = flow_view_to_screen(view, b->max);
+        // never shorter than its arrow is wide: a small collapsed group is still a thing to click
+        const bool collapsed = (b->flags & MD_FLOW_BAND_FLAG_COLLAPSED) != 0;
+        if (cv.fill_tri && max.y - min.y < style.band_width_px) {
+            const float c = (min.y + max.y) * 0.5f;
+            min.y = c - style.band_width_px * 0.5f;
+            max.y = c + style.band_width_px * 0.5f;
+        }
         // the deepest next to the bars
         const uint32_t slot = (uint32_t)MD_MAX(band_depth[flow_side_index(side)] - (int32_t)b->depth, 0);
         const float out = style.band_offset_px + (float)slot * (style.band_width_px + style.band_offset_px);
@@ -579,14 +625,31 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             hit.stripe = -1;
         }
 
-        // its name along it, where the band is long enough to hold it (else the tooltip has it)
-        if (!style.show_band_labels || !cv.text_up) continue;
+        // Its arrow, at the top: pointing at the band when open, sideways when closed. One click on it opens or
+        // closes the group, where it is, on both sides.
+        float label_top = band_min.y;
+        if (cv.fill_tri) {
+            const float aw = band_max.x - band_min.x;
+            const ImVec2 a0 = band_min, a1 = { band_max.x, band_min.y + aw };
+            const bool arrow_hovered = mouse.x >= a0.x && mouse.x <= a1.x && mouse.y >= a0.y && mouse.y <= a1.y;
+            if (arrow_hovered) hit.toggle = (int32_t)b->node;
+            const ImVec2 c = (a0 + a1) * 0.5f;
+            const float r = aw * (arrow_hovered ? 0.30f : 0.25f);
+            const vec4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
+            if (collapsed) {    // pointing right
+                cv.fill_tri(cv.user, ImVec2(c.x - r * 0.6f, c.y - r), ImVec2(c.x + r * 0.9f, c.y), ImVec2(c.x - r * 0.6f, c.y + r), col);
+            } else {            // pointing down
+                cv.fill_tri(cv.user, ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), ImVec2(c.x, c.y + r * 0.9f), col);
+            }
+            label_top = a1.y;
+        }
+
+        // its name along it, where the band is long enough to hold it (else the row's label or the tooltip has it)
         char buf[FLOW_LABEL_CAP];
-        snprintf(buf, sizeof(buf), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
+        flow_node_name(buf, sizeof(buf), node);
+        if (!flow_band_label_fits(cv, style, buf, band_max.y - label_top)) continue;
         const float size = MD_MIN(cv.small_size, style.band_width_px - 2.0f);
-        const float w = cv.measure(cv.user, buf, size);
-        if (size < 6.0f || w + 8.0f > band_max.y - band_min.y) continue;
-        const ImVec2 c = { (band_min.x + band_max.x) * 0.5f, (band_min.y + band_max.y) * 0.5f };
+        const ImVec2 c = { (band_min.x + band_max.x) * 0.5f, (label_top + band_max.y) * 0.5f };
         cv.text_up(cv.user, c, size, flow_with_alpha(text_col, alpha), buf);
     }
 
@@ -751,7 +814,7 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
     if (!draw_list) return FlowHit{};
     FlowImCanvas im = { draw_list, style.ribbon_curvature, style.ribbon_segments };
     const float base = ImGui::GetFontSize();
-    const FlowCanvas cv = { &im, base, base * style.small_text_scale, im_measure, im_fill, im_stroke, im_text, im_ribbon, im_text_up };
+    const FlowCanvas cv = { &im, base, base * style.small_text_scale, im_measure, im_fill, im_stroke, im_text, im_ribbon, im_text_up, im_tri };
     const ImVec2 mouse = ImGui::GetMousePos();
     return flow_draw_common(cv, view, graph, cut, layout, style, emphasis, stripes, notes, &mouse);
 }
@@ -763,7 +826,7 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
     if (!scene) return;
     FlowVgCanvas vg = { scene, style.ribbon_curvature };
     const float base = FLOW_VG_TEXT_SIZE;
-    const FlowCanvas cv = { &vg, base, base * style.small_text_scale, vg_measure, vg_fill, vg_stroke, vg_text, vg_ribbon, vg_text_up };
+    const FlowCanvas cv = { &vg, base, base * style.small_text_scale, vg_measure, vg_fill, vg_stroke, vg_text, vg_ribbon, vg_text_up, nullptr };
     flow_draw_common(cv, view, graph, cut, layout, style, FlowEmphasis{}, stripes, notes, nullptr);
 }
 
@@ -806,7 +869,7 @@ FlowMargins flow_measure_margins(const md_flow_graph_t* graph, const md_flow_cut
                                  const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     const float base = ImGui::GetFontSize();
-    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, im_measure, nullptr, nullptr, nullptr, nullptr, nullptr };
+    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, im_measure, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
     return flow_measure_common(cv, graph, cut, layout, style, notes);
 }
 
@@ -814,6 +877,6 @@ FlowMargins flow_measure_margins_vg(const md_flow_graph_t* graph, const md_flow_
                                     const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     const float base = FLOW_VG_TEXT_SIZE;
-    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, vg_measure, nullptr, nullptr, nullptr, nullptr, nullptr };
+    const FlowCanvas cv = { nullptr, base, base * style.small_text_scale, vg_measure, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
     return flow_measure_common(cv, graph, cut, layout, style, notes);
 }

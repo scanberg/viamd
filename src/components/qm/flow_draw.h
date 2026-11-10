@@ -64,6 +64,8 @@ struct FlowDrawStyle {
     float band_width_px     = 15.0f;
     float band_fill_tint    = 0.12f;  // of the side's colour over white: paler than the bars
     bool  show_band_labels  = true;
+    // A collapsed group's band carries its name, so its row says what it holds instead: "4 fragments"
+    const char* member_noun[2] = { "fragment", "fragments" };
 
     // A node's interior is this much of its colour over white, its border its colour darkened.
     float node_fill_tint    = 0.22f;
@@ -122,6 +124,7 @@ struct FlowHit {
     int32_t link = -1;  // index into cut->links
     int32_t stripe = -1;    // the stripe of that link under the cursor (FlowStripes), -1 for none
     bool subtitle = false;  // the cursor is over the annotations' subtitle
+    int32_t toggle = -1;    // the group (graph node) whose open/close arrow is under the cursor, -1 for none
 };
 
 // What a ribbon is made of, drawn as stripes along it: for cut link l, the shares frac[offset[l] ..

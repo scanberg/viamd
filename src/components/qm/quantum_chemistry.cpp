@@ -12119,6 +12119,17 @@ struct QuantumChemistry : viamd::EventHandler {
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
+
+            // A group's arrow: one click opens or closes it, pinned (the row budget leaves it so) and on both
+            // sides. A click is a press and release in place, as everywhere here, since a drag pans.
+            if (canvas_hovered && hit.toggle >= 0 && !io.KeyShift && !flow.region_active) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const uint32_t idx = (uint32_t)hit.toggle;
+                    md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+            }
             if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
                 ImGui::SetTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
                                   "it is local excitation (LE), the rest is charge transfer (CT). Opening a\n"
@@ -12269,8 +12280,12 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     if (has_children) {
                         const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\nDouble click to %s",
+                        // a group with an arrow (its band) says so; a fragment of atoms has none
+                        bool has_arrow = false;
+                        for (size_t b = 0; b < md_array_size(flow.layout.bands); ++b) has_arrow |= flow.layout.bands[b].node == (uint32_t)hit.node;
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\n%s to %s",
                             (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local,
+                            has_arrow ? "Click the arrow, or double click," : "Double click",
                             open ? "collapse" : "open it");
                     } else {
                         ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s",
@@ -12289,7 +12304,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // its members individually. That is what lets the threshold hide things honestly:
                 // everything below it goes, and you can still look. What the user opens or closes is
                 // PINNED, so the row budget leaves it as it is; a fragment is pinned on both sides.
-                if (!io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                // Not on an arrow: its two clicks have already closed and opened it again
+                if (!io.KeyShift && hit.toggle < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     const uint32_t idx = (uint32_t)hit.node;
                     const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
                     if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
