@@ -1069,6 +1069,56 @@ static CtDensityJob* ct_density_job_start(const md_system_t& sys, int32_t state)
     return job;
 }
 
+// One ribbon's orbital pair for the side views: a block NTO (md_qm_ct_block_nto), which the main thread forms
+// in the Lowdin basis from the state's charge transfer data (K x K work and a pass over K x A), and this takes
+// back to AO coefficients, C C~^T x, for the evaluation on the grid. O(M A) per vector: a worker's.
+struct CtOrbitalJob {
+    uint64_t key = 0;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    double*  x[2] = {};                 // [A] hole and particle in the Lowdin basis, owned
+    double*  c[2] = {};                 // [A] the same in AO coefficients, owned
+    char     info[2][64] = {};
+    char     sub[96] = {};
+    bool     ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_orbital_job_destroy(CtOrbitalJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0;
+    for (int i = 0; i < 2; ++i) {
+        if (job->x[i]) md_free(heap, job->x[i], sizeof(double) * A);
+        if (job->c[i]) md_free(heap, job->c[i], sizeof(double) * A);
+    }
+    delete job;
+}
+
+// x[0], x[1] are taken over: allocated by the caller from the heap, A doubles each
+static CtOrbitalJob* ct_orbital_job_start(const LowdinJob* lowdin, uint64_t key, double* x_hole, double* x_part) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    CtOrbitalJob* job = new CtOrbitalJob();
+    job->key    = key;
+    job->lowdin = lowdin;
+    job->x[0]   = x_hole;
+    job->x[1]   = x_part;
+    const size_t A = lowdin->num_ao;
+    job->c[0] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->c[1] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->task.start(MD_STR_LIT("Ribbon orbitals"), [job]() {
+        const LowdinJob* lw = job->lowdin;
+        for (int i = 0; i < 2; ++i) {
+            if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+            md_qm_lowdin_inverse_transform(job->c[i], job->x[i], 1, lw->C, lw->C_lowdin, lw->num_mo, lw->num_ao);
+        }
+        job->ok = true;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
 // The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
 static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
     if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
@@ -1506,17 +1556,40 @@ struct QuantumChemistry : viamd::EventHandler {
         md_grid_t grid = {};
         bool   initialized = false;
 
+        // A state's two densities, or one ribbon's orbital pair (block NTO) or the state's own NTO pair: the
+        // volumes the views show, under one budget
         struct Entry {
+            uint64_t key = 0;           // ctv_density_key, or an orbital key (top bit set)
             int32_t  state = -1;
             Volume   vol[2] = {};       // hole, particle
             uint64_t v0[2] = {};        // their data versions when made: filled once both have moved on
             uint64_t used = 0;
-            bool     failed = false;    // no densities to show for the state (no NTO pairs, or the evaluation failed)
+            bool     failed = false;    // nothing to show (no NTO pairs, or the evaluation failed)
+            bool     orbital = false;   // signed: drawn at +-iso rather than at iso^2
+            char     info[2][64] = {};  // per view, beside its caption: what is shown
+            char     sub[96] = {};      // under both
         };
         md_array(Entry) cache = nullptr;    // heap
         uint64_t tick = 0;
         CtDensityJob* job = nullptr;
         int32_t shown = -1;             // the state whose volumes the views show
+
+        // Ribbon orbitals. Hovering a ribbon asks for its orbital pair once the cursor has rested on it for
+        // hover_delay (sweeping across the diagram asks for nothing); clicking one pins it, so that the views
+        // keep it while the cursor is off the diagram (turning them, for one). The orbital route's NTO pairs
+        // likewise, from the middle column.
+        CtOrbitalJob* orb_job = nullptr;
+        uint64_t orb_shown = 0;         // the orbital entry last shown
+        uint64_t hover_cand = 0;        // the orbital under the cursor, and since when
+        double   hover_t0 = 0.0;
+        float    hover_delay = 0.15f;
+        struct Pin {
+            bool     on = false;
+            int32_t  state = -1;
+            uint64_t src_key = 0, dst_key = 0;  // the ribbon, by its ends (fragment route)
+            uint32_t pair = 0;
+            int32_t  nto = -1;                  // the NTO pair (orbital route)
+        } pin;
 
         GBuffer  gbuf = {};
         uint32_t iso_tex[2] = {};
@@ -1532,6 +1605,8 @@ struct QuantumChemistry : viamd::EventHandler {
     void ctv_free() {
         ct_density_job_destroy(ctv.job);
         ctv.job = nullptr;
+        ct_orbital_job_destroy(ctv.orb_job);
+        ctv.orb_job = nullptr;
         for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
             for (int c = 0; c < 2; ++c) if (ctv.cache[i].vol[c].tex_id) gl::free_texture(&ctv.cache[i].vol[c].tex_id);
         }
@@ -1543,9 +1618,12 @@ struct QuantumChemistry : viamd::EventHandler {
         if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
         if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
         md_gl_rep_destroy(ctv.gl_rep);
-        const bool show = ctv.show;
+        const CtViews prefs = { .show = ctv.show, .width_frac = ctv.width_frac, .iso_val = ctv.iso_val, .budget_mb = ctv.budget_mb };
         ctv = CtViews{};
-        ctv.show = show;     // a preference, not data
+        ctv.show       = prefs.show;        // preferences, not data
+        ctv.width_frac = prefs.width_frac;
+        ctv.iso_val    = prefs.iso_val;
+        ctv.budget_mb  = prefs.budget_mb;
     }
 
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
@@ -1566,6 +1644,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
         // Group labels already live in nto.group.label; these two are ours.
         char nto_label[MAX_NTO_LABELS][40] = {};
+        uint32_t nto_index[MAX_NTO_LABELS] = {};   // the state's NTO pair each middle node stands for
 
         // Second line: the dominant MO character of each NTO, e.g. "HOMO-1 -> LUMO". Empty when
         // no single pair dominates enough to name honestly.
@@ -10656,6 +10735,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (size_t k = 0; k < num_nto; ++k) {
             if (lambdas[k] < (double)flow.lambda_cutoff) continue;
+            if (num_keep >= MAX_NTO_LABELS) break;  // the labels' room; the rest weigh least (descending)
 
             for (int side = 0; side < 2; ++side) {
                 const double* C_nto = (side == 0 ? C_hole : C_part) + k * num_ao;
@@ -10687,6 +10767,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
+            flow.nto_index[num_keep] = (uint32_t)k;
             flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
                                C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
 
@@ -11291,12 +11372,17 @@ struct QuantumChemistry : viamd::EventHandler {
         return (size_t)ctv.grid.dim[0] * (size_t)ctv.grid.dim[1] * (size_t)ctv.grid.dim[2] * 2 * 2;
     }
 
-    CtViews::Entry* ctv_find(int32_t s) {
+    static uint64_t ctv_density_key(int32_t s) { return (uint64_t)(uint32_t)s + 1; }    // never 0, top bit clear
+    static uint64_t ctv_orbital_key(uint64_t h) { return h | (1ull << 63); }
+
+    CtViews::Entry* ctv_find_key(uint64_t key) {
+        if (!key) return nullptr;
         for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
-            if (ctv.cache[i].state == s) return &ctv.cache[i];
+            if (ctv.cache[i].key == key) return &ctv.cache[i];
         }
         return nullptr;
     }
+    CtViews::Entry* ctv_find(int32_t s) { return ctv_find_key(ctv_density_key(s)); }
 
     // Both volumes filled: a GPU evaluation lands in its texture frames after it was asked for, and every landing
     // moves the texture's data version on from the one it had when it was made
@@ -11312,10 +11398,10 @@ struct QuantumChemistry : viamd::EventHandler {
         for (int c = 0; c < 2; ++c) if (e->vol[c].tex_id) gl::free_texture(&e->vol[c].tex_id);
     }
 
-    // Room for one more state: the least recently used ready entries out, never the one asked for or the one on
+    // Room for one more entry: the least recently used ready entries out, never the one asked for or one on
     // screen, never one whose evaluation is still under way (its readback would land in a texture gone). With
     // evict false nothing goes, which is what a prefetch asks: it is never worth what is already there.
-    bool ctv_make_room(int32_t keep, bool evict) {
+    bool ctv_make_room(uint64_t keep, bool evict) {
         const size_t budget = (size_t)MD_MAX(ctv.budget_mb, 16) << 20;
         const size_t entry = ctv_entry_bytes();
         for (;;) {
@@ -11326,7 +11412,7 @@ struct QuantumChemistry : viamd::EventHandler {
             int64_t victim = -1;
             for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
                 const CtViews::Entry& e = ctv.cache[i];
-                if (e.failed || e.state == keep || e.state == ctv.shown || !ctv_entry_ready(e)) continue;
+                if (e.failed || e.key == keep || e.key == ctv_density_key(ctv.shown) || e.key == ctv.orb_shown || !ctv_entry_ready(e)) continue;
                 if (victim < 0 || e.used < ctv.cache[victim].used) victim = (int64_t)i;
             }
             if (victim < 0) return true;    // over the budget by what is in use: one more state, for a while
@@ -11345,8 +11431,9 @@ struct QuantumChemistry : viamd::EventHandler {
         if (ctv.job && ctv.job->done.load(std::memory_order_acquire)) {
             CtDensityJob* job = ctv.job;
             ctv.job = nullptr;
-            if (!ctv_find(job->state) && ctv_make_room(job->state, job->state == rsp.selected)) {
+            if (!ctv_find(job->state) && ctv_make_room(ctv_density_key(job->state), job->state == rsp.selected)) {
                 CtViews::Entry e = {};
+                e.key = ctv_density_key(job->state);
                 e.state = job->state;
                 e.used = ++ctv.tick;
                 e.failed = !job->ok;
@@ -11373,7 +11460,7 @@ struct QuantumChemistry : viamd::EventHandler {
             for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
                 if (!ctv.cache[i].failed && !ctv_entry_ready(ctv.cache[i])) return;
             }
-            if (!ctv_make_room(-1, false)) return;
+            if (!ctv_make_room(0, false)) return;
             for (int32_t d = 1; d < S && next < 0; ++d) {
                 const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
                 for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
@@ -11384,15 +11471,255 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!ctv.job) {
             // nothing to make the densities of: remembered, so that it is not asked again every frame
             CtViews::Entry e = {};
+            e.key = ctv_density_key(next);
             e.state = next;
             e.failed = true;
             md_array_push(ctv.cache, e, heap);
         }
     }
 
+    // ---- ribbon orbitals ----
+
+    // An orbital the views can show: a ribbon's block NTO pair (fragment route) or an NTO pair of the state
+    // (orbital route). key 0 for none.
+    struct CtOrbReq {
+        uint64_t key = 0;
+        int32_t  link = -1;     // cut link (fragment route)
+        uint32_t pair = 0;      // block NTO pair of the ribbon, descending
+        int32_t  nto = -1;      // NTO pair index of the state (orbital route)
+    };
+
+    bool ctv_block_ready() const {
+        return flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected && lowdin_job_ready(lowdin);
+    }
+
+    // The NTO pair a node of the orbital route's middle column stands for, -1 for any other node
+    int32_t ctv_nto_of_cut_node(uint32_t cut_idx) const {
+        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!n || (n->flags & MD_FLOW_NODE_FLAG_OTHER) || n->level != FLOW_LEVEL_NTO) return -1;
+        const uint32_t k = flow_key_index(n->key);
+        return k < MAX_NTO_LABELS ? (int32_t)flow.nto_index[k] : -1;
+    }
+
+    CtOrbReq ctv_request(int32_t link, int32_t stripe, int32_t node) const {
+        CtOrbReq r = {};
+        if (rsp.selected < 0) return r;
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+            if (link < 0 || (size_t)link >= md_array_size(flow.cut.links) || !ctv_block_ready()) return r;
+            const md_flow_link_t* l = flow.cut.links + link;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (!a || !b || (a->flags & MD_FLOW_NODE_FLAG_OTHER) || (b->flags & MD_FLOW_NODE_FLAG_OTHER)) return r;
+            if (!flow_level_has_atoms(a->level) || !flow_level_has_atoms(b->level)) return r;
+            r.link = link;
+            r.pair = stripe > 0 ? (uint32_t)stripe : 0;
+            const uint64_t h[4] = { (uint64_t)rsp.selected, a->key, b->key, r.pair };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0xb10c4a0ull));
+        } else if (flow.mode == FLOW_MODE_ORBITALS) {
+            int32_t k = node >= 0 ? ctv_nto_of_cut_node((uint32_t)node) : -1;
+            if (k < 0 && link >= 0 && (size_t)link < md_array_size(flow.cut.links)) {
+                k = ctv_nto_of_cut_node(flow.cut.links[link].src);
+                if (k < 0) k = ctv_nto_of_cut_node(flow.cut.links[link].dst);
+            }
+            if (k < 0) return r;
+            r.nto = k;
+            const uint64_t h[2] = { (uint64_t)rsp.selected, (uint64_t)k };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0x7e0ull));
+        }
+        return r;
+    }
+
+    // The pinned orbital as a request, its ribbon found again among the visible ones by its ends
+    CtOrbReq ctv_pin_request() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected) return {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            if (p.nto < 0) return {};
+            for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                if (flow.graph.nodes[i].level == FLOW_LEVEL_NTO && ctv_nto_of_cut_node((uint32_t)i) == p.nto) return ctv_request(-1, -1, (int32_t)i);
+            }
+            return {};
+        }
+        const int32_t l = ctv_pin_link();
+        return l >= 0 ? ctv_request(l, (int32_t)p.pair, -1) : CtOrbReq{};
+    }
+
+    int32_t ctv_pin_link() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected || flow.mode != FLOW_MODE_FRAGMENTS) return -1;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].dst);
+            if (a && b && a->key == p.src_key && b->key == p.dst_key) return (int32_t)i;
+        }
+        return -1;
+    }
+
+    void ctv_pin_toggle(const CtOrbReq& r) {
+        const CtOrbReq cur = ctv_pin_request();
+        if (cur.key && cur.key == r.key) { ctv.pin = {}; return; }
+        ctv.pin = {};
+        if (!r.key) return;
+        ctv.pin.on = true;
+        ctv.pin.state = rsp.selected;
+        ctv.pin.nto = r.nto;
+        ctv.pin.pair = r.pair;
+        if (r.link >= 0) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].dst);
+            ctv.pin.src_key = a ? a->key : 0;
+            ctv.pin.dst_key = b ? b->key : 0;
+        }
+    }
+
+    // A ribbon's block NTO pair in the Lowdin basis: the pair'th singular pair of the ribbon's block of the
+    // transition density, each confined to its end's atoms. x_hole and x_part are A doubles; false when the
+    // ribbon has no such pair.
+    bool ctv_block_pair(double* x_hole, double* x_part, char info[2][64], char* sub, size_t sub_cap, int32_t link, uint32_t pair) {
+        const size_t K = ct_job->K, KK = K * K, A = lowdin->num_ao, N = ct_job->num_atoms;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const md_flow_link_t* l = flow.cut.links + link;
+        const uint32_t end[2] = { l->src, l->dst };
+        const double* x_lowdin[2] = { ct_job->hole, ct_job->part };
+        const double* blocks[2]   = { ct_job->hole_blocks, ct_job->part_blocks };
+        double* B[2];
+        bool* in[2];
+        for (int side = 0; side < 2; ++side) {
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, end[side], talloc) || md_array_size(atoms) == 0) return false;
+            B[side]  = md_temp_alloc_zero_array(temp, double, KK);
+            in[side] = md_temp_alloc_zero_array(temp, bool, N + 1);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= N) continue;
+                in[side][atoms[i]] = true;
+                const double* ab = blocks[side] + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) B[side][k] += ab[k];
+            }
+        }
+        double* w  = md_temp_alloc_array(temp, double, K);
+        double* hc = md_temp_alloc_array(temp, double, KK);
+        double* pc = md_temp_alloc_array(temp, double, KK);
+        const size_t n = md_qm_ct_block_nto(w, hc, pc, ct_job->lambda, K, B[0], B[1]);
+        if (n == 0) return false;
+        const size_t j = MD_MIN((size_t)pair, n - 1);
+        double sum = 0.0;
+        for (size_t i = 0; i < n; ++i) sum += w[i];
+
+        const double* coef[2] = { hc + j * K, pc + j * K };
+        double* out[2] = { x_hole, x_part };
+        for (int side = 0; side < 2; ++side) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lowdin->ao_atom[mu];
+                double v = 0.0;
+                if (atom < N && in[side][atom]) {
+                    for (size_t k = 0; k < K; ++k) v += coef[side][k] * x_lowdin[side][k * A + mu];
+                }
+                out[side][mu] = v;
+            }
+            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, end[side]);
+            snprintf(info[side], 64, "%.*s", node ? (int)node->label.len : 0, node && node->label.ptr ? node->label.ptr : "");
+        }
+        if (n > 1) {
+            snprintf(sub, sub_cap, "pair %zu of %zu, %.0f%% of the ribbon (%.1f%%)", j + 1, n, sum > 0.0 ? 100.0 * w[j] / sum : 0.0, 100.0 * l->weight);
+        } else {
+            snprintf(sub, sub_cap, "the ribbon's one pair (%.1f%%)", 100.0 * l->weight);
+        }
+        return true;
+    }
+
+    // Once a frame while the views are on, after ctv_update: collects the orbital job that finished, and starts
+    // the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job: they
+    // are published as AO coefficients and go straight to the evaluation.
+    void ctv_orbital_update(ApplicationState& state, const CtOrbReq& req) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        auto evaluate = [&](CtViews::Entry* e, const double* c0, const double* c1, size_t A) {
+            const double* c[2] = { c0, c1 };
+            for (int i = 0; i < 2 && !e->failed; ++i) {
+                init_volume(&e->vol[i], ctv.grid, GL_R16F);
+                e->v0[i] = volume::data_version(e->vol[i].tex_id);
+                if (!orbital_coefficients_evaluate(&state, e->vol[i].tex_id, ctv.grid, c[i], A, MD_GTO_EVAL_MODE_PSI, MD_GTO_OP_SET, DEFAULT_GTO_CUTOFF_VALUE)) e->failed = true;
+            }
+            if (e->failed) ctv_entry_free(e);
+        };
+
+        if (ctv.orb_job && ctv.orb_job->done.load(std::memory_order_acquire)) {
+            CtOrbitalJob* job = ctv.orb_job;
+            ctv.orb_job = nullptr;
+            if (!ctv_find_key(job->key) && ctv_make_room(job->key, true)) {
+                CtViews::Entry e = {};
+                e.key = job->key;
+                e.state = rsp.selected;
+                e.orbital = true;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                md_memcpy(e.info, job->info, sizeof(e.info));
+                md_memcpy(e.sub, job->sub, sizeof(e.sub));
+                if (job->ok) evaluate(&e, job->c[0], job->c[1], job->lowdin->num_ao);
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_orbital_job_destroy(job);
+        }
+
+        if (!req.key || ctv_find_key(req.key)) return;
+        if (req.nto >= 0) {
+            // the state's own NTO pair: published, so evaluated from the attribute table
+            if (!es_nto_ready(&state, (size_t)rsp.selected) || !ctv_make_room(req.key, true)) return;
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.used = ++ctv.tick;
+            snprintf(e.info[0], sizeof(e.info[0]), "NTO %d", req.nto + 1);
+            snprintf(e.info[1], sizeof(e.info[1]), "NTO %d", req.nto + 1);
+            const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
+            double lambda = 0.0;
+            if (lam && md_attribute_extract_f64(&lambda, 1, lam, md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto), md_unit_none()) == 1) {
+                snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
+            }
+            for (int i = 0; i < 2 && !e.failed; ++i) {
+                init_volume(&e.vol[i], ctv.grid, GL_R16F);
+                e.v0[i] = volume::data_version(e.vol[i].tex_id);
+                const ElectronicStructureNtoComponent comp = i == 0 ? ElectronicStructureNtoComponent::Hole : ElectronicStructureNtoComponent::Particle;
+                if (!evaluate_nto(state, e.vol[i].tex_id, ctv.grid, (size_t)rsp.selected, (size_t)req.nto, comp, MD_GTO_OP_SET)) e.failed = true;
+            }
+            if (e.failed) ctv_entry_free(&e);
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        if (ctv.orb_job || req.link < 0 || !ctv_block_ready()) return;
+
+        const size_t A = lowdin->num_ao;
+        double* x_hole = (double*)md_alloc(heap, sizeof(double) * A);
+        double* x_part = (double*)md_alloc(heap, sizeof(double) * A);
+        char info[2][64] = {};
+        char sub[96] = {};
+        if (!ctv_block_pair(x_hole, x_part, info, sub, sizeof(sub), req.link, req.pair)) {
+            md_free(heap, x_hole, sizeof(double) * A);
+            md_free(heap, x_part, sizeof(double) * A);
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.failed = true;
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        ctv.orb_job = ct_orbital_job_start(lowdin, req.key, x_hole, x_part);
+        md_memcpy(ctv.orb_job->info, info, sizeof(info));
+        md_memcpy(ctv.orb_job->sub, sub, sizeof(sub));
+    }
+
     // The two views, hole and particle, in r[0] and r[1]: the molecule, the selection and highlight marks over it,
-    // and each its own density. One camera for both, so they turn together and read side by side.
-    void draw_ct_views(ApplicationState& state, const ImRect r[2]) {
+    // and each its own density - or, while an orbital is asked for (orb_key), its hole and particle orbitals.
+    // keep_orbital: the cursor is on something with orbitals, so the last orbital shown stays until the one asked
+    // for is in, rather than the densities flashing between them. One camera for both views, so they turn
+    // together and read side by side.
+    void draw_ct_views(ApplicationState& state, const ImRect r[2], uint64_t orb_key, bool keep_orbital) {
         ImGuiIO& io = ImGui::GetIO();
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 sz = r[0].GetSize();
@@ -11408,8 +11735,29 @@ struct QuantumChemistry : viamd::EventHandler {
         CtViews::Entry* shown = ctv.shown >= 0 ? ctv_find(ctv.shown) : nullptr;
         if (shown && !ctv_entry_ready(*shown)) shown = nullptr;
         if (sel && sel->failed) shown = nullptr;    // the last state's densities would read as this one's
+        bool updating = ctv.shown != rsp.selected && !(sel && sel->failed);
+        const char* failed_status = (sel && sel->failed) ? "no NTO pairs" : nullptr;
+
+        // An orbital over the densities, when one is asked for
+        if (orb_key || keep_orbital) {
+            CtViews::Entry* want = ctv_find_key(orb_key);
+            if (want && ctv_entry_ready(*want)) {
+                ctv.orb_shown = orb_key;
+                shown = want;
+                updating = false;
+                failed_status = nullptr;
+            } else if (want && want->failed) {
+                shown = nullptr;
+                updating = false;
+                failed_status = "no orbital pair";
+            } else {
+                CtViews::Entry* last = keep_orbital ? ctv_find_key(ctv.orb_shown) : nullptr;
+                if (last && ctv_entry_ready(*last) && last->state == rsp.selected) shown = last;
+                updating = orb_key != 0;
+            }
+        }
         if (shown) shown->used = ++ctv.tick;
-        const bool updating = ctv.shown != rsp.selected && !(sel && sel->failed);
+        const bool orbital = shown && shown->orbital;
 
         const float aspect = sz.x / sz.y;
         const mat4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
@@ -11437,6 +11785,9 @@ struct QuantumChemistry : viamd::EventHandler {
         vec4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
         colors[0].w = colors[1].w = 0.75f;
         const float iso_value = (float)(ctv.iso_val * ctv.iso_val);
+        // orbitals in the orbital window's lobe colours, at +-iso
+        const float  orb_values[2] = { (float)ctv.iso_val, -(float)ctv.iso_val };
+        const vec4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
 
         // Camera control in either view; the picking reads the shared buffer, the same in both
         for (int i = 0; i < 2; ++i) {
@@ -11476,7 +11827,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const int layout[2] = { width, height };
             render_hash = md_hash64(layout, sizeof(layout), render_hash);
             render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
-            const int32_t s = shown ? shown->state : -1;
+            const uint64_t s = shown ? shown->key : 0;
             render_hash = md_hash64(&s, sizeof(s), render_hash);
             if (shown) {
                 for (int c = 0; c < 2; ++c) {
@@ -11487,6 +11838,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
             render_hash = md_hash64(colors, sizeof(colors), render_hash);
             render_hash = md_hash64(&iso_value, sizeof(iso_value), render_hash);
+            render_hash = md_hash64(orb_colors, sizeof(orb_colors), render_hash);
             render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
             render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
             render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
@@ -11613,9 +11965,9 @@ struct QuantumChemistry : viamd::EventHandler {
                             .inv_proj = inv_proj_mat,
                         },
                         .iso = {
-                            .count  = 1,
-                            .values = &iso_value,
-                            .colors = &colors[i],
+                            .count  = orbital ? 2u : 1u,
+                            .values = orbital ? orb_values : &iso_value,
+                            .colors = orbital ? orb_colors : &colors[i],
                             .exact  = state.settings.exact_isosurfaces,
                         },
                         .shading = {
@@ -11648,11 +12000,26 @@ struct QuantumChemistry : viamd::EventHandler {
             dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
             dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
             const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
-            dl->AddText(tp, ImGui::ColorConvertFloat4ToU32(vec_cast(vec4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f })), lbl[i]);
-            const char* status = (sel && sel->failed) ? "no NTO pairs" : updating ? "updating..." : nullptr;
+            const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(vec4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
+            dl->AddText(tp, caption_col, lbl[i]);
+            float y = tp.y + ImGui::GetTextLineHeight();
+            if (orbital) {
+                // what it is the orbital of, under the caption, clipped to the view
+                dl->PushClipRect(r[i].Min, r[i].Max, true);
+                dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 200), shown->info[i]);
+                y += ImGui::GetTextLineHeight();
+                if (shown->sub[0]) dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 130), shown->sub);
+                dl->PopClipRect();
+            }
+            const char* status = failed_status ? failed_status : updating ? "updating..." : nullptr;
             if (status) {
                 const ImVec2 ts = ImGui::CalcTextSize(status);
                 dl->AddText(ImVec2(r[i].Max.x - ts.x - 6.0f, r[i].Min.y + 4.0f), IM_COL32(0, 0, 0, 140), status);
+            }
+            if (i == 0 && ctv.pin.on && orbital && shown->key == ctv_pin_request().key) {
+                const char* pinned = "pinned (click it again, or Esc)";
+                const ImVec2 ts = ImGui::CalcTextSize(pinned);
+                dl->AddText(ImVec2(r[i].Min.x + 6.0f, r[i].Max.y - ts.y - 4.0f), IM_COL32(0, 0, 0, 120), pinned);
             }
         }
     }
@@ -11795,7 +12162,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::SetItemTooltip("Of the window's width, each side.");
                     float iso = (float)ctv.iso_val;
                     if (ImGui::SliderFloat("Iso value", &iso, 0.005f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic)) ctv.iso_val = iso;
-                    ImGui::SetItemTooltip("The densities are drawn at its square, as the transition analysis draws them.");
+                    ImGui::SetItemTooltip("Orbitals are drawn at plus and minus it, densities at its square, as the\n"
+                                          "transition analysis draws them.");
                     ImGui::SliderInt("Cache", &ctv.budget_mb, 32, 2048, "%d MB");
                     ImGui::SetItemTooltip("GPU memory for the states' densities, kept so that switching state shows them at once.\n"
                                           "%zu states fit.", ctv.initialized && ctv_entry_bytes() ? ((size_t)ctv.budget_mb << 20) / ctv_entry_bytes() : (size_t)0);
@@ -11903,7 +12271,10 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::Checkbox("3D", &ctv.show);
             ImGui::SetItemTooltip("The molecule on either side of the diagram: the hole density left, the particle\n"
                                   "density right, from the state's NTO pairs. The states are prepared in the\n"
-                                  "background, so switching between them does not wait. Sizes under Settings.");
+                                  "background, so switching between them does not wait. Sizes under Settings.\n\n"
+                                  "Rest the cursor on a ribbon for the orbital pair that carries it (the stripe\n"
+                                  "under the cursor, where there are several); click it to keep it there, click\n"
+                                  "it again, empty space or Esc to let go. In the orbital route, an NTO pair.");
 
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -11940,8 +12311,23 @@ struct QuantumChemistry : viamd::EventHandler {
                     { area_p0, area_p0 + ImVec2(side_w, canvas_sz.y) },
                     { ImVec2(canvas_p1.x + side_gap, area_p0.y), ImVec2(canvas_p1.x + side_gap + side_w, area_p0.y + canvas_sz.y) },
                 };
+                // The orbital asked for: the one under the cursor once it has rested there, else the pinned one.
+                // From the last frame's hit, the diagram being drawn after the views.
+                if (ctv.pin.on && ctv.pin.state != rsp.selected) ctv.pin = {};
+                const CtOrbReq cand = ctv_request(flow.hover.link, flow.hover.stripe, flow.hover.node);
+                const double now = ImGui::GetTime();
+                if (cand.key != ctv.hover_cand) {
+                    ctv.hover_cand = cand.key;
+                    ctv.hover_t0 = now;
+                }
+                const CtOrbReq pinned = ctv_pin_request();
+                CtOrbReq req = {};
+                if (cand.key && now - ctv.hover_t0 >= (double)ctv.hover_delay) req = cand;
+                else if (!cand.key) req = pinned;
+
                 ctv_update(state);
-                draw_ct_views(state, side_rect);
+                ctv_orbital_update(state, req);
+                draw_ct_views(state, side_rect, req.key, cand.key != 0 || pinned.key != 0);
                 ImGui::SetCursorScreenPos(canvas_p0);
             }
 
@@ -12102,6 +12488,9 @@ struct QuantumChemistry : viamd::EventHandler {
             emphasis.any_selected = selection_touches_atoms || md_array_size(flow.selected_orbital_keys) > 0;
             emphasis.hover_node = flow.hover.node;
             emphasis.hover_link = flow.hover.link;
+            if (side_w > 0.0f && flow.hover.node < 0 && flow.hover.link < 0) {
+                emphasis.hover_link = ctv_pin_link();     // the pinned ribbon stands out while nothing is hovered
+            }
 
             flow_update_stripes();
             FlowStripes stripes = {};
@@ -12119,6 +12508,18 @@ struct QuantumChemistry : viamd::EventHandler {
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
+
+            // With the side views on: a click on a ribbon (or, in the orbital route, an NTO pair) pins its orbitals
+            // in them, again unpins; a click on empty space or Esc lets go. A press and release in place.
+            if (side_w > 0.0f) {
+                if (canvas_hovered && hit.toggle < 0 && !io.KeyShift && !flow.region_active &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const CtOrbReq r = ctv_request(hit.link, hit.stripe, hit.node);
+                    if (r.key) ctv_pin_toggle(r);
+                    else if (hit.node < 0 && hit.link < 0) ctv.pin = {};
+                }
+                if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ctv.pin = {};
+            }
 
             // A group's arrow: one click opens or closes it, pinned (the row budget leaves it so) and on both
             // sides. A click is a press and release in place, as everywhere here, since a drag pans.

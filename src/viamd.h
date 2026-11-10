@@ -2732,6 +2732,10 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
                          const vec3_t* atom_pos, size_t num_atom_pos,
                          md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+// From coefficients the caller holds, num_ao of them
+bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                      const vec3_t* atom_pos, size_t num_atom_pos,
+                                      const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 
 // Positions for a system's BASIS atoms, in the bohr and interleaved layout md_gto works in, taken
 // out of `state` through the QM -> system map. Allocated from temp; null with a zero count when the
@@ -2999,6 +3003,10 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
 // returns; gpu_volume_jobs_drain() forces it where the contents are needed immediately.
 bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
+// The same for an orbital the caller made itself (a block NTO, a combination of orbitals): its AO coefficients,
+// num_ao of them, which must match the system's basis. Copied before the call returns.
+bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, const double* ao_coeffs, size_t num_ao,
+                                   md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 // async (the representations): on the GPU, the density is issued as a job (md_gto_gpu_job_t) the frame loop
 // completes (gpu_volume_jobs_poll), where the launch would wait for its counting pass
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
