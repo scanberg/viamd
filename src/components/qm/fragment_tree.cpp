@@ -197,108 +197,64 @@ void emit_molecule(Builder& b, size_t m, uint32_t par, const char* name_override
     }
 
     const uint32_t mnode = b.push(par, FRAG_TREE_MOLECULE, MD_FRAGMENT_KIND_COUNT, nm);
-    md_array(uint32_t) kids = nullptr;
+    const size_t num_frags = f_end - f_beg;
+    const size_t num_res = md_array_size(residues);
 
-    if (md_array_size(residues) < 2) {
-        for (uint32_t f = f_beg; f < f_end; ++f) {
-            const md_str_t fn = md_system_fragment_name(sys, f);
-            snprintf(nm, sizeof(nm), "%.*s", (int)fn.len, fn.ptr);
-            const uint32_t leaf = b.push(mnode, FRAG_TREE_FRAGMENT, md_system_fragment_kind(sys, f), nm);
-            md_array_push(kids, leaf, b.temp);
-            fragment_atoms(&scratch, b, f, -1);
-            for (size_t i = 0; i < md_array_size(scratch); ++i) b.add_atom(leaf, scratch[i]);
-            b.close(leaf);
-        }
-        number_repeats(b, kids, md_array_size(kids));
-        return;
-    }
-
-    // A molecule of residues: each residue with the fragments it is the first of. A fragment of several residues (a
-    // peptide group, a phosphate, a disulfide) is whole, under the first of them, its name saying the next ("peptide,
-    // with ALA 4"): every atom is in one leaf, and the leaves are the chemistry, at the cost of a residue's node
-    // holding the N of the next residue and not its own.
-    md_array(md_fragment_idx_t) pieces = nullptr;
-    md_array(md_fragment_idx_t) owned = nullptr;
+    // The fragments, whole, in the molecule's order: by the first residue they are of, then by their first atom,
+    // one that reaches on to a later residue (a peptide group to the next) after those of its first residue alone.
+    // Of a protein: the N-terminus, then for each residue its alpha carbon, its side chain and the peptide group.
+    md_fragment_idx_t* order = (md_fragment_idx_t*)md_alloc(b.temp, sizeof(md_fragment_idx_t) * num_frags);
+    uint64_t* key = (uint64_t*)md_alloc(b.temp, sizeof(uint64_t) * num_frags);
     md_residue_idx_t of[4];
-    // Of several chains (chains joined by a disulfide), the residues say their chain, as their numbers repeat
-    bool chains = false;
-    for (size_t j = 1; j < md_array_size(residues) && !chains; ++j) chains = residue_chain(sys, residues[j]) != residue_chain(sys, residues[0]);
-    for (size_t j = 0; j < md_array_size(residues); ++j) {
-        const int32_t r = residues[j];
-        const size_t num = md_system_residue_fragments(nullptr, 0, sys, (size_t)r);
-        md_array_resize(pieces, num, b.temp);
-        md_system_residue_fragments(pieces, num, sys, (size_t)r);
-        md_array_shrink(owned, 0);
-        for (size_t p = 0; p < num; ++p) {
-            const size_t no = md_system_fragment_residues(of, MD_COUNTOF(of), sys, pieces[p]);
-            if (no > 0 && of[0] == r) md_array_push(owned, pieces[p], b.temp);
+    for (size_t i = 0; i < num_frags; ++i) {
+        const md_fragment_idx_t f = (md_fragment_idx_t)(f_beg + i);
+        uint32_t first_atom = UINT32_MAX;
+        for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, f); md_fragment_atom_iter_next(&it);) {
+            first_atom = MD_MIN(first_atom, (uint32_t)it.atom);
         }
-        const size_t num_owned = md_array_size(owned);
-        if (num_owned == 0) continue;
-        // In the residue's own order: by its first atom, those reaching on to a later residue (the peptide group to
-        // the next) last. Of a protein: the N-terminus, the alpha carbon, the side chain, the peptide group.
-        {
-            uint64_t* key = (uint64_t*)md_alloc(b.temp, sizeof(uint64_t) * num_owned);
-            for (size_t p = 0; p < num_owned; ++p) {
-                uint32_t first_atom = UINT32_MAX;
-                for (md_fragment_atom_iter_t it = md_fragment_atom_iter(sys, owned[p]); md_fragment_atom_iter_next(&it);) {
-                    first_atom = MD_MIN(first_atom, (uint32_t)it.atom);
-                }
-                const bool reaches_on = md_system_fragment_residues(of, MD_COUNTOF(of), sys, owned[p]) > 1;
-                key[p] = ((uint64_t)reaches_on << 32) | first_atom;
-            }
-            for (size_t p = 1; p < num_owned; ++p) {
-                const uint64_t k = key[p];
-                const md_fragment_idx_t f = owned[p];
-                size_t q = p;
-                for (; q > 0 && key[q - 1] > k; --q) { key[q] = key[q - 1]; owned[q] = owned[q - 1]; }
-                key[q] = k;
-                owned[q] = f;
-            }
-        }
-
-        char rl[FRAG_TREE_NAME_CAP];
-        residue_label(rl, sizeof(rl), sys, r, chains);
-        if (num_owned == 1 && num == 1) {
-            // The residue is one fragment, of it alone
-            const uint32_t leaf = b.push(mnode, FRAG_TREE_FRAGMENT, md_system_fragment_kind(sys, owned[0]), rl);
-            md_array_push(kids, leaf, b.temp);
-            fragment_atoms(&scratch, b, owned[0], -1);
-            for (size_t i = 0; i < md_array_size(scratch); ++i) b.add_atom(leaf, scratch[i]);
-            b.close(leaf);
-            continue;
-        }
-        const uint32_t rnode = b.push(mnode, FRAG_TREE_RESIDUE, MD_FRAGMENT_KIND_COUNT, rl);
-        md_array_push(kids, rnode, b.temp);
-        md_array(uint32_t) rkids = nullptr;
-        for (size_t p = 0; p < num_owned; ++p) {
-            const md_fragment_idx_t f = owned[p];
-            const md_str_t fn = md_system_fragment_name(sys, f);
-            const size_t no = md_system_fragment_residues(of, MD_COUNTOF(of), sys, f);
-            if (no > 1) {
-                char ol[FRAG_TREE_NAME_CAP];
-                residue_label(ol, sizeof(ol), sys, of[1], chains && residue_chain(sys, of[1]) != residue_chain(sys, r));
-                snprintf(nm, sizeof(nm), "%.*s, with %s", (int)fn.len, fn.ptr, ol);
-            } else {
-                snprintf(nm, sizeof(nm), "%.*s", (int)fn.len, fn.ptr);
-            }
-            const uint32_t leaf = b.push(rnode, FRAG_TREE_FRAGMENT, md_system_fragment_kind(sys, f), nm);
-            md_array_push(rkids, leaf, b.temp);
-            fragment_atoms(&scratch, b, f, -1);
-            for (size_t i = 0; i < md_array_size(scratch); ++i) b.add_atom(leaf, scratch[i]);
-            b.close(leaf);
-        }
-        number_repeats(b, rkids, md_array_size(rkids));
+        const size_t no = md_system_fragment_residues(of, MD_COUNTOF(of), sys, f);
+        const uint64_t first_res = no > 0 ? (uint64_t)of[0] : 0xFFFFFFull;  // of no residue: last
+        order[i] = f;
+        key[i] = (first_res << 33) | ((uint64_t)(no > 1) << 32) | first_atom;
     }
-    // Fragments of atoms in no residue, after
-    for (uint32_t f = f_beg; f < f_end; ++f) {
-        if (md_system_fragment_residues(of, MD_COUNTOF(of), sys, f) > 0) continue;
+    for (size_t i = 1; i < num_frags; ++i) {
+        const uint64_t k = key[i];
+        const md_fragment_idx_t f = order[i];
+        size_t q = i;
+        for (; q > 0 && key[q - 1] > k; --q) { key[q] = key[q - 1]; order[q] = order[q - 1]; }
+        key[q] = k;
+        order[q] = f;
+    }
+
+    // In a molecule of residues a fragment says where it is: "alpha carbon, ALA 3", "peptide, ALA 3 / ALA 4". Of
+    // several chains (joined by a disulfide), the residues say their chain, as their numbers repeat.
+    bool chains = false;
+    for (size_t j = 1; j < num_res && !chains; ++j) chains = residue_chain(sys, residues[j]) != residue_chain(sys, residues[0]);
+
+    md_array(uint32_t) kids = nullptr;
+    for (size_t i = 0; i < num_frags; ++i) {
+        const md_fragment_idx_t f = order[i];
         const md_str_t fn = md_system_fragment_name(sys, f);
-        snprintf(nm, sizeof(nm), "%.*s", (int)fn.len, fn.ptr);
+        const size_t no = num_res > 1 ? md_system_fragment_residues(of, MD_COUNTOF(of), sys, f) : 0;
+        if (no == 0) {
+            snprintf(nm, sizeof(nm), "%.*s", (int)fn.len, fn.ptr);
+        } else {
+            char r0[FRAG_TREE_NAME_CAP];
+            residue_label(r0, sizeof(r0), sys, of[0], chains);
+            if (no == 1) {
+                snprintf(nm, sizeof(nm), "%.*s, %s", (int)fn.len, fn.ptr, r0);
+            } else {
+                char r1[FRAG_TREE_NAME_CAP];
+                residue_label(r1, sizeof(r1), sys, of[1], chains && residue_chain(sys, of[1]) != residue_chain(sys, of[0]));
+                char tmp[3 * FRAG_TREE_NAME_CAP];
+                snprintf(tmp, sizeof(tmp), "%.*s, %s / %s%s", (int)fn.len, fn.ptr, r0, r1, no > 2 ? " / ..." : "");
+                snprintf(nm, sizeof(nm), "%s", tmp);
+            }
+        }
         const uint32_t leaf = b.push(mnode, FRAG_TREE_FRAGMENT, md_system_fragment_kind(sys, f), nm);
         md_array_push(kids, leaf, b.temp);
         fragment_atoms(&scratch, b, f, -1);
-        for (size_t i = 0; i < md_array_size(scratch); ++i) b.add_atom(leaf, scratch[i]);
+        for (size_t k = 0; k < md_array_size(scratch); ++k) b.add_atom(leaf, scratch[k]);
         b.close(leaf);
     }
     number_repeats(b, kids, md_array_size(kids));

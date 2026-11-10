@@ -10,20 +10,17 @@
 struct md_system_t;
 struct md_allocator_i;
 
-// The fragments of a system (sys->fragment, md_fragment.h) as a tree to show, over the levels the system
-// already has:
+// The fragments of a system (sys->fragment, md_fragment.h) as a tree to show:
 //
 //   set        molecules alike (one template), two or more: "water x24"
 //   molecule   one molecule of several fragments: named by its residue, "protein", "nucleic acid", or its formula
-//   residue    a residue of a molecule of several residues, with the fragments it is the first of
 //   fragment   a leaf: a fragment, whole
 //
-// A level of one child is not made: a molecule of one fragment is that fragment, a residue which is one fragment is
-// a leaf. A fragment over residues (a peptide group, a phosphate, a disulfide) is shown whole under the first of them,
-// its name saying the next ("peptide, with ALA 4"): every atom is in one leaf, so the tree's quantities, which add up
-// over its atoms, are right, but a residue's node is its fragments, not its atoms (of a protein: its alpha carbon,
-// its side chain and the peptide group to the next residue). Names repeated under one parent are numbered
-// ("phenyl 1", "phenyl 2").
+// A level of one child is not made: a molecule of one fragment is that fragment. Residues are no level: fragments and
+// residues do not nest (a peptide group, a phosphate, an ester joins two), so a molecule's fragments are listed in
+// its order, by the first residue each is of, and in a molecule of several residues each says which ("alpha carbon,
+// ALA 3", "peptide, ALA 3 / ALA 4"). Every atom is in one leaf, so the tree's quantities, which add up over its atoms,
+// are right at every node. Names repeated under one parent are numbered ("phenyl 1", "phenyl 2").
 //
 // The nodes are in pre-order, a parent before its children, and their atoms are ordered so that every node is one
 // contiguous range of atom_idx, its children's ranges inside its own.
@@ -33,7 +30,6 @@ struct md_allocator_i;
 enum FragTreeKind : uint8_t {
     FRAG_TREE_SET = 0,
     FRAG_TREE_MOLECULE,
-    FRAG_TREE_RESIDUE,
     FRAG_TREE_FRAGMENT,
 };
 
