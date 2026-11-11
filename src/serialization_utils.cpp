@@ -43,7 +43,7 @@ bool next_section_header(md_str_t& section, deserialization_state_t& state) {
 	while (next_entry(ident, arg, state)) {}
 
 	md_str_t line;
-	while (md_str_extract_line(&line, &state.text)) {
+	while (md_parse_next_line(&line, &state.text)) {
 		line = md_str_trim(line);
 		if (md_str_begins_with(line, MD_STR_LIT("[")) &&
 			md_str_ends_with(line, MD_STR_LIT("]")))
@@ -59,31 +59,31 @@ bool next_section_header(md_str_t& section, deserialization_state_t& state) {
 
 bool next_entry(md_str_t& ident, md_str_t& arg, deserialization_state_t& state) {
 	md_str_t line;
-	while (md_str_peek_line(&line, &state.text)) {
+	while (md_parse_peek_line(&line, &state.text)) {
 		line = md_str_trim(line);
 		if (md_str_begins_with(line, MD_STR_LIT("["))) {
 			return false;
 		}
-		md_str_skip_line(&state.text);
+		md_parse_skip_line(&state.text);
 		if (is_comment(line)) {
 			continue;
 		}
 
-		size_t loc;
-		if (md_str_find_char(&loc, line, '=')) {
-			ident = md_str_trim(md_str_substr(line, 0, loc));
-			arg   = md_str_trim(md_str_substr(line, loc + 1, SIZE_MAX));
+		if (md_str_cut(&ident, &arg, line, md_str_find_char(line, '='))) {
+			ident = md_str_trim(ident);
+			arg   = md_str_trim(arg);
 			if (md_str_begins_with(arg, esc)) {
 				// Multiline string: from the opening quotes in the text itself (the line was only a
 				// view of its first line) to the matching closing ones
 				const char* beg = md_str_beg(arg) + md_str_len(esc);
 				const char* end = md_str_end(state.text);
 				md_str_t haystack = {beg, (size_t)(end-beg)};
-				if (md_str_find_str(&loc, haystack, esc)) {
-					arg = {beg, loc};
+				const size_t loc = md_str_find_str(haystack, esc);
+				if (loc != MD_STR_NPOS) {
+					arg = md_str_substr(haystack, 0, loc);
 					state.text = md_str_substr(haystack, loc + md_str_len(esc));
 					// The rest of the closing line
-					md_str_skip_line(&state.text);
+					md_parse_skip_line(&state.text);
 				} else {
 					MD_LOG_ERROR("Workspace: unbalanced \"\"\" in the value of '" MD_STR_FMT "', the rest of the file is skipped", MD_STR_ARG(ident));
 					state.text = {};
@@ -139,11 +139,11 @@ void write_flt_vec(serialization_state_t& state, md_str_t ident, const float* el
 void write_str(serialization_state_t& state, md_str_t ident, md_str_t str) {
 	// Quoted whenever a plain value would not come back as it went: a line break ends it, and the
 	// reader trims whitespace at either end
-	const bool multiline  = md_str_find_char(NULL, str, '\n') || md_str_find_char(NULL, str, '\r');
-	const bool padded     = str.len > 0 && (is_whitespace(str.ptr[0]) || is_whitespace(str.ptr[str.len - 1]));
+	const bool multiline  = md_str_contains_char(str, '\n') || md_str_contains_char(str, '\r');
+	const bool padded     = str.len > 0 && (md_ascii_is_whitespace(str.ptr[0]) || md_ascii_is_whitespace(str.ptr[str.len - 1]));
 	const bool looks_esc  = md_str_begins_with(str, esc);
 	if (multiline || padded || looks_esc) {
-		if (md_str_find_str(NULL, str, esc)) {
+		if (md_str_contains_str(str, esc)) {
 			MD_LOG_ERROR("Workspace: the value of '" MD_STR_FMT "' contains \"\"\" and cannot be stored as it is", MD_STR_ARG(ident));
 		}
 		md_str_writer_fmt(&state.sw, MD_STR_FMT "=" MD_STR_FMT MD_STR_FMT MD_STR_FMT "\n", MD_STR_ARG(ident), MD_STR_ARG(esc), MD_STR_ARG(str), MD_STR_ARG(esc));
@@ -220,7 +220,7 @@ bool extract_int_vec(int* elem, size_t len, md_str_t arg) {
 	if (len > MD_COUNTOF(tmp)) return false;
 	md_str_t tok;
 	size_t count = 0;
-	while (extract_token_delim(&tok, &arg, ',')) {
+	while (md_parse_next_token_delim(&tok, &arg, ',')) {
 		tok = md_str_trim(tok);
 		if (count == len || !is_int(tok)) return false;
 		tmp[count++] = (int)parse_int(tok);
@@ -258,7 +258,7 @@ bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
 	md_str_t tok;
 	size_t count = 0;
 	size_t extra = 0;
-	while (extract_token_delim(&tok, &arg, ',')) {
+	while (md_parse_next_token_delim(&tok, &arg, ',')) {
 		tok = md_str_trim(tok);
 		if (!(is_float(tok) || is_int(tok))) return false;
 		if (count < len) {
@@ -308,7 +308,7 @@ bool extract_bitset(md_bitset_t* bs, md_str_t arg, md_allocator_i* alloc) {
 	arg = md_str_substr(arg, md_str_len(token));
 
 	size_t loc;
-	if (!md_str_find_str(&loc, arg, token)) {
+	if ((loc = md_str_find_str(arg, token)) == MD_STR_NPOS) {
 		MD_LOG_ERROR("Malformed end token for bitfield");
 		return false;
 	}

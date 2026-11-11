@@ -8,6 +8,8 @@
 #include <core/md_common.h>
 #include <core/md_platform.h>
 #include <core/md_str.h>
+#include <core/md_format.h>
+#include <core/md_path.h>
 #include <core/md_allocator.h>
 
 #include <gfx/gl.h>
@@ -258,7 +260,7 @@ bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
     // Zero terminated
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
-    md_str_t ztitle = md_str_copy(title, md_temp_allocator(temp));
+    md_str_t ztitle = md_alloc_str(md_temp_allocator(temp), title);
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
         MD_LOG_ERROR("Could not create glfw window.");
@@ -519,7 +521,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, md_str_t f
     nfdresult_t result = NFD_ERROR;
 
     // Zero terminated variant
-    md_str_t zfilt = md_str_copy(filter, md_temp_allocator(temp));
+    md_str_t zfilt = md_alloc_str(md_temp_allocator(temp), filter);
 
     // NFD(e)'s filter spec is a comma-separated list of extensions without the leading dot
     // (e.g. "png,jpg,jpeg"), which is exactly the format callers already pass as `filter` here.
@@ -557,16 +559,15 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, md_str_t f
             // In such case we append the first extension found in the filter (if supplied)
             md_str_t ext;
             md_str_t path = md_str_from_cstr(out_path);
-            if (!md_extract_ext(&ext, path) && filter) {
+            if (!md_path_ext(&ext, path) && filter) {
                 // get ext from supplied filter (first match)
-                ext = filter;
-                md_str_find_char(&ext.len, ext, ',');
+                md_str_cut(&ext, NULL, filter, md_str_find_char(filter, ','));
                 len += snprintf(str_buf + len, str_cap - len, "." MD_STR_FMT, MD_STR_ARG(ext));
             }
         }
         
         if (0 < len && len < (int)str_cap) {
-            md_replace_char(str_buf, len, '\\', '/');
+            md_chars_replace(str_buf, len, '\\', '/');
             return true;
         }
 

@@ -5,6 +5,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -126,8 +127,8 @@ State* gp = &states[0];
 // String helpers
 ////////////////////////////////////////////////////////////////////////////////
 
-bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-bool is_alnum(char c) { return is_alpha(c) || is_digit(c); }
+bool is_space(char c) { return md_ascii_is_whitespace(c); }
+bool is_alnum(char c) { return md_ascii_is_alpha(c) || md_ascii_is_digit(c); }
 
 // Case-insensitive md_str_find_str
 bool find_ignore_case(size_t* loc, md_str_t hay, md_str_t needle) {
@@ -156,7 +157,7 @@ md_str_t plain_heading(md_str_t s, md_allocator_i* alloc) {
         if (c == ']') {
             // Skip the target of a link: "[text](target)"
             size_t close;
-            if (i + 1 < s.len && s.ptr[i + 1] == '(' && md_str_find_char(&close, md_str_substr(s, i), ')')) i += close;
+            if (i + 1 < s.len && s.ptr[i + 1] == '(' && ((close = md_str_find_char(md_str_substr(s, i), ')')) != MD_STR_NPOS)) i += close;
             continue;
         }
         out[n++] = c;
@@ -174,7 +175,7 @@ md_str_t make_slug(md_str_t plain, int suffix, md_allocator_i* alloc) {
         const unsigned char c = (unsigned char)plain.ptr[i];
         if (c == ' ') out[n++] = '-';
         else if (c == '-' || c == '_' || c >= 0x80) out[n++] = (char)c;
-        else if (is_alnum((char)c)) out[n++] = (char)to_lower(c);
+        else if (is_alnum((char)c)) out[n++] = (char)md_ascii_to_lower(c);
     }
     if (suffix > 0) n += (size_t)snprintf(out + n, 16, "-%d", suffix);
     out[n] = '\0';
@@ -247,7 +248,7 @@ void load(md_str_t doc) {
     md_str_t line;
     while (true) {
         const uint32_t line_beg = (uint32_t)(rest.ptr - doc.ptr);
-        if (!md_str_extract_line(&line, &rest)) break;
+        if (!md_parse_next_line(&line, &rest)) break;
 
         const bool was_inside = fence.inside();
         fence.update(line);
@@ -317,7 +318,7 @@ void load(md_str_t doc) {
                 size_t k = 0;
                 while (k < span.len && (is_alnum(span.ptr[k]) || span.ptr[k] == '_')) ++k;
                 const bool call = k > 0 && k < span.len && span.ptr[k] == '(';
-                if (k > 0 && !is_digit(span.ptr[0]) && (call || k == span.len)) {
+                if (k > 0 && !md_ascii_is_digit(span.ptr[0]) && (call || k == span.len)) {
                     const md_str_t name = md_str_substr(span, 0, k);
                     bool dup = false;
                     for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) dup = md_str_eq(aliases[j].name, name);
@@ -331,31 +332,30 @@ void load(md_str_t doc) {
         // <!-- proc name=x aliases=a,b category=c -->
         if (md_str_begins_with(line, MD_STR_LIT("<!-- proc"))) {
             const md_str_t name = meta_value(line, MD_STR_LIT("name"));
-            if (!md_str_empty(name)) sec.proc = md_str_copy(name, arena);
+            if (!md_str_empty(name)) sec.proc = md_alloc_str(arena, name);
             md_str_t list = meta_value(line, MD_STR_LIT("aliases"));
             while (!md_str_empty(list)) {
-                size_t comma = list.len;
-                md_str_find_char(&comma, list, ',');
-                const md_str_t alias = md_str_trim(md_str_substr(list, 0, comma));
+                md_str_t alias;
+                md_str_cut(&alias, &list, list, md_str_find_char(list, ','));
+                alias = md_str_trim(alias);
                 if (!md_str_empty(alias)) md_array_push(aliases, (Anchor{alias, cur, AnchorKind_Alias}), arena);
-                list = md_str_substr(list, MD_MIN(comma + 1, list.len));
+                
             }
         }
         // <a id="x"></a>
         if (md_str_begins_with(line, MD_STR_LIT("<a id")) || md_str_begins_with(line, MD_STR_LIT("<a name"))) {
             md_str_t rem = line;
+            const md_str_t id_attr = MD_STR_LIT("id=\"");
             size_t p;
-            while (md_str_find_str(&p, rem, MD_STR_LIT("id=\""))) {
-                rem = md_str_substr(rem, p + 4);
-                size_t q;
-                if (!md_str_find_char(&q, rem, '"')) break;
-                const md_str_t id = md_str_substr(rem, 0, q);
+            while ((p = md_str_find_str(rem, id_attr)) != MD_STR_NPOS) {
+                rem = md_str_substr(rem, p + id_attr.len);
+                md_str_t id;
+                if (!md_str_cut(&id, &rem, rem, md_str_find_char(rem, '"'))) break;
                 bool dup = md_str_empty(id);
                 for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) {
                     dup = aliases[j].section == cur && md_str_eq(aliases[j].name, id);
                 }
                 if (!dup) md_array_push(aliases, (Anchor{id, cur, AnchorKind_Alias}), arena);
-                rem = md_str_substr(rem, q);
             }
         }
     }
@@ -524,7 +524,7 @@ Palette make_palette() {
     return p;
 }
 
-bool is_ident_start(char c) { return is_alpha(c) || c == '_'; }
+bool is_ident_start(char c) { return md_ascii_is_alpha(c) || c == '_'; }
 bool is_ident(char c) { return is_alnum(c) || c == '_'; }
 
 bool is_one_of(md_str_t word, const char* const* list, size_t count) {
@@ -574,7 +574,7 @@ void draw_code_line(ImDrawList* dl, ImVec2 pos, md_str_t line, bool script, cons
             if (j < n) ++j;
             emit(i, j, pal.string);
             i = j;
-        } else if (is_digit(c) || (c == '.' && i + 1 < n && is_digit(s[i + 1]))) {
+        } else if (md_ascii_is_digit(c) || (c == '.' && i + 1 < n && md_ascii_is_digit(s[i + 1]))) {
             size_t j = i + 1;
             while (j < n && (is_alnum(s[j]) || s[j] == '.')) ++j;
             emit(i, j, pal.number);
@@ -631,7 +631,7 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     float max_w = 0.0f;
     {
         md_str_t rest = code, line;
-        while (md_str_extract_line(&line, &rest)) {
+        while (md_parse_next_line(&line, &rest)) {
             max_w = MD_MAX(max_w, ImGui::CalcTextSize(line.ptr, line.ptr + line.len).x);
             ++num_lines;
         }
@@ -696,7 +696,7 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
         ImDrawList* cdl = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         md_str_t rest = code, line;
-        for (int l = 0; md_str_extract_line(&line, &rest); ++l) {
+        for (int l = 0; md_parse_next_line(&line, &rest); ++l) {
             draw_code_line(cdl, ImVec2(origin.x, origin.y + (float)l * lh), line, script, pal);
         }
         ImGui::Dummy(ImVec2(max_w, (float)num_lines * lh));

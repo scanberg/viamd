@@ -1822,7 +1822,7 @@ struct Shapespace : viamd::EventHandler {
         if (!md_unit_is_none(time_unit)) {
             char unit_buf[64];
             md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-            x_label = md_str_printf(temp, "Time (%s)", unit_buf);
+            x_label = md_alloc_printf(temp, "Time (%s)", unit_buf);
         }
         md_array(md_str_t)  labels = 0;
         md_array(float*) values = 0;
@@ -1831,9 +1831,9 @@ struct Shapespace : viamd::EventHandler {
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
         for (size_t s = 0; s < ns; ++s) {
-            md_array_push(labels, ns > 1 ? md_str_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
-            md_array_push(labels, ns > 1 ? md_str_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
-            md_array_push(labels, ns > 1 ? md_str_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
+            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
+            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
+            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
         const float* time = app->timeline.x_values;

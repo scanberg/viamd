@@ -37,7 +37,7 @@ static bool too_long(const md_str_writer_t* sb, size_t limit) {
 
 static bool str_has(md_str_t s, const char* needle) {
     size_t loc;
-    return md_str_find_str(&loc, s, md_str_from_cstr(needle));
+    return ((loc = md_str_find_str(s, md_str_from_cstr(needle))) != MD_STR_NPOS);
 }
 
 static void write_int(md_str_writer_t* sb, int64_t v) {
@@ -104,7 +104,7 @@ static bool quotable(md_str_t s) {
 
 static void write_quoted(md_str_writer_t* sb, md_str_t s) {
     size_t loc;
-    const char q = md_str_find_char(&loc, s, '"') ? '\'' : '"';
+    const char q = ((loc = md_str_find_char(s, '"')) != MD_STR_NPOS) ? '\'' : '"';
     *sb += q;
     *sb += s;
     *sb += q;
@@ -156,7 +156,7 @@ static void write_and_operand(md_str_writer_t* sb, md_str_t term) {
 }
 
 static md_str_t take(md_str_writer_t* sb, md_allocator_i* alloc) {
-    md_str_t s = md_str_copy(md_str_writer_to_str(sb), alloc);
+    md_str_t s = md_alloc_str(alloc, md_str_writer_to_str(sb));
     md_str_writer_reset(sb);
     return s;
 }
@@ -1201,7 +1201,7 @@ static void push_suggestion(md_array(ScriptSuggestion)* out, md_str_t text, md_s
     for (size_t i = 0; i < md_array_size(*out); ++i) {
         if (md_str_eq((*out)[i].text, text)) return;
     }
-    ScriptSuggestion s = {md_str_copy(text, alloc), md_str_copy(hint, alloc)};
+    ScriptSuggestion s = {md_alloc_str(alloc, text), md_alloc_str(alloc, hint)};
     md_array_push(*out, s, alloc);
 }
 

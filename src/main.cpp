@@ -29,6 +29,7 @@
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_unit.h>
 #include <core/md_writer.h>
 #include <core/md_parse.h>
@@ -139,7 +140,7 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 // The G-buffer's snippet as the shaders are made of it: with the saturation of the dimmed atoms in it
 static_assert(AtomBit_Dimmed == 16u, "The G-buffer's snippet tests the flags by this bit");
 static md_str_t output_snippet(const ApplicationState& state) {
-    return md_str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", MD_CLAMP(state.selection.color.saturation, 0.0f, 1.0f), MD_STR_ARG(shader_output_snippet));
+    return md_alloc_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", MD_CLAMP(state.selection.color.saturation, 0.0f, 1.0f), MD_STR_ARG(shader_output_snippet));
 }
 
 // The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
@@ -1298,10 +1299,10 @@ int main(int argc, char** argv) {
                     
                     md_str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
-                        md_extract_folder_path(&cwd, md_str_from_cstr(state.files.workspace));
+                        md_path_folder(&cwd, md_str_from_cstr(state.files.workspace));
                     } else if (const FileEntry* run_file = file_list_run_file(&state.files.list)) {
                         // The trajectory's folder, else the structure's
-                        md_extract_folder_path(&cwd, md_str_from_cstr(run_file->path));
+                        md_path_folder(&cwd, md_str_from_cstr(run_file->path));
                     }
                     if (!md_str_empty(cwd)) {
                         md_path_set_cwd(cwd);
@@ -2460,12 +2461,12 @@ static void draw_main_menu(ApplicationState* data) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("jpg,jpeg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
                     md_str_t ext;
-                    if (!md_extract_ext(&ext, {path_buf, path_len})) {
+                    if (!md_path_ext(&ext, {path_buf, path_len})) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
                         ext = MD_STR_LIT("jpg");
                     }
                     if (image_format_from_ext(ext) != ImageFormat_Unknown) {
-                        data->screenshot.path_to_file = md_str_copy({path_buf, path_len}, persistent_alloc);
+                        data->screenshot.path_to_file = md_alloc_str(persistent_alloc, {path_buf, path_len});
                     }
                     else {
                         VIAMD_LOG_ERROR("Supplied image extension is not supported");
@@ -3060,7 +3061,7 @@ static md_str_t create_unique_identifier(const script::Program* ir, md_str_t bas
         if (res > 0) {
             md_str_t ident = {buf, (size_t)res};
             if (find_identifier(ir, ident) == -1) {
-                return md_str_copy(ident, alloc);
+                return md_alloc_str(alloc, ident);
             }
         }
     }
@@ -6200,8 +6201,8 @@ static void draw_script_editor_window(ApplicationState* state) {
                 if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     const md_str_t value = script_vis_value_text(state);
                     // A value known since the compilation is in the text already, unless it was too long to keep there
-                    const bool dynamic = md_str_find_str(NULL, hovered_marker->text, MD_STR_LIT("[d]"));
-                    const bool has_value = md_str_find_char(NULL, hovered_marker->text, '\n');
+                    const bool dynamic = md_str_contains_str(hovered_marker->text, MD_STR_LIT("[d]"));
+                    const bool has_value = md_str_contains_char(hovered_marker->text, '\n');
                     if (!md_str_empty(value) && (dynamic || !has_value || state->script.sub_idx != -1)) {
                         ImGui::Separator();
                         if (dynamic) ImGui::TextDisabled("At the frame shown");
@@ -6648,16 +6649,15 @@ static void draw_property_export_window(ApplicationState* data) {
                 const uint32_t beg = each ? 0 : (uint32_t)MD_MAX(volume_member, 0);
                 const uint32_t end = each ? count : beg + 1;
                 md_str_t stem = path;
-                md_str_t ext  = file_extension;
-                size_t sep;
-                if (each && md_extract_ext(&ext, path) && !md_str_find_char(&sep, ext, '/') && !md_str_find_char(&sep, ext, '\\')) {
-                    md_extract_file_path_without_ext(&stem, path);
+                md_str_t ext  = file_extension;
+                if (each && md_path_ext(&ext, path) && !md_str_contains_char(ext, '/') && !md_str_contains_char(ext, '\\')) {
+                    md_path_without_ext(&stem, path);
                 } else {
                     ext = file_extension;
                 }
                 for (uint32_t m = beg; m < end; ++m) {
                     SeriesVolumeView view;
-                    const md_str_t file = each ? md_str_printf(alloc, MD_STR_FMT "_%u." MD_STR_FMT, MD_STR_ARG(stem), m + 1, MD_STR_ARG(ext)) : path;
+                    const md_str_t file = each ? md_alloc_printf(alloc, MD_STR_FMT "_%u." MD_STR_FMT, MD_STR_ARG(stem), m + 1, MD_STR_ARG(ext)) : path;
                     if (!series_resolve_volume(&view, data, selected, m)) {
                         VIAMD_LOG_ERROR("'%s' has no volume to export", label);
                         break;
@@ -6686,8 +6686,8 @@ static void draw_property_export_window(ApplicationState* data) {
                         md_array_push(column_data, col, alloc);
                         if (dim > 1) {
                             const md_str_t member = series_member_label(data, selected, k);
-                            const md_str_t legend = md_str_empty(member) ? md_str_printf(alloc, "%s[%i]", label, k + 1)
-                                                                   : md_str_printf(alloc, "%s[%i] " MD_STR_FMT, label, k + 1, MD_STR_ARG(member));
+                            const md_str_t legend = md_str_empty(member) ? md_alloc_printf(alloc, "%s[%i]", label, k + 1)
+                                                                   : md_alloc_printf(alloc, "%s[%i] " MD_STR_FMT, label, k + 1, MD_STR_ARG(member));
                             md_array_push(legends, legend, alloc);
                             md_array_push(column_labels, legend, alloc);
                         } else {
@@ -6702,8 +6702,8 @@ static void draw_property_export_window(ApplicationState* data) {
                         num_rows = (size_t)view.num_samples;
                         char time_unit_str[32] = "";
                         md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
-                        x_label = md_unit_is_none(data->timeline.time_unit) ? MD_STR_LIT("Frame") : md_str_printf(alloc, "Time (%s)", time_unit_str);
-                        if (view.unit_str[0]) y_label = md_str_printf(alloc, "%s (%s)", label, view.unit_str);
+                        x_label = md_unit_is_none(data->timeline.time_unit) ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
+                        if (view.unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.unit_str);
 
                         float* x = md_temp_alloc_array(temp, float, num_rows);
                         md_memcpy(x, view.x, num_rows * sizeof(float));
@@ -6716,8 +6716,8 @@ static void draw_property_export_window(ApplicationState* data) {
                     SeriesHistogramView view;
                     if (series_resolve_histogram(&view, data, selected, 1 << bins_exp)) {
                         num_rows = (size_t)view.num_bins;
-                        x_label = md_str_copy(md_str_from_cstr(view.x_unit_str), alloc);
-                        if (view.y_unit_str[0]) y_label = md_str_printf(alloc, "%s (%s)", label, view.y_unit_str);
+                        x_label = md_alloc_str(alloc, md_str_from_cstr(view.x_unit_str));
+                        if (view.y_unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.y_unit_str);
 
                         // The centre of each bin, where the plot draws it
                         float* x = md_temp_alloc_array(temp, float, num_rows);
@@ -7211,7 +7211,7 @@ void create_screenshot(md_str_t path) {
     }
 
     md_str_t ext = {};
-    md_extract_ext(&ext, path);
+    md_path_ext(&ext, path);
 
     bool written = false;
     switch (image_format_from_ext(ext)) {
@@ -7558,7 +7558,7 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
 // Saves the screenshot from the framebuffer bound (create_screenshot), and it is no longer pending
 static void screenshot_save(ApplicationState* state) {
     create_screenshot(state->screenshot.path_to_file);
-    md_str_free(state->screenshot.path_to_file, state->allocator.persistent);
+    md_free_str(state->allocator.persistent, state->screenshot.path_to_file);
     state->screenshot.path_to_file = {};
 }
 

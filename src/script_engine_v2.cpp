@@ -127,7 +127,7 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
     p->v2 = x;
     x->id = next_program_id();
     x->sys = desc.sys;
-    x->run = md_str_copy(desc.run, alloc);
+    x->run = md_alloc_str(alloc, desc.run);
     // The stored selections, as lists of atoms
     for (size_t i = 0; i < desc.num_sets; ++i) {
         const md_bitset_t& b = desc.sets[i].atoms;
@@ -136,7 +136,7 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
         size_t k = 0;
         md_bitset_iter_t it = md_bitset_iter(b);
         while (k < n && md_bitset_iter_next(&it)) atoms[k++] = (uint32_t)it.idx;
-        md_vial_named_set_t ns = {md_str_copy(desc.sets[i].name, alloc), atoms, k};
+        md_vial_named_set_t ns = {md_alloc_str(alloc, desc.sets[i].name), atoms, k};
         md_array_push(x->sets, ns, alloc);
         md_array_push(x->idents, ns.name, alloc);
     }
@@ -156,7 +156,7 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
         // The code first, as the reference lists it
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), md_str_copy(md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), nullptr};
         if (dg[i].severity == MD_VIAL_SEVERITY_ERROR) md_array_push(p->errs, d, alloc);
         else md_array_push(p->warns, d, alloc);
     }
@@ -168,7 +168,7 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
         if (!md_vial_expr_info(x->prog, mk[i].expr, &h)) continue;
         char buf[256];
         const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
-        Mark m = {range_of(mk[i].span), (int)mk[i].depth, md_str_copy(md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), Ref{x->id, mk[i].expr}};
+        Mark m = {range_of(mk[i].span), (int)mk[i].depth, md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), Ref{x->id, mk[i].expr}};
         m.unit = h.unit;
         m.unit_at = h.unit_at;
         m.unit_len = h.unit_len;
@@ -450,7 +450,7 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, md_str_t, const ui
     for (size_t i = 0; i < nd; ++i) {
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), md_str_copy(md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}, e->alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), md_alloc_str(e->alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), nullptr};
         // R0101 and R0102 leave a value missing and fail nothing (the reference's "a value can be missing")
         const bool missing = !strncmp(dg[i].code, "R0101", 5) || !strncmp(dg[i].code, "R0102", 5);
         if (missing) md_array_push(x->warns, d, e->alloc);
@@ -823,7 +823,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
             for (size_t i = 0; i < dr.num_labels; ++i) {
                 Text t;
                 t.pos = v3(dr.labels[i].pos);
-                t.str = md_str_copy(dr.labels[i].text, out->alloc);
+                t.str = md_alloc_str(out->alloc, dr.labels[i].text);
                 t.value = dr.labels[i].value;
                 t.unit = dr.labels[i].unit;
                 md_array_push(out->text, t, out->alloc);

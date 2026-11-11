@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_str.h>
 #include <core/md_writer.h>
 
@@ -27,7 +28,7 @@ static inline md_str_t resource_path(md_str_writer_t* sb, md_str_t relative) {
     }
 
     md_str_t dir = {};
-    if (!md_extract_folder_path(&dir, {exe, len})) {
+    if (!md_path_folder(&dir, {exe, len})) {
         return {};
     }
 

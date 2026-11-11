@@ -93,8 +93,7 @@ static bool script_aggregate_path(const ApplicationState& state, md_str_t path) 
     const md_str_t prefix = MD_STR_LIT("script/");
     if (!state.script.eval_ir || !md_str_begins_with(path, prefix)) return false;
     md_str_t ident = md_str_substr(path, prefix.len);
-    size_t loc;
-    if (md_str_find_char(&loc, ident, '/')) ident = md_str_substr(ident, 0, loc);
+    ident = md_str_substr(ident, 0, md_str_find_char(ident, '/'));
     return script::output_flags(state.script.eval_ir, ident) & (script::OUTPUT_DISTRIBUTION | script::OUTPUT_VOLUME);
 }
 

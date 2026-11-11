@@ -100,7 +100,7 @@ bool contains(const md_array(ScriptSuggestion) s, const char* text) {
 bool any_contains(const md_array(ScriptSuggestion) s, const char* needle) {
     size_t loc;
     for (size_t i = 0; i < md_array_size(s); ++i) {
-        if (md_str_find_str(&loc, s[i].text, md_str_from_cstr(needle))) return true;
+        if ((loc = md_str_find_str(s[i].text, md_str_from_cstr(needle))) != MD_STR_NPOS) return true;
     }
     return false;
 }
@@ -574,9 +574,8 @@ UTEST(script_suggestions, measurement_within_a_residue) {
     EXPECT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resid(5) in chain(\"A\");"));
     // The same angle in every residue of the name, which the hint counts
     ASSERT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resname(\"HIS\");"));
-    for (size_t i = 0; i < md_array_size(s); ++i) {
-        size_t loc;
-        const bool every = md_str_find_str(&loc, s[i].text, MD_STR_LIT("resname("));
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        const bool every = md_str_contains_str(s[i].text, MD_STR_LIT("resname("));
         EXPECT_TRUE(every == md_str_eq_cstr(s[i].hint, "One value for each of the 51 HIS"));
     }
     unload(&l);
@@ -806,9 +805,8 @@ UTEST(script_suggestions, vial_measurement) {
     // Within one residue, written once, with its particles stacked by name
     EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
     EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));
-    for (size_t i = 0; i < md_array_size(s); ++i) {
-        size_t loc;
-        const bool every = md_str_find_str(&loc, s[i].text, MD_STR_LIT("residue("));
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+        const bool every = md_str_contains_str(s[i].text, MD_STR_LIT("residue("));
         EXPECT_TRUE(every == md_str_begins_with(s[i].hint, MD_STR_LIT("One value for each of the 51 HIS")));
     }
     // And by position within it, as v1's angle(1,2,3) in residue(5), in it and in each HIS

@@ -39,7 +39,7 @@ const char* const predefined[] = {"protein", "nucleic", "water", "ion", "lipid",
 constexpr size_t num_predefined = sizeof(predefined) / sizeof(predefined[0]);
 
 md_str_t take(md_str_writer_t* sb, md_allocator_i* alloc) {
-    md_str_t s = md_str_copy(md_str_writer_to_str(sb), alloc);
+    md_str_t s = md_alloc_str(alloc, md_str_writer_to_str(sb));
     md_str_writer_reset(sb);
     return s;
 }
@@ -60,7 +60,7 @@ bool quotable(md_str_t s) {
 
 void write_quoted(md_str_writer_t* sb, md_str_t s) {
     size_t loc;
-    const char q = md_str_find_char(&loc, s, '\'') ? '"' : '\'';
+    const char q = ((loc = md_str_find_char(s, '\'')) != MD_STR_NPOS) ? '"' : '\'';
     *sb += q;
     *sb += s;
     *sb += q;
@@ -462,7 +462,7 @@ bool write_positions(md_str_writer_t* out, const Ctx& c, md_bitset_t sel) {
 
 void push_suggestion(md_array(ScriptSuggestion)* out, md_str_t text, md_str_t hint, md_allocator_i* alloc) {
     for (size_t i = 0; i < md_array_size(*out); ++i) if (md_str_eq((*out)[i].text, text)) return;
-    ScriptSuggestion s = {md_str_copy(text, alloc), md_str_copy(hint, alloc)};
+    ScriptSuggestion s = {md_alloc_str(alloc, text), md_alloc_str(alloc, hint)};
     md_array_push(*out, s, alloc);
 }
 
@@ -661,7 +661,7 @@ md_str_t script_selection_smiles(md_bitset_t sel, const md_system_t& sys, md_all
 static void smiles_selection_line(md_array(ScriptSuggestion)* out, md_str_t ident, md_bitset_t sel, const md_system_t& sys, md_allocator_i* temp, md_allocator_i* alloc) {
     if (!sys.bond.count) return;
     const md_str_t canon = script_selection_smiles(sel, sys, temp);
-    if (md_str_empty(canon) || canon.len > 200 || md_str_find_char(NULL, canon, '\'')) return;
+    if (md_str_empty(canon) || canon.len > 200 || md_str_contains_char(canon, '\'')) return;
     // A line here picks the selection: every place with the chemistry is selected, and nothing else, hydrogens
     // aside, which the pattern leaves implicit
     size_t matches = 0;

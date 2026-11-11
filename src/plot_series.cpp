@@ -11,6 +11,7 @@
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_str.h>
+#include <core/md_path.h>
 
 #include <float.h>
 #include <math.h>
@@ -232,11 +233,7 @@ void series_state_describe(char* buf, size_t cap, const SeriesState& state) {
 }
 
 static md_str_t path_leaf(md_str_t path) {
-    size_t loc;
-    if (md_str_rfind_char(&loc, path, '/')) {
-        return md_str_substr(path, loc + 1);
-    }
-    return path;
+    return md_str_substr(path, md_str_rfind_char(path, '/') + 1);
 }
 
 void series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key) {
@@ -1493,10 +1490,7 @@ void system_series_group_label(char* buf, size_t cap, const ApplicationState* ap
         rel = md_str_substr(group, run.len + 1);
     }
     md_str_t file = system_series_group_source(app, group);
-    size_t loc;
-    if (md_str_rfind_char(&loc, file, '/') || md_str_rfind_char(&loc, file, '\\')) {
-        file = md_str_substr(file, loc + 1);
-    }
+    md_path_filename(&file, file);
     if (md_str_empty(file)) {
         snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(rel));
     } else {

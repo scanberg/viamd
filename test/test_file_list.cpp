@@ -6,6 +6,7 @@
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 
 #include <string.h>
 #include <string>
@@ -154,7 +155,7 @@ struct Read {
         static const char* names[] = { "None", "System", "Supplement", "Trajectory", "Series" };
         for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
             md_str_t name = md_str_from_cstr(plan.inputs[i].entry.path);
-            md_extract_file(&name, name);
+            md_path_filename(&name, name);
             if (!s.empty()) s += " ";
             s += std::string(name.ptr, name.len) + ":" + names[plan.inputs[i].role] + ":" + std::to_string(plan.inputs[i].run);
         }
@@ -172,7 +173,7 @@ std::string resolved(const char* path) {
 
 bool contains(md_str_t text, const char* what) {
     size_t loc;
-    return md_str_find_str(&loc, text, md_str_from_cstr(what));
+    return ((loc = md_str_find_str(text, md_str_from_cstr(what))) != MD_STR_NPOS);
 }
 
 }  // namespace

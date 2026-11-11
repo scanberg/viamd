@@ -28,6 +28,7 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_os.h>
+#include <core/md_path.h>
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
@@ -2254,7 +2255,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         const CriticalPointStyle& style = critical_point_style(type);
                         char type_str[32];
                         const int type_len = snprintf(type_str, sizeof(type_str), "%s", style.name);
-                        md_convert_to_lower(type_str, (size_t)MD_CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
+                        md_chars_to_lower(type_str, (size_t)MD_CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
                         tooltip_title(req, "%s", type_str);
                         tooltip_row(req, MD_STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
                         tooltip_row(req, MD_STR_LIT("density"), "%.6g au", v.value);
@@ -6125,7 +6126,7 @@ struct QuantumChemistry : viamd::EventHandler {
     bool critical_points_write(const ApplicationState& state, md_str_t path) {
         const CriticalPoints& cp = critical_points;
         md_str_t ext = {};
-        const bool vtp = md_extract_ext(&ext, path) && md_str_eq_cstr_ignore_case(ext, "vtp");
+        const bool vtp = md_path_ext(&ext, path) && md_str_eq_cstr_ignore_case(ext, "vtp");
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -8935,19 +8936,19 @@ struct QuantumChemistry : viamd::EventHandler {
                         */
 
                         md_str_t basepath;
-                        if (!md_extract_file_path_without_ext(&basepath, path)) {
+                        if (!md_path_without_ext(&basepath, path)) {
                             MD_LOG_ERROR("Failed to extract base path");
                             goto done;
                         }
 
                         md_str_t filename_raw;
-                        if (!md_extract_file(&filename_raw, path)) {
+                        if (!md_path_filename(&filename_raw, path)) {
                             MD_LOG_ERROR("Failed to extract filename raw");
                             goto done;
                         }
 
                         md_str_t filename;
-                        if (!md_extract_file_path_without_ext(&filename, filename_raw)) {
+                        if (!md_path_without_ext(&filename, filename_raw)) {
                             MD_LOG_ERROR("Failed to extract filename");
                             goto done;
                         }
@@ -8955,8 +8956,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_file_write(file, data, num_samples * sizeof(float));
 
                         md_allocator_i* temp_arena = md_temp_allocator(temp);
-                        md_str_t mhd_path = md_str_printf(temp_arena, MD_STR_FMT ".mhd", MD_STR_ARG(basepath));
-                        md_str_t xyz_path = md_str_printf(temp_arena, MD_STR_FMT ".xyz", MD_STR_ARG(basepath));
+                        md_str_t mhd_path = md_alloc_printf(temp_arena, MD_STR_FMT ".mhd", MD_STR_ARG(basepath));
+                        md_str_t xyz_path = md_alloc_printf(temp_arena, MD_STR_FMT ".xyz", MD_STR_ARG(basepath));
 
                         md_file_t mhd_file = { 0 };
                         if (!md_file_open(&mhd_file, mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {

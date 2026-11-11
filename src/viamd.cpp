@@ -10,6 +10,9 @@
 #include <script_engine.h>
 
 #include <core/md_log.h>
+#include <core/md_path.h>
+#include <core/md_allocator.h>
+#include <core/md_os.h>
 #include <core/md_writer.h>
 #include <core/md_arena_allocator.h>
 
@@ -195,7 +198,7 @@ static md_str_t tooltip_lower(md_allocator_i* alloc, md_str_t str) {
     char* buf = (char*)md_alloc(alloc, str.len + 1);
     md_memcpy(buf, str.ptr, str.len);
     buf[str.len] = '\0';
-    md_convert_to_lower(buf, str.len);
+    md_chars_to_lower(buf, str.len);
     return {buf, str.len};
 }
 
@@ -392,7 +395,7 @@ static void tooltip_append_fragment(md_str_writer_t* sb, const md_system_t& sys,
     }
     if (md_str_empty(name)) {
         *sb += kind;
-    } else if (md_str_empty(word) || md_str_find_str(NULL, name, word)) {
+    } else if (md_str_empty(word) || md_str_contains_str(name, word)) {
         *sb += name;
     } else {
         md_str_writer_fmt(sb, MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(name), MD_STR_ARG(kind));
@@ -489,7 +492,7 @@ static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const Ap
 
         md_str_t key = atom_attribute_label(attr);
         if (variant >= 0) {
-            key = md_str_printf(req->alloc, MD_STR_FMT " (%d)", MD_STR_ARG(key), variant + 1);
+            key = md_alloc_printf(req->alloc, MD_STR_FMT " (%d)", MD_STR_ARG(key), variant + 1);
         }
         char unit[32];
         tooltip_unit_suffix(unit, sizeof(unit), attr->unit);
@@ -1331,11 +1334,9 @@ static void end_frame_extracts(ApplicationState* app) {
 // same file gives the same run - and the same attribute ids - every time it is loaded.
 static void run_path_from_file(char* buf, size_t cap, md_str_t path) {
     md_str_t file = path;
-    md_extract_file(&file, path);
-    size_t dot;
-    if (md_str_rfind_char(&dot, file, '.') && dot > 0) {
-        file = md_str_substr(file, 0, dot);
-    }
+    md_path_filename(&file, path);
+    const size_t dot = md_str_rfind_char(file, '.');
+    if (dot > 0) file = md_str_substr(file, 0, dot);   // MD_STR_NPOS keeps all of it
     size_t len = (size_t)snprintf(buf, cap, "run/");
     for (size_t i = 0; i < file.len && len + 1 < cap; ++i) {
         const char c = file.ptr[i];
@@ -2189,14 +2190,8 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
 // The next name of a list of them separated by commas, trimmed. False at the end.
 static bool next_list_name(md_str_t* tok, md_str_t* list) {
     if (md_str_empty(*list)) return false;
-    size_t loc = 0;
-    if (md_str_find_char(&loc, *list, ',')) {
-        *tok  = md_str_trim(md_str_substr(*list, 0, loc));
-        *list = md_str_substr(*list, loc + 1);
-    } else {
-        *tok  = md_str_trim(*list);
-        *list = md_str_t{};
-    }
+    md_str_cut(tok, list, *list, md_str_find_char(*list, ','));
+    *tok = md_str_trim(*tok);
     return true;
 }
 
@@ -2486,7 +2481,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     pending.recenter_target = md_bitset_empty_set();
 
     md_str_t folder = {};
-    md_extract_folder_path(&folder, filename);
+    md_path_folder(&folder, filename);
 
     md_str_t section;
     while (viamd::next_section_header(section, state)) {
@@ -3194,9 +3189,8 @@ bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribut
         // The group name is the path segment before the leaf, which is the same string the gather
         // above hands back - so a label built from either route reads identically.
         md_str_t label = vec->path;
-        size_t sep = 0;
-        if (md_str_rfind_char(&sep, label, '/')) label = md_str_substr(label, 0, sep);
-        if (md_str_rfind_char(&sep, label, '/')) label = md_str_substr(label, sep + 1, SIZE_MAX);
+        label = md_str_substr(label, 0, md_str_rfind_char(label, '/'));
+        label = md_str_substr(label, md_str_rfind_char(label, '/') + 1);
 
         *out = {
             .key   = key,
@@ -7517,7 +7511,7 @@ void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags) {
 
 
     md_str_t ext = {};
-    md_extract_ext(&ext, path);
+    md_path_ext(&ext, path);
     loader::LoaderState detected = {};
     if (!md_str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
         // By the contents where the extension does not tell (Amber's mdout, prmtop and inpcrd have none)
@@ -7545,7 +7539,7 @@ void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags) {
     }
 
     uint32_t i = queue->head;
-    queue->arr[queue->head] = {md_str_copy(path, queue->ring), flags, prio};
+    queue->arr[queue->head] = {md_alloc_str(queue->ring, path), flags, prio};
     queue->head = (queue->head + 1) % MD_COUNTOF(queue->arr);
 
     // Sort queue based on prio
@@ -7576,7 +7570,7 @@ void file_queue_process(ApplicationState* state) {
         FileQueue::Entry e = file_queue_pop(&state->file_queue);
 
         md_str_t ext;
-        md_extract_ext(&ext, e.path);
+        md_path_ext(&ext, e.path);
 
         if (md_str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
@@ -8007,7 +8001,7 @@ void script_visualize_str(ApplicationState* state, md_str_t str, uint32_t flags)
     ScriptVisTarget& t = state->script.vis_target;
     t = {};
     t.kind  = ScriptVisTarget::Str;
-    t.str   = md_str_copy(str, state->allocator.frame);
+    t.str   = md_alloc_str(state->allocator.frame, str);
     t.flags = flags;
 }
 
@@ -8089,11 +8083,11 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->state_key = state_key;
     job->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     job->target = t;
-    job->target.str = md_str_copy(t.str, job->arena);
+    job->target.str = md_alloc_str(job->arena, t.str);
     job->ir = ir;
     script::program_retain(ir);
     job->sys = &state->mold.sys;
-    job->run = md_str_copy(md_str_from_cstr(state->mold.run), job->arena);
+    job->run = md_alloc_str(job->arena, md_str_from_cstr(state->mold.run));
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
     script::drawing_init(&job->vis, job->arena);
@@ -8125,7 +8119,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
             char buf[2048];
             const size_t len = script::value_text(buf, sizeof(buf), tgt.ref, tgt.subidx, ctx);
             if (len) {
-                job->value_text = md_str_copy({buf, len}, job->arena);
+                job->value_text = md_alloc_str(job->arena, {buf, len});
             }
         }
     });

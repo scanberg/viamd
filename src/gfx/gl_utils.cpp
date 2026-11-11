@@ -1,5 +1,8 @@
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_parse.h>
+#include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_log.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
@@ -36,7 +39,7 @@ bool gl::get_program_link_error(char* buffer, int max_length, GLuint program) {
 
 bool build_shader_src(md_writer_i* w, md_str_t src, md_str_t base_include_dir, md_allocator_i* alloc) {
     md_str_t line;
-    while (md_str_extract_line(&line, &src)) {
+    while (md_parse_next_line(&line, &src)) {
         if (md_str_eq_cstr_n(line, "#include ", 9)) {
             md_str_t file = md_str_trim(md_str_substr(line, 9));
             if (!file || !(file.len > 2) || file[0] != '"' || file[file.len-1] != '"') {
@@ -44,12 +47,12 @@ bool build_shader_src(md_writer_i* w, md_str_t src, md_str_t base_include_dir, m
                 return false;
             }
             file = md_str_substr(file, 1, file.len - 2);
-            md_str_t path = md_str_printf(alloc, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
+            md_str_t path = md_alloc_printf(alloc, "%.*s%.*s", (int)base_include_dir.len, base_include_dir.ptr, (int)file.len, file.ptr);
 
             md_str_t inc_src = md_load_textfile(path, alloc);
             if (inc_src) {
                 md_str_t base = {};
-                md_extract_folder_path(&base, path);
+                md_path_folder(&base, path);
                 build_shader_src(w, inc_src, base, alloc);
             } else {
                 MD_LOG_ERROR("Failed to open include file '%.*s'", (int)path.len, path.ptr);
@@ -77,7 +80,7 @@ GLuint gl::compile_shader_from_source(md_str_t src, GLenum type, md_str_t define
     if (defines) {
         md_str_t version_str = {};
         if (md_str_eq_cstr_n(src, "#version ", 9)) {
-            if (!md_str_extract_line(&version_str, &src)) {
+            if (!md_parse_next_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
@@ -130,7 +133,7 @@ GLuint gl::compile_shader_from_file(md_str_t filename, GLenum type, md_str_t def
     if (defines) {
         md_str_t version_str = {};
         if (md_str_eq_cstr_n(src, "#version ", 9)) {
-            if (!md_str_extract_line(&version_str, &src)) {
+            if (!md_parse_next_line(&version_str, &src)) {
                 MD_LOG_ERROR("Failed to extract version string!");
                 return 0;
             }
@@ -146,7 +149,7 @@ GLuint gl::compile_shader_from_file(md_str_t filename, GLenum type, md_str_t def
     }
 
     md_str_t folder_path;
-    md_extract_folder_path(&folder_path, filename);
+    md_path_folder(&folder_path, filename);
     build_shader_src(&sb.w, src, folder_path, alloc);
 
     md_str_t final_src = md_str_writer_to_str(&sb);

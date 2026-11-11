@@ -8,6 +8,7 @@
 #include <plot_series.h>
 
 #include <core/md_common.h>
+#include <core/md_path.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
@@ -1017,7 +1018,7 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::TableSetColumnIndex(1);
         md_str_t name = row.path;
-        md_extract_file(&name, row.path);
+        md_path_filename(&name, row.path);
         char name_buf[256];
         md_str_copy_to_char_buf(name_buf, sizeof(name_buf), name);
         ImGui::Selectable(name_buf, false, ImGuiSelectableFlags_SpanAllColumns);
@@ -1090,7 +1091,7 @@ struct Dataset : viamd::EventHandler {
                     md_str_t coords = {};
                     if (e.coordinates[0]) {
                         coords = md_str_from_cstr(e.coordinates);
-                        md_extract_file(&coords, coords);
+                        md_path_filename(&coords, coords);
                     }
                     snprintf(d, cap, "%zu atoms%s%s" MD_STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
                         coords.len ? ", coordinates of " : "", MD_STR_ARG(coords));

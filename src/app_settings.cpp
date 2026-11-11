@@ -118,13 +118,12 @@ static void* read_open(ImGuiContext*, ImGuiSettingsHandler*, const char* name) {
 static void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* line) {
     const md_str_t str = md_str_trim(md_str_from_cstr(line));
 
-    size_t loc;
-    if (!md_str_find_char(&loc, str, '=')) {
+    md_str_t key, val;
+    if (!md_str_cut(&key, &val, str, md_str_find_char(str, '='))) {
         return;
     }
-
-    const md_str_t key = md_str_trim(md_str_substr(str, 0, loc));
-    const md_str_t val = md_str_trim(md_str_substr(str, loc + 1));
+    key = md_str_trim(key);
+    val = md_str_trim(val);
 
     Entry* entry = find_entry(key);
     if (!entry) {

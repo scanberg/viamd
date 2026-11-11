@@ -91,9 +91,9 @@ const TextEditor::Palette& retro_blue_palette() {
 ////////////////////////////////////////////////////////////////////////////////
 
 static bool is_identifier(const std::string& s) {
-    if (s.empty() || !(is_alpha(s[0]) || s[0] == '_')) return false;
+    if (s.empty() || !(md_ascii_is_alpha(s[0]) || s[0] == '_')) return false;
     for (char c : s) {
-        if (!(is_alpha(c) || is_digit(c) || c == '_')) return false;
+        if (!(md_ascii_is_alpha(c) || md_ascii_is_digit(c) || c == '_')) return false;
     }
     return true;
 }
@@ -392,7 +392,7 @@ void markers_set_source(Markers* m, md_str_t source) {
     markers_clear(m);
     if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     // Kept: markers are also added after the compilation, as the evaluation finds what fails
-    m->source = md_str_copy(source, m->arena);
+    m->source = md_alloc_str(m->arena, source);
     md_array_push(m->line_offsets, 0u, m->arena);
     for (size_t i = 0; i < source.len; ++i) {
         if (source.ptr[i] == '\n') md_array_push(m->line_offsets, (uint32_t)(i + 1), m->arena);
@@ -428,7 +428,7 @@ void markers_truncate(Markers* m, size_t count) {
 
 void markers_set_text(Markers* m, size_t index, md_str_t text) {
     if (!m || !m->arena || index >= md_array_size(m->list)) return;
-    m->list[index].text = md_str_copy(text, m->arena);
+    m->list[index].text = md_alloc_str(m->arena, text);
 }
 
 void markers_add(Markers* m, MarkerType type, int prio, script::Range range, md_str_t text,
@@ -440,7 +440,7 @@ void markers_add(Markers* m, MarkerType type, int prio, script::Range range, md_
     marker.prio = prio;
     marker.beg  = doc_pos(m, range.beg);
     marker.end  = doc_pos(m, range.end);
-    marker.text = md_str_copy(text, m->arena);
+    marker.text = md_alloc_str(m->arena, text);
     if (atoms) {
         md_bitset_t* copy = (md_bitset_t*)md_alloc(m->arena, sizeof(md_bitset_t));
         *copy = md_bitset_copy(*atoms, m->arena);

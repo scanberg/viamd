@@ -349,7 +349,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
         uint32_t expected_slabs = 0;
         for (size_t s = 0; s < bb.segment.count; ++s) {
             const md_str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
-            const bool purine = md_str_find_char(NULL, name, 'A') || md_str_find_char(NULL, name, 'G');
+            const bool purine = md_str_contains_char(name, 'A') || md_str_contains_char(name, 'G');
             expected_slabs += purine ? 3 : 2;
         }
 

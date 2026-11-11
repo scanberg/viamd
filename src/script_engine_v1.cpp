@@ -240,7 +240,7 @@ static void take(Drawing* d, const md_script_vis_t& v) {
     for (size_t i = 0; i < md_array_size(v.text); ++i) {
         Text t;
         t.pos = v.text[i].pos;
-        t.str = md_str_copy(v.text[i].str, alloc);
+        t.str = md_alloc_str(alloc, v.text[i].str);
         t.value = v.text[i].value;
         t.unit = v.text[i].unit;
         md_array_push(d->text, t, alloc);
