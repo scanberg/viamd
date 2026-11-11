@@ -607,7 +607,7 @@ struct Dataset : viamd::EventHandler {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
             } else if (md_str_eq_cstr(ident, "Kind")) {
                 int kind = 0;
-                if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)MD_RESIDUE_FLAG_KIND_MASK) {
+                if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)MD_RESIDUE_KIND_LIPID) {
                     ovr.kind = (md_residue_kind_t)kind;
                 }
             } else if (md_str_eq_cstr(ident, "Color")) {
@@ -1408,12 +1408,12 @@ struct Dataset : viamd::EventHandler {
         for (size_t a = 0; a < sys.atom.count; ++a) {
             if (atom_without_element(sys, a)) c.atoms_without_element += 1;
         }
-        // The backbones of coarse grained residues are beads, which atom names cannot resolve, so they are not counted
+        // The backbones of coarse grained residues are beads, which their bonds do not resolve, so they are not counted
         for (size_t i = 0; i < sys.residue.count && !md_system_is_coarse_grained(&sys); ++i) {
-            const md_residue_flags_t f = md_system_residue_flags(&sys, i);
-            if (f & MD_RESIDUE_FLAG_RESOLVED) continue;
-            c.unresolved_amino   += md_residue_flags_kind(f) == MD_RESIDUE_KIND_AMINO_ACID;
-            c.unresolved_nucleic += md_residue_flags_kind(f) == MD_RESIDUE_KIND_NUCLEOTIDE;
+            if (md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_RESOLVED) continue;
+            const md_residue_kind_t k = md_system_residue_kind(&sys, i);
+            c.unresolved_amino   += k == MD_RESIDUE_KIND_AMINO_ACID;
+            c.unresolved_nucleic += k == MD_RESIDUE_KIND_NUCLEOTIDE;
         }
     }
 
@@ -1968,12 +1968,11 @@ struct Dataset : viamd::EventHandler {
             if (count == 0) return;
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu residues are named like %s but their backbone was not found", count, what);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their atom names may not follow the usual convention.");
+                ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their backbone atoms may be missing, or their bonds not inferred.");
                 md_bitmask_t* hb = &data.selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t i = 0; i < sys.residue.count; ++i) {
-                    const md_residue_flags_t f = md_system_residue_flags(&sys, i);
-                    if (md_residue_flags_kind(f) == kind && !(f & MD_RESIDUE_FLAG_RESOLVED)) {
+                    if (md_system_residue_kind(&sys, i) == kind && !(md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_RESOLVED)) {
                         const md_urange_t r = md_system_residue_atom_range(&sys, i);
                         md_bitmask_set_range(hb, r.beg, r.end);
                     }
