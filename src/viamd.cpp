@@ -674,7 +674,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 // A backbone segment stands for its residue: the cartoon and ribbons have no atoms to speak of. What the segment adds is
 // the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
 // dihedrals. phi and psi need a neighbour on either side within the chain, so the ends of a chain, and chains too
-// short to assign, have none (md_util_backbone_angles_compute).
+// short to assign, have none (md_backbone_angles_compute).
 static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
@@ -683,7 +683,7 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
         tooltip_row(req, MD_STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
     }
 
-    const md_backbone_angles_t* angles = md_util_state_backbone_angles(&state.mold.state, &sys);
+    const md_backbone_angles_t* angles = md_system_state_backbone_angles(&state.mold.state, &sys);
     if (angles && bb.range.offset) {
         for (size_t i = 0; i < bb.range.count; ++i) {
             const uint32_t beg = bb.range.offset[i];
@@ -772,7 +772,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_atom_idx_t atoms[2];
-    if (md_util_chain_break_atoms(atoms, &sys, res_idx)) {
+    if (md_system_chain_break_atoms(atoms, &sys, res_idx)) {
         const md_system_state_t& sys_state = state.mold.state;
         md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
         md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
@@ -1185,7 +1185,7 @@ static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_stru
 static void upload_secondary_structure_weights(ApplicationState* data) {
     const md_system_t& sys = data->mold.sys;
     const size_t num_segments = sys.protein_backbone.segment.count;
-    const md_secondary_structure_t* ss = md_util_state_secondary_structure(&data->mold.state, &sys);
+    const md_secondary_structure_t* ss = md_system_state_secondary_structure(&data->mold.state, &sys);
     if (!ss || num_segments == 0) return;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -1318,7 +1318,7 @@ const md_secondary_structure_t* displayed_secondary_structure(const ApplicationS
             return render.data + frame * render.stride;
         }
     }
-    return md_util_state_secondary_structure(state, &app->mold.sys);
+    return md_system_state_secondary_structure(state, &app->mold.sys);
 }
 
 static const md_str_t frame_extract_paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
@@ -1513,7 +1513,7 @@ static void trajectory_backbone_start(ApplicationState* data) {
                 if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
                     continue;
                 }
-                md_util_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                md_backbone_angles_compute(bb_dst, data->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
                 md_dssp_compute(ss_dst, data->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
             }
             md_system_extract_end(ex);
@@ -1716,7 +1716,7 @@ void init_system_data(ApplicationState* data) {
 
         // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
         // frame (interpolate_system_state)
-        if (md_util_state_backbone_compute(&data->mold.state, &data->mold.sys)) {
+        if (md_system_state_backbone_compute(&data->mold.state, &data->mold.sys)) {
             upload_secondary_structure_weights(data);
         }
 
@@ -1949,7 +1949,7 @@ static void system_inferred_refresh(ApplicationState* app) {
         app->mold.gl_mol = md_gl_mol_create(&app->mold.sys);
     }
     cartoon_glyphs_init(&app->mold.cartoon_glyphs, app->mold.sys, app->mold.gl_mol, app->allocator.persistent);
-    if (md_util_state_backbone_compute(&app->mold.state, &app->mold.sys)) {
+    if (md_system_state_backbone_compute(&app->mold.state, &app->mold.sys)) {
         upload_secondary_structure_weights(app);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
@@ -6181,10 +6181,10 @@ void interpolate_system_state(ApplicationState* app) {
     // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
     const size_t num_segments = app->mold.sys.protein_backbone.segment.count;
     if (num_segments > 0 && app->trajectory_data.backbone_angles.data) {
-        payload.dst_angle = md_util_state_backbone_angles_write(&app->mold.state, &app->mold.sys);
+        payload.dst_angle = md_system_state_backbone_angles_write(&app->mold.state, &app->mold.sys);
     }
     if (num_segments > 0 && app->trajectory_data.secondary_structure.data) {
-        payload.dst_ss = md_util_state_secondary_structure_write(&app->mold.state, &app->mold.sys);
+        payload.dst_ss = md_system_state_secondary_structure_write(&app->mold.state, &app->mold.sys);
         payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
     }
 
@@ -7746,9 +7746,9 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
                 // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
                 mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
             } else {
-                // Without one, for the atoms of its amino acid by their roles (md_util_protein_segment_atoms)
+                // Without one, for the atoms of its amino acid by their roles (md_system_protein_segment_atoms)
                 md_atom_idx_t atoms[512];
-                const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &app.mold.sys, seg_idx), MD_COUNTOF(atoms));
+                const size_t n = MD_MIN(md_system_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &app.mold.sys, seg_idx), MD_COUNTOF(atoms));
                 for (size_t k = 0; k < n; ++k) {
                     mask_set_atom_by_selection_granularity(mask, (size_t)atoms[k], granularity, app.mold.sys);
                 }

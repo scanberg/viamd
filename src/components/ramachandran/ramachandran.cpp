@@ -264,11 +264,11 @@ struct Layer {
 
 // ## Masks
 
-// Adds the atoms a backbone segment stands for to mask (md_util_protein_segment_atoms): those of its residue, or of
+// Adds the atoms a backbone segment stands for to mask (md_system_protein_segment_atoms): those of its residue, or of
 // its amino acid by the roles of the atoms
 static void mask_add_segment(md_bitmask_t* mask, const md_system_t& sys, size_t seg_idx) {
     md_atom_idx_t atoms[512];
-    const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, seg_idx), MD_COUNTOF(atoms));
+    const size_t n = MD_MIN(md_system_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, seg_idx), MD_COUNTOF(atoms));
     for (size_t k = 0; k < n; ++k) {
         if ((size_t)atoms[k] < sys.atom.count) md_bitmask_set_bit(mask, (uint32_t)atoms[k]);
     }
@@ -955,8 +955,8 @@ struct Ramachandran : viamd::EventHandler {
             md_memset(seg_type, -1, num_segments);
             md_temp_scope_t temp = md_temp_begin();
             md_ramachandran_type_t* types = md_temp_alloc_array(temp, md_ramachandran_type_t, num_segments);
-            md_util_backbone_ramachandran_classify(types, num_segments, &sys);
-            // The first and the last segment of a backbone have no phi and no psi (md_util_backbone_angles_compute)
+            md_backbone_ramachandran_classify(types, num_segments, &sys);
+            // The first and the last segment of a backbone have no phi and no psi (md_backbone_angles_compute)
             const md_protein_backbone_data_t& bb = sys.protein_backbone;
             for (size_t r = 0; r < bb.range.count; ++r) {
                 const uint32_t beg = bb.range.offset[r];
@@ -1539,7 +1539,7 @@ struct Ramachandran : viamd::EventHandler {
 
         // The frame shown, or the only one there is
         if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
-            ps->base = md_util_state_backbone_angles(&app->mold.state, &app->mold.sys);
+            ps->base = md_system_state_backbone_angles(&app->mold.state, &app->mold.sys);
             if (!ps->base || md_array_size(seg_type) != app->mold.sys.protein_backbone.segment.count) return false;
             ps->stride = 0;
             ps->frame_beg = 0;

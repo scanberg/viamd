@@ -238,7 +238,7 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
 #endif
                 // The atoms of the segment: those of its residue, or of its amino acid by the roles of the atoms
                 md_atom_idx_t atoms[512];
-                const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, range_beg + j), MD_COUNTOF(atoms));
+                const size_t n = MD_MIN(md_system_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, range_beg + j), MD_COUNTOF(atoms));
                 for (size_t k = 0; k < n; ++k) {
                     if ((size_t)atoms[k] < count) colors[atoms[k]] = color;
                 }

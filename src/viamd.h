@@ -1488,7 +1488,7 @@ struct ApplicationState {
 
         // The actual interpolated state of the system.
         // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
-        // secondary structure of the displayed frame (md_util_state_backbone_angles, md_util_state_secondary_structure).
+        // secondary structure of the displayed frame (md_system_state_backbone_angles, md_system_state_secondary_structure).
         md_system_state_t   state = {};
 
 		md_f32x4x4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
@@ -2560,7 +2560,7 @@ const md_attribute_t* run_attribute(const ApplicationState* app, md_str_t leaf);
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
 // of the run at the displayed frame (secondary_structure_render), else the state's own assignment
-// (md_util_state_secondary_structure). For presentation; NULL when there is neither.
+// (md_system_state_secondary_structure). For presentation; NULL when there is neither.
 const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app);
 
 // Frame cache operations
