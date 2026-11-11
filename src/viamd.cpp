@@ -1,5 +1,6 @@
 ﻿
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>

@@ -10,6 +10,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <md_util.h>
+#include <md_util_geom.h>
 #include <md_gl.h>
 #include <md_gfx.h>
 #include <md_system.h>

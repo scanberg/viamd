@@ -11,6 +11,7 @@
 #include <math.h>
 #include <float.h>
 #include <core/md_vec_math.h>
+#include <md_util_geom.h>
 
 static inline md_f32x3_t transform_point(const md_f32x4x4_t& m, md_f32x3_t p) {
     const md_f32x4_t r = md_f32x4x4_mul_f32x4(m, md_f32x4_set(p.x, p.y, p.z, 1.0f));
