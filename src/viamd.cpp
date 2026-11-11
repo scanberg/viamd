@@ -6851,8 +6851,14 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_system_bond_build_connectivity(&sys);
         // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
         // are what they were, and a bond added by hand has none.
-        md_util_system_infer_molecules(&sys);
-        md_util_system_infer_rings(&sys);
+        md_molecule_data_t molecules = {};
+        md_molecule_infer(&molecules, &sys, sys.alloc);
+        md_molecule_data_free(&sys.molecule, sys.alloc);
+        sys.molecule = molecules;
+        md_ring_data_t rings = {};
+        md_ring_infer(&rings, &sys, sys.alloc);
+        md_ring_data_free(&sys.ring, sys.alloc);
+        sys.ring = rings;
         // And so are its fragments, which the molecules' inference clears
         md_util_system_infer_fragments(&sys);
     }
