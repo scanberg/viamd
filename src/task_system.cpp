@@ -332,16 +332,22 @@ struct ParallelSet : enki::ITaskSet {
     RangeFn           fn = nullptr;
     void*             user = nullptr;
     Context           ctx = {};
+    uint32_t          count = 0;
+    uint32_t          grain = 1;
     std::atomic<bool> skipped{false};
 
+    // enki's range is in grains: its m_MinRange bounds where it splits, not the remainder each split leaves behind
+    // (which can be one), so the pieces of at least grain are the ones it is handed in whole grains
     void ExecuteRange(enki::TaskSetPartition range, uint32_t) override {
         if (ctx.job && job_cancelled(ctx.job)) {
             skipped.store(true, std::memory_order_relaxed);
             return;
         }
+        const uint32_t beg = (uint32_t)MD_MIN((uint64_t)range.start * grain, (uint64_t)count);
+        const uint32_t end = (uint32_t)MD_MIN((uint64_t)range.end * grain, (uint64_t)count);
         const Context saved = tl_ctx;
         tl_ctx = ctx;
-        fn(user, range.start, range.end);
+        fn(user, beg, end);
         tl_ctx = saved;
     }
 };
@@ -368,8 +374,10 @@ bool parallel_for(uint32_t count, uint32_t grain, RangeFn fn, void* user) {
     }
 
     ParallelSet set;
-    set.m_SetSize  = count;
-    set.m_MinRange = grain;
+    set.m_SetSize  = (uint32_t)(((uint64_t)count + grain - 1) / grain);
+    set.m_MinRange = 1;
+    set.count = count;
+    set.grain = grain;
     set.m_Priority = ctx.prio;
     set.fn   = fn;
     set.user = user;
