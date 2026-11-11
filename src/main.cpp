@@ -3301,7 +3301,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                             const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
                             system_bonds_edit_begin(state);
                             md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
-                            if (graph) md_util_system_infer_coordination(&sys);
+                            if (graph) md_system_infer_coordination(&sys);
                             system_bonds_changed(state, graph);
                             ImGui::CloseCurrentPopup();
                         }

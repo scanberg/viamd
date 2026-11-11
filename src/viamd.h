@@ -1878,7 +1878,7 @@ struct ApplicationState {
         bool apply_pbc = false;
         bool unwrap_structures = false;
 
-        // The bonds formed and broken in the frame shown, against the bonds of the system (md_util_bond_delta), when
+        // The bonds formed and broken in the frame shown, against the bonds of the system (md_bond_delta_compute), when
         // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
         // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
         struct {

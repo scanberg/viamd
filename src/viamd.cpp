@@ -563,7 +563,16 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
     if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
     if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
-    if (flags & MD_ATOM_FLAG_METALLIC)   tooltip_list_add(&chem, "metallic");
+    // Of a metallic phase: an atom of a metallic bond, which has no bond of the graph (md_bond_metallic_atoms)
+    if (md_bond_conn_count(&sys.bond, atom_idx) == 0) {
+        for (size_t i = 0; i < sys.bond.count; ++i) {
+            const md_atom_pair_t p = sys.bond.pairs[i];
+            if (md_bond_kind(sys.bond.flags[i]) == MD_BOND_KIND_METALLIC && (p.idx[0] == (md_atom_idx_t)atom_idx || p.idx[1] == (md_atom_idx_t)atom_idx)) {
+                tooltip_list_add(&chem, "metallic");
+                break;
+            }
+        }
+    }
     if (num_h > 0) md_str_writer_fmt(&chem, "%s%d H", md_str_writer_empty(&chem) ? "" : ", ", num_h);
     tooltip_row_list(req, MD_STR_LIT("chemistry"), chem);
 
@@ -2858,7 +2867,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             }
         }
         if (graph) {
-            md_util_system_infer_coordination(&sys);
+            md_system_infer_coordination(&sys);
         }
         system_bonds_changed(data, graph);
     }
@@ -6820,11 +6829,9 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
     if (!bond_coordinates(&state, app, frame)) return false;
 
     system_bonds_edit_begin(app);
-    md_util_infer_covalent_bonds(&sys.bond, &state, &sys, sys.alloc, task_system::executor());
-    md_bond_build_connectivity(&sys.bond, sys.atom.count, sys.alloc);
-    md_system_topology_changed(&sys);
-    // What follows from the bonds, from the same coordinates, which md_util_system_infer records as the reference
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT | MD_UTIL_INFER_FRAGMENT_BIT, task_system::executor());
+    // The bonds inferred anew (those given stay) and what follows from them, from the same coordinates, which
+    // md_util_system_infer records as the reference
+    md_util_system_infer(&sys, &state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT | MD_UTIL_INFER_FRAGMENT_BIT, task_system::executor());
     system_bonds_changed(app, false);
     return true;
 }
@@ -6983,7 +6990,7 @@ void bond_tracking_update(ApplicationState* app) {
             .tolerance = bt.tolerance,
             .breakable = bt.breakable,
         };
-        md_util_bond_delta(&delta, &sys, &state, &desc, app->allocator.persistent);
+        md_bond_delta_compute(&delta, &sys, &state, &desc, app->allocator.persistent);
     }
     const double time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
 
