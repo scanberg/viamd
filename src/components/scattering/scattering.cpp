@@ -151,7 +151,7 @@ const BeamPreset beam_presets[] = {
         // scaled from the values of the Ohm 2018 setup (delta ~ lambda^2, beta ~ lambda^4). The native oxide is not
         // modelled, the paper finds the substrate contribution negligible.
         2.88e-6, 2.6e-8,
-        // The paper cuts at qy = 0 nm^-1 (Fig. 4b); 0 is clamped to the lowest q_par of the map
+        // The paper cuts at qy = 0 nm^-1 (Fig. 4b); 0 is MD_CLAMPed to the lowest q_par of the map
         0.13, 0.0,
         // Not stated in the paper, estimated from Fig. S8, calibrated on the two horizontal module gaps visible
         // there (212 px pitch): the specular beamstop sits on the gap at rows 407-423 and the CNF Yoneda is ~135 px
@@ -227,10 +227,10 @@ enum ComputeState : int {
     ComputeState_Failed,
 };
 
-// Combo over a fixed label array. Clamps the value into range. Returns true when the selection changed.
+// Combo over a fixed label array. MD_CLAMPs the value into range. Returns true when the selection changed.
 template <size_t N>
 bool combo(const char* label, int* value, const char* const (&items)[N]) {
-    *value = CLAMP(*value, 0, (int)N - 1);
+    *value = MD_CLAMP(*value, 0, (int)N - 1);
     bool changed = false;
     if (ImGui::BeginCombo(label, items[*value])) {
         for (int i = 0; i < (int)N; ++i) {
@@ -473,8 +473,8 @@ struct ScatteringComponent : viamd::EventHandler {
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
                 // "GISAXS" is the section name before the component was generalized
-                const str_t header = viamd::section_header(state);
-                if (str_eq(header, STR_LIT("Scattering")) || str_eq(header, STR_LIT("GISAXS"))) {
+                const md_str_t header = viamd::section_header(state);
+                if (md_str_eq(header, MD_STR_LIT("Scattering")) || md_str_eq(header, MD_STR_LIT("GISAXS"))) {
                     deserialize(state);
                 }
                 break;
@@ -497,9 +497,9 @@ struct ScatteringComponent : viamd::EventHandler {
 
     double wavelength() const {
 #if VIAMD_SCATTERING_NEUTRON
-        if (is_neutron()) return (double)MAX(neu_wavelength, 0.1f);
+        if (is_neutron()) return (double)MD_MAX(neu_wavelength, 0.1f);
 #endif
-        return gisaxs::wavelength_from_energy(MAX(energy_kev, 1.0e-3f));
+        return gisaxs::wavelength_from_energy(MD_MAX(energy_kev, 1.0e-3f));
     }
 
     double substrate_z() const {
@@ -653,9 +653,9 @@ struct ScatteringComponent : viamd::EventHandler {
 
     static PresetValues preset_values(const BeamPreset& p) {
         const double lambda_a = p.wavelength_nm * 10.0;
-        const double k0 = 2.0 * PI / p.wavelength_nm;   // nm^-1
+        const double k0 = 2.0 * MD_PI / p.wavelength_nm;   // nm^-1
         // Largest in-plane angle: the detector edge farthest from the direct beam, so the map covers every pixel
-        const double edge_px = MAX(p.beam_x_px, p.det_px_h - p.beam_x_px);
+        const double edge_px = MD_MAX(p.beam_x_px, p.det_px_h - p.beam_x_px);
         const double two_theta_max = atan(edge_px * p.pixel_mm / p.sdd_mm);
         const double ai = p.alpha_i_deg * DEG_TO_RAD;
         const double af = p.alpha_f_max_deg * DEG_TO_RAD;
@@ -671,14 +671,14 @@ struct ScatteringComponent : viamd::EventHandler {
 
     bool preset_matches(const BeamPreset& p) const {
         const PresetValues v = preset_values(p);
-        auto eq = [](double a, double b) { return fabs(a - b) <= 1.0e-4 * MAX(fabs(a), fabs(b)); };
+        auto eq = [](double a, double b) { return fabs(a - b) <= 1.0e-4 * MD_MAX(fabs(a), fabs(b)); };
         return eq(energy_kev, v.energy_kev) && eq(alpha_i_deg, v.alpha_i_deg) &&
                eq(q_par_max_nm, v.q_par_max_nm) && eq(q_z_max_nm, v.q_z_max_nm) &&
                dwba && eq(sub_density, v.sub_density) && eq(sub_beta, v.sub_beta);
     }
 
     void apply_preset(int idx) {
-        if (idx < 0 || idx >= (int)ARRAY_SIZE(beam_presets)) return;
+        if (idx < 0 || idx >= (int)MD_COUNTOF(beam_presets)) return;
         const BeamPreset& p = beam_presets[idx];
         const PresetValues v = preset_values(p);
 #if VIAMD_SCATTERING_NEUTRON
@@ -713,7 +713,7 @@ struct ScatteringComponent : viamd::EventHandler {
         det.bs_direct_px   = p.bs_direct_px;
         det.bs_specular_px = p.bs_specular_px;
         // Resolution: one detector pixel (the angular beam divergence at P03 is of the same order or smaller)
-        const float dq = (float)(2.0 * PI / p.wavelength_nm * p.pixel_mm / p.sdd_mm);
+        const float dq = (float)(2.0 * MD_PI / p.wavelength_nm * p.pixel_mm / p.sdd_mm);
         res_fwhm_qpar = dq;
         res_fwhm_qz = dq;
         res_dirty = true;
@@ -788,14 +788,14 @@ struct ScatteringComponent : viamd::EventHandler {
             snprintf(status, sizeof(status), "Fibril model: beads per slice must be in [2, 64]");
             return false;
         }
-        const str_t center = str_from_cstr(fib_center_name);
+        const md_str_t center = md_str_from_cstr(fib_center_name);
         const double box[3] = {cell.x, cell.y, cell.z};
         auto min_img = [&](double d, int k) { return box[k] > 0.0 ? d - box[k] * floor(d / box[k] + 0.5) : d; };
 
         // Selected center beads (positions in the gathered arrays)
         std::vector<size_t> centers;
         for (size_t i = 0; i < n; ++i) {
-            if (str_eq(md_atom_name(&sys.atom, atom_idx[i]), center)) centers.push_back(i);
+            if (md_str_eq(md_atom_name(&sys.atom, atom_idx[i]), center)) centers.push_back(i);
         }
         if (centers.empty()) {
             snprintf(status, sizeof(status), "Fibril model: no '%s' beads in the selection", fib_center_name);
@@ -808,14 +808,14 @@ struct ScatteringComponent : viamd::EventHandler {
             if (g < 0 || g + S > (long)n) return false;
             if (atom_idx[g + S - 1] - atom_idx[g] != (uint32_t)(S - 1)) return false;
             int nc = 0;
-            for (int b = 0; b < S; ++b) nc += str_eq(md_atom_name(&sys.atom, atom_idx[g + b]), center) ? 1 : 0;
+            for (int b = 0; b < S; ++b) nc += md_str_eq(md_atom_name(&sys.atom, atom_idx[g + b]), center) ? 1 : 0;
             return nc == 1;
         };
 
         // Position of the center bead within its slice: choose the offset that keeps the beads closest to the center
         int best_off = 0;
         double best_cost = DBL_MAX;
-        const size_t sample = MIN(centers.size(), (size_t)2000);
+        const size_t sample = MD_MIN(centers.size(), (size_t)2000);
         for (int off = 0; off < S; ++off) {
             double cost = 0.0;
             size_t valid = 0;
@@ -1096,8 +1096,8 @@ struct ScatteringComponent : viamd::EventHandler {
 
         // Selection
         md_bitset_t mask = md_bitset_empty_set();
-        defer { md_bitset_free(&mask, alloc); };
-        const script::FilterResult fr = script::filter(app_state->script.language, &mask, str_from_cstr(filter), filter_context(app_state), alloc);
+        MD_DEFER { md_bitset_free(&mask, alloc); };
+        const script::FilterResult fr = script::filter(app_state->script.language, &mask, md_str_from_cstr(filter), filter_context(app_state), alloc);
         filter_valid = fr.success;
         snprintf(filter_err, sizeof(filter_err), "%s", fr.error);
         if (!filter_valid) {
@@ -1170,7 +1170,7 @@ struct ScatteringComponent : viamd::EventHandler {
         params.q_z_max = q_z_max_nm * 0.1;
         params.oversampling = oversampling;
         params.ring_rel_width = ring_rel_width;
-        params.max_slices = (size_t)MAX(max_slices, 8);
+        params.max_slices = (size_t)MD_MAX(max_slices, 8);
 
         ctx = md_gisaxs_create(&input, &params, alloc);
         if (!ctx) {
@@ -1194,7 +1194,7 @@ struct ScatteringComponent : viamd::EventHandler {
             info.spectra_bytes / (1024.0 * 1024.0), info.matrix_bytes / (1024.0 * 1024.0));
 
         // Per thread scratch, allocated lazily by each worker, indexed by task_system::thread_index()
-        const size_t num_threads = MAX((size_t)task_system::num_threads(), (size_t)1);
+        const size_t num_threads = MD_MAX((size_t)task_system::num_threads(), (size_t)1);
         md_array_resize(scratch, num_threads, alloc);
         for (size_t i = 0; i < num_threads; ++i) scratch[i] = nullptr;
         scratch_bytes = md_gisaxs_slice_scratch_bytes(ctx);
@@ -1207,7 +1207,7 @@ struct ScatteringComponent : viamd::EventHandler {
         // spectra are released whatever happened, as a failed or cancelled ctx is destroyed in update().
         const uint32_t num_slices = (uint32_t)info.num_slices;
         const uint32_t num_rings  = (uint32_t)info.num_rings;
-        compute_job.start(STR_LIT("Scattering"), [this, num_slices, num_rings]() {
+        compute_job.start(MD_STR_LIT("Scattering"), [this, num_slices, num_rings]() {
             std::atomic<uint32_t> done{0};
             task_system::parallel_for(num_slices, 1, [this, num_slices, &done](uint32_t beg, uint32_t end) {
                 if (compute_failed) return;
@@ -1249,7 +1249,7 @@ struct ScatteringComponent : viamd::EventHandler {
 
     void start_eval(const md_gisaxs_model_t& model, uint64_t hash) {
         const size_t R = md_gisaxs_num_rings(ctx);
-        const size_t Nq = (size_t)MAX(num_qz, 2);
+        const size_t Nq = (size_t)MD_MAX(num_qz, 2);
         eval_qz.resize(Nq);
         eval_out.assign(Nq * R, 0.0f);
         for (size_t i = 0; i < Nq; ++i) {
@@ -1262,7 +1262,7 @@ struct ScatteringComponent : viamd::EventHandler {
         eval_hash_pending = hash;
         eval_ready = false;
 
-        eval_job.start_for(STR_LIT("Scattering evaluate"), (uint32_t)Nq, 4, [this](uint32_t beg, uint32_t end) {
+        eval_job.start_for(MD_STR_LIT("Scattering evaluate"), (uint32_t)Nq, 4, [this](uint32_t beg, uint32_t end) {
             md_gisaxs_evaluate_range(ctx, &eval_model, eval_qz.data(), beg, end, eval_out.data());
         }, [this](task_system::Status s) {
             // A cancelled evaluation is partial: dropped, and update() starts it again if it is still wanted
@@ -1385,12 +1385,12 @@ struct ScatteringComponent : viamd::EventHandler {
 
         double vmax = -DBL_MAX, vmin = DBL_MAX;
         for (float v : smooth.I) {
-            if (v > 0.0f) { vmax = MAX(vmax, (double)v); vmin = MIN(vmin, (double)v); }
+            if (v > 0.0f) { vmax = MD_MAX(vmax, (double)v); vmin = MD_MIN(vmin, (double)v); }
         }
         if (vmax <= 0.0 || vmax == -DBL_MAX) { vmax = 1.0; vmin = 0.0; }
         if (log_scale) {
             res_max = log10(vmax);
-            res_min = res_max - MAX(decades, 0.5f);
+            res_min = res_max - MD_MAX(decades, 0.5f);
         } else {
             res_max = vmax;
             res_min = 0.0;
@@ -1402,7 +1402,7 @@ struct ScatteringComponent : viamd::EventHandler {
             double* dst = map_display.data() + c * Q;
             for (size_t row = 0; row < Q; ++row) {
                 double v = smooth.at(Q - 1 - row, c);   // Row 0 of the heat map is drawn at the top (highest q_z)
-                if (log_scale) v = v > 0.0 ? MAX(log10(v), res_min) : res_min;
+                if (log_scale) v = v > 0.0 ? MD_MAX(log10(v), res_min) : res_min;
                 dst[row] = v;
             }
         }
@@ -1433,7 +1433,7 @@ struct ScatteringComponent : viamd::EventHandler {
             for (int bx = 0; bx < W; ++bx) {
                 const double v = src[bx];
                 if (v < 0.0)        dst[bx] = masked;
-                else if (log_scale) dst[bx] = v > 0.0 ? MAX(log10(v), res_min) : res_min;
+                else if (log_scale) dst[bx] = v > 0.0 ? MD_MAX(log10(v), res_min) : res_min;
                 else                dst[bx] = v;
             }
         }
@@ -1468,18 +1468,18 @@ struct ScatteringComponent : viamd::EventHandler {
         } else if (cut_mode == CutMode_FilmYoneda && eval_model.dwba && eval_model.graded) {
             cut_qz = film_yoneda_qz_nm();
         }
-        cut_qz   = CLAMP(cut_qz,   res_qz_min,   res_qz_max);
-        cut_qpar = CLAMP(cut_qpar, res_qpar_min, res_qpar_max);
+        cut_qz   = MD_CLAMP(cut_qz,   res_qz_min,   res_qz_max);
+        cut_qpar = MD_CLAMP(cut_qpar, res_qpar_min, res_qpar_max);
     }
 
     // ---------------------------------------------------------------------------------------------
     // Export
     // ---------------------------------------------------------------------------------------------
 
-    static bool export_columns(const float* const* cols, const str_t* names, size_t num_cols, size_t n) {
+    static bool export_columns(const float* const* cols, const md_str_t* names, size_t num_cols, size_t n) {
         char path_buf[2048];
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return false;
-        const str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("csv"))) return false;
+        const md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
         if (!md_csv_write_to_file(cols, names, num_cols, n, path)) {
             MD_LOG_ERROR("Scattering: failed to write '%.*s'", (int)path.len, path.ptr);
             return false;
@@ -1496,10 +1496,10 @@ struct ScatteringComponent : viamd::EventHandler {
             a[i] = horizontal ? (float)alpha_f_deg(cut_qz) : (float)alpha_f_deg(qz_nm[i]);
         }
         const float* cols[3] = {x.data(), y.data(), a.data()};
-        const str_t names[3] = {
-            horizontal ? STR_LIT("q_par [nm^-1]") : STR_LIT("q_z [nm^-1]"),
-            STR_LIT("I [sr^-1]"),
-            STR_LIT("alpha_f [deg]"),
+        const md_str_t names[3] = {
+            horizontal ? MD_STR_LIT("q_par [nm^-1]") : MD_STR_LIT("q_z [nm^-1]"),
+            MD_STR_LIT("I [sr^-1]"),
+            MD_STR_LIT("alpha_f [deg]"),
         };
         export_columns(cols, names, 3, n);
     }
@@ -1519,7 +1519,7 @@ struct ScatteringComponent : viamd::EventHandler {
             }
         }
         const float* cols[5] = {qp.data(), qz.data(), af.data(), I.data(), cnt.data()};
-        const str_t names[5] = {STR_LIT("q_par [nm^-1]"), STR_LIT("q_z [nm^-1]"), STR_LIT("alpha_f [deg]"), STR_LIT("I [sr^-1]"), STR_LIT("ring points")};
+        const md_str_t names[5] = {MD_STR_LIT("q_par [nm^-1]"), MD_STR_LIT("q_z [nm^-1]"), MD_STR_LIT("alpha_f [deg]"), MD_STR_LIT("I [sr^-1]"), MD_STR_LIT("ring points")};
         export_columns(cols, names, 5, n);
     }
 
@@ -1554,7 +1554,7 @@ struct ScatteringComponent : viamd::EventHandler {
     void draw_compute_bar() {
         const bool running = compute_state.load() == ComputeState_Running;
         if (running) {
-            const float frac = MAX(compute_job.progress(), 0.0f);    // negative until the first slices are done
+            const float frac = MD_MAX(compute_job.progress(), 0.0f);    // negative until the first slices are done
             const float bw = ImGui::GetContentRegionAvail().x;
             ImGui::ProgressBar(frac, ImVec2(bw * 0.7f, 0));
             ImGui::SameLine();
@@ -1602,7 +1602,7 @@ struct ScatteringComponent : viamd::EventHandler {
     void draw_beam_settings() {
         if (!ImGui::CollapsingHeader("Beam", ImGuiTreeNodeFlags_DefaultOpen)) return;
         if (!is_neutron()) {
-            const bool preset_valid = beam_preset >= 0 && beam_preset < (int)ARRAY_SIZE(beam_presets);
+            const bool preset_valid = beam_preset >= 0 && beam_preset < (int)MD_COUNTOF(beam_presets);
             char preview[128];
             if (preset_valid) {
                 snprintf(preview, sizeof(preview), "%s%s", beam_presets[beam_preset].name, preset_matches(beam_presets[beam_preset]) ? "" : " (modified)");
@@ -1610,7 +1610,7 @@ struct ScatteringComponent : viamd::EventHandler {
                 snprintf(preview, sizeof(preview), "Custom");
             }
             if (ImGui::BeginCombo("Setup", preview)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(beam_presets); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(beam_presets); ++i) {
                     if (ImGui::Selectable(beam_presets[i].name, beam_preset == i)) apply_preset(i);
                     ImGui::SetItemTooltip("%s", beam_presets[i].description);
                 }
@@ -1618,14 +1618,14 @@ struct ScatteringComponent : viamd::EventHandler {
             }
             ImGui::SetItemTooltip("Experimental setup: beam, substrate, detector, resolution and cut positions");
             ImGui::InputFloat("Energy (keV)", &energy_kev, 0, 0, "%.3f");
-            energy_kev = CLAMP(energy_kev, 0.1f, 1000.0f);
+            energy_kev = MD_CLAMP(energy_kev, 0.1f, 1000.0f);
             ImGui::SameLine();
             ImGui::TextDisabled("%.4f Å", wavelength());
         }
 #if VIAMD_SCATTERING_NEUTRON
         else {
             ImGui::InputFloat("Wavelength (Å)", &neu_wavelength, 0, 0, "%.3f");
-            neu_wavelength = CLAMP(neu_wavelength, 0.5f, 50.0f);
+            neu_wavelength = MD_CLAMP(neu_wavelength, 0.5f, 50.0f);
             // E = h^2 / (2 m lambda^2) = 81.8042 meV Å^2 / lambda^2, v = h / (m lambda) = 3956 m/s Å / lambda
             ImGui::TextDisabled("Energy: %.3f meV, %.0f m/s", 81.8042 / (neu_wavelength * neu_wavelength), 3956.03 / neu_wavelength);
         }
@@ -1652,25 +1652,25 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::SetItemTooltip("Number of electrons of each particle (the scattering weight)");
             if (electron_mode == ElectronMode_Constant) {
                 ImGui::InputFloat("e / particle", &electrons_per_particle, 0, 0, "%.1f");
-                electrons_per_particle = MAX(electrons_per_particle, 0.0f);
+                electrons_per_particle = MD_MAX(electrons_per_particle, 0.0f);
             } else if (electron_mode == ElectronMode_Mass) {
                 ImGui::InputFloat("e / Da", &electrons_per_dalton, 0, 0, "%.4f");
                 ImGui::SetItemTooltip("Electrons per dalton of mass. Cellulose 0.530, water 0.555, pure C/N/O 0.5");
             }
             ImGui::InputFloat("Material density (e/Å³)", &material_density, 0, 0, "%.4f");
-            material_density = MAX(material_density, 0.0f);
+            material_density = MD_MAX(material_density, 0.0f);
             ImGui::SetItemTooltip("Electron density of the particle material. Each particle displaces (electrons /\n"
                                   "material density) of the ambient medium, which sets the contrast. 0: no displacement.\n"
                                   "Cellulose (1.5 g/cm³): 0.478");
             ImGui::InputDouble("Material beta", &material_beta, 0, 0, "%.3e");
-            material_beta = MAX(material_beta, 0.0);
+            material_beta = MD_MAX(material_beta, 0.0);
             ImGui::SetItemTooltip("Absorption (imaginary part of the refractive index) of the particle material at the\n"
                                   "material density. Only used for the film in the graded DWBA. Cellulose ~2e-9 at 12.8 keV.");
         }
         combo("Gaussian width", &sigma_mode, sigma_mode_lbl);
         if (sigma_mode == SigmaMode_Constant) {
             ImGui::InputFloat("Sigma (Å)", &sigma_constant, 0, 0, "%.2f");
-            sigma_constant = MAX(sigma_constant, 0.0f);
+            sigma_constant = MD_MAX(sigma_constant, 0.0f);
         }
 
         combo("Density model", &density_model, density_model_lbl);
@@ -1682,17 +1682,17 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::Indent();
             ImGui::InputText("Center bead", fib_center_name, sizeof(fib_center_name));
             ImGui::InputInt("Beads per slice", &fib_stride);
-            fib_stride = CLAMP(fib_stride, 2, 64);
+            fib_stride = MD_CLAMP(fib_stride, 2, 64);
             combo("Cross-section", &fib_template, fibril_template_lbl);
             if (fib_template == FibrilTemplate_Beads) {
                 ImGui::InputFloat("Bead sigma (Å)", &fib_bead_sigma, 0, 0, "%.2f");
-                fib_bead_sigma = MAX(fib_bead_sigma, 0.5f);
+                fib_bead_sigma = MD_MAX(fib_bead_sigma, 0.5f);
                 ImGui::SetItemTooltip("One Gaussian per bead at the mean bead layout of the slices, swept along the fibril");
             } else if (fib_template == FibrilTemplate_Disk) {
                 ImGui::InputFloat("Radius (Å)", &fib_disk_radius, 0, 0, "%.2f");
                 ImGui::InputFloat("Grid spacing (Å)", &fib_disk_spacing, 0, 0, "%.2f");
-                fib_disk_radius = MAX(fib_disk_radius, 1.0f);
-                fib_disk_spacing = MAX(fib_disk_spacing, 1.0f);
+                fib_disk_radius = MD_MAX(fib_disk_radius, 1.0f);
+                fib_disk_spacing = MD_MAX(fib_disk_spacing, 1.0f);
                 ImGui::SetItemTooltip("Uniform disk (as the cylinders in the BornAgain script) built from Gaussians with\n"
                                       "sigma = spacing / 2 on a hexagonal grid");
             } else {
@@ -1700,14 +1700,14 @@ struct ScatteringComponent : viamd::EventHandler {
                 ImGui::SameLine();
                 if (ImGui::Button("Browse")) {
                     char buf[512];
-                    if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, STR_LIT("txt"))) {
+                    if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, MD_STR_LIT("txt"))) {
                         snprintf(fib_template_path, sizeof(fib_template_path), "%s", buf);
                     }
                 }
                 ImGui::SetItemTooltip("Text file with lines 'gauss u v weight sigma' (and optionally 'anchor u v' per bead), Å");
             }
             ImGui::InputFloat("Sample spacing (Å)", &fib_ds, 0, 0, "%.2f");
-            fib_ds = MAX(fib_ds, 0.0f);
+            fib_ds = MD_MAX(fib_ds, 0.0f);
             ImGui::SetItemTooltip("Spacing of the cross-section samples along the fibril. 0 = smallest template sigma,\n"
                                   "which makes the density continuous along the fibril.");
             if (fib_info[0]) {
@@ -1726,7 +1726,7 @@ struct ScatteringComponent : viamd::EventHandler {
 #if VIAMD_SCATTERING_NEUTRON
         if (is_neutron()) {
             if (ImGui::BeginCombo("Ambient", neutron_background_presets[neu_bg_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(neutron_background_presets); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(neutron_background_presets); ++i) {
                     if (ImGui::Selectable(neutron_background_presets[i].name, neu_bg_preset == i)) {
                         neu_bg_preset = i;
                         if (i != NBG_CUSTOM && i != NBG_WATER) neu_bg_sld = neutron_background_presets[i].sld;
@@ -1748,7 +1748,7 @@ struct ScatteringComponent : viamd::EventHandler {
 #endif
         {
             if (ImGui::BeginCombo("Ambient", ambient_presets[ambient_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(ambient_presets); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(ambient_presets); ++i) {
                     if (ImGui::Selectable(ambient_presets[i].name, ambient_preset == i)) {
                         ambient_preset = i;
                         if (i != AMBIENT_CUSTOM) ambient_density = ambient_presets[i].electron_density;
@@ -1760,7 +1760,7 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::BeginDisabled(ambient_preset != AMBIENT_CUSTOM);
             ImGui::InputDouble("Density (e/Å³)", &ambient_density, 0, 0, "%.5f");
             ImGui::EndDisabled();
-            ambient_density = MAX(ambient_density, 0.0);
+            ambient_density = MD_MAX(ambient_density, 0.0);
             const double cf = gisaxs::contrast_factor(xray_setup());
             if (cf < 1.0) ImGui::TextDisabled("Contrast factor %.4f", cf);
             if (cf <= 0.0) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Contrast matched: no particle scattering");
@@ -1773,7 +1773,7 @@ struct ScatteringComponent : viamd::EventHandler {
 #if VIAMD_SCATTERING_NEUTRON
         if (is_neutron()) {
             if (ImGui::BeginCombo("Material", neutron_substrate_presets[neu_sub_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(neutron_substrate_presets); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(neutron_substrate_presets); ++i) {
                     if (ImGui::Selectable(neutron_substrate_presets[i].name, neu_sub_preset == i)) {
                         neu_sub_preset = i;
                         if (i != NSUB_CUSTOM) {
@@ -1790,12 +1790,12 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::SetItemTooltip("Imaginary part of the SLD, N sigma_a / (2 lambda), which is wavelength independent\n"
                                   "for 1/v absorbers. Negligible for Si and SiO2.");
             ImGui::EndDisabled();
-            neu_sub_abs = MAX(neu_sub_abs, 0.0);
+            neu_sub_abs = MD_MAX(neu_sub_abs, 0.0);
         } else
 #endif
         {
             if (ImGui::BeginCombo("Material", substrate_presets[sub_preset].name)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(substrate_presets); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(substrate_presets); ++i) {
                     if (ImGui::Selectable(substrate_presets[i].name, sub_preset == i)) {
                         sub_preset = i;
                         if (i != SUB_CUSTOM) {
@@ -1825,7 +1825,7 @@ struct ScatteringComponent : viamd::EventHandler {
             ImGui::InputFloat("z (Å)", &sub_z, 0, 0, "%.2f");
         }
         ImGui::InputFloat("Roughness (Å)", &sub_roughness, 0, 0, "%.2f");
-        sub_roughness = MAX(sub_roughness, 0.0f);
+        sub_roughness = MD_MAX(sub_roughness, 0.0f);
         ImGui::SetItemTooltip("RMS roughness of the substrate interface (Nevot-Croce factor)");
         const md_gisaxs_model_t m = build_model();
         if (!(m.sld_substrate > m.sld_ambient)) {
@@ -1851,8 +1851,8 @@ struct ScatteringComponent : viamd::EventHandler {
         ImGui::SetItemTooltip("Instrument resolution (FWHM) along q_par, applied as a Gaussian convolution");
         changed |= ImGui::InputFloat("Resolution q_z (nm⁻¹)", &res_fwhm_qz, 0, 0, "%.4f");
         ImGui::SetItemTooltip("Instrument resolution (FWHM) along q_z, applied as a Gaussian convolution");
-        res_fwhm_qpar = MAX(res_fwhm_qpar, 0.0f);
-        res_fwhm_qz = MAX(res_fwhm_qz, 0.0f);
+        res_fwhm_qpar = MD_MAX(res_fwhm_qpar, 0.0f);
+        res_fwhm_qz = MD_MAX(res_fwhm_qz, 0.0f);
         if (changed) res_dirty = true;
 
         ImGui::Checkbox("Show as detector image", &view_detector);
@@ -1876,33 +1876,33 @@ struct ScatteringComponent : viamd::EventHandler {
         }
         ImGui::InputInt("Direct beamstop (px)", &det.bs_direct_px);
         ImGui::InputInt("Specular beamstop (px)", &det.bs_specular_px);
-        det.sdd_mm = MAX(det.sdd_mm, 1.0);
-        det.pixel_mm = MAX(det.pixel_mm, 1.0e-3);
-        det.npx_h = CLAMP(det.npx_h, 1, 8192);
-        det.npx_v = CLAMP(det.npx_v, 1, 8192);
-        det.module_w = MAX(det.module_w, 0); det.module_h = MAX(det.module_h, 0);
-        det.gap_w = MAX(det.gap_w, 0); det.gap_h = MAX(det.gap_h, 0);
-        det.bs_direct_px = MAX(det.bs_direct_px, 0); det.bs_specular_px = MAX(det.bs_specular_px, 0);
+        det.sdd_mm = MD_MAX(det.sdd_mm, 1.0);
+        det.pixel_mm = MD_MAX(det.pixel_mm, 1.0e-3);
+        det.npx_h = MD_CLAMP(det.npx_h, 1, 8192);
+        det.npx_v = MD_CLAMP(det.npx_v, 1, 8192);
+        det.module_w = MD_MAX(det.module_w, 0); det.module_h = MD_MAX(det.module_h, 0);
+        det.gap_w = MD_MAX(det.gap_w, 0); det.gap_h = MD_MAX(det.gap_h, 0);
+        det.bs_direct_px = MD_MAX(det.bs_direct_px, 0); det.bs_specular_px = MD_MAX(det.bs_specular_px, 0);
     }
 
     void draw_sampling_settings() {
         if (!ImGui::CollapsingHeader("Sampling")) return;
         ImGui::InputFloat("q_par max (nm⁻¹)", &q_par_max_nm, 0, 0, "%.3f");
         ImGui::InputFloat("q_z max (nm⁻¹)", &q_z_max_nm, 0, 0, "%.3f");
-        q_par_max_nm = MAX(q_par_max_nm, 0.01f);
-        q_z_max_nm = MAX(q_z_max_nm, 0.01f);
+        q_par_max_nm = MD_MAX(q_par_max_nm, 0.01f);
+        q_z_max_nm = MD_MAX(q_z_max_nm, 0.01f);
         ImGui::SliderInt("q_z rows", &num_qz, 16, 1024);
         ImGui::SliderFloat("Oversampling", &oversampling, 1.5f, 4.0f, "%.2f");
         ImGui::SetItemTooltip("Grid oversampling relative to q max (in-plane and z). The B-spline aliasing error at\n"
                               "q max is ~4%% at 2, ~0.4%% at 3 and ~0.1%% at 4, at the cost of memory and time.");
         ImGui::SliderFloat("Ring width (Δq/q)", &ring_rel_width, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
-        ring_rel_width = CLAMP(ring_rel_width, 0.001f, 10.0f);
+        ring_rel_width = MD_CLAMP(ring_rel_width, 0.001f, 10.0f);
         ImGui::SetItemTooltip("The periodic box restricts q_par to the reciprocal lattice (2π i / Lx, 2π j / Ly).\n"
                               "Lattice shells closer than this fraction of q_par are averaged into one ring.\n"
                               "At low q_par every shell is its own ring (exact q_par, few points), rings are never wider than\n"
                               "the lattice spacing max(2π/Lx, 2π/Ly). Smaller: finer q_par sampling, noisier rings, more memory.");
         ImGui::InputInt("Max slices", &max_slices);
-        max_slices = CLAMP(max_slices, 8, 8192);
+        max_slices = MD_CLAMP(max_slices, 8, 8192);
         if (ctx) {
             md_gisaxs_info_t info;
             md_gisaxs_get_info(ctx, &info);
@@ -1945,8 +1945,8 @@ struct ScatteringComponent : viamd::EventHandler {
         ImGui::InputDouble("Vertical cut q_par (nm⁻¹)", &cut_qpar, 0, 0, "%.4f");
         ImGui::InputFloat("q_par band (nm⁻¹)", &cut_width_qpar, 0, 0, "%.4f");
         ImGui::SetItemTooltip("Width of the integration band. 0 interpolates between the two nearest rings.");
-        cut_width_qz = MAX(cut_width_qz, 0.0f);
-        cut_width_qpar = MAX(cut_width_qpar, 0.0f);
+        cut_width_qz = MD_MAX(cut_width_qz, 0.0f);
+        cut_width_qpar = MD_MAX(cut_width_qpar, 0.0f);
         ImGui::Checkbox("Log q_par axis", &cut_log_x);
         ImGui::SameLine();
         ImGui::Checkbox("Vertical vs alpha_f", &vcut_vs_alpha_f);
@@ -1970,7 +1970,7 @@ struct ScatteringComponent : viamd::EventHandler {
 #if VIAMD_SCATTERING_NEUTRON
     void draw_neutron_particles() {
         if (ImGui::BeginCombo("Scattering length", neutron_weight_lbl[neu_weight_mode])) {
-            for (int i = 0; i < (int)ARRAY_SIZE(neutron_weight_lbl); ++i) {
+            for (int i = 0; i < (int)MD_COUNTOF(neutron_weight_lbl); ++i) {
                 if (ImGui::Selectable(neutron_weight_lbl[i], neu_weight_mode == i)) neu_weight_mode = i;
             }
             ImGui::EndCombo();
@@ -1988,15 +1988,15 @@ struct ScatteringComponent : viamd::EventHandler {
                                   "Cellulose: 3 (hydroxyl) per anhydroglucose unit.");
             ImGui::InputFloat("Volume (Å³)", &neu_volume, 0, 0, "%.1f");
             ImGui::SetItemTooltip("Volume displaced by one particle. Cellulose: 179.5 Å³ per anhydroglucose unit at 1.5 g/cm³.");
-            neu_n_h = MAX(neu_n_h, 0.0f);
-            neu_n_ex = MAX(neu_n_ex, 0.0f);
-            neu_volume = MAX(neu_volume, 0.0f);
+            neu_n_h = MD_MAX(neu_n_h, 0.0f);
+            neu_n_ex = MD_MAX(neu_n_ex, 0.0f);
+            neu_volume = MD_MAX(neu_volume, 0.0f);
         } else {
             ImGui::InputFloat("Mass density (g/cm³)", &neu_mass_density, 0, 0, "%.3f");
             ImGui::SetItemTooltip("Volume of each atom = mass / density (hydrogen isotopes with the ¹H mass).\n"
                                   "Hydrogen with a deuterium mass in the topology is taken as D. Hydrogen bound\n"
                                   "to N, O or S (from the bonds) is exchangeable.");
-            neu_mass_density = MAX(neu_mass_density, 0.01f);
+            neu_mass_density = MD_MAX(neu_mass_density, 0.01f);
         }
         ImGui::SliderFloat("Deuteration", &neu_deuteration, 0.0f, 1.0f, "%.3f");
         ImGui::SetItemTooltip("D fraction of the non-exchangeable hydrogen (synthetic labelling)");
@@ -2096,8 +2096,8 @@ struct ScatteringComponent : viamd::EventHandler {
         const float colorbar_w = 70.0f;
         const float avail_h = ImGui::GetContentRegionAvail().y;
         const bool  lower_row = show_cuts || show_profile;
-        const float lower_h = lower_row ? MAX(160.0f, avail_h * 0.38f) : 0.0f;
-        const float map_h = MAX(100.0f, avail_h - lower_h - (lower_row ? style.ItemSpacing.y : 0.0f));
+        const float lower_h = lower_row ? MD_MAX(160.0f, avail_h * 0.38f) : 0.0f;
+        const float map_h = MD_MAX(100.0f, avail_h - lower_h - (lower_row ? style.ItemSpacing.y : 0.0f));
         const float map_w = ImGui::GetContentRegionAvail().x - colorbar_w - style.ItemSpacing.x;
 
         const ImVec4 col_h = ImVec4(1.0f, 0.35f, 0.35f, 1.0f);   // horizontal cut (fixed q_z)
@@ -2292,198 +2292,198 @@ struct ScatteringComponent : viamd::EventHandler {
     // ---------------------------------------------------------------------------------------------
 
     void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("Scattering"));
-        viamd::write_str(state, STR_LIT("Filter"), str_from_cstr(filter));
+        viamd::write_section_header(state, MD_STR_LIT("Scattering"));
+        viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(filter));
 #if VIAMD_SCATTERING_NEUTRON
-        viamd::write_int(state, STR_LIT("Radiation"), radiation);
-        viamd::write_int(state, STR_LIT("NeuWeightMode"), neu_weight_mode);
-        viamd::write_flt(state, STR_LIT("NeuBProtiated"), neu_b_protiated);
-        viamd::write_flt(state, STR_LIT("NeuNH"), neu_n_h);
-        viamd::write_flt(state, STR_LIT("NeuNEx"), neu_n_ex);
-        viamd::write_flt(state, STR_LIT("NeuVolume"), neu_volume);
-        viamd::write_flt(state, STR_LIT("NeuMassDensity"), neu_mass_density);
-        viamd::write_flt(state, STR_LIT("NeuDeuteration"), neu_deuteration);
-        viamd::write_bool(state, STR_LIT("NeuExchange"), neu_exchange);
-        viamd::write_bool(state, STR_LIT("NeuExchangeFollow"), neu_exchange_follow);
-        viamd::write_flt(state, STR_LIT("NeuExchangeD"), neu_exchange_d);
-        viamd::write_bool(state, STR_LIT("NeuIncoherent"), neu_incoherent);
-        viamd::write_int(state, STR_LIT("NeuBackgroundPreset"), neu_bg_preset);
-        viamd::write_dbl(state, STR_LIT("NeuBackgroundSld"), neu_bg_sld);
-        viamd::write_flt(state, STR_LIT("NeuD2O"), neu_d2o);
-        viamd::write_int(state, STR_LIT("NeuSubstratePreset"), neu_sub_preset);
-        viamd::write_dbl(state, STR_LIT("NeuSubstrateSld"), neu_sub_sld);
-        viamd::write_dbl(state, STR_LIT("NeuSubstrateAbs"), neu_sub_abs);
-        viamd::write_flt(state, STR_LIT("NeuWavelength"), neu_wavelength);
+        viamd::write_int(state, MD_STR_LIT("Radiation"), radiation);
+        viamd::write_int(state, MD_STR_LIT("NeuWeightMode"), neu_weight_mode);
+        viamd::write_flt(state, MD_STR_LIT("NeuBProtiated"), neu_b_protiated);
+        viamd::write_flt(state, MD_STR_LIT("NeuNH"), neu_n_h);
+        viamd::write_flt(state, MD_STR_LIT("NeuNEx"), neu_n_ex);
+        viamd::write_flt(state, MD_STR_LIT("NeuVolume"), neu_volume);
+        viamd::write_flt(state, MD_STR_LIT("NeuMassDensity"), neu_mass_density);
+        viamd::write_flt(state, MD_STR_LIT("NeuDeuteration"), neu_deuteration);
+        viamd::write_bool(state, MD_STR_LIT("NeuExchange"), neu_exchange);
+        viamd::write_bool(state, MD_STR_LIT("NeuExchangeFollow"), neu_exchange_follow);
+        viamd::write_flt(state, MD_STR_LIT("NeuExchangeD"), neu_exchange_d);
+        viamd::write_bool(state, MD_STR_LIT("NeuIncoherent"), neu_incoherent);
+        viamd::write_int(state, MD_STR_LIT("NeuBackgroundPreset"), neu_bg_preset);
+        viamd::write_dbl(state, MD_STR_LIT("NeuBackgroundSld"), neu_bg_sld);
+        viamd::write_flt(state, MD_STR_LIT("NeuD2O"), neu_d2o);
+        viamd::write_int(state, MD_STR_LIT("NeuSubstratePreset"), neu_sub_preset);
+        viamd::write_dbl(state, MD_STR_LIT("NeuSubstrateSld"), neu_sub_sld);
+        viamd::write_dbl(state, MD_STR_LIT("NeuSubstrateAbs"), neu_sub_abs);
+        viamd::write_flt(state, MD_STR_LIT("NeuWavelength"), neu_wavelength);
 #endif
-        viamd::write_int(state, STR_LIT("ElectronMode"), electron_mode);
-        viamd::write_flt(state, STR_LIT("Electrons"), electrons_per_particle);
-        viamd::write_flt(state, STR_LIT("ElectronsPerDalton"), electrons_per_dalton);
-        viamd::write_int(state, STR_LIT("SigmaMode"), sigma_mode);
-        viamd::write_flt(state, STR_LIT("Sigma"), sigma_constant);
-        viamd::write_flt(state, STR_LIT("MaterialDensity"), material_density);
-        viamd::write_dbl(state, STR_LIT("MaterialBeta"), material_beta);
-        viamd::write_int(state, STR_LIT("DensityModel"), density_model);
-        viamd::write_str(state, STR_LIT("FibrilCenter"), str_from_cstr(fib_center_name));
-        viamd::write_int(state, STR_LIT("FibrilStride"), fib_stride);
-        viamd::write_int(state, STR_LIT("FibrilTemplate"), fib_template);
-        viamd::write_flt(state, STR_LIT("FibrilBeadSigma"), fib_bead_sigma);
-        viamd::write_flt(state, STR_LIT("FibrilDiskRadius"), fib_disk_radius);
-        viamd::write_flt(state, STR_LIT("FibrilDiskSpacing"), fib_disk_spacing);
-        viamd::write_flt(state, STR_LIT("FibrilSampleSpacing"), fib_ds);
-        viamd::write_str(state, STR_LIT("FibrilTemplatePath"), str_from_cstr(fib_template_path));
-        viamd::write_int(state, STR_LIT("BackgroundPreset"), ambient_preset);
-        viamd::write_dbl(state, STR_LIT("BackgroundDensity"), ambient_density);
-        viamd::write_bool(state, STR_LIT("DWBA"), dwba);
-        viamd::write_int(state, STR_LIT("SubstratePreset"), sub_preset);
-        viamd::write_dbl(state, STR_LIT("SubstrateDensity"), sub_density);
-        viamd::write_dbl(state, STR_LIT("SubstrateBeta"), sub_beta);
-        viamd::write_bool(state, STR_LIT("SubstrateAutoZ"), sub_auto_z);
-        viamd::write_flt(state, STR_LIT("SubstrateZ"), sub_z);
-        viamd::write_flt(state, STR_LIT("SubstrateZOffset"), sub_z_offset);
-        viamd::write_flt(state, STR_LIT("SubstrateRoughness"), sub_roughness);
-        viamd::write_bool(state, STR_LIT("FilmGraded"), film_graded);
-        viamd::write_flt(state, STR_LIT("EnergyKeV"), energy_kev);
-        viamd::write_flt(state, STR_LIT("AlphaIDeg"), alpha_i_deg);
-        viamd::write_int(state, STR_LIT("BeamPreset"), beam_preset);
-        viamd::write_flt(state, STR_LIT("QParMax"), q_par_max_nm);
-        viamd::write_flt(state, STR_LIT("QZMax"), q_z_max_nm);
-        viamd::write_flt(state, STR_LIT("Oversampling"), oversampling);
-        viamd::write_flt(state, STR_LIT("RingRelWidth"), ring_rel_width);
-        viamd::write_int(state, STR_LIT("NumQz"), num_qz);
-        viamd::write_int(state, STR_LIT("MaxSlices"), max_slices);
-        viamd::write_flt(state, STR_LIT("ResFwhmQpar"), res_fwhm_qpar);
-        viamd::write_flt(state, STR_LIT("ResFwhmQz"), res_fwhm_qz);
-        viamd::write_bool(state, STR_LIT("ViewDetector"), view_detector);
-        viamd::write_dbl(state, STR_LIT("DetSDD"), det.sdd_mm);
-        viamd::write_dbl(state, STR_LIT("DetPixel"), det.pixel_mm);
-        viamd::write_int(state, STR_LIT("DetPxH"), det.npx_h);
-        viamd::write_int(state, STR_LIT("DetPxV"), det.npx_v);
-        viamd::write_dbl(state, STR_LIT("DetBeamX"), det.beam_x_px);
-        viamd::write_dbl(state, STR_LIT("DetBeamY"), det.beam_y_px);
-        viamd::write_int(state, STR_LIT("DetBinning"), det.binning);
-        viamd::write_bool(state, STR_LIT("DetGaps"), det.gaps);
-        viamd::write_int(state, STR_LIT("DetModuleW"), det.module_w);
-        viamd::write_int(state, STR_LIT("DetModuleH"), det.module_h);
-        viamd::write_int(state, STR_LIT("DetGapW"), det.gap_w);
-        viamd::write_int(state, STR_LIT("DetGapH"), det.gap_h);
-        viamd::write_int(state, STR_LIT("DetBsDirect"), det.bs_direct_px);
-        viamd::write_int(state, STR_LIT("DetBsSpecular"), det.bs_specular_px);
-        viamd::write_bool(state, STR_LIT("LogScale"), log_scale);
-        viamd::write_flt(state, STR_LIT("Decades"), decades);
-        viamd::write_bool(state, STR_LIT("ShowBeadSelf"), show_bead_self);
-        viamd::write_bool(state, STR_LIT("ShowCuts"), show_cuts);
-        viamd::write_int(state, STR_LIT("CutMode"), cut_mode);
-        viamd::write_bool(state, STR_LIT("VCutVsAlphaF"), vcut_vs_alpha_f);
-        viamd::write_flt(state, STR_LIT("CutAlphaF"), cut_alpha_f_deg);
-        viamd::write_dbl(state, STR_LIT("CutQz"), cut_qz);
-        viamd::write_dbl(state, STR_LIT("CutQpar"), cut_qpar);
-        viamd::write_flt(state, STR_LIT("CutWidthQz"), cut_width_qz);
-        viamd::write_flt(state, STR_LIT("CutWidthQpar"), cut_width_qpar);
+        viamd::write_int(state, MD_STR_LIT("ElectronMode"), electron_mode);
+        viamd::write_flt(state, MD_STR_LIT("Electrons"), electrons_per_particle);
+        viamd::write_flt(state, MD_STR_LIT("ElectronsPerDalton"), electrons_per_dalton);
+        viamd::write_int(state, MD_STR_LIT("SigmaMode"), sigma_mode);
+        viamd::write_flt(state, MD_STR_LIT("Sigma"), sigma_constant);
+        viamd::write_flt(state, MD_STR_LIT("MaterialDensity"), material_density);
+        viamd::write_dbl(state, MD_STR_LIT("MaterialBeta"), material_beta);
+        viamd::write_int(state, MD_STR_LIT("DensityModel"), density_model);
+        viamd::write_str(state, MD_STR_LIT("FibrilCenter"), md_str_from_cstr(fib_center_name));
+        viamd::write_int(state, MD_STR_LIT("FibrilStride"), fib_stride);
+        viamd::write_int(state, MD_STR_LIT("FibrilTemplate"), fib_template);
+        viamd::write_flt(state, MD_STR_LIT("FibrilBeadSigma"), fib_bead_sigma);
+        viamd::write_flt(state, MD_STR_LIT("FibrilDiskRadius"), fib_disk_radius);
+        viamd::write_flt(state, MD_STR_LIT("FibrilDiskSpacing"), fib_disk_spacing);
+        viamd::write_flt(state, MD_STR_LIT("FibrilSampleSpacing"), fib_ds);
+        viamd::write_str(state, MD_STR_LIT("FibrilTemplatePath"), md_str_from_cstr(fib_template_path));
+        viamd::write_int(state, MD_STR_LIT("BackgroundPreset"), ambient_preset);
+        viamd::write_dbl(state, MD_STR_LIT("BackgroundDensity"), ambient_density);
+        viamd::write_bool(state, MD_STR_LIT("DWBA"), dwba);
+        viamd::write_int(state, MD_STR_LIT("SubstratePreset"), sub_preset);
+        viamd::write_dbl(state, MD_STR_LIT("SubstrateDensity"), sub_density);
+        viamd::write_dbl(state, MD_STR_LIT("SubstrateBeta"), sub_beta);
+        viamd::write_bool(state, MD_STR_LIT("SubstrateAutoZ"), sub_auto_z);
+        viamd::write_flt(state, MD_STR_LIT("SubstrateZ"), sub_z);
+        viamd::write_flt(state, MD_STR_LIT("SubstrateZOffset"), sub_z_offset);
+        viamd::write_flt(state, MD_STR_LIT("SubstrateRoughness"), sub_roughness);
+        viamd::write_bool(state, MD_STR_LIT("FilmGraded"), film_graded);
+        viamd::write_flt(state, MD_STR_LIT("EnergyKeV"), energy_kev);
+        viamd::write_flt(state, MD_STR_LIT("AlphaIDeg"), alpha_i_deg);
+        viamd::write_int(state, MD_STR_LIT("BeamPreset"), beam_preset);
+        viamd::write_flt(state, MD_STR_LIT("QParMax"), q_par_max_nm);
+        viamd::write_flt(state, MD_STR_LIT("QZMax"), q_z_max_nm);
+        viamd::write_flt(state, MD_STR_LIT("Oversampling"), oversampling);
+        viamd::write_flt(state, MD_STR_LIT("RingRelWidth"), ring_rel_width);
+        viamd::write_int(state, MD_STR_LIT("NumQz"), num_qz);
+        viamd::write_int(state, MD_STR_LIT("MaxSlices"), max_slices);
+        viamd::write_flt(state, MD_STR_LIT("ResFwhmQpar"), res_fwhm_qpar);
+        viamd::write_flt(state, MD_STR_LIT("ResFwhmQz"), res_fwhm_qz);
+        viamd::write_bool(state, MD_STR_LIT("ViewDetector"), view_detector);
+        viamd::write_dbl(state, MD_STR_LIT("DetSDD"), det.sdd_mm);
+        viamd::write_dbl(state, MD_STR_LIT("DetPixel"), det.pixel_mm);
+        viamd::write_int(state, MD_STR_LIT("DetPxH"), det.npx_h);
+        viamd::write_int(state, MD_STR_LIT("DetPxV"), det.npx_v);
+        viamd::write_dbl(state, MD_STR_LIT("DetBeamX"), det.beam_x_px);
+        viamd::write_dbl(state, MD_STR_LIT("DetBeamY"), det.beam_y_px);
+        viamd::write_int(state, MD_STR_LIT("DetBinning"), det.binning);
+        viamd::write_bool(state, MD_STR_LIT("DetGaps"), det.gaps);
+        viamd::write_int(state, MD_STR_LIT("DetModuleW"), det.module_w);
+        viamd::write_int(state, MD_STR_LIT("DetModuleH"), det.module_h);
+        viamd::write_int(state, MD_STR_LIT("DetGapW"), det.gap_w);
+        viamd::write_int(state, MD_STR_LIT("DetGapH"), det.gap_h);
+        viamd::write_int(state, MD_STR_LIT("DetBsDirect"), det.bs_direct_px);
+        viamd::write_int(state, MD_STR_LIT("DetBsSpecular"), det.bs_specular_px);
+        viamd::write_bool(state, MD_STR_LIT("LogScale"), log_scale);
+        viamd::write_flt(state, MD_STR_LIT("Decades"), decades);
+        viamd::write_bool(state, MD_STR_LIT("ShowBeadSelf"), show_bead_self);
+        viamd::write_bool(state, MD_STR_LIT("ShowCuts"), show_cuts);
+        viamd::write_int(state, MD_STR_LIT("CutMode"), cut_mode);
+        viamd::write_bool(state, MD_STR_LIT("VCutVsAlphaF"), vcut_vs_alpha_f);
+        viamd::write_flt(state, MD_STR_LIT("CutAlphaF"), cut_alpha_f_deg);
+        viamd::write_dbl(state, MD_STR_LIT("CutQz"), cut_qz);
+        viamd::write_dbl(state, MD_STR_LIT("CutQpar"), cut_qpar);
+        viamd::write_flt(state, MD_STR_LIT("CutWidthQz"), cut_width_qz);
+        viamd::write_flt(state, MD_STR_LIT("CutWidthQpar"), cut_width_qpar);
     }
 
     void deserialize(viamd::deserialization_state_t& state) {
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if      (str_eq(ident, STR_LIT("Filter")))            viamd::extract_to_char_buf(filter, sizeof(filter), arg);
+            if      (md_str_eq(ident, MD_STR_LIT("Filter")))            viamd::extract_to_char_buf(filter, sizeof(filter), arg);
 #if VIAMD_SCATTERING_NEUTRON
-            else if (str_eq(ident, STR_LIT("Radiation")))         viamd::extract_int(radiation, arg);
-            else if (str_eq(ident, STR_LIT("NeuWeightMode")))     viamd::extract_int(neu_weight_mode, arg);
-            else if (str_eq(ident, STR_LIT("NeuBProtiated")))     viamd::extract_flt(neu_b_protiated, arg);
-            else if (str_eq(ident, STR_LIT("NeuNH")))             viamd::extract_flt(neu_n_h, arg);
-            else if (str_eq(ident, STR_LIT("NeuNEx")))            viamd::extract_flt(neu_n_ex, arg);
-            else if (str_eq(ident, STR_LIT("NeuVolume")))         viamd::extract_flt(neu_volume, arg);
-            else if (str_eq(ident, STR_LIT("NeuMassDensity")))    viamd::extract_flt(neu_mass_density, arg);
-            else if (str_eq(ident, STR_LIT("NeuDeuteration")))    viamd::extract_flt(neu_deuteration, arg);
-            else if (str_eq(ident, STR_LIT("NeuExchange")))       viamd::extract_bool(neu_exchange, arg);
-            else if (str_eq(ident, STR_LIT("NeuExchangeFollow"))) viamd::extract_bool(neu_exchange_follow, arg);
-            else if (str_eq(ident, STR_LIT("NeuExchangeD")))      viamd::extract_flt(neu_exchange_d, arg);
-            else if (str_eq(ident, STR_LIT("NeuIncoherent")))     viamd::extract_bool(neu_incoherent, arg);
-            else if (str_eq(ident, STR_LIT("NeuBackgroundPreset"))) viamd::extract_int(neu_bg_preset, arg);
-            else if (str_eq(ident, STR_LIT("NeuBackgroundSld")))  viamd::extract_dbl(neu_bg_sld, arg);
-            else if (str_eq(ident, STR_LIT("NeuD2O")))            viamd::extract_flt(neu_d2o, arg);
-            else if (str_eq(ident, STR_LIT("NeuSubstratePreset"))) viamd::extract_int(neu_sub_preset, arg);
-            else if (str_eq(ident, STR_LIT("NeuSubstrateSld")))   viamd::extract_dbl(neu_sub_sld, arg);
-            else if (str_eq(ident, STR_LIT("NeuSubstrateAbs")))   viamd::extract_dbl(neu_sub_abs, arg);
-            else if (str_eq(ident, STR_LIT("NeuWavelength")))     viamd::extract_flt(neu_wavelength, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("Radiation")))         viamd::extract_int(radiation, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuWeightMode")))     viamd::extract_int(neu_weight_mode, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuBProtiated")))     viamd::extract_flt(neu_b_protiated, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuNH")))             viamd::extract_flt(neu_n_h, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuNEx")))            viamd::extract_flt(neu_n_ex, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuVolume")))         viamd::extract_flt(neu_volume, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuMassDensity")))    viamd::extract_flt(neu_mass_density, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuDeuteration")))    viamd::extract_flt(neu_deuteration, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuExchange")))       viamd::extract_bool(neu_exchange, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuExchangeFollow"))) viamd::extract_bool(neu_exchange_follow, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuExchangeD")))      viamd::extract_flt(neu_exchange_d, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuIncoherent")))     viamd::extract_bool(neu_incoherent, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuBackgroundPreset"))) viamd::extract_int(neu_bg_preset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuBackgroundSld")))  viamd::extract_dbl(neu_bg_sld, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuD2O")))            viamd::extract_flt(neu_d2o, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuSubstratePreset"))) viamd::extract_int(neu_sub_preset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuSubstrateSld")))   viamd::extract_dbl(neu_sub_sld, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuSubstrateAbs")))   viamd::extract_dbl(neu_sub_abs, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NeuWavelength")))     viamd::extract_flt(neu_wavelength, arg);
 #endif
-            else if (str_eq(ident, STR_LIT("ElectronMode")))      viamd::extract_int(electron_mode, arg);
-            else if (str_eq(ident, STR_LIT("Electrons")))         viamd::extract_flt(electrons_per_particle, arg);
-            else if (str_eq(ident, STR_LIT("ElectronsPerDalton"))) viamd::extract_flt(electrons_per_dalton, arg);
-            else if (str_eq(ident, STR_LIT("SigmaMode")))         viamd::extract_int(sigma_mode, arg);
-            else if (str_eq(ident, STR_LIT("Sigma")))             viamd::extract_flt(sigma_constant, arg);
-            else if (str_eq(ident, STR_LIT("MaterialDensity")))   viamd::extract_flt(material_density, arg);
-            else if (str_eq(ident, STR_LIT("MaterialBeta")))      viamd::extract_dbl(material_beta, arg);
-            else if (str_eq(ident, STR_LIT("DensityModel")))      viamd::extract_int(density_model, arg);
-            else if (str_eq(ident, STR_LIT("FibrilCenter")))      viamd::extract_to_char_buf(fib_center_name, sizeof(fib_center_name), arg);
-            else if (str_eq(ident, STR_LIT("FibrilStride")))      viamd::extract_int(fib_stride, arg);
-            else if (str_eq(ident, STR_LIT("FibrilTemplate")))    viamd::extract_int(fib_template, arg);
-            else if (str_eq(ident, STR_LIT("FibrilBeadSigma")))   viamd::extract_flt(fib_bead_sigma, arg);
-            else if (str_eq(ident, STR_LIT("FibrilDiskRadius")))  viamd::extract_flt(fib_disk_radius, arg);
-            else if (str_eq(ident, STR_LIT("FibrilDiskSpacing"))) viamd::extract_flt(fib_disk_spacing, arg);
-            else if (str_eq(ident, STR_LIT("FibrilSampleSpacing"))) viamd::extract_flt(fib_ds, arg);
-            else if (str_eq(ident, STR_LIT("FibrilTemplatePath"))) viamd::extract_to_char_buf(fib_template_path, sizeof(fib_template_path), arg);
-            else if (str_eq(ident, STR_LIT("BackgroundPreset")))  viamd::extract_int(ambient_preset, arg);
-            else if (str_eq(ident, STR_LIT("BackgroundDensity"))) viamd::extract_dbl(ambient_density, arg);
-            else if (str_eq(ident, STR_LIT("DWBA")))              viamd::extract_bool(dwba, arg);
-            else if (str_eq(ident, STR_LIT("SubstratePreset")))   viamd::extract_int(sub_preset, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateDensity")))  viamd::extract_dbl(sub_density, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateBeta")))     viamd::extract_dbl(sub_beta, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateAutoZ")))    viamd::extract_bool(sub_auto_z, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateZ")))        viamd::extract_flt(sub_z, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateZOffset")))  viamd::extract_flt(sub_z_offset, arg);
-            else if (str_eq(ident, STR_LIT("SubstrateRoughness"))) viamd::extract_flt(sub_roughness, arg);
-            else if (str_eq(ident, STR_LIT("FilmGraded")))        viamd::extract_bool(film_graded, arg);
-            else if (str_eq(ident, STR_LIT("EnergyKeV")))         viamd::extract_flt(energy_kev, arg);
-            else if (str_eq(ident, STR_LIT("AlphaIDeg")))         viamd::extract_flt(alpha_i_deg, arg);
-            else if (str_eq(ident, STR_LIT("BeamPreset")))        viamd::extract_int(beam_preset, arg);
-            else if (str_eq(ident, STR_LIT("QParMax")))           viamd::extract_flt(q_par_max_nm, arg);
-            else if (str_eq(ident, STR_LIT("QZMax")))             viamd::extract_flt(q_z_max_nm, arg);
-            else if (str_eq(ident, STR_LIT("Oversampling")))      viamd::extract_flt(oversampling, arg);
-            else if (str_eq(ident, STR_LIT("RingRelWidth")))      viamd::extract_flt(ring_rel_width, arg);
-            else if (str_eq(ident, STR_LIT("NumQz")))             viamd::extract_int(num_qz, arg);
-            else if (str_eq(ident, STR_LIT("MaxSlices")))         viamd::extract_int(max_slices, arg);
-            else if (str_eq(ident, STR_LIT("ResFwhmQpar")))       viamd::extract_flt(res_fwhm_qpar, arg);
-            else if (str_eq(ident, STR_LIT("ResFwhmQz")))         viamd::extract_flt(res_fwhm_qz, arg);
-            else if (str_eq(ident, STR_LIT("ViewDetector")))      viamd::extract_bool(view_detector, arg);
-            else if (str_eq(ident, STR_LIT("DetSDD")))            viamd::extract_dbl(det.sdd_mm, arg);
-            else if (str_eq(ident, STR_LIT("DetPixel")))          viamd::extract_dbl(det.pixel_mm, arg);
-            else if (str_eq(ident, STR_LIT("DetPxH")))            viamd::extract_int(det.npx_h, arg);
-            else if (str_eq(ident, STR_LIT("DetPxV")))            viamd::extract_int(det.npx_v, arg);
-            else if (str_eq(ident, STR_LIT("DetBeamX")))          viamd::extract_dbl(det.beam_x_px, arg);
-            else if (str_eq(ident, STR_LIT("DetBeamY")))          viamd::extract_dbl(det.beam_y_px, arg);
-            else if (str_eq(ident, STR_LIT("DetBinning")))        viamd::extract_int(det.binning, arg);
-            else if (str_eq(ident, STR_LIT("DetGaps")))           viamd::extract_bool(det.gaps, arg);
-            else if (str_eq(ident, STR_LIT("DetModuleW")))        viamd::extract_int(det.module_w, arg);
-            else if (str_eq(ident, STR_LIT("DetModuleH")))        viamd::extract_int(det.module_h, arg);
-            else if (str_eq(ident, STR_LIT("DetGapW")))           viamd::extract_int(det.gap_w, arg);
-            else if (str_eq(ident, STR_LIT("DetGapH")))           viamd::extract_int(det.gap_h, arg);
-            else if (str_eq(ident, STR_LIT("DetBsDirect")))       viamd::extract_int(det.bs_direct_px, arg);
-            else if (str_eq(ident, STR_LIT("DetBsSpecular")))     viamd::extract_int(det.bs_specular_px, arg);
-            else if (str_eq(ident, STR_LIT("LogScale")))          viamd::extract_bool(log_scale, arg);
-            else if (str_eq(ident, STR_LIT("Decades")))           viamd::extract_flt(decades, arg);
-            else if (str_eq(ident, STR_LIT("ShowBeadSelf")))      viamd::extract_bool(show_bead_self, arg);
-            else if (str_eq(ident, STR_LIT("ShowCuts")))          viamd::extract_bool(show_cuts, arg);
-            else if (str_eq(ident, STR_LIT("CutMode")))           viamd::extract_int(cut_mode, arg);
-            else if (str_eq(ident, STR_LIT("VCutVsAlphaF")))      viamd::extract_bool(vcut_vs_alpha_f, arg);
-            else if (str_eq(ident, STR_LIT("CutAlphaF")))         viamd::extract_flt(cut_alpha_f_deg, arg);
-            else if (str_eq(ident, STR_LIT("CutQz")))             { viamd::extract_dbl(cut_qz, arg); cut_init = true; }
-            else if (str_eq(ident, STR_LIT("CutQpar")))           { viamd::extract_dbl(cut_qpar, arg); cut_init = true; }
-            else if (str_eq(ident, STR_LIT("CutWidthQz")))        viamd::extract_flt(cut_width_qz, arg);
-            else if (str_eq(ident, STR_LIT("CutWidthQpar")))      viamd::extract_flt(cut_width_qpar, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ElectronMode")))      viamd::extract_int(electron_mode, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("Electrons")))         viamd::extract_flt(electrons_per_particle, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ElectronsPerDalton"))) viamd::extract_flt(electrons_per_dalton, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SigmaMode")))         viamd::extract_int(sigma_mode, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("Sigma")))             viamd::extract_flt(sigma_constant, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("MaterialDensity")))   viamd::extract_flt(material_density, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("MaterialBeta")))      viamd::extract_dbl(material_beta, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DensityModel")))      viamd::extract_int(density_model, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilCenter")))      viamd::extract_to_char_buf(fib_center_name, sizeof(fib_center_name), arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilStride")))      viamd::extract_int(fib_stride, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilTemplate")))    viamd::extract_int(fib_template, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilBeadSigma")))   viamd::extract_flt(fib_bead_sigma, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilDiskRadius")))  viamd::extract_flt(fib_disk_radius, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilDiskSpacing"))) viamd::extract_flt(fib_disk_spacing, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilSampleSpacing"))) viamd::extract_flt(fib_ds, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FibrilTemplatePath"))) viamd::extract_to_char_buf(fib_template_path, sizeof(fib_template_path), arg);
+            else if (md_str_eq(ident, MD_STR_LIT("BackgroundPreset")))  viamd::extract_int(ambient_preset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("BackgroundDensity"))) viamd::extract_dbl(ambient_density, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DWBA")))              viamd::extract_bool(dwba, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstratePreset")))   viamd::extract_int(sub_preset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateDensity")))  viamd::extract_dbl(sub_density, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateBeta")))     viamd::extract_dbl(sub_beta, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateAutoZ")))    viamd::extract_bool(sub_auto_z, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateZ")))        viamd::extract_flt(sub_z, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateZOffset")))  viamd::extract_flt(sub_z_offset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("SubstrateRoughness"))) viamd::extract_flt(sub_roughness, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("FilmGraded")))        viamd::extract_bool(film_graded, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("EnergyKeV")))         viamd::extract_flt(energy_kev, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("AlphaIDeg")))         viamd::extract_flt(alpha_i_deg, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("BeamPreset")))        viamd::extract_int(beam_preset, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("QParMax")))           viamd::extract_flt(q_par_max_nm, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("QZMax")))             viamd::extract_flt(q_z_max_nm, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("Oversampling")))      viamd::extract_flt(oversampling, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("RingRelWidth")))      viamd::extract_flt(ring_rel_width, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("NumQz")))             viamd::extract_int(num_qz, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("MaxSlices")))         viamd::extract_int(max_slices, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ResFwhmQpar")))       viamd::extract_flt(res_fwhm_qpar, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ResFwhmQz")))         viamd::extract_flt(res_fwhm_qz, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ViewDetector")))      viamd::extract_bool(view_detector, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetSDD")))            viamd::extract_dbl(det.sdd_mm, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetPixel")))          viamd::extract_dbl(det.pixel_mm, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetPxH")))            viamd::extract_int(det.npx_h, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetPxV")))            viamd::extract_int(det.npx_v, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetBeamX")))          viamd::extract_dbl(det.beam_x_px, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetBeamY")))          viamd::extract_dbl(det.beam_y_px, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetBinning")))        viamd::extract_int(det.binning, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetGaps")))           viamd::extract_bool(det.gaps, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetModuleW")))        viamd::extract_int(det.module_w, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetModuleH")))        viamd::extract_int(det.module_h, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetGapW")))           viamd::extract_int(det.gap_w, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetGapH")))           viamd::extract_int(det.gap_h, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetBsDirect")))       viamd::extract_int(det.bs_direct_px, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("DetBsSpecular")))     viamd::extract_int(det.bs_specular_px, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("LogScale")))          viamd::extract_bool(log_scale, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("Decades")))           viamd::extract_flt(decades, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ShowBeadSelf")))      viamd::extract_bool(show_bead_self, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("ShowCuts")))          viamd::extract_bool(show_cuts, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("CutMode")))           viamd::extract_int(cut_mode, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("VCutVsAlphaF")))      viamd::extract_bool(vcut_vs_alpha_f, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("CutAlphaF")))         viamd::extract_flt(cut_alpha_f_deg, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("CutQz")))             { viamd::extract_dbl(cut_qz, arg); cut_init = true; }
+            else if (md_str_eq(ident, MD_STR_LIT("CutQpar")))           { viamd::extract_dbl(cut_qpar, arg); cut_init = true; }
+            else if (md_str_eq(ident, MD_STR_LIT("CutWidthQz")))        viamd::extract_flt(cut_width_qz, arg);
+            else if (md_str_eq(ident, MD_STR_LIT("CutWidthQpar")))      viamd::extract_flt(cut_width_qpar, arg);
         }
-        electron_mode = CLAMP(electron_mode, 0, (int)ARRAY_SIZE(electron_mode_lbl) - 1);
-        sigma_mode = CLAMP(sigma_mode, 0, (int)ARRAY_SIZE(sigma_mode_lbl) - 1);
-        density_model = CLAMP(density_model, 0, (int)ARRAY_SIZE(density_model_lbl) - 1);
-        fib_template = CLAMP(fib_template, 0, (int)ARRAY_SIZE(fibril_template_lbl) - 1);
-        ambient_preset = CLAMP(ambient_preset, 0, (int)ARRAY_SIZE(ambient_presets) - 1);
-        sub_preset = CLAMP(sub_preset, 0, (int)ARRAY_SIZE(substrate_presets) - 1);
-        cut_mode = CLAMP(cut_mode, 0, (int)ARRAY_SIZE(cut_mode_lbl) - 1);
-        beam_preset = CLAMP(beam_preset, -1, (int)ARRAY_SIZE(beam_presets) - 1);
+        electron_mode = MD_CLAMP(electron_mode, 0, (int)MD_COUNTOF(electron_mode_lbl) - 1);
+        sigma_mode = MD_CLAMP(sigma_mode, 0, (int)MD_COUNTOF(sigma_mode_lbl) - 1);
+        density_model = MD_CLAMP(density_model, 0, (int)MD_COUNTOF(density_model_lbl) - 1);
+        fib_template = MD_CLAMP(fib_template, 0, (int)MD_COUNTOF(fibril_template_lbl) - 1);
+        ambient_preset = MD_CLAMP(ambient_preset, 0, (int)MD_COUNTOF(ambient_presets) - 1);
+        sub_preset = MD_CLAMP(sub_preset, 0, (int)MD_COUNTOF(substrate_presets) - 1);
+        cut_mode = MD_CLAMP(cut_mode, 0, (int)MD_COUNTOF(cut_mode_lbl) - 1);
+        beam_preset = MD_CLAMP(beam_preset, -1, (int)MD_COUNTOF(beam_presets) - 1);
 #if VIAMD_SCATTERING_NEUTRON
-        radiation = CLAMP(radiation, 0, (int)ARRAY_SIZE(radiation_lbl) - 1);
-        neu_weight_mode = CLAMP(neu_weight_mode, 0, (int)ARRAY_SIZE(neutron_weight_lbl) - 1);
-        neu_bg_preset = CLAMP(neu_bg_preset, 0, (int)ARRAY_SIZE(neutron_background_presets) - 1);
-        neu_sub_preset = CLAMP(neu_sub_preset, 0, (int)ARRAY_SIZE(neutron_substrate_presets) - 1);
+        radiation = MD_CLAMP(radiation, 0, (int)MD_COUNTOF(radiation_lbl) - 1);
+        neu_weight_mode = MD_CLAMP(neu_weight_mode, 0, (int)MD_COUNTOF(neutron_weight_lbl) - 1);
+        neu_bg_preset = MD_CLAMP(neu_bg_preset, 0, (int)MD_COUNTOF(neutron_background_presets) - 1);
+        neu_sub_preset = MD_CLAMP(neu_sub_preset, 0, (int)MD_COUNTOF(neutron_substrate_presets) - 1);
 #endif
         res_dirty = true;
     }

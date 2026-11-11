@@ -678,7 +678,7 @@ struct VoidAnalysis : viamd::EventHandler {
         md_array_free(height_disp, arena);
         height_top = 0; height_bot = 0; height_thk = 0; height_disp = 0;
         height_nx = height_ny = 0;
-        MEMSET(height_stats, 0, sizeof(height_stats));
+        md_memset(height_stats, 0, sizeof(height_stats));
         has_height = false;
         height_pending = false;
         height_disp_dirty = true;
@@ -707,7 +707,7 @@ struct VoidAnalysis : viamd::EventHandler {
             md_atom_extract_radii(out_radii, 0, count, &sys.atom);
             for (size_t i = 0; i < count; ++i) {
                 float rad = out_radii[i] + extra;
-                max = MAX(max, rad);
+                max = MD_MAX(max, rad);
                 out_radii[i] = rad;
             }
         } else {
@@ -733,7 +733,7 @@ struct VoidAnalysis : viamd::EventHandler {
         md_allocator_i* heap = md_get_heap_allocator();
         md_array_resize(in->xyz,   state.num_atoms, heap);
         md_array_resize(in->radii, state.num_atoms, heap);
-        MEMCPY(in->xyz, state.xyz, state.num_atoms * sizeof(vec3_t));
+        md_memcpy(in->xyz, state.xyz, state.num_atoms * sizeof(vec3_t));
         // Bead radii. Every reported quantity is a function of them, so the radius source is a
         // choice worth stating next to any number quoted from here.
         fill_radii(in->radii, sys, state.num_atoms, 0.0);
@@ -778,8 +778,8 @@ struct VoidAnalysis : viamd::EventHandler {
         }
 
         const size_t num_voxels = md_grid_num_points(&g);
-        if (materialize && num_voxels * sizeof(float) > GIGABYTES(4)) {
-            snprintf(error, sizeof(error), "Materialized field would need %.1f GB, refusing", (double)(num_voxels * sizeof(float)) / (double)GIGABYTES(1));
+        if (materialize && num_voxels * sizeof(float) > MD_GIGABYTES(8)) {
+            snprintf(error, sizeof(error), "Materialized field would need %.1f GB, refusing", (double)(num_voxels * sizeof(float)) / (double)MD_GIGABYTES(1));
             return;
         }
 
@@ -803,7 +803,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         // One accumulator for every thread the pool reports an index for (task_system::thread_index), the main
         // thread's included
-        p->num_threads = MAX((size_t)1, (size_t)task_system::num_threads());
+        p->num_threads = MD_MAX((size_t)1, (size_t)task_system::num_threads());
 
         const uint32_t num_tiles = void_field_num_tiles(&g);
         p->work_total = num_tiles;
@@ -812,13 +812,13 @@ struct VoidAnalysis : viamd::EventHandler {
         // time within a range so that a cancel lands within a tile rather than a range; the reduction of the per
         // thread accumulators. The install is its follow-up on the main thread.
         field_pass = p;
-        p->job.start(STR_LIT("Void distance field"), [p, num_voxels, num_tiles]() {
+        p->job.start(MD_STR_LIT("Void distance field"), [p, num_voxels, num_tiles]() {
             setup_field_pass(p, num_voxels);
 
             // Per thread accumulators: nothing is shared while the tiles run
             if (!p->cancelled()) {
                 task_system::parallel_for(num_tiles, 1, [p](uint32_t beg, uint32_t end) {
-                    const size_t ti = MIN(p->num_threads - 1, (size_t)task_system::thread_index());
+                    const size_t ti = MD_MIN(p->num_threads - 1, (size_t)task_system::thread_index());
                     for (uint32_t t = beg; t < end && !p->cancelled(); ++t) {
                         void_field_eval_tiles(&p->accum[ti], &p->desc, t, t + 1);
                         p->work_done.fetch_add(1, std::memory_order_relaxed);
@@ -1018,11 +1018,11 @@ struct VoidAnalysis : viamd::EventHandler {
             region_beg = film_beg;
             region_end = film_end;
         } else if (region == Region_Manual) {
-            const double lo = MIN(manual_z_lo, manual_z_hi);
-            const double hi = MAX(manual_z_lo, manual_z_hi);
+            const double lo = MD_MIN(manual_z_lo, manual_z_hi);
+            const double hi = MD_MAX(manual_z_lo, manual_z_hi);
             region_beg = void_profile_slab_at(&p, lo);
-            region_end = MIN(void_profile_slab_at(&p, hi) + 1, stats.num_slabs);
-            if (region_end <= region_beg) region_end = MIN(region_beg + 1, stats.num_slabs);
+            region_end = MD_MIN(void_profile_slab_at(&p, hi) + 1, stats.num_slabs);
+            if (region_end <= region_beg) region_end = MD_MIN(region_beg + 1, stats.num_slabs);
         }
 
         curves_dirty = true;
@@ -1059,7 +1059,7 @@ struct VoidAnalysis : viamd::EventHandler {
             const uint64_t* h = stats.hist + (size_t)sl * NUM_BINS;
             for (int b = 0; b < NUM_BINS; ++b) region_hist[b] += h[b];
         }
-        const double n_tot = (double)MAX((uint64_t)1, void_profile_num_total(&p, region_beg, region_end));
+        const double n_tot = (double)MD_MAX((uint64_t)1, void_profile_num_total(&p, region_beg, region_end));
 
         md_array_resize(hist_x, NUM_BINS, arena);
         md_array_resize(hist_y, NUM_BINS, arena);
@@ -1072,8 +1072,8 @@ struct VoidAnalysis : viamd::EventHandler {
         // piecewise linear with its knots at the bin edges and is exact when evaluated there - there
         // is no sampling resolution to choose. From R = 0, where it is the porosity, to the first
         // edge past the largest clearance, where it reaches zero.
-        const double   d_hi      = MAX(stats.d_max, 0.0);
-        const uint32_t num_edges = (stats.bin_width > 0.0) ? (uint32_t)MIN((double)NUM_BINS, floor(d_hi / stats.bin_width) + 1.0) : 1;
+        const double   d_hi      = MD_MAX(stats.d_max, 0.0);
+        const uint32_t num_edges = (stats.bin_width > 0.0) ? (uint32_t)MD_MIN((double)NUM_BINS, floor(d_hi / stats.bin_width) + 1.0) : 1;
         const uint32_t num_knots = num_edges + 1;
         md_array_resize(acc_r,    num_knots, arena);
         md_array_resize(acc_frac, num_knots, arena);
@@ -1150,7 +1150,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const uint32_t num_patches = p->work_total;
 
         height_pass = p;
-        p->job.start(STR_LIT("Void surface topography"), [p, n, num_patches]() {
+        p->job.start(MD_STR_LIT("Void surface topography"), [p, n, num_patches]() {
             if (!p->cancelled()) {
                 md_allocator_i* heap = md_get_heap_allocator();
                 p->in.build();
@@ -1206,7 +1206,7 @@ struct VoidAnalysis : viamd::EventHandler {
         height_top = p->top; p->top = 0;
         height_bot = p->bot; p->bot = 0;
         height_thk = p->thk; p->thk = 0;
-        MEMCPY(height_stats, p->st, sizeof(height_stats));
+        md_memcpy(height_stats, p->st, sizeof(height_stats));
         height_nx         = 0;
         height_ny         = 0;
         height_probe      = p->probe;
@@ -1276,8 +1276,8 @@ struct VoidAnalysis : viamd::EventHandler {
             for (uint32_t i = 0; i < height_nx; ++i) {
                 double sum = 0.0;
                 uint32_t cnt = 0;
-                for (uint32_t y = j * sy; y < MIN(dy, (j + 1) * sy); ++y) {
-                    for (uint32_t x = i * sx; x < MIN(dx, (i + 1) * sx); ++x) {
+                for (uint32_t y = j * sy; y < MD_MIN(dy, (j + 1) * sy); ++y) {
+                    for (uint32_t x = i * sx; x < MD_MIN(dx, (i + 1) * sx); ++x) {
                         const float v = src[(size_t)y * dx + x];
                         if (isfinite(v)) { sum += (double)v; cnt += 1; }
                     }
@@ -1298,8 +1298,8 @@ struct VoidAnalysis : viamd::EventHandler {
         if (!field || !has_result) return;
 
         const int* d = grid.dim;
-        const int maxd = MAX(d[0], MAX(d[1], d[2]));
-        const int s = MAX(1, (maxd + VOL_MAX_DIM - 1) / VOL_MAX_DIM);
+        const int maxd = MD_MAX(d[0], MD_MAX(d[1], d[2]));
+        const int s = MD_MAX(1, (maxd + VOL_MAX_DIM - 1) / VOL_MAX_DIM);
         const int dd[3] = { (d[0] + s - 1) / s, (d[1] + s - 1) / s, (d[2] + s - 1) / s };
 
         if (!gl::init_texture_3D(&vol_tex, dd[0], dd[1], dd[2], GL_R16F)) {
@@ -1313,7 +1313,7 @@ struct VoidAnalysis : viamd::EventHandler {
             const size_t count = (size_t)dd[0] * dd[1] * dd[2];
             const size_t bytes = count * sizeof(float);
             float* buf = (float*)md_alloc(md_get_heap_allocator(), bytes);
-            defer { md_free(md_get_heap_allocator(), buf, bytes); };
+            MD_DEFER { md_free(md_get_heap_allocator(), buf, bytes); };
 
             const float* src = field;
             task_system::parallel_for((uint32_t)dd[2], 1,
@@ -1323,10 +1323,10 @@ struct VoidAnalysis : viamd::EventHandler {
                             for (int i = 0; i < dd[0]; ++i) {
                                 double sum = 0.0;
                                 int cnt = 0;
-                                for (int z = (int)k * s; z < MIN(d[2], ((int)k + 1) * s); ++z) {
-                                    for (int y = j * s; y < MIN(d[1], (j + 1) * s); ++y) {
+                                for (int z = (int)k * s; z < MD_MIN(d[2], ((int)k + 1) * s); ++z) {
+                                    for (int y = j * s; y < MD_MIN(d[1], (j + 1) * s); ++y) {
                                         const float* row = src + ((size_t)z * d[1] + y) * d[0];
-                                        for (int x = i * s; x < MIN(d[0], (i + 1) * s); ++x) {
+                                        for (int x = i * s; x < MD_MIN(d[0], (i + 1) * s); ++x) {
                                             sum += (double)row[x];
                                             cnt += 1;
                                         }
@@ -1342,7 +1342,7 @@ struct VoidAnalysis : viamd::EventHandler {
         }
 
         vol_stride = s;
-        MEMCPY(vol_dim, dd, sizeof(dd));
+        md_memcpy(vol_dim, dd, sizeof(dd));
         vol_spacing = vec3_t{ grid.spacing.x * (float)s, grid.spacing.y * (float)s, grid.spacing.z * (float)s };
         const vec3_t min_aabb = grid.origin;
         const vec3_t max_aabb = {
@@ -1358,7 +1358,7 @@ struct VoidAnalysis : viamd::EventHandler {
     // Clearance range the colours span. The lower end is always zero, so a colour means the same
     // clearance whatever the probe is; the probe only decides where the transparency ends.
     double vol_tf_max() const {
-        return MAX((double)vol_upper, 1.0e-3);
+        return MD_MAX((double)vol_upper, 1.0e-3);
     }
 
     // Transparent below the probe radius - those are places a probe centre of that size cannot be -
@@ -1379,7 +1379,7 @@ struct VoidAnalysis : viamd::EventHandler {
                 const double u = (tf_max > R) ? (d - R) / (tf_max - R) : 1.0;
                 a = vol_opacity * (float)(0.25 + 0.75 * u);
             }
-            c.w = CLAMP(a, 0.0f, 1.0f);
+            c.w = MD_CLAMP(a, 0.0f, 1.0f);
             px[i] = ImGui::ColorConvertFloat4ToU32(c);
         }
         gl::init_texture_2D(&vol_tf_tex, VOL_TF_RES, 1, GL_RGBA8);
@@ -1399,8 +1399,8 @@ struct VoidAnalysis : viamd::EventHandler {
         vec3_t clip_max = {1, 1, 1};
         if (vol_clip_region && region_end > region_beg && (region_beg > 0 || region_end < stats.num_slabs) && vol_z1 > vol_z0) {
             const void_profile_t p = make_profile();
-            clip_min.z = CLAMP((float)((void_profile_z_lo(&p, region_beg)     - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
-            clip_max.z = CLAMP((float)((void_profile_z_hi(&p, region_end - 1) - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
+            clip_min.z = MD_CLAMP((float)((void_profile_z_lo(&p, region_beg)     - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
+            clip_max.z = MD_CLAMP((float)((void_profile_z_hi(&p, region_end - 1) - vol_z0) / (vol_z1 - vol_z0)), 0.0f, 1.0f);
         }
 
         volume::DvrRenderDesc desc = {};
@@ -1444,22 +1444,22 @@ struct VoidAnalysis : viamd::EventHandler {
     double coarea_area(double r) const {
         if (!has_result) return 0.0;
         const void_profile_t p = make_profile();
-        const double voxel_min = (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        const double voxel_min = (double)MD_MIN(grid.spacing.x, MD_MIN(grid.spacing.y, grid.spacing.z));
         return void_profile_density(&p, 0, stats.num_slabs, r, voxel_min) * stats.voxel_volume;
     }
 
     // The z profile, one row per slab, at the current probe radius.
     void export_profile_csv() const {
         char path_buf[2048];
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
-        str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("csv"))) return;
+        md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             MD_LOG_ERROR("Void analysis: could not open '%.*s' for writing", (int)path.len, path.ptr);
             return;
         }
-        defer { md_file_close(&file); };
+        MD_DEFER { md_file_close(&file); };
 
         const void_profile_t p = make_profile();
         const double nm  = (double)ANGSTROM_PER_NM;
@@ -1490,15 +1490,15 @@ struct VoidAnalysis : viamd::EventHandler {
     // linear interpolation between rows reproduces it exactly.
     void export_accessible_csv() const {
         char path_buf[2048];
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
-        str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("csv"))) return;
+        md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             MD_LOG_ERROR("Void analysis: could not open '%.*s' for writing", (int)path.len, path.ptr);
             return;
         }
-        defer { md_file_close(&file); };
+        MD_DEFER { md_file_close(&file); };
 
         const void_profile_t p = make_profile();
         const double nm  = (double)ANGSTROM_PER_NM;
@@ -1535,15 +1535,15 @@ struct VoidAnalysis : viamd::EventHandler {
         if (!has_net || ns == 0) return;
 
         char path_buf[2048];
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) return;
-        str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("csv"))) return;
+        md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
             MD_LOG_ERROR("Void analysis: could not open '%.*s' for writing", (int)path.len, path.ptr);
             return;
         }
-        defer { md_file_close(&file); };
+        MD_DEFER { md_file_close(&file); };
 
         const double nm = (double)ANGSTROM_PER_NM;
         md_file_printf(file, "# VIAMD void analysis, pore network classes against probe radius\n");
@@ -1590,7 +1590,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const md_tick_t t0 = md_tick_now();
 
         md_temp_scope_t temp_scope = md_temp_begin();
-        defer { md_temp_end(temp_scope); };
+        MD_DEFER { md_temp_end(temp_scope); };
 
         float* radii = (float*)md_temp_alloc(temp_scope, state.num_atoms * sizeof(float));
         double max_rad = fill_radii(radii, sys, state.num_atoms, (double)probe_radius);
@@ -1604,18 +1604,18 @@ struct VoidAnalysis : viamd::EventHandler {
         desc.cutoff   = ACC_CUTOFF;
         desc.unitcell = &state.unitcell;
         md_spatial_acc_init(&acc, &desc);
-        defer { md_spatial_acc_free(&acc); };
+        MD_DEFER { md_spatial_acc_free(&acc); };
         const void_beads_t beads = void_beads(&acc, radii, state.num_atoms);
 
         // Unit sphere directions, generated once and shared read only. A Fibonacci spiral spreads the points evenly
         // enough that the quadrature error is the 1/sqrt(N) term rather than a pattern in the lattice.
-        const int NP = CLAMP(sasa_points, 8, SASA_MAX_POINTS);
+        const int NP = MD_CLAMP(sasa_points, 8, SASA_MAX_POINTS);
         float* dir = (float*)md_temp_alloc(temp_scope, (size_t)NP * 3 * sizeof(float));
         {
             const double golden = PI_D * (3.0 - sqrt(5.0));
             for (int k = 0; k < NP; ++k) {
                 const double cz  = 1.0 - 2.0 * ((double)k + 0.5) / (double)NP;
-                const double rho = sqrt(MAX(0.0, 1.0 - cz * cz));
+                const double rho = sqrt(MD_MAX(0.0, 1.0 - cz * cz));
                 const double th  = golden * (double)k;
                 dir[k * 3 + 0] = (float)(rho * cos(th));
                 dir[k * 3 + 1] = (float)(rho * sin(th));
@@ -1625,19 +1625,19 @@ struct VoidAnalysis : viamd::EventHandler {
 
         // Every bead is equally likely to be sampled regardless of where it sits, so a stride is unbiased for the
         // total; correlation along a fibril costs variance, not accuracy, and the reported error bar sees it.
-        const size_t stride      = MAX((size_t)1, (size_t)llround(1.0 / (double)CLAMP(sasa_fraction, 0.001f, 1.0f)));
+        const size_t stride      = MD_MAX((size_t)1, (size_t)llround(1.0 / (double)MD_CLAMP(sasa_fraction, 0.001f, 1.0f)));
         const size_t num_sampled = (state.num_atoms + stride - 1) / stride;
-        const size_t num_types   = MAX((size_t)1, sys.atom.type.count);
+        const size_t num_types   = MD_MAX((size_t)1, sys.atom.type.count);
 
-        const size_t num_threads = MAX((size_t)1, (size_t)task_system::num_threads());
+        const size_t num_threads = MD_MAX((size_t)1, (size_t)task_system::num_threads());
         double* acc_area  = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
         double* acc_area2 = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
         double* acc_mass  = (double*)md_temp_alloc(temp_scope, num_threads * sizeof(double));
         double* acc_type  = (double*)md_temp_alloc(temp_scope, num_threads * num_types * sizeof(double));
-        MEMSET(acc_area,  0, num_threads * sizeof(double));
-        MEMSET(acc_area2, 0, num_threads * sizeof(double));
-        MEMSET(acc_mass,  0, num_threads * sizeof(double));
-        MEMSET(acc_type,  0, num_threads * num_types * sizeof(double));
+        md_memset(acc_area,  0, num_threads * sizeof(double));
+        md_memset(acc_area2, 0, num_threads * sizeof(double));
+        md_memset(acc_mass,  0, num_threads * sizeof(double));
+        md_memset(acc_type,  0, num_threads * num_types * sizeof(double));
 
         // A sample point sits on its own bead, so the search never has to travel: anything which could bury it is
         // within two radii. Bounding the query here keeps the traversal to the immediate neighborhood.
@@ -1645,7 +1645,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         task_system::parallel_for((uint32_t)num_sampled, 64,
             [&](uint32_t range_beg, uint32_t range_end) {
-                const size_t ti = MIN(num_threads - 1, (size_t)task_system::thread_index());
+                const size_t ti = MD_MIN(num_threads - 1, (size_t)task_system::thread_index());
                 double* my_type = acc_type + ti * num_types;
 
                 float px[SASA_MAX_POINTS], py[SASA_MAX_POINTS], pz[SASA_MAX_POINTS];
@@ -1680,7 +1680,7 @@ struct VoidAnalysis : viamd::EventHandler {
             });
 
         md_array_resize(sasa.type_area, num_types, arena);
-        MEMSET(sasa.type_area, 0, num_types * sizeof(double));
+        md_memset(sasa.type_area, 0, num_types * sizeof(double));
 
         double sum_area = 0.0, sum_area2 = 0.0, sum_mass = 0.0;
         for (size_t t = 0; t < num_threads; ++t) {
@@ -1701,7 +1701,7 @@ struct VoidAnalysis : viamd::EventHandler {
         // count, not a sampling error.
         if (num_sampled > 1 && stride > 1) {
             const double mean = sum_area / (double)num_sampled;
-            const double var  = MAX(0.0, sum_area2 / (double)num_sampled - mean * mean);
+            const double var  = MD_MAX(0.0, sum_area2 / (double)num_sampled - mean * mean);
             sasa.std_err = sqrt(var / (double)num_sampled) * (double)state.num_atoms;
         }
 
@@ -1725,7 +1725,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
     bool build_channel_field(channel_field_t* out) const {
         if (!field || !has_result) return false;
-        MEMSET(out, 0, sizeof(*out));
+        md_memset(out, 0, sizeof(*out));
         out->data = field;
         const uint32_t flags = md_unitcell_flags(&app_state->mold.state.unitcell);
         for (int a = 0; a < 3; ++a) {
@@ -1768,7 +1768,7 @@ struct VoidAnalysis : viamd::EventHandler {
         net_num_region = 0;
         net_drawn_throats = 0;
         net_class_r = -1.0f;
-        MEMSET(net_class_count, 0, sizeof(net_class_count));
+        md_memset(net_class_count, 0, sizeof(net_class_count));
         net_route_bottleneck = 0.0;
         net_route_length = 0.0;
         net_hovered = PORE_INVALID;
@@ -1796,12 +1796,12 @@ struct VoidAnalysis : viamd::EventHandler {
         p->keep       = field_owner;
         p->f          = f;
         p->r_min      = (double)net_r_min;
-        p->merge      = (double)net_merge * (double)MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        p->merge      = (double)net_merge * (double)MD_MIN(grid.spacing.x, MD_MIN(grid.spacing.y, grid.spacing.z));
         p->result_gen = result_gen;
         p->work_total = 1000;
 
         net_pass = p;
-        p->job.start(STR_LIT("Void pore network"), [p]() {
+        p->job.start(MD_STR_LIT("Void pore network"), [p]() {
             md_allocator_i* heap = md_get_heap_allocator();
             p->phase = Phase_Work;
             if (!p->cancelled() && !pore_network_build(&p->net, &p->f, p->r_min, p->merge, heap, network_progress, p)) {
@@ -1838,7 +1838,7 @@ struct VoidAnalysis : viamd::EventHandler {
             if (!p->cancelled() && md_array_size(p->net.vertices) > 0) {
                 const size_t ns = PORE_SWEEP_SAMPLES;
                 const double r0 = p->net.r_min;
-                const double r1 = MAX(r0, (double)(PROBE_RADIUS_MAX_NM * ANGSTROM_PER_NM));
+                const double r1 = MD_MAX(r0, (double)(PROBE_RADIUS_MAX_NM * ANGSTROM_PER_NM));
                 md_array_resize(p->sweep_r, ns, heap);
                 md_array_resize(p->sweep_counts, ns * PORE_CLASS_COUNT, heap);
                 for (size_t k = 0; k < ns; ++k) p->sweep_r[k] = r0 + (r1 - r0) * (double)k / (double)(ns - 1);
@@ -1897,7 +1897,7 @@ struct VoidAnalysis : viamd::EventHandler {
     // probe slider rather than waiting for a button.
     void update_network_classes() {
         net_class_r = probe_radius;
-        MEMSET(net_class_count, 0, sizeof(net_class_count));
+        md_memset(net_class_count, 0, sizeof(net_class_count));
         const size_t V = md_array_size(net.vertices);
         md_array_resize(net_class, V, md_get_heap_allocator());
         if (V == 0) return;
@@ -2088,7 +2088,7 @@ struct VoidAnalysis : viamd::EventHandler {
         md_allocator_i* frame = state.allocator.frame;
 
         // Points and lines have no surface to light, so their normal is made to face the camera:
-        // the deferred pass then shades them at their full colour from any direction.
+        // the MD_DEFERred pass then shades them at their full colour from any direction.
         const vec3_t facing = vec3_normalize(vec3_from_vec4(state.view.param.matrix.inv.view.col[2]));
         const uint32_t focus = focus_color(state);
 
@@ -2100,7 +2100,7 @@ struct VoidAnalysis : viamd::EventHandler {
         const uint32_t no_pick = 0xFFFFFFFFu;
 
         md_array(immediate::Vertex) lines = 0;
-        md_array_ensure(lines, 4 * MIN(E, PORE_MAX_DRAWN_THROATS) + 1024, frame);
+        md_array_ensure(lines, 4 * MD_MIN(E, PORE_MAX_DRAWN_THROATS) + 1024, frame);
         auto throat = [&](uint32_t e, uint32_t col) {
             vec3_t a, s, b;
             pore_network_edge_points(&a, &s, &b, &net, e);
@@ -2140,8 +2140,8 @@ struct VoidAnalysis : viamd::EventHandler {
         // The widest route through the film as a tube, so it reads as a path rather than as one more
         // line among thousands. Sized to the grid and to r_c, not to the screen.
         if (route) {
-            const float spacing = MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
-            const float tube = MAX(0.5f * spacing, net.has_r_c ? 0.15f * (float)net.r_c : 0.0f);
+            const float spacing = MD_MIN(grid.spacing.x, MD_MIN(grid.spacing.y, grid.spacing.z));
+            const float tube = MD_MAX(0.5f * spacing, net.has_r_c ? 0.15f * (float)net.r_c : 0.0f);
             for (size_t i = 0; i + 1 < nr; ++i) {
                 const uint32_t e = pore_network_find_edge(&net, net_route[i], net_route[i + 1]);
                 if (e == PORE_INVALID) continue;
@@ -2196,9 +2196,9 @@ struct VoidAnalysis : viamd::EventHandler {
         const double nm3 = nm * nm * nm;
 
         tooltip_title(req, "pore %u", i);
-        tooltip_row(req, STR_LIT("radius"), "%.2f nm (largest sphere that fits)", v.radius / nm);
-        tooltip_row(req, STR_LIT("volume"), "%.4g nm\xC2\xB3", (double)v.num_voxels * net.voxel_volume / nm3);
-        tooltip_row(req, STR_LIT("centre"), "%.1f, %.1f, %.1f nm", v.pos[0] / nm, v.pos[1] / nm, v.pos[2] / nm);
+        tooltip_row(req, MD_STR_LIT("radius"), "%.2f nm (largest sphere that fits)", v.radius / nm);
+        tooltip_row(req, MD_STR_LIT("volume"), "%.4g nm\xC2\xB3", (double)v.num_voxels * net.voxel_volume / nm3);
+        tooltip_row(req, MD_STR_LIT("centre"), "%.1f, %.1f, %.1f nm", v.pos[0] / nm, v.pos[1] / nm, v.pos[2] / nm);
 
         const uint32_t deg = net.adj_offset[i + 1] - net.adj_offset[i];
         if (deg > 0) {
@@ -2206,27 +2206,27 @@ struct VoidAnalysis : viamd::EventHandler {
             uint32_t passable = 0;
             for (uint32_t j = net.adj_offset[i]; j < net.adj_offset[i + 1]; ++j) {
                 const float r = net.edges[net.adj[j]].radius;
-                t_min = MIN(t_min, r);
-                t_max = MAX(t_max, r);
+                t_min = MD_MIN(t_min, r);
+                t_max = MD_MAX(t_max, r);
                 passable += (r >= probe_radius);
             }
-            tooltip_row(req, STR_LIT("throats"), "%u, %.2f to %.2f nm, %u wide enough for the probe", deg, t_min / nm, t_max / nm, passable);
+            tooltip_row(req, MD_STR_LIT("throats"), "%u, %.2f to %.2f nm, %u wide enough for the probe", deg, t_min / nm, t_max / nm, passable);
         } else {
-            tooltip_row(req, STR_LIT("throats"), "none");
+            tooltip_row(req, MD_STR_LIT("throats"), "none");
         }
-        if (v.face_top    >= 0.0f) tooltip_row(req, STR_LIT("top face"),    "open, %.2f nm wide", v.face_top / nm);
-        if (v.face_bottom >= 0.0f) tooltip_row(req, STR_LIT("bottom face"), "open, %.2f nm wide", v.face_bottom / nm);
+        if (v.face_top    >= 0.0f) tooltip_row(req, MD_STR_LIT("top face"),    "open, %.2f nm wide", v.face_top / nm);
+        if (v.face_bottom >= 0.0f) tooltip_row(req, MD_STR_LIT("bottom face"), "open, %.2f nm wide", v.face_bottom / nm);
 
         if (i < md_array_size(net_class)) {
             // The legend's label, which is capitalised
             char cls[64];
             const int len = snprintf(cls, sizeof(cls), "%s", pore_class_lbl[net_class[i]]);
-            convert_to_lower(cls, (size_t)CLAMP(len, 0, (int)sizeof(cls) - 1));
-            tooltip_row(req, STR_LIT("class"), "%s at probe %.2f nm", cls, probe_radius / nm);
+            md_convert_to_lower(cls, (size_t)MD_CLAMP(len, 0, (int)sizeof(cls) - 1));
+            tooltip_row(req, MD_STR_LIT("class"), "%s at probe %.2f nm", cls, probe_radius / nm);
         }
         for (size_t k = 0; k < md_array_size(net_route); ++k) {
             if (net_route[k] == i) {
-                tooltip_row(req, STR_LIT("widest route"), "pore %zu of %zu from the top", k + 1, md_array_size(net_route));
+                tooltip_row(req, MD_STR_LIT("widest route"), "pore %zu of %zu from the top", k + 1, md_array_size(net_route));
                 break;
             }
         }
@@ -2245,7 +2245,7 @@ struct VoidAnalysis : viamd::EventHandler {
         ImGui::SetItemTooltip("The narrowest throat and the smallest pore the network can have, and what bounds\n"
                               "the memory: a voxel with less clearance never enters the pass.");
 
-        const float spacing = MIN(grid.spacing.x, MIN(grid.spacing.y, grid.spacing.z));
+        const float spacing = MD_MIN(grid.spacing.x, MD_MIN(grid.spacing.y, grid.spacing.z));
         ImGui::SliderFloat("Merge depth (voxels)", &net_merge, 0.0f, 4.0f, "%.2f");
         ImGui::SetItemTooltip("Two pores are one when the throat between them is less than this far below the\n"
                               "smaller one's radius - a shallow dip rather than a constriction. Every bump the\n"
@@ -2280,7 +2280,7 @@ struct VoidAnalysis : viamd::EventHandler {
                                   "the graph, so merging pores does not move it.");
             const size_t nr = md_array_size(net_route);
             if (nr > 0) {
-                ImGui::Text("Widest route: %zu pores, tortuosity %.2f", nr, net_route_length / MAX(1.0e-6, (double)net.box_ext[2]));
+                ImGui::Text("Widest route: %zu pores, tortuosity %.2f", nr, net_route_length / MD_MAX(1.0e-6, (double)net.box_ext[2]));
                 ImGui::SetItemTooltip("Through pore centres and throats, with straight legs in from each face, over the\n"
                                       "depth of the box. A route through the graph, so it is as coarse as the pores are.%s",
                                       (fabs(net_route_bottleneck - net.r_c) > 1.0e-3 * nm)
@@ -2458,7 +2458,7 @@ struct VoidAnalysis : viamd::EventHandler {
             ImGui::TableSetColumnIndex(0);
             if (md_array_size(acc_r) > 1 && ImPlot::BeginPlot("##acc_curve", ImVec2(-1, plot_h))) {
                 ImPlot::SetupAxes("Probe radius R (nm)", "V(R) / V");
-                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, MAX(1.0e-4, phi * 1.05), ImPlotCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, MD_MAX(1.0e-4, phi * 1.05), ImPlotCond_Always);
                 ImPlot::PlotLine("V(R)/V", acc_r, acc_frac, (int)md_array_size(acc_r));
                 double r_nm = probe_radius / nm;
                 ImPlot::DragLineX(0, &r_nm, ImVec4(1, 0.6f, 0.2f, 1), 1.0f, ImPlotDragToolFlags_NoInputs);
@@ -2581,7 +2581,7 @@ struct VoidAnalysis : viamd::EventHandler {
                                   "stops reaching into the narrower dips.");
         }
         if (st.num_open > 0) {
-            ImGui::Text("Open columns: %.2f%%", 100.0 * (double)st.num_open / (double)MAX((uint64_t)1, n_cols));
+            ImGui::Text("Open columns: %.2f%%", 100.0 * (double)st.num_open / (double)MD_MAX((uint64_t)1, n_cols));
             ImGui::SetItemTooltip("Columns the probe falls straight through without touching anything: a pore that\n"
                                   "runs the full height of the box at this radius. Drawn at the bottom of the\n"
                                   "colour scale and left out of every statistic above.");
@@ -2662,7 +2662,7 @@ struct VoidAnalysis : viamd::EventHandler {
 
         float upper_nm = vol_upper / (float)nm;
         const float lo_nm = probe_radius / (float)nm;
-        const float hi_nm = MAX(lo_nm + 0.01f, (float)(stats.d_max / nm));
+        const float hi_nm = MD_MAX(lo_nm + 0.01f, (float)(stats.d_max / nm));
         if (ImGui::SliderFloat("Upper limit (nm)", &upper_nm, lo_nm, hi_nm, "%.2f")) {
             vol_upper = upper_nm * (float)nm;
             vol_tf_dirty = true;
@@ -2746,7 +2746,7 @@ struct VoidAnalysis : viamd::EventHandler {
                     const size_t num_voxels = md_grid_num_points(&preview);
                     ImGui::Text("Grid: %i x %i x %i  (%.3g voxels)", preview.dim[0], preview.dim[1], preview.dim[2], (double)num_voxels);
                     if (materialize) {
-                        ImGui::Text("Field: %.2f GB", (double)(num_voxels * sizeof(float)) / (double)GIGABYTES(1));
+                        ImGui::Text("Field: %.2f GB", (double)(num_voxels * sizeof(float)) / (double)MD_GIGABYTES(1));
                     }
                 }
             }
@@ -2781,7 +2781,7 @@ struct VoidAnalysis : viamd::EventHandler {
                 ImGui::Text("Distance range: %.2f to %.2f nm", stats.d_min / ANGSTROM_PER_NM, stats.d_max / ANGSTROM_PER_NM);
                 if (stats.num_clamped > 0) {
                     ImGui::TextColored({1.0f, 0.8f, 0.35f, 1.0f}, "%.2f%% of voxels have no bead within %.1f nm",
-                                       100.0 * (double)stats.num_clamped / (double)MAX((uint64_t)1, stats.num_voxels),
+                                       100.0 * (double)stats.num_clamped / (double)MD_MAX((uint64_t)1, stats.num_voxels),
                                        max_dist / ANGSTROM_PER_NM);
                     ImGui::SetItemTooltip("Their distance is that limit, not a measurement. Porosity is unaffected - they\n"
                                           "are void either way - but an accessible volume asked for at a radius near or\n"
@@ -2838,7 +2838,7 @@ struct VoidAnalysis : viamd::EventHandler {
                     const double coarea = coarea_area(probe_radius) / (double)(ANGSTROM_PER_NM * ANGSTROM_PER_NM);
                     if (coarea > 0.0) {
                         ImGui::Text("Coarea cross check: %.4g nm^2  (%+.1f%%)", coarea,
-                                    100.0 * (coarea / MAX(area_nm2, 1.0e-12) - 1.0));
+                                    100.0 * (coarea / MD_MAX(area_nm2, 1.0e-12) - 1.0));
                         ImGui::SetItemTooltip("Read off the distance histogram of the field, if one has been computed.\n"
                                               "Discretized, so a few percent is expected.");
                     }
@@ -2857,12 +2857,12 @@ struct VoidAnalysis : viamd::EventHandler {
                             if (sasa.type_area[k] <= 0.0) continue;
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0);
-                            const str_t name = LBL_TO_STR(type.name[k]);
+                            const md_str_t name = LBL_TO_STR(type.name[k]);
                             ImGui::Text("%.*s", (int)name.len, name.ptr);
                             ImGui::TableSetColumnIndex(1);
                             ImGui::Text("%.4g", sasa.type_area[k] / (double)(ANGSTROM_PER_NM * ANGSTROM_PER_NM));
                             ImGui::TableSetColumnIndex(2);
-                            ImGui::Text("%.1f%%", 100.0 * sasa.type_area[k] / MAX(sasa.total_area, 1.0e-12));
+                            ImGui::Text("%.1f%%", 100.0 * sasa.type_area[k] / MD_MAX(sasa.total_area, 1.0e-12));
                         }
                         ImGui::EndTable();
                     }

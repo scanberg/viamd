@@ -114,7 +114,7 @@ void check(int* utest_result, const Case& c, const std::vector<float>& qx, const
     size_t num_bad = 0, num_idx_bad = 0;
     for (size_t chunk : { (size_t)7, (size_t)64, (size_t)513, n }) {
         for (size_t b = 0; b < n; b += chunk) {
-            const size_t m = MIN(chunk, n - b);
+            const size_t m = MD_MIN(chunk, n - b);
             void_beads_nearest(&beads, qx.data() + b, qy.data() + b, qz.data() + b, m, max_dist, idx.data() + b, dist.data() + b);
         }
         for (size_t i = 0; i < n; ++i) {

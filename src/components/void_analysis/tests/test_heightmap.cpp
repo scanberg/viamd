@@ -144,7 +144,7 @@ UTEST(viamd_void_heightmap, probe_bridges_a_gap_narrower_than_its_diameter) {
         const double dx = x - 5.0, dy = x - 5.0;
         // The nearest bead centre to (x, x) is at (5, 5) or (15, 15); x = 10.25 is nearer (15, 15)
         const double ex = 15.0 - x, ey = 15.0 - x;
-        const double rho2 = MIN(dx * dx + dy * dy, ex * ex + ey * ey);
+        const double rho2 = MD_MIN(dx * dx + dy * dy, ex * ex + ey * ey);
         const double expect = zc + sqrt((Rb + R) * (Rb + R) - rho2) - R;
         EXPECT_NEAR(expect, (double)m.top[k], 2.0e-2);
     }

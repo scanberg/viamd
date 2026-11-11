@@ -235,9 +235,9 @@ inline void nearest_try(nearest_batch_t* b, float ex, float ey, float ez, float 
         // the group box is.
         const float t = grp->worst + r;
         if (!(t > 0.0f)) continue;
-        const float bx = MAX(0.0f, MAX(grp->lo[0] - ex, ex - grp->hi[0]));
-        const float by = MAX(0.0f, MAX(grp->lo[1] - ey, ey - grp->hi[1]));
-        const float bz = MAX(0.0f, MAX(grp->lo[2] - ez, ez - grp->hi[2]));
+        const float bx = MD_MAX(0.0f, MD_MAX(grp->lo[0] - ex, ex - grp->hi[0]));
+        const float by = MD_MAX(0.0f, MD_MAX(grp->lo[1] - ey, ey - grp->hi[1]));
+        const float bz = MD_MAX(0.0f, MD_MAX(grp->lo[2] - ez, ez - grp->hi[2]));
         if (bx * bx + by * by + bz * bz >= t * t) continue;
 
         const md_256  vx = md_mm256_set1_ps(ex);
@@ -343,7 +343,7 @@ void_beads_t void_beads(const md_spatial_acc_t* acc, const float* radii, size_t 
     beads.radii = radii;
     float max_radius = 0.0f;
     for (size_t i = 0; i < num_radii; ++i) {
-        max_radius = MAX(max_radius, radii[i]);
+        max_radius = MD_MAX(max_radius, radii[i]);
     }
     beads.max_radius = max_radius;
     return beads;
@@ -363,7 +363,7 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
     }
 
     const md_spatial_acc_t* acc = beads->acc;
-    const double R = MAX(0.0, (double)beads->max_radius);
+    const double R = MD_MAX(0.0, (double)beads->max_radius);
 
     // Nothing further than this from a point can be below max_dist
     const double e_max = max_dist + R;
@@ -401,7 +401,7 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
             const double len   = sqrt(nrm[a][0] * nrm[a][0] + nrm[a][1] * nrm[a][1] + nrm[a][2] * nrm[a][2]);
             const double width = (len > 0.0) ? vol / len : 0.0;
             if (tri) {
-                max_ball = MIN(max_ball, 0.5 * width);
+                max_ball = MD_MIN(max_ball, 0.5 * width);
             } else {
                 max_half[a] = 0.5 * width;
             }
@@ -424,7 +424,7 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
     }
 
     for (size_t base = 0; base < count; base += NEAREST_BATCH) {
-        const int n = (int)MIN((size_t)NEAREST_BATCH, count - base);
+        const int n = (int)MD_MIN((size_t)NEAREST_BATCH, count - base);
 
         // Points relative to the centre of the batch, which keeps the distances accurate however far from the
         // origin the batch is
@@ -435,8 +435,8 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
             for (int i = 0; i < n; ++i) {
                 const double p[3] = { (double)x[base + i], (double)y[base + i], (double)z[base + i] };
                 for (int a = 0; a < 3; ++a) {
-                    lo[a] = MIN(lo[a], p[a]);
-                    hi[a] = MAX(hi[a], p[a]);
+                    lo[a] = MD_MIN(lo[a], p[a]);
+                    hi[a] = MD_MAX(hi[a], p[a]);
                 }
             }
             for (int a = 0; a < 3; ++a) ref[a] = 0.5 * (lo[a] + hi[a]);
@@ -446,17 +446,17 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
         double uhi[3] = { -DBL_MAX, -DBL_MAX, -DBL_MAX };
         b.num_groups = 0;
         for (int beg = 0; beg < n; beg += NEAREST_GROUP) {
-            const int end = MIN(beg + NEAREST_GROUP, n);
+            const int end = MD_MIN(beg + NEAREST_GROUP, n);
             nearest_group_t* grp = &b.group[b.num_groups++];
             grp->beg   = beg;
-            grp->end   = (int)ALIGN_TO(end, 8);
+            grp->end   = (int)MD_ALIGN_TO(end, 8);
             grp->worst = d_max;
             for (int a = 0; a < 3; ++a) {
                 grp->lo[a] =  FLT_MAX;
                 grp->hi[a] = -FLT_MAX;
             }
             for (int i = beg; i < grp->end; ++i) {
-                const size_t s = base + (size_t)MIN(i, end - 1);
+                const size_t s = base + (size_t)MD_MIN(i, end - 1);
                 const float p[3] = {
                     (float)((double)x[s] - ref[0]),
                     (float)((double)y[s] - ref[1]),
@@ -468,20 +468,20 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
                 b.best[i] = d_max;
                 b.bead[i] = VOID_BEAD_NONE;
                 for (int a = 0; a < 3; ++a) {
-                    grp->lo[a] = MIN(grp->lo[a], p[a]);
-                    grp->hi[a] = MAX(grp->hi[a], p[a]);
+                    grp->lo[a] = MD_MIN(grp->lo[a], p[a]);
+                    grp->hi[a] = MD_MAX(grp->hi[a], p[a]);
                 }
             }
             for (int a = 0; a < 3; ++a) {
-                ulo[a] = MIN(ulo[a], (double)grp->lo[a]);
-                uhi[a] = MAX(uhi[a], (double)grp->hi[a]);
+                ulo[a] = MD_MIN(ulo[a], (double)grp->lo[a]);
+                uhi[a] = MD_MAX(uhi[a], (double)grp->hi[a]);
             }
         }
 
         // Grow the box around the batch until no bead outside it can improve on a point. A bead outside the box
         // is at least as far from a point of a group as the group box is from the faces of the search box, and
         // its weighted distance is that less its radius.
-        double e = MIN(e_max, R + VOID_NEAREST_SEED);
+        double e = MD_MIN(e_max, R + VOID_NEAREST_SEED);
         double e_prev = -1.0;
         for (;;) {
             bool fits = true;
@@ -526,16 +526,16 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
                 const nearest_group_t* grp = &b.group[g];
                 double margin = DBL_MAX;
                 for (int a = 0; a < 3; ++a) {
-                    margin = MIN(margin, MIN(out_hi[a] - (double)grp->hi[a], (double)grp->lo[a] - out_lo[a]));
+                    margin = MD_MIN(margin, MD_MIN(out_hi[a] - (double)grp->hi[a], (double)grp->lo[a] - out_lo[a]));
                 }
                 const double reach = (double)grp->worst + R;
                 if (reach > margin) done = false;
-                need = MAX(need, reach);
+                need = MD_MAX(need, reach);
             }
             if (done || e >= e_max) break;
 
             e_prev = e;
-            e = MIN(e_max, MIN(2.0 * e, need));
+            e = MD_MIN(e_max, MD_MIN(2.0 * e, need));
             if (!(e > e_prev)) break;
         }
 
@@ -552,7 +552,7 @@ void void_beads_nearest(const void_beads_t* beads, const float* x, const float* 
 
 double void_profile_bin_mass(double* out_slab_mass, const void_profile_t* prof, const vec3_t* xyz, const float* mass, size_t count, bool periodic_z) {
     if (!out_slab_mass || !prof || prof->num_slabs == 0 || !(prof->slab_height > 0.0)) return 0.0;
-    memset(out_slab_mass, 0, prof->num_slabs * sizeof(double));
+    md_memset(out_slab_mass, 0, prof->num_slabs * sizeof(double));
     if (!xyz) return 0.0;
 
     const double H = prof->z_max - prof->z_min;
@@ -621,7 +621,7 @@ bool void_field_grid(md_grid_t* out_grid, const md_unitcell_t* cell, const vec3_
 
     for (int a = 0; a < 3; ++a) {
         const int dim = (int)round((double)extent.elem[a] / (double)spacing);
-        out_grid->dim[a] = MAX(1, dim);
+        out_grid->dim[a] = MD_MAX(1, dim);
         out_grid->spacing.elem[a] = extent.elem[a] / (float)out_grid->dim[a];
     }
     out_grid->origin = origin;
@@ -642,9 +642,9 @@ uint32_t void_field_num_tiles(const md_grid_t* grid) {
 
 void void_field_accum_reset(void_field_accum_t* accum, uint32_t num_slabs, uint32_t num_bins) {
     if (!accum) return;
-    if (accum->hist)  MEMSET(accum->hist,  0, (size_t)num_slabs * num_bins * sizeof(uint64_t));
-    if (accum->solid) MEMSET(accum->solid, 0, (size_t)num_slabs * sizeof(uint64_t));
-    if (accum->total) MEMSET(accum->total, 0, (size_t)num_slabs * sizeof(uint64_t));
+    if (accum->hist)  md_memset(accum->hist,  0, (size_t)num_slabs * num_bins * sizeof(uint64_t));
+    if (accum->solid) md_memset(accum->solid, 0, (size_t)num_slabs * sizeof(uint64_t));
+    if (accum->total) md_memset(accum->total, 0, (size_t)num_slabs * sizeof(uint64_t));
     accum->num_clamped = 0;
     accum->d_min =  FLT_MAX;
     accum->d_max = -FLT_MAX;
@@ -659,8 +659,8 @@ void void_field_accum_merge(void_field_accum_t* dst, const void_field_accum_t* s
         dst->total[s] += src->total[s];
     }
     dst->num_clamped += src->num_clamped;
-    dst->d_min = MIN(dst->d_min, src->d_min);
-    dst->d_max = MAX(dst->d_max, src->d_max);
+    dst->d_min = MD_MIN(dst->d_min, src->d_min);
+    dst->d_max = MD_MAX(dst->d_max, src->d_max);
 }
 
 void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* desc, uint32_t tile_beg, uint32_t tile_end) {
@@ -674,7 +674,7 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
         (grid.dim[1] + TD - 1) / TD,
         (grid.dim[2] + TD - 1) / TD,
     };
-    tile_end = MIN(tile_end, void_field_num_tiles(desc->grid));
+    tile_end = MD_MIN(tile_end, void_field_num_tiles(desc->grid));
 
     const uint32_t pps       = desc->planes_per_slab;
     const uint32_t num_bins  = desc->num_bins;
@@ -742,7 +742,7 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
 
             if (desc->field) {
                 const size_t idx = ((size_t)vk[p] * (size_t)grid.dim[1] + (size_t)vj[p]) * (size_t)grid.dim[0] + (size_t)vi[p];
-                desc->field[idx] = MAX(0.0f, d);
+                desc->field[idx] = MD_MAX(0.0f, d);
             }
 
             if (mask_cell) {
@@ -760,8 +760,8 @@ void void_field_eval_tiles(void_field_accum_t* accum, const void_field_desc_t* d
             const uint32_t slab = void_profile_slab_of(vk[p], pps);
 
             accum->total[slab] += 1;
-            accum->d_min = MIN(accum->d_min, d);
-            accum->d_max = MAX(accum->d_max, d);
+            accum->d_min = MD_MIN(accum->d_min, d);
+            accum->d_max = MD_MAX(accum->d_max, d);
             if (d >= max_dist) accum->num_clamped += 1;
 
             if (d <= 0.0f) {
@@ -884,10 +884,10 @@ void void_heightmap_eval_patches(float* out_top, float* out_bot, const void_heig
 
     const int TD = VOID_FIELD_TILE_DIM;
     const int px = (grid.dim[0] + TD - 1) / TD;
-    patch_end = MIN(patch_end, void_heightmap_num_patches(desc->grid));
+    patch_end = MD_MIN(patch_end, void_heightmap_num_patches(desc->grid));
 
     const double R = desc->probe_radius > 0.0 ? desc->probe_radius : 0.0;
-    const double min_spacing = MIN((double)grid.spacing.x, MIN((double)grid.spacing.y, (double)grid.spacing.z));
+    const double min_spacing = MD_MIN((double)grid.spacing.x, MD_MIN((double)grid.spacing.y, (double)grid.spacing.z));
     const double tol = (desc->tol > 0.0) ? desc->tol : 0.01 * min_spacing;
 
     const double z_lo = (double)grid.origin.z;
@@ -935,7 +935,7 @@ void void_heightmap_eval_patches(float* out_top, float* out_bot, const void_heig
 
 void void_heightmap_stats(void_heightmap_stats_t* out, const float* h, size_t count) {
     if (!out) return;
-    memset(out, 0, sizeof(*out));
+    md_memset(out, 0, sizeof(*out));
     if (!h) return;
 
     double sum = 0.0;
@@ -949,8 +949,8 @@ void void_heightmap_stats(void_heightmap_stats_t* out, const float* h, size_t co
         }
         out->num_valid += 1;
         sum += (double)v;
-        lo = MIN(lo, (double)v);
-        hi = MAX(hi, (double)v);
+        lo = MD_MIN(lo, (double)v);
+        hi = MD_MAX(hi, (double)v);
     }
     if (out->num_valid == 0) return;
 
@@ -1015,7 +1015,7 @@ static uint32_t uf_find(sweep_ctx_t* c, uint32_t x) {
 
 static uint32_t node_new(sweep_ctx_t* c, float z, bool at_top) {
     channel_node_t n;
-    MEMSET(&n, 0, sizeof(n));
+    md_memset(&n, 0, sizeof(n));
     n.parent        = CHANNEL_INVALID_INDEX;
     n.first_child   = CHANNEL_INVALID_INDEX;
     n.next_sibling  = CHANNEL_INVALID_INDEX;
@@ -1033,7 +1033,7 @@ static uint32_t node_new(sweep_ctx_t* c, float z, bool at_top) {
 static void node_attach(sweep_ctx_t* c, uint32_t child, uint32_t parent, float z) {
     channel_node_t* nodes = c->tree->nodes;
     nodes[child].parent  = parent;
-    nodes[child].z_bot   = MIN(nodes[child].z_bot, z);
+    nodes[child].z_bot   = MD_MIN(nodes[child].z_bot, z);
     nodes[child].next_sibling = nodes[parent].first_child;
     nodes[parent].first_child = child;
 }
@@ -1112,15 +1112,15 @@ void channel_tree_free(channel_tree_t* tree) {
     }
     md_array_free(tree->nodes, tree->alloc);
     md_array_free(tree->roots, tree->alloc);
-    MEMSET(tree, 0, sizeof(channel_tree_t));
+    md_memset(tree, 0, sizeof(channel_tree_t));
 }
 
 bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double probe_radius, bool want_tree, struct md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(field);
-    ASSERT(alloc);
+    MD_ASSERT(out);
+    MD_ASSERT(field);
+    MD_ASSERT(alloc);
 
-    MEMSET(out, 0, sizeof(channel_tree_t));
+    md_memset(out, 0, sizeof(channel_tree_t));
     out->alloc = alloc;
     out->probe_radius = probe_radius;
 
@@ -1133,7 +1133,7 @@ bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double pro
     const size_t plane = (size_t)nx * (size_t)ny;
 
     sweep_ctx_t ctx;
-    MEMSET(&ctx, 0, sizeof(ctx));
+    md_memset(&ctx, 0, sizeof(ctx));
     ctx.tree      = out;
     ctx.alloc     = alloc;
     ctx.want_tree = want_tree;
@@ -1209,8 +1209,8 @@ bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double pro
                     channel_node_t* n = ctx.tree->nodes + node;
 
                     n->num_voxels    += 1;
-                    n->max_clearance  = MAX(n->max_clearance, slab[i]);
-                    n->z_bot          = MIN(n->z_bot, z);
+                    n->max_clearance  = MD_MAX(n->max_clearance, slab[i]);
+                    n->z_bot          = MD_MIN(n->z_bot, z);
 
                     if (ctx.node_slab[node] != k) {
                         ctx.node_slab[node] = k;
@@ -1255,7 +1255,7 @@ bool channel_sweep(channel_tree_t* out, const channel_field_t* field, double pro
         for (size_t i = 0; i < md_array_size(out->nodes); ++i) {
             channel_node_t* n = out->nodes + i;
             for (size_t p = 0; p < md_array_size(n->path); ++p) {
-                n->min_clearance = MIN(n->min_clearance, n->path[p].w);
+                n->min_clearance = MD_MIN(n->min_clearance, n->path[p].w);
             }
             if (n->min_clearance == FLT_MAX) n->min_clearance = 0.0f;
             if (n->reaches_top && n->parent != CHANNEL_INVALID_INDEX) {
@@ -1321,8 +1321,8 @@ static void perc_enter(perc_ctx_t* c, uint32_t r) {
         c->span_voxels += c->size[r];
         c->num_spanning += 1;
     }
-    if (f & CHANNEL_FLAG_TOP)    c->deepest_top = MIN(c->deepest_top, (int32_t)c->min_k[r]);
-    if (f & CHANNEL_FLAG_BOTTOM) c->highest_bot = MAX(c->highest_bot, (int32_t)c->max_k[r]);
+    if (f & CHANNEL_FLAG_TOP)    c->deepest_top = MD_MIN(c->deepest_top, (int32_t)c->min_k[r]);
+    if (f & CHANNEL_FLAG_BOTTOM) c->highest_bot = MD_MAX(c->highest_bot, (int32_t)c->max_k[r]);
 }
 
 static void perc_leave(perc_ctx_t* c, uint32_t r) {
@@ -1349,8 +1349,8 @@ static bool perc_union(perc_ctx_t* c, uint32_t a, uint32_t b) {
     c->parent[rb] = ra;
     c->size[ra]  += c->size[rb];
     c->flags[ra]  = (uint8_t)(c->flags[ra] | c->flags[rb]);
-    c->min_k[ra]  = MIN(c->min_k[ra], c->min_k[rb]);
-    c->max_k[ra]  = MAX(c->max_k[ra], c->max_k[rb]);
+    c->min_k[ra]  = MD_MIN(c->min_k[ra], c->min_k[rb]);
+    c->max_k[ra]  = MD_MAX(c->max_k[ra], c->max_k[rb]);
     c->num_roots -= 1;
 
     perc_enter(c, ra);
@@ -1367,15 +1367,15 @@ void channel_percolation_free(channel_percolation_t* perc) {
     md_array_free(perc->z_from_bottom, perc->alloc);
     md_array_free(perc->num_components, perc->alloc);
     md_array_free(perc->num_spanning, perc->alloc);
-    MEMSET(perc, 0, sizeof(channel_percolation_t));
+    md_memset(perc, 0, sizeof(channel_percolation_t));
 }
 
 bool channel_percolate(channel_percolation_t* out, const channel_field_t* field, double r_min, uint32_t num_samples, struct md_allocator_i* alloc) {
-    ASSERT(out);
-    ASSERT(field);
-    ASSERT(alloc);
+    MD_ASSERT(out);
+    MD_ASSERT(field);
+    MD_ASSERT(alloc);
 
-    MEMSET(out, 0, sizeof(channel_percolation_t));
+    md_memset(out, 0, sizeof(channel_percolation_t));
     out->alloc = alloc;
 
     if (!field->data) return false;
@@ -1403,14 +1403,14 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
     out->num_active = M;
     if (M == 0) return false;
 
-    const uint32_t ns  = (uint32_t)CLAMP((int)num_samples, 2, 4096);
+    const uint32_t ns  = (uint32_t)MD_CLAMP((int)num_samples, 2, 4096);
     // Internal buckets are far finer than the reported samples. The bucket width is what bounds the
     // error on r_c, and at these counts it lands orders of magnitude below the grid's own limit -
     // half a voxel of unresolved gap - so the grid stays the thing that limits the answer.
-    const uint32_t per = MAX(1u, (4096u + ns - 1u) / ns);
+    const uint32_t per = MD_MAX(1u, (4096u + ns - 1u) / ns);
     const uint32_t NB  = ns * per;
 
-    const double span  = MAX(1.0e-6, (double)d_max - (double)rmin);
+    const double span  = MD_MAX(1.0e-6, (double)d_max - (double)rmin);
     const double width = span / (double)NB;
 
     const size_t bytes = N * sizeof(uint32_t)
@@ -1424,7 +1424,7 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
     uint32_t* cur = (uint32_t*)md_alloc(alloc, (size_t)NB * sizeof(uint32_t));
 
     perc_ctx_t c;
-    MEMSET(&c, 0, sizeof(c));
+    md_memset(&c, 0, sizeof(c));
     c.parent = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
     c.size   = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
     c.flags  = (uint8_t*) md_alloc(alloc, M * sizeof(uint8_t));
@@ -1446,7 +1446,7 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
         return false;
     }
 
-    MEMSET(off, 0, (size_t)NB * sizeof(uint32_t));
+    md_memset(off, 0, (size_t)NB * sizeof(uint32_t));
 
     // Counting sort by clearance, descending. A comparison sort of a hundred million voxels would
     // cost more than the union find it feeds.
@@ -1455,7 +1455,7 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
         const float d = field->data[i];
         if (d < rmin) continue;
         int b = (int)(((double)d - (double)rmin) / width);
-        b = CLAMP(b, 0, (int)NB - 1);
+        b = MD_CLAMP(b, 0, (int)NB - 1);
         off[b] += 1;
     }
     {   // Bucket NB-1 is widest and goes first, so the offsets accumulate downward
@@ -1471,7 +1471,7 @@ bool channel_percolate(channel_percolation_t* out, const channel_field_t* field,
         const float d = field->data[i];
         if (d < rmin) continue;
         int b = (int)(((double)d - (double)rmin) / width);
-        b = CLAMP(b, 0, (int)NB - 1);
+        b = MD_CLAMP(b, 0, (int)NB - 1);
         const uint32_t p = cur[b]++;
         vox[p] = (uint32_t)i;
         cid[i] = p;
@@ -1690,16 +1690,16 @@ void pore_network_free(pore_network_t* net) {
     md_array_free(net->edges,      net->alloc);
     md_array_free(net->adj_offset, net->alloc);
     md_array_free(net->adj,        net->alloc);
-    MEMSET(net, 0, sizeof(pore_network_t));
+    md_memset(net, 0, sizeof(pore_network_t));
 }
 
 bool pore_network_build(pore_network_t* out, const channel_field_t* field, double r_min, double merge, struct md_allocator_i* alloc,
                         pore_network_progress_fn progress, void* user) {
-    ASSERT(out);
-    ASSERT(field);
-    ASSERT(alloc);
+    MD_ASSERT(out);
+    MD_ASSERT(field);
+    MD_ASSERT(alloc);
 
-    MEMSET(out, 0, sizeof(pore_network_t));
+    md_memset(out, 0, sizeof(pore_network_t));
     out->alloc = alloc;
     out->r_min = r_min;
     out->merge = merge;
@@ -1738,8 +1738,8 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
     // voxel order rather than clearance, and the only thing that sees it is the persistence test,
     // which is told to ignore anything shallower than two buckets.
     const uint32_t NB    = 1u << 16;
-    const double   width = MAX(1.0e-6, (double)d_max - (double)rmin) / (double)NB;
-    const float    h     = (float)MAX(merge, 2.0 * width);
+    const double   width = MD_MAX(1.0e-6, (double)d_max - (double)rmin) / (double)NB;
+    const float    h     = (float)MD_MAX(merge, 2.0 * width);
 
     uint32_t* label = (uint32_t*)md_alloc(alloc, N * sizeof(uint32_t));
     uint32_t* vox   = (uint32_t*)md_alloc(alloc, M * sizeof(uint32_t));
@@ -1751,12 +1751,12 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
         return false;
     }
 
-    MEMSET(off, 0, (size_t)NB * sizeof(uint32_t));
+    md_memset(off, 0, (size_t)NB * sizeof(uint32_t));
     for (size_t i = 0; i < N; ++i) {
         label[i] = PORE_INVALID;
         const float d = field->data[i];
         if (d < rmin) continue;
-        const int b = CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
+        const int b = MD_CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
         off[b] += 1;
     }
     {
@@ -1770,7 +1770,7 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
     for (size_t i = 0; i < N; ++i) {
         const float d = field->data[i];
         if (d < rmin) continue;
-        const int b = CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
+        const int b = MD_CLAMP((int)(((double)d - (double)rmin) / width), 0, (int)NB - 1);
         vox[off[b]++] = (uint32_t)i;
     }
     md_free(alloc, off, (size_t)NB * sizeof(uint32_t));
@@ -1842,11 +1842,11 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
         label[v] = own;
         reg[own].count += 1;
         if (k == nz - 1) {
-            reg[own].face_top = MAX(reg[own].face_top, d);
+            reg[own].face_top = MD_MAX(reg[own].face_top, d);
             reg[conn_find(reg, own)].conn_faces |= PORE_FACE_TOP;
         }
         if (k == 0) {
-            reg[own].face_bot = MAX(reg[own].face_bot, d);
+            reg[own].face_bot = MD_MAX(reg[own].face_bot, d);
             reg[conn_find(reg, own)].conn_faces |= PORE_FACE_BOTTOM;
         }
 
@@ -1863,13 +1863,13 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
             }
 
             // Nothing wider than this voxel joins the two, so its clearance is their throat
-            if (MIN(reg[ro].peak, reg[rr].peak) - d < h) {
+            if (MD_MIN(reg[ro].peak, reg[rr].peak) - d < h) {
                 const uint32_t elder   = (reg[ro].peak >= reg[rr].peak) ? ro : rr;
                 const uint32_t younger = (elder == ro) ? rr : ro;
                 reg[younger].pore_parent = elder;
                 reg[elder].count   += reg[younger].count;
-                reg[elder].face_top = MAX(reg[elder].face_top, reg[younger].face_top);
-                reg[elder].face_bot = MAX(reg[elder].face_bot, reg[younger].face_bot);
+                reg[elder].face_top = MD_MAX(reg[elder].face_top, reg[younger].face_top);
+                reg[elder].face_bot = MD_MAX(reg[elder].face_bot, reg[younger].face_bot);
             } else {
                 const uint64_t key = pore_pair_key(ro, rr);
                 if (!md_hashmap_get(&seen, key)) {
@@ -1953,7 +1953,7 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
 
     md_array_resize(out->adj_offset, V + 1, alloc);
     md_array_resize(out->adj, 2 * E, alloc);
-    MEMSET(out->adj_offset, 0, (V + 1) * sizeof(uint32_t));
+    md_memset(out->adj_offset, 0, (V + 1) * sizeof(uint32_t));
     for (size_t e = 0; e < E; ++e) {
         out->adj_offset[out->edges[e].a + 1] += 1;
         out->adj_offset[out->edges[e].b + 1] += 1;
@@ -1974,9 +1974,9 @@ bool pore_network_build(pore_network_t* out, const channel_field_t* field, doubl
 }
 
 void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double r, struct md_allocator_i* temp) {
-    ASSERT(out_class);
-    ASSERT(net);
-    ASSERT(temp);
+    MD_ASSERT(out_class);
+    MD_ASSERT(net);
+    MD_ASSERT(temp);
     const size_t V = md_array_size(net->vertices);
     if (V == 0) return;
 
@@ -2022,12 +2022,12 @@ void pore_network_classify(uint8_t* out_class, const pore_network_t* net, double
 }
 
 void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, const double* r, size_t num_r, struct md_allocator_i* temp) {
-    ASSERT(out_counts);
-    ASSERT(net);
-    ASSERT(temp);
+    MD_ASSERT(out_counts);
+    MD_ASSERT(net);
+    MD_ASSERT(temp);
     if (num_r == 0) return;
-    ASSERT(r);
-    MEMSET(out_counts, 0, num_r * PORE_CLASS_COUNT * sizeof(uint32_t));
+    MD_ASSERT(r);
+    md_memset(out_counts, 0, num_r * PORE_CLASS_COUNT * sizeof(uint32_t));
 
     const size_t V = md_array_size(net->vertices);
     const size_t E = md_array_size(net->edges);
@@ -2036,7 +2036,7 @@ void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, c
 
     // A component's class is which faces it reaches
     static const uint8_t face_class[4] = { PORE_CLASS_CLOSED, PORE_CLASS_TOP, PORE_CLASS_BOTTOM, PORE_CLASS_SPANNING };
-    STATIC_ASSERT(PORE_FACE_TOP == 1 && PORE_FACE_BOTTOM == 2, "face_class is indexed by the face bits");
+    MD_STATIC_ASSERT(PORE_FACE_TOP == 1 && PORE_FACE_BOTTOM == 2, "face_class is indexed by the face bits");
 
     uint32_t* parent = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
     uint32_t* size   = (uint32_t*)md_alloc(temp, V * sizeof(uint32_t));
@@ -2105,7 +2105,7 @@ void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, c
         }
 
         uint32_t* out = out_counts + k * PORE_CLASS_COUNT;
-        MEMCPY(out, count, sizeof(count));
+        md_memcpy(out, count, sizeof(count));
         out[PORE_CLASS_SMALL] = (uint32_t)V - num_active;
     }
 
@@ -2119,9 +2119,9 @@ void pore_network_class_sweep(uint32_t* out_counts, const pore_network_t* net, c
 }
 
 bool pore_network_widest_route(md_array(uint32_t)* out_vertices, double* out_bottleneck, const pore_network_t* net, struct md_allocator_i* alloc) {
-    ASSERT(out_vertices);
-    ASSERT(net);
-    ASSERT(alloc);
+    MD_ASSERT(out_vertices);
+    MD_ASSERT(net);
+    MD_ASSERT(alloc);
     md_array_shrink(*out_vertices, 0);
 
     const uint32_t V = (uint32_t)md_array_size(net->vertices);
@@ -2172,7 +2172,7 @@ bool pore_network_widest_route(md_array(uint32_t)* out_vertices, double* out_bot
         md_array(uint32_t) prev  = 0;
         md_array(uint32_t) queue = 0;
         md_array_resize(off, NV + 1, alloc);
-        MEMSET(off, 0, (NV + 1) * sizeof(uint32_t));
+        md_memset(off, 0, (NV + 1) * sizeof(uint32_t));
         for (size_t i = 0; i < md_array_size(tree); ++i) {
             off[tree[i].u + 1] += 1;
             off[tree[i].w + 1] += 1;
@@ -2228,7 +2228,7 @@ uint32_t pore_network_find_edge(const pore_network_t* net, uint32_t a, uint32_t 
 }
 
 void pore_network_edge_points(vec3_t* out_a, vec3_t* out_throat, vec3_t* out_b, const pore_network_t* net, uint32_t edge) {
-    ASSERT(net && edge < md_array_size(net->edges));
+    MD_ASSERT(net && edge < md_array_size(net->edges));
     const pore_edge_t& e = net->edges[edge];
     const vec3_t s = { e.pos[0], e.pos[1], e.pos[2] };
     vec3_t a = { net->vertices[e.a].pos[0], net->vertices[e.a].pos[1], net->vertices[e.a].pos[2] };
