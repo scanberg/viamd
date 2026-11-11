@@ -92,7 +92,7 @@ void color_atoms_uniform(uint32_t* colors, size_t count, uint32_t color) {
 void color_atoms_cpk(uint32_t* colors, size_t count, const md_system_t& sys) {
     for (size_t i = 0; i < count; i++) {
         md_atomic_number_t z = md_atom_atomic_number(&sys.atom, i);
-        colors[i] = z ? md_util_element_cpk_color(z) : 0xFFFFFFFFU;
+        colors[i] = z ? md_atomic_number_cpk_color(z) : 0xFFFFFFFFU;
     }
 }
 

@@ -174,7 +174,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
         int n = snprintf(line, sizeof(line), "%zu\ncube\n", other.num_atoms);
         md_array_push_array(text, line, (size_t)n, temp);
         for (size_t i = 0; i < other.num_atoms; ++i) {
-            const md_str_t sym = md_util_element_symbol((md_element_t)other.atomic_numbers[i]);
+            const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)other.atomic_numbers[i]);
             n = snprintf(line, sizeof(line), "%.*s %.6f %.6f %.6f\n", (int)sym.len, sym.ptr, other.xyz[i].x, other.xyz[i].y, other.xyz[i].z);
             md_array_push_array(text, line, (size_t)n, temp);
         }

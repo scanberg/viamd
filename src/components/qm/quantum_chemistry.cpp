@@ -1938,7 +1938,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // and core binding energies of different elements are hundreds of eV apart, so putting two
         // elements on one axis leaves each of them an unreadable spike. Zero means nothing has been
         // picked yet - the first group with entries is adopted on the first draw.
-        md_element_t element = 0;
+        md_atomic_number_t element = 0;
 
         // Index into the FLAT entry array, not into a group. -1 when the cursor is not on a peak.
         // There is deliberately no 'selected' counterpart: a peak draws as selected when its atom is
@@ -2628,12 +2628,12 @@ struct QuantumChemistry : viamd::EventHandler {
         // Group 0 is "not in any group", so it keeps the element colour the molecule would have
         // anyway. Stamping the unassigned grey over everything would make an ungrouped system look
         // like a system whose groups all happen to be grey.
-        const md_element_t* atom_z = qm.atomic_number;
+        const md_atomic_number_t* atom_z = qm.atomic_number;
         for (size_t i = 0; i < num_atoms; ++i) {
             const size_t group_idx = nto.atom_group_idx[i];
             uint32_t color = U32_MAGENTA;
             if (group_idx == 0) {
-                color = atom_z ? md_util_element_cpk_color(atom_z[i]) : U32_MAGENTA;
+                color = atom_z ? md_atomic_number_cpk_color(atom_z[i]) : U32_MAGENTA;
             } else if (group_idx < nto.group.count) {
                 color = convert_color(nto.group.color[group_idx]);
             }
@@ -2716,7 +2716,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
         orb.render_hash = 0;
 
-					const md_element_t* atom_z = qm.atomic_number;
+					const md_atomic_number_t* atom_z = qm.atomic_number;
 					md_f64x3_t nucl_dipole = { 0, 0, 0 };
 
         md_array_resize(atom_xyzw, num_atoms, arena);
@@ -2808,7 +2808,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_temp_scope_t temp = md_temp_begin();
                     MD_DEFER { md_temp_end(temp); };
                     uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
-                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_util_element_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
+                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_atomic_number_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
                     md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
                 }
             }
@@ -5106,14 +5106,14 @@ struct QuantumChemistry : viamd::EventHandler {
         // The group list is exactly the set of elements that were computed, so listing it offers no
         // element that would draw an empty plot.
         {
-            const md_str_t cur_sym = md_util_element_symbol(grp->element);
+            const md_str_t cur_sym = md_atomic_number_symbol(grp->element);
             char preview[8];
             snprintf(preview, sizeof(preview), "%.*s", (int)cur_sym.len, cur_sym.ptr);
             if (ImGui::BeginCombo("Element", preview)) {
                 for (size_t g = 0; g < num_groups; ++g) {
                     const XpsGroup* it = &groups[g];
                     if (it->count == 0) continue;
-                    const md_str_t sym = md_util_element_symbol(it->element);
+                    const md_str_t sym = md_atomic_number_symbol(it->element);
                     char item[32];
                     snprintf(item, sizeof(item), "%.*s (%i)", (int)sym.len, sym.ptr, (int)it->count);
                     if (ImGui::Selectable(item, it->element == xps.element)) {
@@ -5253,7 +5253,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             if (plot_hovered && hov >= 0) {
                 const int32_t hov_atom_index = tbl.atom_index ? tbl.atom_index[hov] : -1;
-                const md_str_t sym = md_util_element_symbol(tbl.element[hov]);
+                const md_str_t sym = md_atomic_number_symbol(tbl.element[hov]);
                 if (ImGui::BeginTooltip()) {
                     // Atom index is shown 1-based to match the labels VeloxChem prints.
                     if (hov_atom_index >= 0) {
@@ -6480,7 +6480,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Both columns are optional members of the QM atom domain (see es_qm_atoms).
                         ImGui::TableNextColumn();
                         if (atom_nr) {
-                            md_str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                            md_str_t sym = md_atomic_number_symbol(atom_nr[row_n]);
                             ImGui::Text(MD_STR_FMT, MD_STR_ARG(sym));
                         } else {
                             ImGui::TextUnformatted("-");
@@ -8983,7 +8983,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         const FileEntry* system_file = file_list_system_file(&state.files.list);
                         md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
-                            md_str_t sym = md_util_element_symbol(qm_numbers[i]);
+                            md_str_t sym = md_atomic_number_symbol(qm_numbers[i]);
                             md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, qm_coords[i].x, qm_coords[i].y, qm_coords[i].z);
                         }
 
@@ -10351,13 +10351,13 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t num_atoms = qm.count;
         if (num_atoms == 0 || flow.atom_labels) return;
 
-        const md_element_t* z = qm.atomic_number;
+        const md_atomic_number_t* z = qm.atomic_number;
         flow.atom_labels = (char*)md_alloc(arena, num_atoms * FLOW_ATOM_LABEL_STRIDE);
         flow.num_atom_labels = num_atoms;
 
         for (size_t i = 0; i < num_atoms; ++i) {
             char* dst = flow.atom_labels + i * FLOW_ATOM_LABEL_STRIDE;
-            const md_str_t sym = z ? md_util_element_symbol(z[i]) : md_str_from_cstr("X");
+            const md_str_t sym = z ? md_atomic_number_symbol(z[i]) : md_str_from_cstr("X");
             // One-based, matching how the rest of VIAMD numbers atoms to the user.
             snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
         }

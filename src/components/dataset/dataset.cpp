@@ -30,7 +30,7 @@ namespace dataset {
 
 struct AtomElementMapping {
     char lbl[31] = "";
-    md_element_t elem = 0;
+    md_atomic_number_t elem = 0;
 };
 
 // What a particle type looked like straight out of the loader, before the user got to it. Loading the same
@@ -3119,7 +3119,7 @@ struct Dataset : viamd::EventHandler {
         if (num_mappings && ImGui::CollapsingHeader("Atom Element Mappings")) {
             for (size_t i = 0; i < num_mappings; ++i) {
                 const auto& mapping = atom_element_remappings[i];
-                ImGui::Text("%s -> %s (%s)", mapping.lbl, md_util_element_name(mapping.elem).ptr, md_util_element_symbol(mapping.elem).ptr);
+                ImGui::Text("%s -> %s (%s)", mapping.lbl, md_atomic_number_name(mapping.elem).ptr, md_atomic_number_symbol(mapping.elem).ptr);
             }
         }
     }

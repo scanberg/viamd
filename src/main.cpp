@@ -2989,7 +2989,7 @@ void clear_atom_elem_mappings(ApplicationState* data) {
     md_array_shrink(data->dataset.atom_element_remappings, 0);
 }
 
-AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, md_str_t lbl, md_element_t elem) {
+AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, md_str_t lbl, md_atomic_number_t elem) {
     // Check if we already have a mapping for the label -> overwrite
     size_t i = 0;
     for (; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
@@ -3015,9 +3015,9 @@ void apply_atom_elem_mappings(ApplicationState* data) {
 
     for (size_t j = 0; j < md_array_size(data->dataset.atom_element_remappings); ++j) {
         md_str_t lbl = md_str_from_cstr(data->dataset.atom_element_remappings[j].lbl);
-        md_element_t elem = data->dataset.atom_element_remappings[j].elem;
-        float radius = md_util_element_vdw_radius(elem);
-        float mass = md_util_element_atomic_mass(elem);
+        md_atomic_number_t elem = data->dataset.atom_element_remappings[j].elem;
+        float radius = md_atomic_number_vdw_radius(elem);
+        float mass = md_atomic_number_mass(elem);
 
         for (size_t i = 0; i < data->mold.sys.atom.count; ++i) {
             if (md_str_eq(lbl, data->mold.sys.atom.type[i])) {
@@ -3431,19 +3431,19 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)type.len, type.ptr);
                 if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
-                    md_element_t elem = data->mold.sys.atom.element[idx];
-                    md_str_t name = md_util_element_name(elem);
-                    md_str_t sym  = md_util_element_symbol(elem);
+                    md_atomic_number_t elem = data->mold.sys.atom.element[idx];
+                    md_str_t name = md_atomic_number_name(elem);
+                    md_str_t sym  = md_atomic_number_symbol(elem);
 
                     ImGui::Text("Current Element: %.*s (%.*s)", (int)name.len, name.ptr, (int)sym.len, sym.ptr);
 
                     md_str_t elem_str = {input_buf, strnlen(input_buf, sizeof(input_buf))};
-                    md_element_t new_elem = md_util_element_lookup(elem_str);
+                    md_atomic_number_t new_elem = md_atomic_number_from_symbol(elem_str);
                     const bool is_valid = new_elem != 0;
 
                     ImGui::InputQuery("##Symbol", input_buf, sizeof(input_buf), is_valid, "Cannot recognize Element symbol");
-                    md_str_t new_name = md_util_element_name(new_elem);
-                    md_str_t new_sym  = md_util_element_symbol(new_elem);
+                    md_str_t new_name = md_atomic_number_name(new_elem);
+                    md_str_t new_sym  = md_atomic_number_symbol(new_elem);
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
                     if (!is_valid) ImGui::PushDisabled();
                     if (ImGui::Button("Apply") && is_valid) {

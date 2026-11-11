@@ -62,7 +62,7 @@ void hill_formula(char* buf, size_t cap, const md_system_t* sys, const int32_t* 
     size_t len = 0;
     buf[0] = '\0';
     auto append = [&](int z) {
-        const md_str_t sym = md_util_element_symbol((md_element_t)z);
+        const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
         const int w = num[z] > 1 ? snprintf(buf + len, cap - len, "%.*s%u", (int)sym.len, sym.ptr, num[z])
                                  : snprintf(buf + len, cap - len, "%.*s", (int)sym.len, sym.ptr);
         if (w > 0) len = MD_MIN(cap - 1, len + (size_t)w);
@@ -76,7 +76,7 @@ void hill_formula(char* buf, size_t cap, const md_system_t* sys, const int32_t* 
         md_str_t best_sym = {};
         for (int z = 1; z < 128; ++z) {
             if (done[z] || !num[z]) continue;
-            const md_str_t sym = md_util_element_symbol((md_element_t)z);
+            const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
             if (best < 0 || md_str_cmp_lex(sym, best_sym) < 0) { best = z; best_sym = sym; }
         }
         if (best < 0) break;

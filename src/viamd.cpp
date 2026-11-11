@@ -437,7 +437,7 @@ static void tooltip_append_atom_name(md_str_writer_t* sb, const md_system_t& sys
     md_str_t name = md_atom_name(&sys.atom, atom_idx);
     if (md_str_empty(name)) {
         const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom_idx);
-        if (z) name = md_util_element_symbol(z);
+        if (z) name = md_atomic_number_symbol(z);
     }
     if (!md_str_empty(name)) {
         *sb += name;
@@ -527,8 +527,8 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_row(req, MD_STR_LIT("particle"), "%s", md_particle_kind_name(particle));
     }
     if (z) {
-        const md_str_t symbol = md_util_element_symbol(z);
-        const md_str_t name   = tooltip_lower(req->alloc, md_util_element_name(z));
+        const md_str_t symbol = md_atomic_number_symbol(z);
+        const md_str_t name   = tooltip_lower(req->alloc, md_atomic_number_name(z));
         tooltip_row(req, MD_STR_LIT("element"), MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(symbol), MD_STR_ARG(name));
     }
     const md_str_t ff_type = md_particle_type_ff_type(&sys.atom.type, (size_t)md_atom_particle_type_idx(&sys.atom, atom_idx));
@@ -847,7 +847,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     for (int pass = 0; pass < 2; ++pass) {
         for (int z = 1; z < (int)MD_COUNTOF(element_count); ++z) {
             if (!element_count[z] || (pass == 0) != (z == 6)) continue;
-            formula += md_util_element_symbol((md_element_t)z);
+            formula += md_atomic_number_symbol((md_atomic_number_t)z);
             if (element_count[z] > 1) md_str_writer_fmt(&formula, "%d", element_count[z]);
         }
     }

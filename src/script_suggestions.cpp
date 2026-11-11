@@ -1054,7 +1054,7 @@ static md_array(Pred) predicates(const Breakdown& b, const Scopes& s, const Ctx&
             Pred p = {};
             p.type_take = (uint8_t*)md_alloc(temp, num_types);
             md_array(md_str_t) syms = 0;
-            for (size_t k = 0; k < md_array_size(zs); ++k) md_array_push(syms, md_util_element_symbol(zs[k]), temp);
+            for (size_t k = 0; k < md_array_size(zs); ++k) md_array_push(syms, md_atomic_number_symbol(zs[k]), temp);
             for (size_t t = 0; t < num_types; ++t) {
                 bool take_t = false;
                 for (size_t k = 0; k < md_array_size(zs); ++k) take_t |= sys.atom.type.z[t] == zs[k];

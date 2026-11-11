@@ -136,7 +136,7 @@ bool key_str(const Ctx& c, Key k, size_t atom, md_str_t* out) {
     case Key_Element: {
         const md_atomic_number_t z = md_atom_atomic_number(&sys.atom, atom);
         if (z <= 0) return false;
-        *out = md_util_element_symbol((md_element_t)z);
+        *out = md_atomic_number_symbol((md_atomic_number_t)z);
         return quotable(*out);
     }
     case Key_Resname: {
