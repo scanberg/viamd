@@ -534,42 +534,6 @@ static void build_lipids(GlyphBuilder& b, const md_system_t& sys) {
     md_temp_end(temp);
 }
 
-// The rings of each component which lie within it, as (component, ring) sorted by component
-struct ResRing {
-    int32_t  res;
-    uint32_t ring;
-};
-
-static md_array(ResRing) rings_by_residue(const md_system_t& sys, md_allocator_i* alloc) {
-    md_array(ResRing) out = nullptr;
-    const size_t num_rings = md_ring_data_count(&sys.ring);
-    for (size_t r = 0; r < num_rings; ++r) {
-        const int32_t* atoms = md_ring_atoms(&sys.ring, r);
-        const size_t n = md_ring_size(&sys.ring, r);
-        if (n < 3) continue;
-        const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)atoms[0]);
-        if (res < 0) continue;
-        const md_urange_t range = md_system_residue_atom_range(&sys, (size_t)res);
-        bool within = true;
-        for (size_t k = 0; k < n; ++k) {
-            within &= range.beg <= (uint32_t)atoms[k] && (uint32_t)atoms[k] < range.end;
-        }
-        if (within) md_array_push(out, (ResRing{res, (uint32_t)r}), alloc);
-    }
-    // Rings come in the order of their atoms, which is nearly that of the residues: sort to be sure
-    const size_t n = md_array_size(out);
-    for (size_t i = 1; i < n; ++i) {
-        const ResRing x = out[i];
-        size_t j = i;
-        while (j > 0 && out[j - 1].res > x.res) {
-            out[j] = out[j - 1];
-            --j;
-        }
-        out[j] = x;
-    }
-    return out;
-}
-
 static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
     const int32_t* atoms = md_ring_atoms(&sys.ring, ring);
     const size_t n = md_ring_size(&sys.ring, ring);
@@ -579,8 +543,8 @@ static bool ring_has_atom(const md_system_t& sys, uint32_t ring, int32_t atom) {
     return false;
 }
 
-// The rings of 3 to 7 atoms of each atom: atom a is in ring[offset[a] .. offset[a + 1]). For the nucleotides without a
-// residue (their backbones found from the bonds alone, as for an XYZ file), whose rings are found from their atoms.
+// The rings of 3 to 7 atoms of each atom: atom a is in ring[offset[a] .. offset[a + 1]), from which the rings of each
+// nucleotide are found by its atoms (nucleotide_rings), with or without a residue.
 struct AtomRings {
     md_array(uint32_t) offset = nullptr;    // [num_atoms + 1]
     md_array(uint32_t) ring = nullptr;
@@ -748,14 +712,7 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* temp_alloc = md_temp_allocator(temp);
-    md_array(ResRing) res_rings = rings_by_residue(sys, temp_alloc);
-    const size_t num_res_rings = md_array_size(res_rings);
-
-    // Nucleotides without a residue have their rings found from their atoms
-    bool without_res = false;
-    for (size_t s = 0; s < bb.segment.count && !without_res; ++s) without_res = bb.segment.res_idx[s] < 0;
-    AtomRings atom_rings = {};
-    if (without_res) atom_rings = rings_by_atom(sys, temp_alloc);
+    const AtomRings atom_rings = rings_by_atom(sys, temp_alloc);
 
     // The point of each atom of the current nucleotide, its rings, and the corners of a slab
     md_array(int32_t)  corner_atom = nullptr;
@@ -802,22 +759,8 @@ static void build_nucleic_acids(GlyphBuilder& b, const md_system_t& sys) {
                 continue;
             }
 
-            // The rings of the nucleotide: those within its residue (binary search for its first), or without one
-            // those found from its C1'
-            md_array_shrink(seg_rings, 0);
-            if (res >= 0) {
-                size_t lo = 0, hi = num_res_rings;
-                while (lo < hi) {
-                    const size_t mid = (lo + hi) / 2;
-                    if (res_rings[mid].res < res) lo = mid + 1;
-                    else hi = mid;
-                }
-                for (size_t i = lo; i < num_res_rings && res_rings[i].res == res; ++i) {
-                    md_array_push(seg_rings, res_rings[i].ring, temp_alloc);
-                }
-            } else {
-                nucleotide_rings(&seg_rings, atom_rings, sys, atoms.c1, temp_alloc);
-            }
+            // The rings of the nucleotide, found from its C1': the sugar, and the rings of its base
+            nucleotide_rings(&seg_rings, atom_rings, sys, atoms.c1, temp_alloc);
             uint32_t sugar_c1 = UINT32_MAX;
             for (size_t i = 0; i < md_array_size(seg_rings); ++i) {
                 const uint32_t ring = seg_rings[i];

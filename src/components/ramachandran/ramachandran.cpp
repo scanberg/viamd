@@ -264,21 +264,13 @@ struct Layer {
 
 // ## Masks
 
-// Adds the atoms a backbone segment stands for to mask: those of its residue, or for a segment without a residue (a
-// backbone found from the bonds alone, as for an XYZ file) those of its backbone
+// Adds the atoms a backbone segment stands for to mask (md_util_protein_segment_atoms): those of its residue, or of
+// its amino acid by the roles of the atoms
 static void mask_add_segment(md_bitmask_t* mask, const md_system_t& sys, size_t seg_idx) {
-    const md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[seg_idx];
-    if (res_idx >= 0) {
-        const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-        if (range.beg != range.end) {
-            modify_field(mask, range, SelectionOperator::Or);
-        }
-        return;
-    }
-    const md_amino_acid_atoms_t& a = sys.protein_backbone.segment.atoms[seg_idx];
-    const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
-    for (md_atom_idx_t i : atoms) {
-        if (i >= 0 && (size_t)i < sys.atom.count) md_bitmask_set_bit(mask, (uint32_t)i);
+    md_atom_idx_t atoms[512];
+    const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, seg_idx), MD_COUNTOF(atoms));
+    for (size_t k = 0; k < n; ++k) {
+        if ((size_t)atoms[k] < sys.atom.count) md_bitmask_set_bit(mask, (uint32_t)atoms[k]);
     }
 }
 

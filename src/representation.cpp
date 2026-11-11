@@ -1494,9 +1494,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         const md_protein_backbone_data_t& bb = sys.protein_backbone;
         if (hit.local_idx < bb.segment.count) {
             cartoon = true;
-            const md_residue_idx_t res = bb.segment.res_idx ? bb.segment.res_idx[hit.local_idx] : -1;
-            if (res >= 0) push_residue(res);
-            else push(bb.segment.atoms[hit.local_idx].ca);
+            push(bb.segment.atoms[hit.local_idx].ca);
         }
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
@@ -1750,9 +1748,18 @@ void create_default_representations(ApplicationState* state) {
     }
 
     if (state->mold.sys.residue.count == 0) {
-        // No residues present
+        // No residues present: every atom as it is, and the chains of amino acids the bonds tell (an XYZ file of a
+        // protein, the geometry of a QM calculation) as a cartoon too, by what their atoms are (the backbone). As for a
+        // protein of residues, a short chain is left to the atoms.
         Representation* rep = create_representation(state, RepresentationType::BallAndStick, ColorMapping::Type);
         snprintf(rep->name, sizeof(rep->name), "default");
+        const md_protein_backbone_data_t& bb = state->mold.sys.protein_backbone;
+        uint32_t longest = 0;
+        for (size_t r = 0; r < bb.range.count; ++r) longest = MD_MAX(longest, bb.range.offset[r + 1] - bb.range.offset[r]);
+        if (longest >= 20) {
+            Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, MD_STR_LIT("backbone"));
+            snprintf(prot->name, sizeof(prot->name), "protein");
+        }
         goto done;
     }
 

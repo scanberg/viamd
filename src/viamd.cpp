@@ -7732,11 +7732,11 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
                 // A cartoon segment stands for the residue it stems from: at least that is hovered and selected
                 mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
             } else {
-                // Without one (a backbone found from the bonds alone, as for an XYZ file) for its backbone atoms
-                const md_amino_acid_atoms_t& a = bb.segment.atoms[seg_idx];
-                const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o };
-                for (md_atom_idx_t atom : atoms) {
-                    if (atom >= 0) mask_set_atom_by_selection_granularity(mask, (size_t)atom, granularity, app.mold.sys);
+                // Without one, for the atoms of its amino acid by their roles (md_util_protein_segment_atoms)
+                md_atom_idx_t atoms[512];
+                const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &app.mold.sys, seg_idx), MD_COUNTOF(atoms));
+                for (size_t k = 0; k < n; ++k) {
+                    mask_set_atom_by_selection_granularity(mask, (size_t)atoms[k], granularity, app.mold.sys);
                 }
             }
         }

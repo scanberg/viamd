@@ -236,17 +236,11 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
                     }
                 }
 #endif
-                md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[range_beg + j];
-                if (res_idx >= 0) {
-                    md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-                    set_colors(colors + range.beg, range.end - range.beg, color);
-                } else {
-                    // No residue (a backbone found from the bonds alone, as for an XYZ file): the atoms of the segment
-                    const md_amino_acid_atoms_t& a = sys.protein_backbone.segment.atoms[range_beg + j];
-                    const md_atom_idx_t atoms[] = { a.n, a.ca, a.c, a.o, a.cb, a.hn };
-                    for (md_atom_idx_t atom : atoms) {
-                        if (atom >= 0 && (size_t)atom < count) colors[atom] = color;
-                    }
+                // The atoms of the segment: those of its residue, or of its amino acid by the roles of the atoms
+                md_atom_idx_t atoms[512];
+                const size_t n = MD_MIN(md_util_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, range_beg + j), MD_COUNTOF(atoms));
+                for (size_t k = 0; k < n; ++k) {
+                    if ((size_t)atoms[k] < count) colors[atoms[k]] = color;
                 }
             }
         }
