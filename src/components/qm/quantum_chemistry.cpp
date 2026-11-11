@@ -102,6 +102,7 @@
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
+constexpr uint64_t interaction_surface_flow = HASH_STR_LIT64("interaction surface flow");
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
@@ -996,6 +997,158 @@ static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int3
     return true;
 }
 
+// The basis atoms' positions (bohr) of the current frame, copied for a worker that makes fields at them
+struct CtGeometry {
+    const md_system_t* sys = nullptr;   // outlives the jobs (a load waits for the pool)
+    vec3_t* xyz = nullptr;              // heap
+    size_t  count = 0;
+
+    bool init(const ApplicationState& state) {
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        size_t n = 0;
+        const vec3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
+        if (!p || n == 0) return false;
+        xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), sizeof(vec3_t) * n);
+        md_memcpy(xyz, p, sizeof(vec3_t) * n);
+        count = n;
+        sys = &state.mold.sys;
+        return true;
+    }
+    void free() {
+        if (xyz) md_free(md_get_heap_allocator(), xyz, sizeof(vec3_t) * count);
+        *this = {};
+    }
+    IsoFieldGeometry iso() const { return { sys, xyz, count }; }
+};
+
+// The hole and particle densities of one excited state for the charge transfer window's side views, from its NTO
+// pairs: rho_hole = sum_k lambda_k h_k^2, rho_particle = sum_k lambda_k p_k^2. The same pairs the diagram partitions,
+// so the views show what its columns count (for TDA these are the detachment and attachment densities; for RPA they
+// differ slightly, which is why the views say "hole" and "particle"). As isosurface fields (md_gto_iso) of those
+// products as they are - nothing A x A is formed. The pairs are read on the main thread once they are resident
+// (es_nto_ready), the fields made on a worker: switching state never waits.
+struct CtFieldJob {
+    int32_t state = -1;
+    size_t  A = 0;
+    NtoPairs pairs = {};
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // hole, particle: owned until taken
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_field_job_destroy(CtFieldJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t K = job->pairs.K, A = job->A;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    for (int i = 0; i < 2; ++i) if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);     // never given to a pool task
+    job->geom.free();
+    delete job;
+}
+
+// The number of AOs the NTOs are written in: the last axis of the {S,L,A} coefficients
+static size_t nto_num_ao(const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_hole);
+    if (!attr || attr->format.rank < 1) return 0;
+    return attr->format.shape[attr->format.rank - 1];
+}
+
+// Null when the state's pairs cannot be read (yet: ask es_nto_ready first)
+static CtFieldJob* ct_field_job_start(const ApplicationState& state, int32_t s) {
+    const md_system_t& sys = state.mold.sys;
+    const size_t A = nto_num_ao(sys);
+    if (s < 0 || A == 0) return nullptr;
+    CtFieldJob* job = new CtFieldJob();
+    job->state = s;
+    job->A = A;
+    if (!nto_pairs_read(&job->pairs, sys, A, s) || !job->geom.init(state)) {
+        ct_field_job_destroy(job);
+        return nullptr;
+    }
+    for (size_t k = 0; k < job->pairs.K; ++k) job->pairs.lambda[k] = MD_MAX(0.0, job->pairs.lambda[k]);
+    job->task.start(MD_STR_LIT("Charge transfer densities"), [job]() {
+        const IsoFieldGeometry g = job->geom.iso();
+        const double* rows[2] = { job->pairs.hole, job->pairs.part };
+        bool ok = true;
+        for (int c = 0; c < 2 && ok; ++c) {
+            if (task_system::cancelled()) break;
+            job->field[c] = iso_field_create_products(g, rows[c], nullptr, job->pairs.lambda, job->pairs.K, job->A);
+            ok = job->field[c] != nullptr;
+        }
+        job->ok = ok && job->field[0] && job->field[1];
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// One ribbon's orbital pair for the side views: a block NTO (md_qm_ct_block_nto), which the main thread forms
+// in the Lowdin basis from the state's charge transfer data (K x K work and a pass over K x A), and this takes
+// back to AO coefficients, C C~^T x (O(M A) per vector), and makes the isosurface fields of: a worker's.
+struct CtOrbitalJob {
+    uint64_t key = 0;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    double*  x[2] = {};                 // [A] hole and particle in the Lowdin basis, owned
+    double*  c[2] = {};                 // [A] the same in AO coefficients, owned
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // owned until taken
+    char     info[2][64] = {};
+    char     sub[96] = {};
+    bool     ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_orbital_job_destroy(CtOrbitalJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0;
+    for (int i = 0; i < 2; ++i) {
+        if (job->x[i]) md_free(heap, job->x[i], sizeof(double) * A);
+        if (job->c[i]) md_free(heap, job->c[i], sizeof(double) * A);
+        if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);
+    }
+    job->geom.free();
+    delete job;
+}
+
+// x[0], x[1] are taken over: allocated by the caller from the heap, A doubles each. Null without a geometry.
+static CtOrbitalJob* ct_orbital_job_start(const ApplicationState& state, const LowdinJob* lowdin, uint64_t key, double* x_hole, double* x_part) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    CtOrbitalJob* job = new CtOrbitalJob();
+    job->key    = key;
+    job->lowdin = lowdin;
+    job->x[0]   = x_hole;
+    job->x[1]   = x_part;
+    if (!job->geom.init(state)) {
+        ct_orbital_job_destroy(job);
+        return nullptr;
+    }
+    const size_t A = lowdin->num_ao;
+    job->c[0] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->c[1] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->task.start(MD_STR_LIT("Ribbon orbitals"), [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const IsoFieldGeometry g = job->geom.iso();
+        bool ok = true;
+        for (int i = 0; i < 2 && ok; ++i) {
+            if (task_system::cancelled()) { ok = false; break; }
+            md_qm_lowdin_inverse_transform(job->c[i], job->x[i], 1, lw->C, lw->C_lowdin, lw->num_mo, lw->num_ao);
+            job->field[i] = iso_field_create_coefficients(g, job->c[i], lw->num_ao);
+            ok = job->field[i] != nullptr;
+        }
+        job->ok = ok;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
 // The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
 static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
     if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
@@ -1417,6 +1570,117 @@ struct QuantumChemistry : viamd::EventHandler {
         double* detach    = nullptr;
     } td_cache;
 
+    // The charge transfer window's side views: the molecule with the hole density beside the diagram's hole column and
+    // the particle density beside its particle column, one camera for both. Optional (they take room).
+    //
+    // The surfaces are meshes (md_gto_iso, iso_meshes.h): extracted from the fields themselves, sharp however close
+    // the camera comes, and drawn with the stochastic transparency of isomesh_utils.h.
+    //
+    // Nothing here waits. A state's two density fields are made from its NTO pairs on a worker (CtFieldJob), their
+    // meshes extracted on the GPU as a job over frames. Fields and meshes are kept per state in a cache of a set
+    // number of entries, least recently used out first, and while nothing else is asked the cache is filled with the
+    // other states, the selected one's neighbours first: switching state shows what is cached at once, and what is
+    // not yet keeps the last picture until it is. An iso value changed re-extracts what is shown from the fields kept.
+    struct CtViews {
+        bool   show = false;
+        float  width_frac = 0.26f;      // of the window's canvas, each side
+        double iso_val = 0.05;          // orbitals at +-iso_val, densities at iso_val^2, as the transition analysis
+        int    cache_entries = 24;      // states and orbital pairs kept
+        bool   initialized = false;
+
+        // A state's two densities, or one ribbon's orbital pair (block NTO) or the state's own NTO pair
+        struct Entry {
+            uint64_t key = 0;           // ctv_density_key, or an orbital key (top bit set)
+            int32_t  state = -1;
+            md_gto_iso_field_t* field[2] = {};  // hole, particle
+            IsoMeshes* meshes = nullptr;        // heap, both fields' surfaces
+            uint64_t used = 0;
+            bool     failed = false;    // nothing to show (no NTO pairs, or no field could be made)
+            bool     orbital = false;   // signed: both sheets, at +-iso
+            char     info[2][64] = {};  // per view, beside its caption: what is shown
+            char     sub[96] = {};      // under both
+        };
+        md_array(Entry) cache = nullptr;    // heap
+        uint64_t tick = 0;
+        uint64_t positions_hash = 0;    // the geometry the fields are of: a new one empties the cache
+        CtFieldJob* job = nullptr;
+        int32_t shown = -1;             // the state whose densities the views show
+
+        // Ribbon orbitals. Hovering a ribbon asks for its orbital pair once the cursor has rested on it for
+        // hover_delay (sweeping across the diagram asks for nothing); clicking one pins it, so that the views
+        // keep it while the cursor is off the diagram (turning them, for one). The orbital route's NTO pairs
+        // likewise, from the middle column.
+        CtOrbitalJob* orb_job = nullptr;
+        uint64_t orb_shown = 0;         // the orbital entry last shown
+        uint64_t hover_cand = 0;        // the orbital under the cursor, and since when
+        double   hover_t0 = 0.0;
+        float    hover_delay = 0.15f;
+        struct Pin {
+            bool     on = false;
+            int32_t  state = -1;
+            uint64_t src_key = 0, dst_key = 0;  // the ribbon, by its ends (fragment route)
+            uint32_t pair = 0;
+            int32_t  nto = -1;                  // the NTO pair (orbital route)
+        } pin;
+
+        GBuffer  gbuf = {};
+        uint32_t iso_tex[2] = {};
+        uint32_t out_tex[2] = {};
+        uint32_t out_fbo = 0;
+        isomesh::Target mesh_target[2] = {};
+        bool     converged = true;      // both images final: no redraw until something changes
+        uint64_t render_hash = 0;
+        PickingSurface picking_surface = {};
+        Camera camera = {};
+        ViewTransform target = {};
+        md_gl_rep_t gl_rep = {};
+    } ctv;
+
+    void ctv_entry_free(CtViews::Entry* e) {
+        if (e->meshes) {
+            if (app) iso_meshes_free(e->meshes, app);   // first: its extraction state holds the fields
+            delete e->meshes;
+            e->meshes = nullptr;
+        }
+        for (int c = 0; c < 2; ++c) {
+            iso_field_release(e->field[c]);
+            e->field[c] = nullptr;
+        }
+    }
+
+    void ctv_cache_clear() {
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) ctv_entry_free(&ctv.cache[i]);
+        md_array_shrink(ctv.cache, 0);
+        ct_field_job_destroy(ctv.job);
+        ctv.job = nullptr;
+        ct_orbital_job_destroy(ctv.orb_job);
+        ctv.orb_job = nullptr;
+        ctv.shown = -1;
+        ctv.orb_shown = 0;
+    }
+
+    void ctv_free() {
+        ctv_cache_clear();
+        md_array_free(ctv.cache, md_get_heap_allocator());
+        for (int i = 0; i < 2; ++i) {
+            if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+            if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            isomesh::target_free(&ctv.mesh_target[i]);
+        }
+        if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
+        if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
+        md_gl_rep_destroy(ctv.gl_rep);
+        const bool   show = ctv.show;           // preferences, not data
+        const float  width_frac = ctv.width_frac;
+        const double iso_val = ctv.iso_val;
+        const int    cache_entries = ctv.cache_entries;
+        ctv = CtViews{};
+        ctv.show          = show;
+        ctv.width_frac    = width_frac;
+        ctv.iso_val       = iso_val;
+        ctv.cache_entries = cache_entries;
+    }
+
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
     //
     // Separate window, separate state, but the SAME group definitions as the NTO window - asking
@@ -1435,6 +1699,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
         // Group labels already live in nto.group.label; these two are ours.
         char nto_label[MAX_NTO_LABELS][40] = {};
+        uint32_t nto_index[MAX_NTO_LABELS] = {};   // the state's NTO pair each middle node stands for
 
         // Second line: the dominant MO character of each NTO, e.g. "HOMO-1 -> LUMO". Empty when
         // no single pair dominates enough to name honestly.
@@ -1794,6 +2059,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     panel_meshes_free(&orb.mesh, app);
                     panel_meshes_free(&nto.mesh, app);
                 }
+                ctv_free();
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
@@ -2290,6 +2556,7 @@ struct QuantumChemistry : viamd::EventHandler {
         gl_rep = {};
         // Zeroed with nto below, which would leave its slot taken for good: one for each system loaded
         md_gl_rep_destroy(nto.gl_rep);
+        ctv_free();
         num_qm_atoms = 0;
         num_mos = 0;
         num_excited = 0;
@@ -2525,6 +2792,25 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
             nto.target = default_view;
             nto.camera = nto.target;
+
+            // The charge transfer window's side views: the same view to start from, the molecule in its element
+            // colours, a grid at half the density of the main one. What a previous system left goes first.
+            ctv_free();
+            picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
+            ctv.target = default_view;
+            ctv.camera = ctv.target;
+            ctv.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            {
+                QmAtoms qm = {};
+                if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
+                    md_temp_scope_t temp = md_temp_begin();
+                    MD_DEFER { md_temp_end(temp); };
+                    uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
+                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_util_element_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
+                    md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
+                }
+            }
+            ctv.initialized = true;
         }
 
         // RSP. Oscillator strengths are what a linear response calculation produces and
@@ -10500,6 +10786,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (size_t k = 0; k < num_nto; ++k) {
             if (lambdas[k] < (double)flow.lambda_cutoff) continue;
+            if (num_keep >= MAX_NTO_LABELS) break;  // the labels' room; the rest weigh least (descending)
 
             for (int side = 0; side < 2; ++side) {
                 const double* C_nto = (side == 0 ? C_hole : C_part) + k * num_ao;
@@ -10531,6 +10818,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
+            flow.nto_index[num_keep] = (uint32_t)k;
             flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
                                C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
 
@@ -10735,6 +11023,11 @@ struct QuantumChemistry : viamd::EventHandler {
             const md_flow_layout_node_t* n = layout.nodes + i;
             bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
             bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
+        }
+        // the bands too: an open group's level can be the outermost
+        for (size_t i = 0; i < md_array_size(layout.bands); ++i) {
+            bb_min.x = MD_MIN(bb_min.x, layout.bands[i].min.x);
+            bb_max.x = MD_MAX(bb_max.x, layout.bands[i].max.x);
         }
         const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
         const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
@@ -11126,6 +11419,703 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // The side views of the charge transfer window (CtViews)
+    // ---------------------------------------------------------------------------
+
+    static uint64_t ctv_density_key(int32_t s) { return (uint64_t)(uint32_t)s + 1; }    // never 0, top bit clear
+    static uint64_t ctv_orbital_key(uint64_t h) { return h | (1ull << 63); }
+
+    CtViews::Entry* ctv_find_key(uint64_t key) {
+        if (!key) return nullptr;
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+            if (ctv.cache[i].key == key) return &ctv.cache[i];
+        }
+        return nullptr;
+    }
+    CtViews::Entry* ctv_find(int32_t s) { return ctv_find_key(ctv_density_key(s)); }
+
+    // The lattice the side views' meshes are extracted on: the main views' middle resolution
+    static double ctv_cell_size() { return iso_meshes_cell_size(VolumeResolution::Mid); }
+
+    // An entry's two surfaces at the current iso value: a density's positive sheet, an orbital's both
+    uint32_t ctv_slots(IsoMeshSlot out[2], const CtViews::Entry& e) const {
+        if (e.failed || !e.field[0] || !e.field[1] || !(ctv.iso_val > 0.0)) return 0;
+        const double   iso    = e.orbital ? ctv.iso_val : ctv.iso_val * ctv.iso_val;
+        const uint32_t sheets = e.orbital ? (uint32_t)MD_GTO_ISO_SHEET_BOTH : (uint32_t)MD_GTO_ISO_SHEET_POSITIVE;
+        out[0] = { e.field[0], iso, sheets };
+        out[1] = { e.field[1], iso, sheets };
+        return 2;
+    }
+
+    // Its meshes are of the current iso value
+    bool ctv_entry_current(const CtViews::Entry& e) const {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, e);
+        return n && e.meshes && iso_meshes_current(e.meshes, iso_meshes_slots_key(slots, n, ctv_cell_size(), e.key));
+    }
+
+    // It has meshes to draw: of the current iso value or of an earlier one, until the new ones are in
+    static bool ctv_entry_drawable(const CtViews::Entry& e) {
+        return !e.failed && e.meshes && e.meshes->ok && e.meshes->num_slots == 2;
+    }
+
+    // Brings its meshes on: a GPU extraction is a job that each call advances for a few milliseconds at most, the
+    // mesh shown staying the previous one until it is done. Without a GPU device the extraction is done here.
+    void ctv_mesh_update(ApplicationState& state, CtViews::Entry* e) {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, *e);
+        if (n == 0) return;
+        if (!e->meshes) e->meshes = new IsoMeshes();
+        iso_meshes_update(e->meshes, &state, slots, n, ctv_cell_size(), e->key);
+    }
+
+    // Room for one more entry: the least recently used out, never the one asked for or one on screen
+    void ctv_make_room(uint64_t keep) {
+        const size_t cap = (size_t)MD_MAX(ctv.cache_entries, 4);
+        while (md_array_size(ctv.cache) >= cap) {
+            int64_t victim = -1;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                const CtViews::Entry& e = ctv.cache[i];
+                if (e.key == keep || e.key == ctv_density_key(ctv.shown) || e.key == ctv.orb_shown) continue;
+                if (victim < 0 || e.used < ctv.cache[victim].used) victim = (int64_t)i;
+            }
+            if (victim < 0) return;
+            ctv_entry_free(&ctv.cache[victim]);
+            md_array_swap_back_and_pop(ctv.cache, (size_t)victim);
+        }
+    }
+
+    // Once a frame while the views are on. Takes the fields of the density job that finished and starts the next:
+    // the selected state when it is not cached, otherwise, when nothing is asked and the extraction runs off this
+    // thread, the uncached state nearest the selected one while there is room. And brings on the meshes of one
+    // cached state a frame that are not of the current iso value, the nearest first, once the selected one's are.
+    void ctv_update(ApplicationState& state) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        // The fields are of one geometry
+        const uint64_t positions = panel_positions_hash(state);
+        if (positions != ctv.positions_hash) {
+            ctv_cache_clear();
+            ctv.positions_hash = positions;
+        }
+
+        if (ctv.job && ctv.job->done.load(std::memory_order_acquire)) {
+            CtFieldJob* job = ctv.job;
+            ctv.job = nullptr;
+            const uint64_t key = ctv_density_key(job->state);
+            if (!ctv_find_key(key)) {
+                ctv_make_room(key);
+                CtViews::Entry e = {};
+                e.key = key;
+                e.state = job->state;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
+                }
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_field_job_destroy(job);
+        }
+
+        const int32_t S = (int32_t)num_excited;
+        const bool gpu = gpu_volume_evaluation_available(&state);
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        const bool sel_settled = sel && (sel->failed || ctv_entry_current(*sel));
+
+        if (!ctv.job) {
+            int32_t next = -1;
+            if (rsp.selected >= 0 && rsp.selected < S && !sel) {
+                next = rsp.selected;
+            } else if (gpu && sel_settled && md_array_size(ctv.cache) + 1 < (size_t)MD_MAX(ctv.cache_entries, 4)) {
+                // nothing waiting: the nearest uncached state, with room to spare (a prefetch evicts nothing)
+                for (int32_t d = 1; d < S && next < 0; ++d) {
+                    const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
+                    for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
+                }
+            }
+            if (next >= 0 && es_nto_ready(&state, (size_t)next)) {
+                ctv.job = ct_field_job_start(state, next);
+                if (!ctv.job) {
+                    // nothing to make the densities of: remembered, so that it is not asked again every frame
+                    ctv_make_room(ctv_density_key(next));
+                    CtViews::Entry e = {};
+                    e.key = ctv_density_key(next);
+                    e.state = next;
+                    e.failed = true;
+                    md_array_push(ctv.cache, e, heap);
+                }
+            }
+        }
+
+        // Meshes ahead of being asked for: on the GPU only (the CPU extraction blocks), one entry a frame
+        if (gpu && sel_settled) {
+            CtViews::Entry* best = nullptr;
+            int32_t best_d = INT32_MAX;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                CtViews::Entry& e = ctv.cache[i];
+                if (e.orbital || e.failed || e.state == rsp.selected || ctv_entry_current(e)) continue;
+                const int32_t d = abs(e.state - rsp.selected);
+                if (d < best_d) { best_d = d; best = &e; }
+            }
+            if (best) ctv_mesh_update(state, best);
+        }
+    }
+
+    // ---- ribbon orbitals ----
+
+    // An orbital the views can show: a ribbon's block NTO pair (fragment route) or an NTO pair of the state
+    // (orbital route). key 0 for none.
+    struct CtOrbReq {
+        uint64_t key = 0;
+        int32_t  link = -1;     // cut link (fragment route)
+        uint32_t pair = 0;      // block NTO pair of the ribbon, descending
+        int32_t  nto = -1;      // NTO pair index of the state (orbital route)
+    };
+
+    bool ctv_block_ready() const {
+        return flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected && lowdin_job_ready(lowdin);
+    }
+
+    // The NTO pair a node of the orbital route's middle column stands for, -1 for any other node
+    int32_t ctv_nto_of_cut_node(uint32_t cut_idx) const {
+        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!n || (n->flags & MD_FLOW_NODE_FLAG_OTHER) || n->level != FLOW_LEVEL_NTO) return -1;
+        const uint32_t k = flow_key_index(n->key);
+        return k < MAX_NTO_LABELS ? (int32_t)flow.nto_index[k] : -1;
+    }
+
+    CtOrbReq ctv_request(int32_t link, int32_t stripe, int32_t node) const {
+        CtOrbReq r = {};
+        if (rsp.selected < 0) return r;
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+            if (link < 0 || (size_t)link >= md_array_size(flow.cut.links) || !ctv_block_ready()) return r;
+            const md_flow_link_t* l = flow.cut.links + link;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (!a || !b || (a->flags & MD_FLOW_NODE_FLAG_OTHER) || (b->flags & MD_FLOW_NODE_FLAG_OTHER)) return r;
+            if (!flow_level_has_atoms(a->level) || !flow_level_has_atoms(b->level)) return r;
+            r.link = link;
+            r.pair = stripe > 0 ? (uint32_t)stripe : 0;
+            const uint64_t h[4] = { (uint64_t)rsp.selected, a->key, b->key, r.pair };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0xb10c4a0ull));
+        } else if (flow.mode == FLOW_MODE_ORBITALS) {
+            int32_t k = node >= 0 ? ctv_nto_of_cut_node((uint32_t)node) : -1;
+            if (k < 0 && link >= 0 && (size_t)link < md_array_size(flow.cut.links)) {
+                k = ctv_nto_of_cut_node(flow.cut.links[link].src);
+                if (k < 0) k = ctv_nto_of_cut_node(flow.cut.links[link].dst);
+            }
+            if (k < 0) return r;
+            r.nto = k;
+            const uint64_t h[2] = { (uint64_t)rsp.selected, (uint64_t)k };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0x7e0ull));
+        }
+        return r;
+    }
+
+    // The pinned orbital as a request, its ribbon found again among the visible ones by its ends
+    CtOrbReq ctv_pin_request() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected) return {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            if (p.nto < 0) return {};
+            for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                if (flow.graph.nodes[i].level == FLOW_LEVEL_NTO && ctv_nto_of_cut_node((uint32_t)i) == p.nto) return ctv_request(-1, -1, (int32_t)i);
+            }
+            return {};
+        }
+        const int32_t l = ctv_pin_link();
+        return l >= 0 ? ctv_request(l, (int32_t)p.pair, -1) : CtOrbReq{};
+    }
+
+    int32_t ctv_pin_link() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected || flow.mode != FLOW_MODE_FRAGMENTS) return -1;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].dst);
+            if (a && b && a->key == p.src_key && b->key == p.dst_key) return (int32_t)i;
+        }
+        return -1;
+    }
+
+    void ctv_pin_toggle(const CtOrbReq& r) {
+        const CtOrbReq cur = ctv_pin_request();
+        if (cur.key && cur.key == r.key) { ctv.pin = {}; return; }
+        ctv.pin = {};
+        if (!r.key) return;
+        ctv.pin.on = true;
+        ctv.pin.state = rsp.selected;
+        ctv.pin.nto = r.nto;
+        ctv.pin.pair = r.pair;
+        if (r.link >= 0) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].dst);
+            ctv.pin.src_key = a ? a->key : 0;
+            ctv.pin.dst_key = b ? b->key : 0;
+        }
+    }
+
+    // A ribbon's block NTO pair in the Lowdin basis: the pair'th singular pair of the ribbon's block of the
+    // transition density, each confined to its end's atoms. x_hole and x_part are A doubles; false when the
+    // ribbon has no such pair.
+    bool ctv_block_pair(double* x_hole, double* x_part, char info[2][64], char* sub, size_t sub_cap, int32_t link, uint32_t pair) {
+        const size_t K = ct_job->K, KK = K * K, A = lowdin->num_ao, N = ct_job->num_atoms;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const md_flow_link_t* l = flow.cut.links + link;
+        const uint32_t end[2] = { l->src, l->dst };
+        const double* x_lowdin[2] = { ct_job->hole, ct_job->part };
+        const double* blocks[2]   = { ct_job->hole_blocks, ct_job->part_blocks };
+        double* B[2];
+        bool* in[2];
+        for (int side = 0; side < 2; ++side) {
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, end[side], talloc) || md_array_size(atoms) == 0) return false;
+            B[side]  = md_temp_alloc_zero_array(temp, double, KK);
+            in[side] = md_temp_alloc_zero_array(temp, bool, N + 1);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= N) continue;
+                in[side][atoms[i]] = true;
+                const double* ab = blocks[side] + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) B[side][k] += ab[k];
+            }
+        }
+        double* w  = md_temp_alloc_array(temp, double, K);
+        double* hc = md_temp_alloc_array(temp, double, KK);
+        double* pc = md_temp_alloc_array(temp, double, KK);
+        const size_t n = md_qm_ct_block_nto(w, hc, pc, ct_job->lambda, K, B[0], B[1]);
+        if (n == 0) return false;
+        const size_t j = MD_MIN((size_t)pair, n - 1);
+        double sum = 0.0;
+        for (size_t i = 0; i < n; ++i) sum += w[i];
+
+        const double* coef[2] = { hc + j * K, pc + j * K };
+        double* out[2] = { x_hole, x_part };
+        for (int side = 0; side < 2; ++side) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lowdin->ao_atom[mu];
+                double v = 0.0;
+                if (atom < N && in[side][atom]) {
+                    for (size_t k = 0; k < K; ++k) v += coef[side][k] * x_lowdin[side][k * A + mu];
+                }
+                out[side][mu] = v;
+            }
+            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, end[side]);
+            snprintf(info[side], 64, "%.*s", node ? (int)node->label.len : 0, node && node->label.ptr ? node->label.ptr : "");
+        }
+        if (n > 1) {
+            snprintf(sub, sub_cap, "pair %zu of %zu, %.0f%% of the ribbon (%.1f%%)", j + 1, n, sum > 0.0 ? 100.0 * w[j] / sum : 0.0, 100.0 * l->weight);
+        } else {
+            snprintf(sub, sub_cap, "the ribbon's one pair (%.1f%%)", 100.0 * l->weight);
+        }
+        return true;
+    }
+
+    // Once a frame while the views are on, after ctv_update: collects the orbital job that finished, and starts
+    // the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job: they
+    // are published as AO coefficients and go straight to the evaluation.
+
+    // Once a frame while the views are on, after ctv_update: takes the fields of the orbital job that finished, and
+    // starts the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job:
+    // they are published as AO coefficients, and a field of one orbital is made in no time.
+    void ctv_orbital_update(ApplicationState& state, const CtOrbReq& req) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        if (ctv.orb_job && ctv.orb_job->done.load(std::memory_order_acquire)) {
+            CtOrbitalJob* job = ctv.orb_job;
+            ctv.orb_job = nullptr;
+            if (!ctv_find_key(job->key)) {
+                ctv_make_room(job->key);
+                CtViews::Entry e = {};
+                e.key = job->key;
+                e.state = rsp.selected;
+                e.orbital = true;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                md_memcpy(e.info, job->info, sizeof(e.info));
+                md_memcpy(e.sub, job->sub, sizeof(e.sub));
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
+                }
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_orbital_job_destroy(job);
+        }
+
+        if (!req.key || ctv_find_key(req.key)) return;
+        if (req.nto >= 0) {
+            // the state's own NTO pair, from the attribute table
+            if (!es_nto_ready(&state, (size_t)rsp.selected)) return;
+            ctv_make_room(req.key);
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.used = ++ctv.tick;
+            snprintf(e.info[0], sizeof(e.info[0]), "NTO %d", req.nto + 1);
+            snprintf(e.info[1], sizeof(e.info[1]), "NTO %d", req.nto + 1);
+            const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto);
+            const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
+            double lambda = 0.0;
+            if (lam && md_attribute_extract_f64(&lambda, 1, lam, slice, md_unit_none()) == 1) {
+                snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
+            }
+            e.field[0] = iso_field_create_orbital(&state, es_path::nto_hole, &slice);
+            e.field[1] = iso_field_create_orbital(&state, es_path::nto_particle, &slice);
+            e.failed = !e.field[0] || !e.field[1];
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        if (ctv.orb_job || req.link < 0 || !ctv_block_ready()) return;
+
+        const size_t A = lowdin->num_ao;
+        double* x_hole = (double*)md_alloc(heap, sizeof(double) * A);
+        double* x_part = (double*)md_alloc(heap, sizeof(double) * A);
+        char info[2][64] = {};
+        char sub[96] = {};
+        CtOrbitalJob* job = nullptr;
+        if (ctv_block_pair(x_hole, x_part, info, sub, sizeof(sub), req.link, req.pair)) {
+            job = ct_orbital_job_start(state, lowdin, req.key, x_hole, x_part);     // takes x_hole and x_part
+        } else {
+            md_free(heap, x_hole, sizeof(double) * A);
+            md_free(heap, x_part, sizeof(double) * A);
+        }
+        if (!job) {
+            ctv_make_room(req.key);
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.failed = true;
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        md_memcpy(job->info, info, sizeof(info));
+        md_memcpy(job->sub, sub, sizeof(sub));
+        ctv.orb_job = job;
+    }
+
+    void draw_ct_views(ApplicationState& state, const ImRect r[2], uint64_t orb_key, bool keep_orbital) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 sz = r[0].GetSize();
+        if (sz.x < 16.0f || sz.y < 16.0f || !ctv.initialized) return;
+
+        camera_animate(&ctv.camera, ctv.target, state.app.timing.delta_s);
+
+        // What to show: the selected state once it has meshes, the last state shown until then
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        if (sel && !sel->failed) {
+            ctv_mesh_update(state, sel);
+            if (ctv_entry_drawable(*sel)) ctv.shown = rsp.selected;
+        }
+        CtViews::Entry* shown = ctv.shown >= 0 ? ctv_find(ctv.shown) : nullptr;
+        if (shown && !ctv_entry_drawable(*shown)) shown = nullptr;
+        if (sel && sel->failed) shown = nullptr;    // the last state's densities would read as this one's
+        bool updating = !(sel && sel->failed) && (ctv.shown != rsp.selected || (shown && !ctv_entry_current(*shown)));
+        const char* failed_status = (sel && sel->failed) ? "no NTO pairs" : nullptr;
+
+        // An orbital over the densities, when one is asked for
+        if (orb_key || keep_orbital) {
+            CtViews::Entry* want = ctv_find_key(orb_key);
+            if (want && !want->failed) ctv_mesh_update(state, want);
+            if (want && ctv_entry_drawable(*want)) {
+                ctv.orb_shown = orb_key;
+                shown = want;
+                updating = !ctv_entry_current(*want);
+                failed_status = nullptr;
+            } else if (want && want->failed) {
+                shown = nullptr;
+                updating = false;
+                failed_status = "no orbital pair";
+            } else {
+                CtViews::Entry* last = keep_orbital ? ctv_find_key(ctv.orb_shown) : nullptr;
+                if (last && ctv_entry_drawable(*last) && last->state == rsp.selected) shown = last;
+                updating = orb_key != 0;
+            }
+        }
+        if (shown) shown->used = ++ctv.tick;
+        const bool orbital = shown && shown->orbital;
+
+        const float aspect = sz.x / sz.y;
+        const mat4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
+        const mat4_t proj_mat     = camera_view_to_clip_matrix_persp(ctv.camera, aspect);
+        const mat4_t inv_view_mat = camera_view_to_world_matrix(ctv.camera);
+        const mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(ctv.camera, aspect);
+        const mat4_t world_to_clip = proj_mat * view_mat;
+        const mat4_t clip_to_world = inv_view_mat * inv_proj_mat;
+
+        const int width  = MD_MAX(1, (int)(sz.x * io.DisplayFramebufferScale.x));
+        const int height = MD_MAX(1, (int)(sz.y * io.DisplayFramebufferScale.y));
+        // Sized before the images go into the draw list, which records the texture names
+        if ((int)ctv.gbuf.width != width || (int)ctv.gbuf.height != height) {
+            gbuffer_init(&ctv.gbuf, width, height);
+            for (int i = 0; i < 2; ++i) {
+                if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+                if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            }
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (!ctv.iso_tex[i]) gl::init_texture_2D(&ctv.iso_tex[i], width, height, GL_RGBA16F);
+            if (!ctv.out_tex[i]) gl::init_texture_2D(&ctv.out_tex[i], width, height, GL_RGBA8);
+        }
+
+        vec4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
+        colors[0].w = colors[1].w = 0.75f;
+        // orbitals in the orbital window's lobe colours: the positive sheet, the negative
+        const vec4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
+
+        // Camera control in either view; the picking reads the shared buffer, the same in both
+        for (int i = 0; i < 2; ++i) {
+            ImGui::PushID(i + 0x5c7);
+            ImGui::SetCursorScreenPos(r[i].Min);
+            InteractionSurfaceState surface = interaction_surface(interaction_surface_flow, vec_cast(sz));
+            InteractionSurfaceViewTransformArgs view_args = {
+                .camera = ctv.camera,
+                .trackball_param = state.view.trackball_param,
+            };
+            InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&ctv.target, surface, view_args);
+            if (view_result.reset_requested) ctv.target = default_view;
+            if (surface.hovered) {
+                InteractionSurfaceHitArgs hit_args = {
+                    .picking_surface = &ctv.picking_surface,
+                    .picking_handler = state.picking_handler,
+                    .fbo = ctv.gbuf.fbo,
+                    .width = ctv.gbuf.width,
+                    .height = ctv.gbuf.height,
+                    .clip_to_world = clip_to_world,
+                };
+                PickingHit hit = {};
+                interaction_surface_hit_extract(&hit, surface, hit_args);
+                InteractionSurfaceEvent event = {};
+                interaction_surface_event_extract(&event, surface, hit);
+                event.clip_to_world = clip_to_world;
+                event.world_to_clip = world_to_clip;
+                if (event.kind != InteractionSurfaceEventKind::ContextMenu && event.kind != InteractionSurfaceEventKind::RegionSelect) {
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+                }
+            }
+            ImGui::PopID();
+        }
+
+        uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)ctv.gl_rep.id);
+        {
+            const int layout[2] = { width, height };
+            render_hash = md_hash64(layout, sizeof(layout), render_hash);
+            render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
+            const uint64_t s = shown ? shown->key : 0;
+            render_hash = md_hash64(&s, sizeof(s), render_hash);
+            if (shown) {
+                render_hash = md_hash64(&shown->meshes->mesh.version, sizeof(shown->meshes->mesh.version), render_hash);
+                render_hash = md_hash64(shown->meshes->index_offset, sizeof(shown->meshes->index_offset), render_hash);
+                render_hash = md_hash64(shown->meshes->index_count, sizeof(shown->meshes->index_count), render_hash);
+            }
+            render_hash = md_hash64(colors, sizeof(colors), render_hash);
+            render_hash = md_hash64(orb_colors, sizeof(orb_colors), render_hash);
+            render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
+            render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+            render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
+            render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
+            render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+            render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
+            render_hash = render_hash ? render_hash : 1;
+        }
+
+        // Redrawn when anything it shows changed, and while the meshes' images are being refined over the frames
+        if (render_hash != ctv.render_hash || !ctv.converged) {
+            ctv.render_hash = render_hash;
+            bool converged = true;
+            GBuffer& gbuf = ctv.gbuf;
+            gbuffer_clear(&gbuf);
+
+            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                                            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
+
+            auto draw_rep = [&state, &view_mat, &proj_mat](md_gl_rep_t rep, md_gl_shaders_t& shaders, uint32_t atom_mask) {
+                md_gl_draw_op_t draw_op = {};
+                draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.args.ball_and_stick.bond_orders  = true;
+                draw_op.rep = rep;
+                md_gl_draw_args_t draw_args = {
+                    .shaders = shaders,
+                    .draw_operations = { .count = 1, .ops = &draw_op },
+                    .view_transform = {
+                        .view_matrix = (const float*)view_mat.elem,
+                        .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                    .picking_offset = gl_picking_offset(state),
+                    .atom_mask = atom_mask,
+                };
+                md_gl_draw(&draw_args);
+            };
+            draw_rep(ctv.gl_rep, state.gl.shaders, 0);
+
+            const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+            if (draw_marks) {
+                gbuffer_marks_begin(&gbuf);
+                draw_rep(ctv.gl_rep, state.gl.shaders_marks, AtomBit_Marked);
+                gbuffer_marks_end(&gbuf);
+            }
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDepthFunc(GL_LESS);
+            glDepthMask(0);
+            glColorMask(1, 1, 1, 1);
+
+            postprocess_pipeline::Settings pp = {};
+            postprocess_pipeline::Inputs in = {};
+            pp.background_color   = state.visuals.background.color;
+            pp.shading.mode       = state.visuals.shading.mode;
+            pp.shading.ambient    = state.visuals.shading.ambient;
+            pp.shading.specular   = state.visuals.shading.specular;
+            pp.shading.colors     = state.visuals.shading.colors;
+            pp.shading.light      = state.visuals.shading.light;
+            pp.shading.environment = state.visuals.shading.environment;
+            pp.tonemap.enabled    = state.visuals.tonemapping.enabled;
+            pp.tonemap.mode       = state.visuals.tonemapping.tonemapper;
+            pp.tonemap.exposure   = state.visuals.tonemapping.exposure;
+            pp.tonemap.gamma      = state.visuals.tonemapping.gamma;
+            pp.shadows.enabled = false;
+            pp.ssao.enabled    = false;
+            pp.dof.enabled     = false;
+            pp.fxaa.enabled    = true;
+            pp.taa.enabled     = false;
+            pp.sharpen.enabled = false;
+            in.depth        = gbuf.tex.depth;
+            in.color        = gbuf.tex.color;
+            in.normal       = gbuf.tex.normal;
+            in.velocity     = gbuf.tex.velocity;
+            in.transparency = gbuf.tex.transparency;
+            if (draw_marks) {
+                in.marks       = gbuf.tex.marks;
+                in.marks_group = gbuf.tex.marks_group;
+                marks_settings(&pp, state, 1.0f, MD_MAX(1, (int)roundf(io.DisplayFramebufferScale.x)));
+            }
+            ViewParam view_param = {
+                .matrix = {
+                    .curr = { .view = view_mat, .proj = proj_mat, .norm = view_mat },
+                    .inv  = { .proj = inv_proj_mat },
+                },
+                .clip_planes = { .near = ctv.camera.near_plane, .far = ctv.camera.far_plane },
+                .resolution = { sz.x, sz.y },
+                .fov_y = ctv.camera.fov_y,
+            };
+
+            glDisable(GL_SCISSOR_TEST);
+            if (!ctv.out_fbo) glGenFramebuffers(1, &ctv.out_fbo);
+            for (int i = 0; i < 2; ++i) {
+                bool iso_written = false;
+                if (shown) {
+                    // view i shows slot i: a density's positive sheet in the side's colour, an orbital's two
+                    const IsoMeshes& m = *shown->meshes;
+                    isomesh::Surface surfaces[2];
+                    size_t num_surfaces = 0;
+                    for (int sheet = 0; sheet < 2; ++sheet) {
+                        if (m.index_count[i][sheet] == 0) continue;
+                        isomesh::Surface& surf = surfaces[num_surfaces++];
+                        surf = {};
+                        surf.mesh = &m.mesh;
+                        surf.index_offset = m.index_offset[i][sheet];
+                        surf.index_count  = m.index_count[i][sheet];
+                        surf.model = iso_meshes_model_matrix();
+                        surf.color = orbital ? orb_colors[sheet] : colors[i];
+                    }
+                    const isomesh::RenderDesc desc = {
+                        .render_target = {
+                            .depth  = gbuf.tex.depth,
+                            .color  = ctv.iso_tex[i],
+                            .width  = gbuf.width,
+                            .height = gbuf.height,
+                            .clear_color = true,
+                        },
+                        .matrix = {
+                            .view = view_mat,
+                            .proj = proj_mat,
+                            .proj_no_jitter = proj_mat,
+                        },
+                        .surfaces = surfaces,
+                        .num_surfaces = num_surfaces,
+                        .shading = {
+                            .roughness = 0.3f,
+                            .ior = 1.5f,
+                            .mode = pp.shading.mode,
+                            .ambient = pp.shading.ambient,
+                            .specular = pp.shading.specular,
+                            .colors = pp.shading.colors,
+                            .light = pp.shading.light,
+                            .environment = pp.shading.environment,
+                        },
+                        .scene_hash = render_hash,
+                    };
+                    bool view_converged = true;
+                    iso_written = isomesh::render(&ctv.mesh_target[i], desc, &view_converged);
+                    converged &= view_converged;
+                }
+                in.transparency_hdr = iso_written ? ctv.iso_tex[i] : 0;
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctv.out_fbo);
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctv.out_tex[i], 0);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                postprocess_pipeline::execute(in, pp, view_param);
+            }
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glDisable(GL_SCISSOR_TEST);
+            ctv.converged = converged;
+        }
+
+        static const char* lbl[2] = { "Hole", "Particle" };
+        for (int i = 0; i < 2; ++i) {
+            dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
+            dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
+            const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
+            const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(vec4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
+            dl->AddText(tp, caption_col, lbl[i]);
+            float y = tp.y + ImGui::GetTextLineHeight();
+            if (orbital) {
+                // what it is the orbital of, under the caption, clipped to the view
+                dl->PushClipRect(r[i].Min, r[i].Max, true);
+                dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 200), shown->info[i]);
+                y += ImGui::GetTextLineHeight();
+                if (shown->sub[0]) dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 130), shown->sub);
+                dl->PopClipRect();
+            }
+            const char* status = failed_status ? failed_status : updating ? "updating..." : nullptr;
+            if (status) {
+                const ImVec2 ts = ImGui::CalcTextSize(status);
+                dl->AddText(ImVec2(r[i].Max.x - ts.x - 6.0f, r[i].Min.y + 4.0f), IM_COL32(0, 0, 0, 140), status);
+            }
+            if (i == 0 && ctv.pin.on && orbital && shown->key == ctv_pin_request().key) {
+                const char* pinned = "pinned (click it again, or Esc)";
+                const ImVec2 ts = ImGui::CalcTextSize(pinned);
+                dl->AddText(ImVec2(r[i].Min.x + 6.0f, r[i].Max.y - ts.y - 4.0f), IM_COL32(0, 0, 0, 120), pinned);
+            }
+        }
+    }
+
     void draw_flow_window(ApplicationState& state) {
         if (!flow.show_window) return;
 
@@ -11257,6 +12247,19 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::SliderFloat("Hide ribbons under", &flow.style.ribbon_min_px, 0.0f, 6.0f, "%.1f px");
                     ImGui::SetItemTooltip("A ribbon thinner than this is not drawn - it reads as noise rather\n"
                                           "than as a quantity. The flow is still in the model and still counted.");
+                    ImGui::Separator();
+                    ImGui::Checkbox("3D views", &ctv.show);
+                    ImGui::BeginDisabled(!ctv.show);
+                    ImGui::SliderFloat("View width", &ctv.width_frac, 0.1f, 0.4f, "%.2f");
+                    ImGui::SetItemTooltip("Of the window's width, each side.");
+                    float iso = (float)ctv.iso_val;
+                    if (ImGui::SliderFloat("Iso value", &iso, 0.005f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic)) ctv.iso_val = iso;
+                    ImGui::SetItemTooltip("Orbitals are drawn at plus and minus it, densities at its square, as the\n"
+                                          "transition analysis draws them.");
+                    ImGui::SliderInt("Cache", &ctv.cache_entries, 4, 128, "%d entries");
+                    ImGui::SetItemTooltip("States' densities and orbital pairs kept as meshes, so that switching between them\n"
+                                          "shows them at once. The selected state's neighbours are prepared ahead.");
+                    ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -11357,6 +12360,15 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::PopItemWidth();
 
             ImGui::SameLine();
+            ImGui::Checkbox("3D", &ctv.show);
+            ImGui::SetItemTooltip("The molecule on either side of the diagram: the hole density left, the particle\n"
+                                  "density right, from the state's NTO pairs. The states are prepared in the\n"
+                                  "background, so switching between them does not wait. Sizes under Settings.\n\n"
+                                  "Rest the cursor on a ribbon for the orbital pair that carries it (the stripe\n"
+                                  "under the cursor, where there are several); click it to keep it there, click\n"
+                                  "it again, empty space or Esc to let go. In the orbital route, an NTO pair.");
+
+            ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             ImGui::SetItemTooltip("Left drag pans, wheel zooms at the cursor.\n"
                                   "Shift+left selects, shift+right deselects - click one item,\n"
@@ -11369,11 +12381,47 @@ struct QuantumChemistry : viamd::EventHandler {
                 draw_flow_strip(state);
             }
 
-            const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
-            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
+            // The side views, when on, take a share of the width on either side: the hole density beside the hole
+            // column, the particle density beside the particle column. Too narrow to read, they are left out.
+            const ImVec2 area_p0 = ImGui::GetCursorScreenPos();
+            const ImVec2 area_sz = ImGui::GetContentRegionAvail();
+            const float side_gap = 4.0f;
+            float side_w = 0.0f;
+            if (ctv.show && ctv.initialized) {
+                side_w = floorf(area_sz.x * MD_CLAMP(ctv.width_frac, 0.1f, 0.4f));
+                if (side_w < 96.0f || area_sz.y < 64.0f) side_w = 0.0f;
+            }
+            const float side_take = side_w > 0.0f ? side_w + side_gap : 0.0f;
+            const ImVec2 canvas_p0 = area_p0 + ImVec2(side_take, 0.0f);
+            ImVec2 canvas_sz = area_sz - ImVec2(2.0f * side_take, 0.0f);
             canvas_sz.x = MD_MAX(canvas_sz.x, 64.0f);
             canvas_sz.y = MD_MAX(canvas_sz.y, 64.0f);
             const ImVec2 canvas_p1 = canvas_p0 + canvas_sz;
+
+            if (side_w > 0.0f) {
+                const ImRect side_rect[2] = {
+                    { area_p0, area_p0 + ImVec2(side_w, canvas_sz.y) },
+                    { ImVec2(canvas_p1.x + side_gap, area_p0.y), ImVec2(canvas_p1.x + side_gap + side_w, area_p0.y + canvas_sz.y) },
+                };
+                // The orbital asked for: the one under the cursor once it has rested there, else the pinned one.
+                // From the last frame's hit, the diagram being drawn after the views.
+                if (ctv.pin.on && ctv.pin.state != rsp.selected) ctv.pin = {};
+                const CtOrbReq cand = ctv_request(flow.hover.link, flow.hover.stripe, flow.hover.node);
+                const double now = ImGui::GetTime();
+                if (cand.key != ctv.hover_cand) {
+                    ctv.hover_cand = cand.key;
+                    ctv.hover_t0 = now;
+                }
+                const CtOrbReq pinned = ctv_pin_request();
+                CtOrbReq req = {};
+                if (cand.key && now - ctv.hover_t0 >= (double)ctv.hover_delay) req = cand;
+                else if (!cand.key) req = pinned;
+
+                ctv_update(state);
+                ctv_orbital_update(state, req);
+                draw_ct_views(state, side_rect, req.key, cand.key != 0 || pinned.key != 0);
+                ImGui::SetCursorScreenPos(canvas_p0);
+            }
 
             ImGui::InvisibleButton("##flow_canvas", canvas_sz,
                 ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
@@ -11431,6 +12479,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             md_flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
+            flow_layout_indent(&flow.layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
             // The layout lives in graph space and knows nothing about pan or zoom, so fitting
             // after it is computed costs nothing and needs no second pass.
@@ -11532,6 +12581,9 @@ struct QuantumChemistry : viamd::EventHandler {
             emphasis.any_selected = selection_touches_atoms || md_array_size(flow.selected_orbital_keys) > 0;
             emphasis.hover_node = flow.hover.node;
             emphasis.hover_link = flow.hover.link;
+            if (side_w > 0.0f && flow.hover.node < 0 && flow.hover.link < 0) {
+                emphasis.hover_link = ctv_pin_link();     // the pinned ribbon stands out while nothing is hovered
+            }
 
             flow_update_stripes();
             FlowStripes stripes = {};
@@ -11549,6 +12601,29 @@ struct QuantumChemistry : viamd::EventHandler {
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
+
+            // With the side views on: a click on a ribbon (or, in the orbital route, an NTO pair) pins its orbitals
+            // in them, again unpins; a click on empty space or Esc lets go. A press and release in place.
+            if (side_w > 0.0f) {
+                if (canvas_hovered && hit.toggle < 0 && !io.KeyShift && !flow.region_active &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const CtOrbReq r = ctv_request(hit.link, hit.stripe, hit.node);
+                    if (r.key) ctv_pin_toggle(r);
+                    else if (hit.node < 0 && hit.link < 0) ctv.pin = {};
+                }
+                if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ctv.pin = {};
+            }
+
+            // A group's arrow: one click opens or closes it, pinned (the row budget leaves it so) and on both
+            // sides. A click is a press and release in place, as everywhere here, since a drag pans.
+            if (canvas_hovered && hit.toggle >= 0 && !io.KeyShift && !flow.region_active) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const uint32_t idx = (uint32_t)hit.toggle;
+                    md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+            }
             if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
                 ImGui::SetTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
                                   "it is local excitation (LE), the rest is charge transfer (CT). Opening a\n"
@@ -11699,8 +12774,12 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     if (has_children) {
                         const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\nDouble click to %s",
+                        // a group with an arrow (its band) says so; a fragment of atoms has none
+                        bool has_arrow = flow_node_is_container(&flow.graph, &flow.cut, (uint32_t)hit.node);
+                        for (size_t b = 0; b < md_array_size(flow.layout.bands); ++b) has_arrow |= flow.layout.bands[b].node == (uint32_t)hit.node;
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\n%s to %s",
                             (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local,
+                            has_arrow ? "Click the arrow, or double click," : "Double click",
                             open ? "collapse" : "open it");
                     } else {
                         ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s",
@@ -11719,7 +12798,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // its members individually. That is what lets the threshold hide things honestly:
                 // everything below it goes, and you can still look. What the user opens or closes is
                 // PINNED, so the row budget leaves it as it is; a fragment is pinned on both sides.
-                if (!io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                // Not on an arrow: its two clicks have already closed and opened it again
+                if (!io.KeyShift && hit.toggle < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     const uint32_t idx = (uint32_t)hit.node;
                     const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
                     if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
@@ -11808,6 +12888,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_flow_layout_t layout = {};
         md_flow_layout_init(&layout, md_temp_allocator(temp));
         md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
+        flow_layout_indent(&layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
         FlowAnnotations notes = {};
         char subtitle[96];

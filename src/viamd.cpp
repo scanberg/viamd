@@ -4216,16 +4216,25 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
     if (!ao_coeffs) {
         return false;
     }
+    return orbital_coefficients_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, ao_coeffs, num_ao, mode, op, cutoff);
+}
+
+bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
+                                      const vec3_t* atom_pos, size_t num_atom_pos,
+                                      const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+    if (!ao_coeffs || num_ao == 0) return false;
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
 
     md_gto_basis_t basis = {};
     if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
         return false;
     }
 
-    // The coefficients and the basis are separate attributes, so nothing guarantees they agree
+    // The coefficients and the basis come from different places, so nothing guarantees they agree
     // until it is checked here.
     if (md_gto_basis_num_ao(&basis) != num_ao) {
-        MD_LOG_ERROR("The basis spans %zu atomic orbitals and '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&basis), MD_STR_ARG(coefficient_path), num_ao);
+        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the orbital %zu", md_gto_basis_num_ao(&basis), num_ao);
         return false;
     }
 
@@ -5128,24 +5137,30 @@ static bool gpu_evaluation_ready(const ApplicationState* state) {
 bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
     MD_ASSERT(state);
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+
+    size_t num_ao = 0;
+    const double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, state->mold.sys, coefficient_path, slice);
+    if (!ao_coeffs) {
+        return false;
+    }
+    return orbital_coefficients_evaluate(state, vol_tex, grid, ao_coeffs, num_ao, mode, op, cutoff);
+}
+
+bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, const double* ao_coeffs, size_t num_ao,
+                                   md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
+    MD_ASSERT(state);
+    if (!ao_coeffs || num_ao == 0) return false;
 
 #if MD_ENABLE_GPU
     if (gpu_evaluation_ready(state)) {
         const md_system_t&       sys       = state->mold.sys;
         const md_system_state_t& sys_state = state->mold.state;
 
-        md_temp_scope_t temp = md_temp_begin();
-        MD_DEFER { md_temp_end(temp); };
-
-        size_t  num_ao    = 0;
-        const double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, slice);
-        if (!ao_coeffs) {
-            return false;
-        }
-
         const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
         if (num_cgtos != num_ao) {
-            MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and '" MD_STR_FMT "' %zu", num_cgtos, MD_STR_ARG(coefficient_path), num_ao);
+            MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the orbital %zu", num_cgtos, num_ao);
             return false;
         }
         gpu_density_jobs_settle(state);     // the inputs are changed below
@@ -5184,7 +5199,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 
     size_t num_atom_pos = 0;
     const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
-    return orbital_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, coefficient_path, slice, mode, op, cutoff);
+    return orbital_coefficients_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, ao_coeffs, num_ao, mode, op, cutoff);
 }
 
 #if MD_ENABLE_GPU
@@ -5632,6 +5647,15 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
 // The backend choice, over a density matrix the caller already holds. density_evaluate below is
 // this plus the extract, and a caller which has cached the matrix - the QM residue does, because
 // the transition densities are rebuilt on every read - calls this one and skips the rebuild.
+bool gpu_volume_evaluation_available(const ApplicationState* state) {
+#if MD_ENABLE_GPU
+    return state && gpu_evaluation_ready(state);
+#else
+    (void)state;
+    return false;
+#endif
+}
+
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
                              const double* density_matrix, size_t dim, md_gto_op_t op) {
     MD_ASSERT(state);

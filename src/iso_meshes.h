@@ -98,6 +98,11 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
                        const IsoFieldGeometry* geometry = nullptr);
 void iso_meshes_free(IsoMeshes* m, ApplicationState* state);
 
+// The key iso_meshes_update gives the mesh of these slots: the mesh is of them when it is m->key and no
+// extraction is under way (iso_meshes_current)
+uint64_t iso_meshes_slots_key(const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key);
+bool     iso_meshes_current(const IsoMeshes* m, uint64_t slots_key);
+
 // A field no longer used: destroyed now, or when the pool task that reads it ends
 void iso_field_release(md_gto_iso_field_t* field);
 
@@ -122,6 +127,12 @@ double iso_meshes_cell_size(VolumeResolution resolution);
 md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice);
 md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
 md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim);
+// At a geometry the caller gives (a worker thread's copy of the positions, say), from data the caller holds: an
+// orbital from its AO coefficients, a density as a sum of orbital products (md_gto_iso_field_create_products:
+// right NULL for squares). Safe on any thread while g.sys lives.
+md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, const double* coeffs, size_t num_ao);
+md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const double* left, const double* right, const double* weight,
+                                              size_t count, size_t num_ao);
 
 // The surfaces of an electronic structure representation as meshes: the field its volume is evaluated from,
 // cut at the values of 'iso' (electronic_structure_iso_desc_init). Fills 'out' (mesh, range, model matrix,

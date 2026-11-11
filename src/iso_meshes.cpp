@@ -103,6 +103,33 @@ md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* stat
     return field_create_density_matrix(current_geometry(temp, state), density_matrix, dim);
 }
 
+md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, const double* coeffs, size_t num_ao) {
+    if (!coeffs || num_ao == 0) return nullptr;
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    FieldContext ctx;
+    if (!field_context(&ctx, temp, g)) return nullptr;
+    if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbital %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
+        return nullptr;
+    }
+    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), coeffs, md_get_heap_allocator());
+}
+
+md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const double* left, const double* right, const double* weight,
+                                              size_t count, size_t num_ao) {
+    if (!left || !weight || count == 0 || num_ao == 0) return nullptr;
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    FieldContext ctx;
+    if (!field_context(&ctx, temp, g)) return nullptr;
+    if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
+        return nullptr;
+    }
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), left, right, weight, count, md_get_heap_allocator());
+}
+
 static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -687,6 +714,22 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
 
 static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key);
 
+uint64_t iso_meshes_slots_key(const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key) {
+    const uint32_t n = MD_MIN(num_slots, ISO_MESHES_MAX_SLOTS);
+    uint64_t key = md_hash64(&cell_size, sizeof(cell_size), fields_key);
+    for (uint32_t k = 0; k < n; ++k) {
+        key = md_hash64(&slots[k].field, sizeof(slots[k].field), key);
+        key = md_hash64(&slots[k].iso, sizeof(slots[k].iso), key);
+        key = md_hash64(&slots[k].sheets, sizeof(slots[k].sheets), key);
+    }
+    key = md_hash64(&n, sizeof(n), key);
+    return key ? key : 1;
+}
+
+bool iso_meshes_current(const IsoMeshes* m, uint64_t slots_key) {
+    return m && m->key == slots_key && !m->job;
+}
+
 bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key,
                        const IsoFieldGeometry* geometry) {
     MD_ASSERT(m);
@@ -695,16 +738,11 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
     builds_collect();
 
     uint64_t fkey = md_hash64(&n, sizeof(n), fields_key);
-    uint64_t key  = md_hash64(&cell_size, sizeof(cell_size), fields_key);
     for (uint32_t k = 0; k < n; ++k) {
         fkey = md_hash64(&slots[k].field, sizeof(slots[k].field), fkey);
-        key  = md_hash64(&slots[k].field, sizeof(slots[k].field), key);
-        key  = md_hash64(&slots[k].iso, sizeof(slots[k].iso), key);
-        key  = md_hash64(&slots[k].sheets, sizeof(slots[k].sheets), key);
     }
-    key = md_hash64(&n, sizeof(n), key);
+    const uint64_t key = iso_meshes_slots_key(slots, n, cell_size, fields_key);
     fkey = fkey ? fkey : 1;
-    key  = key ? key : 1;
 #if MD_ENABLE_GPU
     // A job under way: on with it if it makes what is wanted, else dropped (the mesh shown stays until the
     // next one is done)

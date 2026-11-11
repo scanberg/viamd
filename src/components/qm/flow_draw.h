@@ -58,11 +58,14 @@ struct FlowDrawStyle {
     float ribbon_label_min_px     = 22.0f;  // a ribbon this thick at its middle carries its share
     float ribbon_sublabel_min_px  = 44.0f;  // and this thick, what it is made of
 
-    // Group bands: brackets outboard of the labels of the rows they hold.
-    float band_offset_px    = 8.0f;   // gap between the labels and the band, and between nested bands
-    float band_width_px     = 3.0f;
-    float band_label_gap_px = 5.0f;
+    // Levels (flow_layout_indent): every row stands at the x of its level in the hierarchy, the deepest next to the
+    // ribbons, and an open group as a band at its own level's x spanning its rows, its name along it. level_gap is
+    // the space between two levels, of a bar's width.
+    float level_gap         = 0.25f;
+    float band_fill_tint    = 0.12f;  // of the side's colour over white: paler than the bars
     bool  show_band_labels  = true;
+    // A collapsed group's row says what it holds after its share: "98% \u00b7 4 fragments"
+    const char* member_noun[2] = { "fragment", "fragments" };
 
     // A node's interior is this much of its colour over white, its border its colour darkened.
     float node_fill_tint    = 0.22f;
@@ -121,6 +124,7 @@ struct FlowHit {
     int32_t link = -1;  // index into cut->links
     int32_t stripe = -1;    // the stripe of that link under the cursor (FlowStripes), -1 for none
     bool subtitle = false;  // the cursor is over the annotations' subtitle
+    int32_t toggle = -1;    // the group (graph node) whose open/close arrow is under the cursor, -1 for none
 };
 
 // What a ribbon is made of, drawn as stripes along it: for cut link l, the shares frac[offset[l] ..
@@ -135,6 +139,17 @@ struct FlowStripes {
 };
 
 ImVec2 flow_view_to_screen(const FlowView& view, vec2_t graph_point);
+
+// The hierarchy as x: moves every row of the outer columns out to the x of its level - its depth in the graph's
+// tree, counted against the deepest row shown on that side - and every band (an open group) to the x of its own,
+// one bar's width plus 'gap' of it per level. The rows of one level then stand in one line whatever is opened
+// around them, and a collapsed group stands where it stands open, as its band. The ribbons' ends go with their
+// rows. In graph space, so it scales with the zoom like the bars; call it after md_flow_layout_compute, before
+// anything reads the layout (drawing, fitting, picking).
+void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, const md_flow_cut_t* cut, float gap);
+
+// Whether a node opens into rows that open in turn (a molecule of fragments): what has an arrow to open it by
+bool flow_node_is_container(const md_flow_graph_t* graph, const md_flow_cut_t* cut, uint32_t cut_idx);
 
 // Draws the diagram and returns what the mouse is over.
 FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_flow_graph_t* graph,
