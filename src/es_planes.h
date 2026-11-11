@@ -13,7 +13,7 @@
 // And what the volume rendering of a representation is drawn with: its planes in the space of its volume, and its
 // transfer function baked, the colour map with the opacity curve over it.
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 #include <plane.h>
 
 struct ApplicationState;
@@ -25,13 +25,13 @@ struct PlaneFitInfo;
 
 
 // The box of a representation's volume in world space, the unit cube of its texture: false when it has none yet
-bool es_volume_box(mat4_t* box_to_world, const ElectronicStructureRepresentation& es);
+bool es_volume_box(md_f32x4x4_t* box_to_world, const ElectronicStructureRepresentation& es);
 
 // The outlines of the planes of the representations shown, the picking of one by a click on its outline, and the
 // gizmo on the picked one. Called in the main view's canvas, before its interaction surface, with the rectangle the
 // scene is drawn over (screen coordinates, the whole viewport): true when the mouse is the planes' this frame (over the gizmo, using it, or
 // picking an outline), in which case the view is not to turn or pick with it.
-bool es_planes_gizmo(ApplicationState* state, vec2_t canvas_min, vec2_t canvas_size);
+bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t canvas_size);
 
 // The outlines es_planes_gizmo found this frame, drawn into the framebuffer bound (fb_width x fb_height pixels, the
 // window's: the image presented, before the GUI): hidden where the scene, depth_tex (the G-buffer's, of its size), is
@@ -48,19 +48,19 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
 // system is periodic, and how (info, optional). The plane is returned, and left as it was in 'plane' with only
 // 'info' wanted (nullptr: it is set); kind None when no atoms are selected. out_centre (optional): the atoms' centre,
 // where there are any.
-Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info = nullptr, vec3_t* out_centre = nullptr);
+Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info = nullptr, md_f32x3_t* out_centre = nullptr);
 
 // The enabled cuts of a representation (its volume display) in the space of its volume's texture ([0,1]^3), as n . x + d >= 0 for the
 // side kept: what the volume rendering clips to. Returns how many (at most ES_MAX_PLANES).
-int es_volume_clip_planes(vec4_t* out, const ElectronicStructureRepresentation& es);
+int es_volume_clip_planes(md_f32x4_t* out, const ElectronicStructureRepresentation& es);
 
 // A plane of a representation in the space of its volume's texture, as above
-vec4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane);
+md_f32x4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane);
 
 // The slices of a representation (its planes display), every one (at most ES_MAX_PLANES): their planes in the space of
 // its volume's texture, their opacities (0 where hidden) and the matrix of each from that space to its rectangle's
 // unit square (x, y in [0, 1] on it; es_slice_rect_from_world): what the slice rendering draws. Returns how many.
-int es_volume_slices(vec4_t* out_plane, float* out_opacity, mat4_t* out_rect_from_model, const ElectronicStructureRepresentation& es);
+int es_volume_slices(md_f32x4_t* out_plane, float* out_opacity, md_f32x4x4_t* out_rect_from_model, const ElectronicStructureRepresentation& es);
 
 // Gives each slice of a representation its rectangle where it has none yet (the rectangle around where its plane cuts
 // the box, once the box is there), and keeps each on its plane as the plane is moved: the centre projected onto it,
@@ -71,14 +71,14 @@ void es_slices_conform(ElectronicStructureRepresentation* es);
 // is turned to the camera, which changes nothing of it), and of its rectangle: the centre, u and v = n x u along it,
 // and its half sizes. False when it has no rectangle yet.
 struct EsSliceFrame {
-    vec3_t n, u, v, c;
+    md_f32x3_t n, u, v, c;
     float  hu, hv;
 };
 bool es_slice_frame(EsSliceFrame* f, const ElectronicStructurePlane& slice);
 
 // World to the rectangle's unit square: x along u, y along v, both [0, 1] over it, z the distance from the plane
 // (Angstrom), w 1
-mat4_t es_slice_rect_from_world(const EsSliceFrame& f);
+md_f32x4x4_t es_slice_rect_from_world(const EsSliceFrame& f);
 
 // The grid of an image of the rectangle, covering it exactly (its pixels' edges on the rectangle's), with pixels of
 // at most 'spacing' Angstrom a side: one layer whose voxel centres are on the plane, in bohr as the evaluations take it

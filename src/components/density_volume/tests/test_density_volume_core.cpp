@@ -7,6 +7,7 @@
 #include <md_pdb.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_allocator.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <string.h>
@@ -78,12 +79,12 @@ const Peptide* peptide() {
     return ok ? &p : nullptr;
 }
 
-mat3_t rotation(float ax, float ay, float az) {
-    auto m = [](vec3_t c0, vec3_t c1, vec3_t c2) { mat3_t M; M.col[0] = c0; M.col[1] = c1; M.col[2] = c2; return M; };
-    const mat3_t X = m({1, 0, 0}, {0, cosf(ax), sinf(ax)}, {0, -sinf(ax), cosf(ax)});
-    const mat3_t Y = m({cosf(ay), 0, -sinf(ay)}, {0, 1, 0}, {sinf(ay), 0, cosf(ay)});
-    const mat3_t Z = m({cosf(az), sinf(az), 0}, {-sinf(az), cosf(az), 0}, {0, 0, 1});
-    return mat3_mul(Z, mat3_mul(Y, X));
+md_f32x3x3_t rotation(float ax, float ay, float az) {
+    auto m = [](md_f32x3_t c0, md_f32x3_t c1, md_f32x3_t c2) { md_f32x3x3_t M; M.col[0] = c0; M.col[1] = c1; M.col[2] = c2; return M; };
+    const md_f32x3x3_t X = m({1, 0, 0}, {0, cosf(ax), sinf(ax)}, {0, -sinf(ax), cosf(ax)});
+    const md_f32x3x3_t Y = m({cosf(ay), 0, -sinf(ay)}, {0, 1, 0}, {sinf(ay), 0, cosf(ay)});
+    const md_f32x3x3_t Z = m({cosf(az), sinf(az), 0}, {-sinf(az), cosf(az), 0}, {0, 0, 1});
+    return md_f32x3x3_mul(Z, md_f32x3x3_mul(Y, X));
 }
 }  // namespace
 
@@ -99,19 +100,19 @@ UTEST(density_volume_core, align) {
         for (uint32_t i = ar.beg; i < ar.end; ++i) atoms.push_back((int32_t)i);
     }
     ASSERT_GT(atoms.size(), 10u);
-    const vec3_t* xyz = (const vec3_t*)p->state.xyz;
-    const mat3_t R0 = rotation(0.3f, -1.1f, 2.0f);
-    const vec3_t t0 = {5.0f, -3.0f, 12.0f};
+    const md_f32x3_t* xyz = (const md_f32x3_t*)p->state.xyz;
+    const md_f32x3x3_t R0 = rotation(0.3f, -1.1f, 2.0f);
+    const md_f32x3_t t0 = {5.0f, -3.0f, 12.0f};
     // The other: R0 x + t0, without the last heavy atom
     size_t drop = atoms.size();
     for (size_t i = atoms.size(); i-- > 0;) if (md_atom_atomic_number(&p->sys.atom, atoms[i]) > 1) { drop = i; break; }
     std::vector<int> z;
-    std::vector<vec3_t> ox;
+    std::vector<md_f32x3_t> ox;
     std::vector<int32_t> kept;
     for (size_t i = 0; i < atoms.size(); ++i) {
         if (i == drop) continue;
         z.push_back(md_atom_atomic_number(&p->sys.atom, atoms[i]));
-        ox.push_back(vec3_add(mat3_mul_vec3(R0, xyz[atoms[i]]), t0));
+        ox.push_back(md_f32x3_add(md_f32x3x3_mul_f32x3(R0, xyz[atoms[i]]), t0));
         kept.push_back(atoms[i]);
     }
     Cube other;
@@ -127,14 +128,14 @@ UTEST(density_volume_core, align) {
     EXPECT_LT(al.rmsd, 1e-3);
     // Every atom of the other lands on its own
     for (size_t i = 0; i < kept.size(); ++i) {
-        const vec3_t back = vec3_add(mat3_mul_vec3(al.R, ox[i]), al.t);
-        EXPECT_LT(vec3_length(vec3_sub(back, xyz[kept[i]])), 2e-3f);
+        const md_f32x3_t back = md_f32x3_add(md_f32x3x3_mul_f32x3(al.R, ox[i]), al.t);
+        EXPECT_LT(md_f32x3_length(md_f32x3_sub(back, xyz[kept[i]])), 2e-3f);
     }
     // No atoms, or a structure with nothing in common: nothing placed
     Cube none;
     EXPECT_FALSE(align(&al, &p->sys, atoms.data(), atoms.size(), xyz, none, alloc, err, sizeof(err)));
     int lone_z[2] = {26, 26};
-    vec3_t lone_x[2] = {{0, 0, 0}, {10, 0, 0}};
+    md_f32x3_t lone_x[2] = {{0, 0, 0}, {10, 0, 0}};
     Cube lone;
     lone.num_atoms = 2;
     lone.atomic_numbers = lone_z;
@@ -147,9 +148,9 @@ UTEST(density_volume_core, align) {
 // A field linear in space is sampled exactly by trilinear interpolation: through a turn and a move, from a grid of
 // other steps, the values are the field's where the other grid reaches and 0 where it does not
 UTEST(density_volume_core, resample) {
-    const vec3_t g = {0.7f, -0.2f, 0.4f};
+    const md_f32x3_t g = {0.7f, -0.2f, 0.4f};
     const float c0 = 3.0f;
-    auto field = [&](vec3_t x) { return vec3_dot(g, x) + c0; };
+    auto field = [&](md_f32x3_t x) { return md_f32x3_dot(g, x) + c0; };
 
     Grid from;
     from.dim[0] = 20; from.dim[1] = 24; from.dim[2] = 28;
@@ -159,7 +160,7 @@ UTEST(density_volume_core, resample) {
     from.basis[2] = {0.0f, 0.0f, 0.5f};
     std::vector<float> fv((size_t)from.dim[0] * from.dim[1] * from.dim[2]);
     for (uint32_t i = 0; i < from.dim[0]; ++i) for (uint32_t j = 0; j < from.dim[1]; ++j) for (uint32_t k = 0; k < from.dim[2]; ++k) {
-        const vec3_t x = vec3_add(from.origin, vec3_add(vec3_mul1(from.basis[0], i + 0.5f), vec3_add(vec3_mul1(from.basis[1], j + 0.5f), vec3_mul1(from.basis[2], k + 0.5f))));
+        const md_f32x3_t x = md_f32x3_add(from.origin, md_f32x3_add(md_f32x3_mul1(from.basis[0], i + 0.5f), md_f32x3_add(md_f32x3_mul1(from.basis[1], j + 0.5f), md_f32x3_mul1(from.basis[2], k + 0.5f))));
         fv[((size_t)i * from.dim[1] + j) * from.dim[2] + k] = field(x);
     }
     from.values = fv.data();
@@ -179,14 +180,14 @@ UTEST(density_volume_core, resample) {
     EXPECT_GT(covered, 0.2);
     EXPECT_LT(covered, 1.0);
     // Where from reaches, the field at R^T (p - t); elsewhere 0
-    mat3_t B = {};
+    md_f32x3x3_t B = {};
     for (int a = 0; a < 3; ++a) B.col[a] = from.basis[a];
-    const mat3_t Binv = mat3_inverse(B);
+    const md_f32x3x3_t Binv = md_f32x3x3_inverse(B);
     size_t inside = 0, checked = 0;
     for (uint32_t i = 0; i < 16; ++i) for (uint32_t j = 0; j < 16; ++j) for (uint32_t k = 0; k < 16; ++k) {
-        const vec3_t p = vec3_add(to.origin, vec3_add(vec3_mul1(to.basis[0], i + 0.5f), vec3_add(vec3_mul1(to.basis[1], j + 0.5f), vec3_mul1(to.basis[2], k + 0.5f))));
-        const vec3_t q = mat3_mul_vec3(mat3_transpose(al.R), vec3_sub(p, al.t));
-        const vec3_t f = vec3_sub(mat3_mul_vec3(Binv, vec3_sub(q, from.origin)), vec3_set1(0.5f));
+        const md_f32x3_t p = md_f32x3_add(to.origin, md_f32x3_add(md_f32x3_mul1(to.basis[0], i + 0.5f), md_f32x3_add(md_f32x3_mul1(to.basis[1], j + 0.5f), md_f32x3_mul1(to.basis[2], k + 0.5f))));
+        const md_f32x3_t q = md_f32x3x3_mul_f32x3(md_f32x3x3_transpose(al.R), md_f32x3_sub(p, al.t));
+        const md_f32x3_t f = md_f32x3_sub(md_f32x3x3_mul_f32x3(Binv, md_f32x3_sub(q, from.origin)), md_f32x3_set1(0.5f));
         const float v = out[((size_t)i * 16 + j) * 16 + k];
         // Within the outer centres, exact; past them by up to half a voxel, the outer voxels' values; beyond, 0
         const bool in = f.x >= 0 && f.y >= 0 && f.z >= 0 && f.x <= from.dim[0] - 1 && f.y <= from.dim[1] - 1 && f.z <= from.dim[2] - 1;

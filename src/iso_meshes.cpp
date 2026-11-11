@@ -10,6 +10,7 @@
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -18,9 +19,9 @@
 static constexpr uint32_t PROJECT_ITERATIONS = 8;
 static constexpr uint32_t RELAX_ITERATIONS   = 3;
 
-mat4_t iso_meshes_model_matrix() {
+md_f32x4x4_t iso_meshes_model_matrix() {
     const float s = (float)BOHR_TO_ANGSTROM;
-    return mat4_scale(s, s, s);
+    return md_f32x4x4_scale(s, s, s);
 }
 
 double iso_meshes_cell_size(VolumeResolution resolution) {
@@ -38,7 +39,7 @@ double iso_meshes_cell_size(VolumeResolution resolution) {
 
 struct FieldContext {
     md_gto_basis_t basis = {};
-    const vec3_t*  atom_xyz = nullptr;   // bohr
+    const md_f32x3_t*  atom_xyz = nullptr;   // bohr
     size_t         num_atoms = 0;
 };
 
@@ -75,7 +76,7 @@ static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, md_st
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(coefficient_path), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), coeffs, md_get_heap_allocator());
+    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), coeffs, md_get_heap_allocator());
 }
 
 md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice) {
@@ -94,7 +95,7 @@ static md_gto_iso_field_t* field_create_density_matrix(const IsoFieldGeometry& g
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&ctx.basis), dim);
         return nullptr;
     }
-    return md_gto_iso_field_create_density(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), density_matrix, md_get_heap_allocator());
+    return md_gto_iso_field_create_density(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), density_matrix, md_get_heap_allocator());
 }
 
 md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim) {
@@ -113,7 +114,7 @@ md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, con
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbital %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), coeffs, md_get_heap_allocator());
+    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), coeffs, md_get_heap_allocator());
 }
 
 md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const double* left, const double* right, const double* weight,
@@ -127,7 +128,7 @@ md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const d
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), left, right, weight, count, md_get_heap_allocator());
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), left, right, weight, count, md_get_heap_allocator());
 }
 
 static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
@@ -162,7 +163,7 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, m
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(density_path), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), rows, nullptr, weights, count, md_get_heap_allocator());
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), rows, nullptr, weights, count, md_get_heap_allocator());
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -239,7 +240,7 @@ struct IsoBuild {
     md_tick_t t0 = 0;
     uint64_t  key = 0;
     const md_system_t* sys = nullptr;
-    vec3_t*   xyz = nullptr;     // bohr, its copy
+    md_f32x3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
     // Field
     IsoFieldSpec spec = {};
@@ -264,7 +265,7 @@ static uint32_t  g_num_dead = 0;
 
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
 
-static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const vec3_t* xyz, size_t num_atoms) {
+static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_f32x3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
     IsoBuild* b = new IsoBuild();
     b->kind = kind;
@@ -272,9 +273,9 @@ static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t*
     b->sys = sys;
     b->t0 = md_tick_now();
     if (xyz && num_atoms) {
-        b->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+        b->xyz = (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * num_atoms);
         if (b->xyz) {
-            md_memcpy(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+            md_memcpy(b->xyz, xyz, sizeof(md_f32x3_t) * num_atoms);
             b->num_atoms = num_atoms;
         }
     }
@@ -305,7 +306,7 @@ static void build_run(IsoBuild* b) {
     md_temp_scope_t temp = md_temp_begin();
     FieldContext ctx;
     if (field_context(&ctx, temp, g)) {
-        b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), b->fields, b->num_fields, md_get_heap_allocator());
+        b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_f32x3_t), b->fields, b->num_fields, md_get_heap_allocator());
     }
     md_temp_end(temp);
     md_gpu_stream_destroy(b->stream);   // once its uploads are done: the set is then ready for any stream
@@ -836,7 +837,7 @@ struct EsIsoMesh {
     md_gto_iso_field_t* field = nullptr;
     IsoFieldSpec field_spec = {};   // what it is of
     bool field_failed = false;
-    vec3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
+    md_f32x3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
     IsoBuild* field_build = nullptr;    // the field of another key, being made on a worker thread
     IsoMeshes meshes = {};
@@ -1095,7 +1096,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         vertex_field = em.span.valid;
     }
 
-    const mat4_t model = iso_meshes_model_matrix();
+    const md_f32x4x4_t model = iso_meshes_model_matrix();
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
         if (entry_slot[i] < 0) continue;

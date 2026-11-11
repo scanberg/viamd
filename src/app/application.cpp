@@ -8,6 +8,7 @@
 #include <core/md_common.h>
 #include <core/md_platform.h>
 #include <core/md_str.h>
+#include <core/md_os.h>
 #include <core/md_format.h>
 #include <core/md_path.h>
 #include <core/md_allocator.h>
@@ -557,9 +558,9 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, md_str_t f
         if (flags & FileDialogFlag_Save) {
             // If the user is saving through the dialogue and there is no extension
             // In such case we append the first extension found in the filter (if supplied)
-            md_str_t ext;
             md_str_t path = md_str_from_cstr(out_path);
-            if (!md_path_ext(&ext, path) && filter) {
+            md_str_t ext = md_path_ext(path);
+            if (md_str_empty(ext) && filter) {
                 // get ext from supplied filter (first match)
                 md_str_cut(&ext, NULL, filter, md_str_find_char(filter, ','));
                 len += snprintf(str_buf + len, str_cap - len, "." MD_STR_FMT, MD_STR_ARG(ext));

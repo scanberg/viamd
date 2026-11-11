@@ -9,7 +9,6 @@
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
 #include <core/md_vec_math.h>
 
 #include <implot.h>
@@ -67,23 +66,23 @@ static struct {
 
 // std140, mirrors DvrUniforms in dvr.frag
 struct DvrUniformData {
-    mat4_t clip_to_model;
-    vec3_t clip_min;
+    md_f32x4x4_t clip_to_model;
+    md_f32x3_t clip_min;
     float  tf_min;
-    vec3_t clip_max;
+    md_f32x3_t clip_max;
     float  tf_inv_ext;
-    vec2_t inv_res;
+    md_f32x2_t inv_res;
     float  time;
     float  use_depth;
-    vec4_t planes[8];
+    md_f32x4_t planes[8];
     int    num_planes;
     float  linear_out;
     float  slice;
     float  edge_px;
-    vec4_t slice_opacity[2];
-    vec4_t slice_image[2];              // 1 where slice i is read from its image
-    mat4_t slice_rect_from_model[8];
-    vec4_t slice_edge[8];
+    md_f32x4_t slice_opacity[2];
+    md_f32x4_t slice_image[2];              // 1 where slice i is read from its image
+    md_f32x4x4_t slice_rect_from_model[8];
+    md_f32x4_t slice_edge[8];
 };
 static_assert(sizeof(DvrUniformData) == 64 + 3 * 16 + 8 * 16 + 16 + 2 * 16 + 2 * 16 + 8 * 64 + 8 * 16, "DvrUniformData must match the std140 layout of DvrUniforms");
 
@@ -142,23 +141,23 @@ struct IsoProgram {
 
 // std140, mirrors IsoUniforms in isosurface.frag
 struct IsoUniformData {
-    mat4_t clip_to_model;
-    mat4_t model_to_view;
-    mat4_t grad_offsets;
+    md_f32x4x4_t clip_to_model;
+    md_f32x4x4_t model_to_view;
+    md_f32x4x4_t grad_offsets;
 
-    vec3_t clip_min;
+    md_f32x3_t clip_min;
     float  block_size;      // exact: voxels per block side of the block grid; fast: samples per voxel
-    vec3_t clip_max;
+    md_f32x3_t clip_max;
     float  use_depth;
 
-    vec3_t sky_radiance;
+    md_f32x3_t sky_radiance;
     float  roughness;
-    vec3_t dir_radiance;
+    md_f32x3_t dir_radiance;
     float  F0;
-    vec3_t light_dir;
+    md_f32x3_t light_dir;
     float  field_beg;
 
-    vec2_t inv_res;
+    md_f32x2_t inv_res;
     float  field_inv_ext;
     float  optical_scale;
 
@@ -167,7 +166,7 @@ struct IsoUniformData {
     float  use_blocks;
     float  pad;
 
-    vec3_t ground_radiance;
+    md_f32x3_t ground_radiance;
     float  basic;           // 1: the basic model (postprocess_pipeline::ShadingMode_Basic)
 
     float  basic_ambient;
@@ -498,10 +497,10 @@ static const BlockGrid* block_grid_update(GLuint volume, const int dim[3]) {
 
 // Whether any corner of the clip box lies at or behind the near plane. Then rays start at the near plane
 // rather than at the proxy's nearest depth, which cannot see the faces of a box around the camera.
-static bool near_plane_cuts(const mat4_t& model_to_clip, vec3_t lo, vec3_t hi) {
+static bool near_plane_cuts(const md_f32x4x4_t& model_to_clip, md_f32x3_t lo, md_f32x3_t hi) {
     for (int i = 0; i < 8; ++i) {
-        const vec4_t p = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z, 1.0f };
-        const vec4_t c = mat4_mul_vec4(model_to_clip, p);
+        const md_f32x4_t p = { (i & 1) ? hi.x : lo.x, (i & 2) ? hi.y : lo.y, (i & 4) ? hi.z : lo.z, 1.0f };
+        const md_f32x4_t c = md_f32x4x4_mul_f32x4(model_to_clip, p);
         if (c.z <= -c.w) return true;
     }
     return false;
@@ -509,7 +508,7 @@ static bool near_plane_cuts(const mat4_t& model_to_clip, vec3_t lo, vec3_t hi) {
 
 // Rasterizes the boxes of the blocks that can hold a surface into the entry (nearest) and exit (farthest)
 // depth textures
-static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t clip_min, vec3_t clip_max,
+static bool proxy_render(const BlockGrid& g, const md_f32x4x4_t& model_to_clip, md_f32x3_t clip_min, md_f32x3_t clip_max,
                          const float* values, const float* tau, int count, int width, int height) {
     if (!iso.proxy.program || !iso.proxy.fbo) return false;
 
@@ -530,7 +529,7 @@ static bool proxy_render(const BlockGrid& g, const mat4_t& model_to_clip, vec3_t
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
-    const vec3_t block_ext = {
+    const md_f32x3_t block_ext = {
         (float)g.block_size / (float)g.dim[0],
         (float)g.block_size / (float)g.dim[1],
         (float)g.block_size / (float)g.dim[2],
@@ -702,25 +701,25 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     const IsoProgram& p = *pp;
 
     float  values[ISO_MAX_COUNT] = {};
-    vec4_t colors[ISO_MAX_COUNT] = {};
+    md_f32x4_t colors[ISO_MAX_COUNT] = {};
     float  tau[ISO_MAX_COUNT] = {};
     md_memcpy(values, desc.iso.values, count * sizeof(float));
-    md_memcpy(colors, desc.iso.colors, count * sizeof(vec4_t));
+    md_memcpy(colors, desc.iso.colors, count * sizeof(md_f32x4_t));
     if (desc.iso.optical_densities) {
         md_memcpy(tau, desc.iso.optical_densities, count * sizeof(float));
     }
 
-    const mat4_t model_to_view = desc.matrix.view * desc.matrix.model;
-    const mat4_t view_to_model = mat4_inverse(model_to_view);
-    const mat4_t model_to_clip = desc.matrix.proj * model_to_view;
-    const mat4_t clip_to_model = mat4_inverse(model_to_clip);
+    const md_f32x4x4_t model_to_view = desc.matrix.view * desc.matrix.model;
+    const md_f32x4x4_t view_to_model = md_f32x4x4_inverse(model_to_view);
+    const md_f32x4x4_t model_to_clip = desc.matrix.proj * model_to_view;
+    const md_f32x4x4_t clip_to_model = md_f32x4x4_inverse(model_to_clip);
 
     // One voxel, the smallest of the three axes, along each view axis: the gradient taken over those
     // offsets is the view space normal directly
-    const vec3_t voxel_ext = {
-        vec3_length(vec3_from_vec4(desc.matrix.model.col[0])) / (float)dim[0],
-        vec3_length(vec3_from_vec4(desc.matrix.model.col[1])) / (float)dim[1],
-        vec3_length(vec3_from_vec4(desc.matrix.model.col[2])) / (float)dim[2],
+    const md_f32x3_t voxel_ext = {
+        md_f32x3_length(md_f32x3_from_f32x4(desc.matrix.model.col[0])) / (float)dim[0],
+        md_f32x3_length(md_f32x3_from_f32x4(desc.matrix.model.col[1])) / (float)dim[1],
+        md_f32x3_length(md_f32x3_from_f32x4(desc.matrix.model.col[2])) / (float)dim[2],
     };
     const float h = MD_MAX(1.0e-6f, MD_MIN(voxel_ext.x, MD_MIN(voxel_ext.y, voxel_ext.z)));
 
@@ -731,7 +730,7 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     IsoUniformData data = {};
     data.clip_to_model     = clip_to_model;
     data.model_to_view     = model_to_view;
-    data.grad_offsets      = view_to_model * mat4_scale(h, h, h);
+    data.grad_offsets      = view_to_model * md_f32x4x4_scale(h, h, h);
     data.clip_min          = desc.clip_volume.min;
     data.block_size        = 1.0f;
     data.clip_max          = desc.clip_volume.max;
@@ -926,9 +925,9 @@ void initialize() {
 
 void shutdown() {}
 
-mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
-    vec3_t ext = max_world_aabb - min_world_aabb;
-    vec3_t off = min_world_aabb;
+md_f32x4x4_t compute_model_to_world_matrix(md_f32x3_t min_world_aabb, md_f32x3_t max_world_aabb) {
+    md_f32x3_t ext = max_world_aabb - min_world_aabb;
+    md_f32x3_t off = min_world_aabb;
     return {
             ext.x, 0, 0, 0,
             0, ext.y, 0, 0,
@@ -937,9 +936,9 @@ mat4_t compute_model_to_world_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
         };
 }
 
-mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aabb) {
-    vec3_t ext = max_world_aabb - min_world_aabb;
-    vec3_t off = min_world_aabb;
+md_f32x4x4_t compute_world_to_model_matrix(md_f32x3_t min_world_aabb, md_f32x3_t max_world_aabb) {
+    md_f32x3_t ext = max_world_aabb - min_world_aabb;
+    md_f32x3_t off = min_world_aabb;
     return {
             1.0f / ext.x, 0, 0, 0,
             0, 1.0f / ext.y, 0, 0,
@@ -948,18 +947,18 @@ mat4_t compute_world_to_model_matrix(vec3_t min_world_aabb, vec3_t max_world_aab
         };
 }
 
-mat4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z) {
+md_f32x4x4_t compute_model_to_texture_matrix(int dim_x, int dim_y, int dim_z) {
     (void)dim_x;
     (void)dim_y;
     (void)dim_z;
-    return mat4_ident();
+    return md_f32x4x4_ident();
 }
 
-mat4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
+md_f32x4x4_t compute_texture_to_model_matrix(int dim_x, int dim_y, int dim_z) {
     (void)dim_x;
     (void)dim_y;
     (void)dim_z;
-    return mat4_ident();
+    return md_f32x4x4_ident();
 }
 
 void compute_transfer_function_texture_simple(uint32_t* tex, int colormap, float alpha_scale, int res) {
@@ -1034,7 +1033,7 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
 
 }
 
-static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
+static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const md_f32x4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
     PUSH_GPU_SECTION("SPLAT COLOR VOLUME")
     glUseProgram(gl.program.splat_color);
 
@@ -1044,7 +1043,7 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     glUniform1f (glGetUniformLocation(gl.program.splat_color, "u_power"), power);
 
     size_t point_xyzw_offset    = 0;
-    size_t point_xyzw_size      = MD_ALIGN_TO(sizeof(vec4_t) * point_count, 256);
+    size_t point_xyzw_size      = MD_ALIGN_TO(sizeof(md_f32x4_t) * point_count, 256);
     size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
     size_t point_color_size     = MD_ALIGN_TO(sizeof(uint32_t) * point_count, 256);
     size_t total_buffer_size    = MD_ALIGN_TO(point_xyzw_size + point_color_size, 256);
@@ -1052,7 +1051,7 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size , NULL, GL_DYNAMIC_DRAW);
 
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset,  sizeof(vec4_t)   * point_count, point_xyzw);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset,  sizeof(md_f32x4_t)   * point_count, point_xyzw);
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_color_offset, sizeof(uint32_t) * point_count, point_color);
 
     // Bind two contiguous vec4 arrays as separate shader storage buffer bindings for position/radius and color
@@ -1075,7 +1074,7 @@ static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_
 // The CPU twin of splat_color.comp (used where there are no compute shaders, GL < 4.3): normalised
 // Gaussian weights evaluated relative to the largest one, over the points that can matter in each 8^3
 // block of voxels.
-static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
+static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const md_f32x4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
     const int dim_x = volume_dim[0];
     const int dim_y = volume_dim[1];
     const int dim_z = volume_dim[2];
@@ -1088,18 +1087,18 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     MD_DEFER { md_temp_end(temp_scope); };
 
     uint32_t* result = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * (size_t)dim_x * dim_y * dim_z);
-    vec4_t*   points = (vec4_t*)  md_temp_alloc(temp_scope, sizeof(vec4_t) * point_count);    // xyz, power / (2 sigma^2)
-    vec4_t*   colors = (vec4_t*)  md_temp_alloc(temp_scope, sizeof(vec4_t) * point_count);
+    md_f32x4_t*   points = (md_f32x4_t*)  md_temp_alloc(temp_scope, sizeof(md_f32x4_t) * point_count);    // xyz, power / (2 sigma^2)
+    md_f32x4_t*   colors = (md_f32x4_t*)  md_temp_alloc(temp_scope, sizeof(md_f32x4_t) * point_count);
     uint32_t* cand   = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * point_count);
     if (!result || !points || !colors || !cand) return;
 
     for (size_t i = 0; i < point_count; ++i) {
         const float sigma = MD_MAX(point_xyzw[i].w, 0.1f);
-        points[i] = vec4_set(point_xyzw[i].x, point_xyzw[i].y, point_xyzw[i].z, power / (2.0f * sigma * sigma));
+        points[i] = md_f32x4_set(point_xyzw[i].x, point_xyzw[i].y, point_xyzw[i].z, power / (2.0f * sigma * sigma));
         colors[i] = convert_color(point_color[i]);
     }
 
-    const mat4_t M = mat4_load((const float*)index_to_world);
+    const md_f32x4x4_t M = md_f32x4x4_load((const float*)index_to_world);
 
     for (int bz = 0; bz < dim_z; bz += BLOCK) {
         for (int by = 0; by < dim_y; by += BLOCK) {
@@ -1108,27 +1107,27 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
                 const int hi[3] = { MD_MIN(bx + BLOCK, dim_x) - 1, MD_MIN(by + BLOCK, dim_y) - 1, MD_MIN(bz + BLOCK, dim_z) - 1 };
 
                 // World space bounds of the voxel centres of the block (the volume may be rotated)
-                vec3_t bmin = vec3_set( FLT_MAX,  FLT_MAX,  FLT_MAX);
-                vec3_t bmax = vec3_set(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+                md_f32x3_t bmin = md_f32x3_set( FLT_MAX,  FLT_MAX,  FLT_MAX);
+                md_f32x3_t bmax = md_f32x3_set(-FLT_MAX, -FLT_MAX, -FLT_MAX);
                 for (int c = 0; c < 8; ++c) {
-                    const vec4_t idx = { (float)((c & 1) ? hi[0] : lo[0]), (float)((c & 2) ? hi[1] : lo[1]), (float)((c & 4) ? hi[2] : lo[2]), 1.0f };
-                    const vec3_t p = vec3_from_vec4(mat4_mul_vec4(M, idx));
-                    bmin = vec3_min(bmin, p);
-                    bmax = vec3_max(bmax, p);
+                    const md_f32x4_t idx = { (float)((c & 1) ? hi[0] : lo[0]), (float)((c & 2) ? hi[1] : lo[1]), (float)((c & 4) ? hi[2] : lo[2]), 1.0f };
+                    const md_f32x3_t p = md_f32x3_from_f32x4(md_f32x4x4_mul_f32x4(M, idx));
+                    bmin = md_f32x3_min(bmin, p);
+                    bmax = md_f32x3_max(bmax, p);
                 }
 
                 // The best exponent some point is guaranteed everywhere in the block, then the points that can matter
                 float e_best = -FLT_MAX;
                 for (size_t i = 0; i < point_count; ++i) {
-                    const vec3_t p   = vec3_from_vec4(points[i]);
-                    const vec3_t far = vec3_max(vec3_abs(vec3_sub(p, bmin)), vec3_abs(vec3_sub(p, bmax)));
-                    e_best = MD_MAX(e_best, -vec3_dot(far, far) * points[i].w);
+                    const md_f32x3_t p   = md_f32x3_from_f32x4(points[i]);
+                    const md_f32x3_t far = md_f32x3_max(md_f32x3_abs(md_f32x3_sub(p, bmin)), md_f32x3_abs(md_f32x3_sub(p, bmax)));
+                    e_best = MD_MAX(e_best, -md_f32x3_dot(far, far) * points[i].w);
                 }
                 uint32_t num_cand = 0;
                 for (size_t i = 0; i < point_count; ++i) {
-                    const vec3_t p    = vec3_from_vec4(points[i]);
-                    const vec3_t near = vec3_sub(p, vec3_clamp(p, bmin, bmax));
-                    if (-vec3_dot(near, near) * points[i].w >= e_best - CUTOFF) {
+                    const md_f32x3_t p    = md_f32x3_from_f32x4(points[i]);
+                    const md_f32x3_t near = md_f32x3_sub(p, md_f32x3_clamp(p, bmin, bmax));
+                    if (-md_f32x3_dot(near, near) * points[i].w >= e_best - CUTOFF) {
                         cand[num_cand++] = (uint32_t)i;
                     }
                 }
@@ -1136,27 +1135,27 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
                 for (int z = lo[2]; z <= hi[2]; ++z) {
                     for (int y = lo[1]; y <= hi[1]; ++y) {
                         for (int x = lo[0]; x <= hi[0]; ++x) {
-                            const vec3_t xw = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)x, (float)y, (float)z, 1.0f)));
+                            const md_f32x3_t xw = md_f32x3_from_f32x4(md_f32x4x4_mul_f32x4(M, md_f32x4_set((float)x, (float)y, (float)z, 1.0f)));
                             // Streamed log-sum-exp: weights relative to the largest exponent so far
                             float  m   = -FLT_MAX;
                             float  sum = 0.0f;
-                            vec4_t acc = {0, 0, 0, 0};
+                            md_f32x4_t acc = {0, 0, 0, 0};
                             for (uint32_t j = 0; j < num_cand; ++j) {
                                 const uint32_t i = cand[j];
-                                const vec3_t d = vec3_sub(xw, vec3_from_vec4(points[i]));
-                                const float  e = -vec3_dot(d, d) * points[i].w;
+                                const md_f32x3_t d = md_f32x3_sub(xw, md_f32x3_from_f32x4(points[i]));
+                                const float  e = -md_f32x3_dot(d, d) * points[i].w;
                                 if (e > m) {
                                     const float scale = expf(m - e);
                                     sum = sum * scale + 1.0f;
-                                    acc = vec4_add(vec4_mul1(acc, scale), colors[i]);
+                                    acc = md_f32x4_add(md_f32x4_mul1(acc, scale), colors[i]);
                                     m = e;
                                 } else {
                                     const float w = expf(e - m);
                                     sum += w;
-                                    acc = vec4_add(acc, vec4_mul1(colors[i], w));
+                                    acc = md_f32x4_add(acc, md_f32x4_mul1(colors[i], w));
                                 }
                             }
-                            const vec4_t color = (sum > 0.0f) ? vec4_mul1(acc, 1.0f / sum) : vec4_set(1.0f, 1.0f, 1.0f, 0.0f);
+                            const md_f32x4_t color = (sum > 0.0f) ? md_f32x4_mul1(acc, 1.0f / sum) : md_f32x4_set(1.0f, 1.0f, 1.0f, 0.0f);
                             result[(size_t)x + (size_t)y * dim_x + (size_t)z * dim_x * dim_y] = convert_color(color);
                         }
                     }
@@ -1172,7 +1171,7 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
 
 // vol_origin is the origin of the volume in world space
 // voxel_spacing is the spacing of voxels in world space
-void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const vec4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power) {
+void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const md_f32x4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power) {
     if (!glIsTexture(vol_texture)) {
         MD_LOG_ERROR("Invalid volume texture");
         return;
@@ -1397,10 +1396,10 @@ void render_dvr(const DvrRenderDesc& desc) {
     time = desc.temporal.enabled ? fmodf(time + 0.01f, 100.0f) : 0.0f;
 
     const float tf_ext = desc.tf.max_value - desc.tf.min_value;
-    const mat4_t model_to_clip = desc.matrix.proj * desc.matrix.view * desc.matrix.model;
+    const md_f32x4x4_t model_to_clip = desc.matrix.proj * desc.matrix.view * desc.matrix.model;
 
     DvrUniformData data = {};
-    data.clip_to_model = mat4_inverse(model_to_clip);
+    data.clip_to_model = md_f32x4x4_inverse(model_to_clip);
     data.clip_min   = desc.clip_volume.min;
     data.tf_min     = desc.tf.min_value;
     data.clip_max   = desc.clip_volume.max;
@@ -1417,7 +1416,7 @@ void render_dvr(const DvrRenderDesc& desc) {
     for (int i = 0; slices && i < data.num_planes; ++i) {
         data.slice_image[i / 4].elem[i % 4] = images && desc.slice_images[i] ? 1.0f : 0.0f;
         data.slice_rect_from_model[i] = desc.slice_rect_from_model[i];
-        data.slice_edge[i] = desc.slice_edge ? desc.slice_edge[i] : vec4_set(0, 0, 0, 0);
+        data.slice_edge[i] = desc.slice_edge ? desc.slice_edge[i] : md_f32x4_set(0, 0, 0, 0);
     }
 
     const SavedState saved = save_state();

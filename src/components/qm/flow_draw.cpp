@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 
-ImVec2 flow_view_to_screen(const FlowView& view, vec2_t graph_point) {
+ImVec2 flow_view_to_screen(const FlowView& view, md_f32x2_t graph_point) {
     const ImVec2 size = view.area_max - view.area_min;
     return ImVec2(
         view.area_min.x + (graph_point.x * view.zoom + view.pan.x) * size.x,
@@ -42,9 +42,9 @@ static inline ImVec2 flow_edge_point(ImVec2 a, ImVec2 b, float curvature, float 
 
 // Blend toward white. Used for node interiors: bright enough to read as a surface, tinted enough
 // to still say which node it is.
-static inline vec4_t flow_toward_white(vec4_t c, float keep) {
+static inline md_f32x4_t flow_toward_white(md_f32x4_t c, float keep) {
     const float k = ImClamp(keep, 0.0f, 1.0f);
-    return vec4_t{ 1.0f - (1.0f - c.x) * k, 1.0f - (1.0f - c.y) * k, 1.0f - (1.0f - c.z) * k, c.w };
+    return md_f32x4_t{ 1.0f - (1.0f - c.x) * k, 1.0f - (1.0f - c.y) * k, 1.0f - (1.0f - c.z) * k, c.w };
 }
 
 // Darken a colour until it stands out against a near-white interior, by scaling toward black until
@@ -56,22 +56,22 @@ static inline vec4_t flow_toward_white(vec4_t c, float keep) {
 // take, and the pale extremes a user could choose). 0.30 keeps every label at or above 5.4:1,
 // comfortably past AA; 0.62 keeps every border at or above 2.2:1, which is what stops a pale group
 // colour - or white hydrogen, back when these were CPK - from drawing an invisible box.
-static inline vec4_t flow_cap_luminance(vec4_t c, float target) {
+static inline md_f32x4_t flow_cap_luminance(md_f32x4_t c, float target) {
     const float lum = 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z;
     if (lum <= target || lum <= 1.0e-4f) return c;
     const float k = target / lum;
-    return vec4_t{ c.x * k, c.y * k, c.z * k, c.w };
+    return md_f32x4_t{ c.x * k, c.y * k, c.z * k, c.w };
 }
 
-static inline vec4_t flow_readable_text(vec4_t c)   { return flow_cap_luminance(c, 0.30f); }
-static inline vec4_t flow_visible_border(vec4_t c)  { return flow_cap_luminance(c, 0.62f); }
+static inline md_f32x4_t flow_readable_text(md_f32x4_t c)   { return flow_cap_luminance(c, 0.30f); }
+static inline md_f32x4_t flow_visible_border(md_f32x4_t c)  { return flow_cap_luminance(c, 0.62f); }
 
-static inline ImU32 flow_color_u32(vec4_t color, float alpha_scale) {
+static inline ImU32 flow_color_u32(md_f32x4_t color, float alpha_scale) {
     ImVec4 c = { color.x, color.y, color.z, color.w * alpha_scale };
     return ImGui::ColorConvertFloat4ToU32(c);
 }
 
-static inline md_vg_color_t flow_color_vg(vec4_t color, float alpha_scale) {
+static inline md_vg_color_t flow_color_vg(md_f32x4_t color, float alpha_scale) {
     const float a = MD_CLAMP(color.w * alpha_scale, 0.0f, 1.0f);
     return MD_VG_COLOR_RGBA(
         (uint32_t)(MD_CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f),
@@ -210,14 +210,14 @@ static uint32_t flow_stripe_count(const FlowStripes* st, uint32_t l) {
 static inline ImVec2 flow_lerp(ImVec2 a, ImVec2 b, float t) { return ImVec2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t); }
 
 
-static inline vec4_t flow_with_alpha(vec4_t c, float a) { c.w *= a; return c; }
-static inline vec4_t flow_scale_rgb(vec4_t c, float k)  { return vec4_t{ c.x * k, c.y * k, c.z * k, c.w }; }
-static inline vec4_t flow_vec4(ImU32 c) { const ImVec4 v = ImGui::ColorConvertU32ToFloat4(c); return vec4_t{ v.x, v.y, v.z, v.w }; }
+static inline md_f32x4_t flow_with_alpha(md_f32x4_t c, float a) { c.w *= a; return c; }
+static inline md_f32x4_t flow_scale_rgb(md_f32x4_t c, float k)  { return md_f32x4_t{ c.x * k, c.y * k, c.z * k, c.w }; }
+static inline md_f32x4_t flow_vec4(ImU32 c) { const ImVec4 v = ImGui::ColorConvertU32ToFloat4(c); return md_f32x4_t{ v.x, v.y, v.z, v.w }; }
 
 // Every other stripe a little lighter, so neighbours read apart without new hues
-static inline vec4_t flow_stripe_tone(vec4_t c, uint32_t j) {
+static inline md_f32x4_t flow_stripe_tone(md_f32x4_t c, uint32_t j) {
     if ((j & 1u) == 0) return c;
-    return vec4_t{ c.x + (1.0f - c.x) * 0.45f, c.y + (1.0f - c.y) * 0.45f, c.z + (1.0f - c.z) * 0.45f, c.w };
+    return md_f32x4_t{ c.x + (1.0f - c.x) * 0.45f, c.y + (1.0f - c.y) * 0.45f, c.z + (1.0f - c.z) * 0.45f, c.w };
 }
 
 // A share as the diagram prints it: whole percents from 1%, one decimal below, and a floor
@@ -238,16 +238,16 @@ struct FlowCanvas {
     float base_size;    // text sizes, in pixels
     float small_size;
     float (*measure)(void* user, const char* text, float size);
-    void  (*fill_rect)(void* user, ImVec2 min, ImVec2 max, vec4_t col, float rounding);
-    void  (*stroke_rect)(void* user, ImVec2 min, ImVec2 max, vec4_t col, float rounding, float width);
+    void  (*fill_rect)(void* user, ImVec2 min, ImVec2 max, md_f32x4_t col, float rounding);
+    void  (*stroke_rect)(void* user, ImVec2 min, ImVec2 max, md_f32x4_t col, float rounding, float width);
     // pos.y is the top of the line; pos.x its start (align -1), middle (0) or end (+1)
-    void  (*text)(void* user, ImVec2 pos, float size, vec4_t col, int align, const char* text);
+    void  (*text)(void* user, ImVec2 pos, float size, md_f32x4_t col, int align, const char* text);
     // 'fringe' (FLOW_FRINGE_*): which long edges are outer edges of the ribbon, to anti-alias
-    void  (*ribbon)(void* user, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_t col_src, vec4_t col_dst, int fringe);
+    void  (*ribbon)(void* user, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, md_f32x4_t col_src, md_f32x4_t col_dst, int fringe);
     // a line turned to read upwards, centred on 'centre'
-    void  (*text_up)(void* user, ImVec2 centre, float size, vec4_t col, const char* text);
+    void  (*text_up)(void* user, ImVec2 centre, float size, md_f32x4_t col, const char* text);
     // null where nothing is clicked (the export): the controls are left out
-    void  (*fill_tri)(void* user, ImVec2 a, ImVec2 b, ImVec2 c, vec4_t col);
+    void  (*fill_tri)(void* user, ImVec2 a, ImVec2 b, ImVec2 c, md_f32x4_t col);
 };
 
 static inline float flow_line_h(float size) { return size * 1.18f; }
@@ -257,19 +257,19 @@ static inline float flow_line_h(float size) { return size * 1.18f; }
 struct FlowImCanvas { ImDrawList* dl; float curvature; int segments; };
 
 static float im_measure(void*, const char* t, float size) { return ImGui::GetFont()->CalcTextSizeA(size, FLT_MAX, 0.0f, t).x; }
-static void im_fill(void* u, ImVec2 a, ImVec2 b, vec4_t c, float r) { ((FlowImCanvas*)u)->dl->AddRectFilled(a, b, flow_color_u32(c, 1.0f), r); }
-static void im_stroke(void* u, ImVec2 a, ImVec2 b, vec4_t c, float r, float w) { ((FlowImCanvas*)u)->dl->AddRect(a, b, flow_color_u32(c, 1.0f), r, 0, w); }
-static void im_text(void* u, ImVec2 p, float size, vec4_t c, int align, const char* t) {
+static void im_fill(void* u, ImVec2 a, ImVec2 b, md_f32x4_t c, float r) { ((FlowImCanvas*)u)->dl->AddRectFilled(a, b, flow_color_u32(c, 1.0f), r); }
+static void im_stroke(void* u, ImVec2 a, ImVec2 b, md_f32x4_t c, float r, float w) { ((FlowImCanvas*)u)->dl->AddRect(a, b, flow_color_u32(c, 1.0f), r, 0, w); }
+static void im_text(void* u, ImVec2 p, float size, md_f32x4_t c, int align, const char* t) {
     if (align >= 0) p.x -= im_measure(u, t, size) * (align == 0 ? 0.5f : 1.0f);
     ((FlowImCanvas*)u)->dl->AddText(ImGui::GetFont(), size, ImVec2(floorf(p.x + 0.5f), floorf(p.y + 0.5f)), flow_color_u32(c, 1.0f), t);
 }
-static void im_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_t c0, vec4_t c1, int fringe) {
+static void im_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, md_f32x4_t c0, md_f32x4_t c1, int fringe) {
     const FlowImCanvas* cv = (const FlowImCanvas*)u;
     flow_ribbon_imgui(cv->dl, p0, p1, q0, q1, flow_color_u32(c0, 1.0f), flow_color_u32(c1, 1.0f), cv->curvature, cv->segments, fringe);
 }
-static void im_tri(void* u, ImVec2 a, ImVec2 b, ImVec2 c, vec4_t col) { ((FlowImCanvas*)u)->dl->AddTriangleFilled(a, b, c, flow_color_u32(col, 1.0f)); }
+static void im_tri(void* u, ImVec2 a, ImVec2 b, ImVec2 c, md_f32x4_t col) { ((FlowImCanvas*)u)->dl->AddTriangleFilled(a, b, c, flow_color_u32(col, 1.0f)); }
 // ImGui draws text upright only: the glyphs' vertices, as written, turned a quarter about the centre
-static void im_text_up(void* u, ImVec2 c, float size, vec4_t col, const char* t) {
+static void im_text_up(void* u, ImVec2 c, float size, md_f32x4_t col, const char* t) {
     ImDrawList* dl = ((FlowImCanvas*)u)->dl;
     const float w = im_measure(u, t, size);
     const int first = dl->VtxBuffer.Size;
@@ -294,17 +294,17 @@ static float vg_measure(void*, const char* t, float size) {
     for (const unsigned char* c = (const unsigned char*)t; *c; ++c) n += ((*c & 0xC0) != 0x80);
     return 0.6f * size * (float)n;
 }
-static inline vec2_t flow_v2(ImVec2 p) { return vec2_t{ p.x, p.y }; }
-static void vg_fill(void* u, ImVec2 a, ImVec2 b, vec4_t c, float r) { md_vg_add_rect_filled(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r); }
-static void vg_stroke(void* u, ImVec2 a, ImVec2 b, vec4_t c, float r, float w) { md_vg_add_rect(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r, w); }
-static void vg_text(void* u, ImVec2 p, float size, vec4_t c, int align, const char* t) {
+static inline md_f32x2_t flow_v2(ImVec2 p) { return md_f32x2_t{ p.x, p.y }; }
+static void vg_fill(void* u, ImVec2 a, ImVec2 b, md_f32x4_t c, float r) { md_vg_add_rect_filled(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r); }
+static void vg_stroke(void* u, ImVec2 a, ImVec2 b, md_f32x4_t c, float r, float w) { md_vg_add_rect(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r, w); }
+static void vg_text(void* u, ImVec2 p, float size, md_f32x4_t c, int align, const char* t) {
     const md_vg_text_anchor_t anchor = align < 0 ? MD_VG_TEXT_ANCHOR_START : (align == 0 ? MD_VG_TEXT_ANCHOR_MIDDLE : MD_VG_TEXT_ANCHOR_END);
     md_vg_add_text_anchored(((FlowVgCanvas*)u)->scene, flow_v2(p), size, flow_color_vg(c, 1.0f), anchor, md_str_from_cstr(t));
 }
-static void vg_text_up(void* u, ImVec2 c, float size, vec4_t col, const char* t) {
-    md_vg_add_text_rotated(((FlowVgCanvas*)u)->scene, vec2_t{ c.x, c.y - size * 0.5f }, size, flow_color_vg(col, 1.0f), MD_VG_TEXT_ANCHOR_MIDDLE, -90.0f, md_str_from_cstr(t));
+static void vg_text_up(void* u, ImVec2 c, float size, md_f32x4_t col, const char* t) {
+    md_vg_add_text_rotated(((FlowVgCanvas*)u)->scene, md_f32x2_t{ c.x, c.y - size * 0.5f }, size, flow_color_vg(col, 1.0f), MD_VG_TEXT_ANCHOR_MIDDLE, -90.0f, md_str_from_cstr(t));
 }
-static void vg_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_t c0, vec4_t c1, int) {
+static void vg_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, md_f32x4_t c0, md_f32x4_t c1, int) {
     // Native cubics rather than the sampled strip of the screen: an SVG viewer resamples for its own
     // resolution, so handing it curves beats handing it triangles.
     const FlowVgCanvas* cv = (const FlowVgCanvas*)u;
@@ -312,9 +312,9 @@ static void vg_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, vec4_
     const float dx = (q0.x - p0.x) * 0.5f * cv->curvature;
     md_vg_path_clear(scene);
     md_vg_path_move_to(scene, flow_v2(p0));
-    md_vg_path_bezier_cubic_curve_to(scene, vec2_t{ p0.x + dx, p0.y }, vec2_t{ q0.x - dx, q0.y }, flow_v2(q0));
+    md_vg_path_bezier_cubic_curve_to(scene, md_f32x2_t{ p0.x + dx, p0.y }, md_f32x2_t{ q0.x - dx, q0.y }, flow_v2(q0));
     md_vg_path_line_to(scene, flow_v2(q1));
-    md_vg_path_bezier_cubic_curve_to(scene, vec2_t{ q1.x - dx, q1.y }, vec2_t{ p1.x + dx, p1.y }, flow_v2(p1));
+    md_vg_path_bezier_cubic_curve_to(scene, md_f32x2_t{ q1.x - dx, q1.y }, md_f32x2_t{ p1.x + dx, p1.y }, flow_v2(p1));
     md_vg_path_close(scene);
     md_vg_style_t st = {};
     st.fill.type = MD_VG_PAINT_LINEAR_GRADIENT;
@@ -505,7 +505,7 @@ static void flow_child_counts(uint32_t* out, const md_flow_graph_t* graph) {
 // The diagram
 // ---------------------------------------------------------------------------------------------------------
 
-static vec4_t flow_node_base_color(const FlowDrawStyle& style, const md_flow_node_t* node, int side) {
+static md_f32x4_t flow_node_base_color(const FlowDrawStyle& style, const md_flow_node_t* node, int side) {
     if (style.color_by_side) return style.side_color[flow_side_index(side)];
     return node->color.w > 0.0f ? node->color : flow_vec4(style.node_border_color);
 }
@@ -549,8 +549,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     if (!graph || !cut || !layout) return hit;
     const ImVec2 mouse = mouse_ptr ? *mouse_ptr : ImVec2(-1.0e9f, -1.0e9f);
     const bool has_highlight = emphasis.any_selected || emphasis.hover_node >= 0 || emphasis.hover_link >= 0;
-    const vec4_t text_col = flow_vec4(style.text_color);
-    const vec4_t text_sec = flow_vec4(style.text_secondary);
+    const md_f32x4_t text_col = flow_vec4(style.text_color);
+    const md_f32x4_t text_sec = flow_vec4(style.text_secondary);
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -656,7 +656,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         // pale ribbons need a lift to read as the ones in focus, not only the others' fading
         const float alpha = style.ribbon_alpha * (!has_highlight ? 1.0f : (direct ? 1.6f : style.dim_factor));
 
-        vec4_t c_src, c_dst;
+        md_f32x4_t c_src, c_dst;
         if (style.color_by_side) {
             c_src = c_dst = flow_with_alpha(style.ribbon_color, alpha);
         } else {
@@ -722,9 +722,9 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         const bool touched = !has_highlight || hovered || flow_is_emphasized(emphasis, b->node);
         const float alpha = touched ? 1.0f : style.dim_factor;
         // the side's colour, as the bars, a little paler: a container, not a share of its own
-        const vec4_t base = flow_node_base_color(style, node, side);
+        const md_f32x4_t base = flow_node_base_color(style, node, side);
         cv.fill_rect(cv.user, band_min, band_max, flow_with_alpha(flow_toward_white(base, style.band_fill_tint), alpha), style.node_rounding);
-        const vec4_t border = style.color_by_side ? flow_scale_rgb(base, 0.78f) : flow_visible_border(base);
+        const md_f32x4_t border = style.color_by_side ? flow_scale_rgb(base, 0.78f) : flow_visible_border(base);
         cv.stroke_rect(cv.user, band_min, band_max, flow_with_alpha(border, alpha), style.node_rounding,
                        hovered ? style.border_width_hover : style.border_width);
 
@@ -742,7 +742,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             if (arrow_hovered) hit.toggle = (int32_t)b->node;
             const ImVec2 c = (a0 + a1) * 0.5f;
             const float r = MD_MIN(band_w, 16.0f) * (arrow_hovered ? 0.30f : 0.25f);
-            const vec4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
+            const md_f32x4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
             cv.fill_tri(cv.user, ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), ImVec2(c.x, c.y + r * 0.9f), col);
             label_top = a1.y;
         }
@@ -771,7 +771,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         const bool touched  = !has_highlight || selected || partial || hovered;
         const float alpha = touched ? 1.0f : style.dim_factor;
 
-        const vec4_t base = flow_node_base_color(style, node, side);
+        const md_f32x4_t base = flow_node_base_color(style, node, side);
         cv.fill_rect(cv.user, min, max, flow_toward_white(base, style.node_fill_tint * (touched ? 1.0f : 0.5f)), style.node_rounding);
 
         // The node's self flow, solid over its stub: the part that stays put
@@ -779,7 +779,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             const md_flow_layout_ribbon_t* r = layout->ribbons + j;
             if (!(r->flags & MD_FLOW_RIBBON_FLAG_SELF)) continue;
             const md_flow_link_t* link = cut->links + r->link_idx;
-            vec2_t a, b;
+            md_f32x2_t a, b;
             if      (link->src == ln->cut_idx) { a = r->p0; b = r->p1; }
             else if (link->dst == ln->cut_idx) { a = r->q0; b = r->q1; }
             else continue;
@@ -794,7 +794,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
                           : partial  ? style.border_width_partial
                           : hovered  ? style.border_width_hover
                                      : style.border_width;
-        const vec4_t border = style.color_by_side ? flow_scale_rgb(base, 0.78f) : flow_visible_border(base);
+        const md_f32x4_t border = style.color_by_side ? flow_scale_rgb(base, 0.78f) : flow_visible_border(base);
         cv.stroke_rect(cv.user, min, max, flow_with_alpha(border, alpha), style.node_rounding, width);
 
         if (mouse.x >= min.x && mouse.x <= max.x && mouse.y >= min.y && mouse.y <= max.y) {
@@ -821,20 +821,20 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
             }
             const float r = arrow_box * (arrow_hovered ? 0.42f : 0.34f);
             const float d = (float)-side;   // the way in: right on the left side, left on the right
-            const vec4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
+            const md_f32x4_t col = flow_with_alpha(arrow_hovered ? text_col : flow_scale_rgb(border, 0.85f), alpha);
             cv.fill_tri(cv.user, ImVec2(cx - d * r * 0.6f, cy - r), ImVec2(cx + d * r * 0.9f, cy), ImVec2(cx - d * r * 0.6f, cy + r), col);
             (void)s;
         }
 
         // ---- its label ----
         if (!lb->visible) continue;
-        const vec4_t name_col = (!style.color_by_side && style.color_labels) ? flow_readable_text(node->color) : text_col;
+        const md_f32x4_t name_col = (!style.color_by_side && style.color_labels) ? flow_readable_text(node->color) : text_col;
         if (lb->side == 0) {
             // on the bar, over a light plate so the ribbons behind do not bleed into it
             const float pad = 4.0f;
             const ImVec2 pmin = { lb->anchor_x - lb->width * 0.5f - pad, lb->top - 1.0f };
             const ImVec2 pmax = { lb->anchor_x + lb->width * 0.5f + pad, lb->top + lb->height + 1.0f };
-            cv.fill_rect(cv.user, pmin, pmax, vec4_t{ 1.0f, 1.0f, 1.0f, 0.72f * alpha }, 3.0f);
+            cv.fill_rect(cv.user, pmin, pmax, md_f32x4_t{ 1.0f, 1.0f, 1.0f, 0.72f * alpha }, 3.0f);
         }
         const int align = lb->side < 0 ? +1 : (lb->side > 0 ? -1 : 0);
         float y = lb->top;
@@ -920,7 +920,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
                 x += sw + 6.0f + cv.measure(cv.user, notes->legend_ribbon, cv.small_size) + 24.0f;
             }
             if (notes->legend_local) {
-                const vec4_t solid = style.color_by_side ? style.side_color[2] : text_sec;
+                const md_f32x4_t solid = style.color_by_side ? style.side_color[2] : text_sec;
                 cv.fill_rect(cv.user, { x, y }, { x + sw, y + sh }, flow_with_alpha(solid, style.self_alpha), 0.0f);
                 cv.text(cv.user, ImVec2(x + sw + 6.0f, ty), cv.small_size, text_sec, -1, notes->legend_local);
             }

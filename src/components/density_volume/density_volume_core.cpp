@@ -1,10 +1,11 @@
 #include "density_volume_core.h"
 
 #include <core/md_allocator.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_array.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 #include <md_mcs.h>
 #include <md_system.h>
 #include <md_util.h>
@@ -90,7 +91,7 @@ bool cube_parse(Cube* out, md_str_t text, md_allocator_i* alloc, char* err, size
     const long long natoms_signed = (long long)h[0];
     const size_t natoms = (size_t)llabs(natoms_signed);
     const bool has_ids = natoms_signed < 0;
-    vec3_t origin_bohr = {(float)h[1], (float)h[2], (float)h[3]};
+    md_f32x3_t origin_bohr = {(float)h[1], (float)h[2], (float)h[3]};
     double scale[3];
     for (int a = 0; a < 3; ++a) {
         double v[4];
@@ -100,19 +101,19 @@ bool cube_parse(Cube* out, md_str_t text, md_allocator_i* alloc, char* err, size
         out->grid.dim[a] = (uint32_t)llabs(n);
         // A negative count: the axis is in Å, else in bohr
         scale[a] = n < 0 ? 1.0 : BOHR_IN_ANGSTROM;
-        out->grid.basis[a] = vec3_t{(float)(v[1] * scale[a]), (float)(v[2] * scale[a]), (float)(v[3] * scale[a])};
+        out->grid.basis[a] = md_f32x3_t{(float)(v[1] * scale[a]), (float)(v[2] * scale[a]), (float)(v[3] * scale[a])};
     }
     // Positions in the units of the first axis, as readers do
     const double len_scale = scale[0];
-    const vec3_t origin = vec3_mul1(origin_bohr, (float)len_scale);
+    const md_f32x3_t origin = md_f32x3_mul1(origin_bohr, (float)len_scale);
     out->num_atoms = natoms;
     out->atomic_numbers = natoms ? (int*)md_alloc(alloc, natoms * sizeof(int)) : nullptr;
-    out->xyz = natoms ? (vec3_t*)md_alloc(alloc, natoms * sizeof(vec3_t)) : nullptr;
+    out->xyz = natoms ? (md_f32x3_t*)md_alloc(alloc, natoms * sizeof(md_f32x3_t)) : nullptr;
     for (size_t i = 0; i < natoms; ++i) {
         double v[5];
         if (line_numbers(next_line(&r), v, 5) != 5) return fail(err, err_cap, "atom %zu is not 'Z charge x y z'", i + 1);
         out->atomic_numbers[i] = (int)v[0];
-        out->xyz[i] = vec3_t{(float)(v[2] * len_scale), (float)(v[3] * len_scale), (float)(v[4] * len_scale)};
+        out->xyz[i] = md_f32x3_t{(float)(v[2] * len_scale), (float)(v[3] * len_scale), (float)(v[4] * len_scale)};
     }
     if (has_ids) {
         // The count of values per point and their ids: one is all that is read
@@ -130,7 +131,7 @@ bool cube_parse(Cube* out, md_str_t text, md_allocator_i* alloc, char* err, size
     }
     // A cube's origin is the first point; a voxel is centred on its point
     out->grid.origin = origin;
-    for (int a = 0; a < 3; ++a) out->grid.origin = vec3_sub(out->grid.origin, vec3_mul1(out->grid.basis[a], 0.5f));
+    for (int a = 0; a < 3; ++a) out->grid.origin = md_f32x3_sub(out->grid.origin, md_f32x3_mul1(out->grid.basis[a], 0.5f));
     out->grid.values = out->values;
     return true;
 }
@@ -153,13 +154,13 @@ void cube_free(Cube* cube) {
     if (!cube || !cube->alloc) return;
     if (cube->values) md_free(cube->alloc, cube->values, (size_t)cube->grid.dim[0] * cube->grid.dim[1] * cube->grid.dim[2] * sizeof(float));
     if (cube->atomic_numbers) md_free(cube->alloc, cube->atomic_numbers, cube->num_atoms * sizeof(int));
-    if (cube->xyz) md_free(cube->alloc, cube->xyz, cube->num_atoms * sizeof(vec3_t));
+    if (cube->xyz) md_free(cube->alloc, cube->xyz, cube->num_atoms * sizeof(md_f32x3_t));
     *cube = Cube{};
 }
 
 // ### ALIGNMENT ###
 
-bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t count, const vec3_t* xyz, const Cube& other,
+bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t count, const md_f32x3_t* xyz, const Cube& other,
            md_allocator_i* alloc, char* err, size_t err_cap) {
     *out = Alignment{};
     if (!sys || !atoms || !count || !xyz) return fail(err, err_cap, "this volume has no reference structure");
@@ -191,7 +192,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
 
     md_mcs_desc_t desc = {};
     desc.a = {sys, atoms, count, xyz};
-    desc.b = {&osys, oatoms, other.num_atoms, (const vec3_t*)ostate.xyz};
+    desc.b = {&osys, oatoms, other.num_atoms, (const md_f32x3_t*)ostate.xyz};
     md_mcs_result_t res = {};
     ok = md_mcs(&res, &desc, temp);
     if (ok) {
@@ -208,30 +209,30 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
     if (ok) {
         // Kabsch by mass over the pairs: the other's centre onto this one's, then the rotation
         const size_t n = res.count;
-        vec4_t* p = (vec4_t*)md_alloc(temp, n * sizeof(vec4_t));
-        vec4_t* q = (vec4_t*)md_alloc(temp, n * sizeof(vec4_t));
+        md_f32x4_t* p = (md_f32x4_t*)md_alloc(temp, n * sizeof(md_f32x4_t));
+        md_f32x4_t* q = (md_f32x4_t*)md_alloc(temp, n * sizeof(md_f32x4_t));
         double wsum = 0, cp[3] = {0}, cq[3] = {0};
         for (size_t i = 0; i < n; ++i) {
             const float w = md_atom_mass(&sys->atom, (size_t)res.a[i]);
-            const vec3_t a = xyz[res.a[i]], b = ostate.xyz[res.b[i]];
-            p[i] = vec4_t{a.x, a.y, a.z, w};
-            q[i] = vec4_t{b.x, b.y, b.z, w};
+            const md_f32x3_t a = xyz[res.a[i]], b = ostate.xyz[res.b[i]];
+            p[i] = md_f32x4_t{a.x, a.y, a.z, w};
+            q[i] = md_f32x4_t{b.x, b.y, b.z, w};
             wsum += w;
             cp[0] += w * a.x; cp[1] += w * a.y; cp[2] += w * a.z;
             cq[0] += w * b.x; cq[1] += w * b.y; cq[2] += w * b.z;
         }
-        const vec3_t comp = {(float)(cp[0] / wsum), (float)(cp[1] / wsum), (float)(cp[2] / wsum)};
-        const vec3_t comq = {(float)(cq[0] / wsum), (float)(cq[1] / wsum), (float)(cq[2] / wsum)};
+        const md_f32x3_t comp = {(float)(cp[0] / wsum), (float)(cp[1] / wsum), (float)(cp[2] / wsum)};
+        const md_f32x3_t comq = {(float)(cq[0] / wsum), (float)(cq[1] / wsum), (float)(cq[2] / wsum)};
         for (size_t i = 0; i < n; ++i) {
             p[i].x -= comp.x; p[i].y -= comp.y; p[i].z -= comp.z;
             q[i].x -= comq.x; q[i].y -= comq.y; q[i].z -= comq.z;
         }
         out->R = md_util_optimal_rotation_rel_vec4(p, q, n);
-        out->t = vec3_sub(comp, mat3_mul_vec3(out->R, comq));
+        out->t = md_f32x3_sub(comp, md_f32x3x3_mul_f32x3(out->R, comq));
         double ss = 0;
         for (size_t i = 0; i < n; ++i) {
-            const vec3_t d = vec3_sub(mat3_mul_vec3(out->R, vec3_t{q[i].x, q[i].y, q[i].z}), vec3_t{p[i].x, p[i].y, p[i].z});
-            ss += p[i].w * vec3_dot(d, d);
+            const md_f32x3_t d = md_f32x3_sub(md_f32x3x3_mul_f32x3(out->R, md_f32x3_t{q[i].x, q[i].y, q[i].z}), md_f32x3_t{p[i].x, p[i].y, p[i].z});
+            ss += p[i].w * md_f32x3_dot(d, d);
         }
         out->rmsd = sqrt(ss / wsum);
     }
@@ -252,24 +253,24 @@ double resample(float* out, const Grid& to, const Grid& from, const Alignment& a
     }
     // A point of this frame in from's continuous index, whole numbers at voxel centres:
     // f = B^-1 (R^T (p - t) - origin) - 1/2, with B's columns from's steps
-    mat3_t B = {};
+    md_f32x3x3_t B = {};
     for (int a = 0; a < 3; ++a) { B.elem[a][0] = from.basis[a].x; B.elem[a][1] = from.basis[a].y; B.elem[a][2] = from.basis[a].z; }
-    const mat3_t Binv = mat3_inverse(B);
-    const mat3_t M = mat3_mul(Binv, mat3_transpose(al.R));
-    const vec3_t f0 = vec3_sub(mat3_mul_vec3(Binv, vec3_sub(mat3_mul_vec3(mat3_transpose(al.R), vec3_mul1(al.t, -1.0f)), from.origin)), vec3_set1(0.5f));
+    const md_f32x3x3_t Binv = md_f32x3x3_inverse(B);
+    const md_f32x3x3_t M = md_f32x3x3_mul(Binv, md_f32x3x3_transpose(al.R));
+    const md_f32x3_t f0 = md_f32x3_sub(md_f32x3x3_mul_f32x3(Binv, md_f32x3_sub(md_f32x3x3_mul_f32x3(md_f32x3x3_transpose(al.R), md_f32x3_mul1(al.t, -1.0f)), from.origin)), md_f32x3_set1(0.5f));
     // A step of to's index in from's
-    vec3_t step[3];
-    for (int a = 0; a < 3; ++a) step[a] = mat3_mul_vec3(M, to.basis[a]);
-    vec3_t start = vec3_add(mat3_mul_vec3(M, to.origin), f0);
-    for (int a = 0; a < 3; ++a) start = vec3_add(start, vec3_mul1(step[a], 0.5f));
+    md_f32x3_t step[3];
+    for (int a = 0; a < 3; ++a) step[a] = md_f32x3x3_mul_f32x3(M, to.basis[a]);
+    md_f32x3_t start = md_f32x3_add(md_f32x3x3_mul_f32x3(M, to.origin), f0);
+    for (int a = 0; a < 3; ++a) start = md_f32x3_add(start, md_f32x3_mul1(step[a], 0.5f));
 
     const int64_t d0 = from.dim[0], d1 = from.dim[1], d2 = from.dim[2];
     const float* V = from.values;
     size_t reached = 0, o = 0;
     for (uint32_t i = 0; i < to.dim[0]; ++i) {
         for (uint32_t j = 0; j < to.dim[1]; ++j) {
-            vec3_t f = vec3_add(start, vec3_add(vec3_mul1(step[0], (float)i), vec3_mul1(step[1], (float)j)));
-            for (uint32_t k = 0; k < to.dim[2]; ++k, ++o, f = vec3_add(f, step[2])) {
+            md_f32x3_t f = md_f32x3_add(start, md_f32x3_add(md_f32x3_mul1(step[0], (float)i), md_f32x3_mul1(step[1], (float)j)));
+            for (uint32_t k = 0; k < to.dim[2]; ++k, ++o, f = md_f32x3_add(f, step[2])) {
                 const float c[3] = {f.x, f.y, f.z};
                 const int64_t dims[3] = {d0, d1, d2};
                 bool inside = true;

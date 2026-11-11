@@ -4,6 +4,7 @@
 
 #include <core/md_common.h>
 #include <core/md_str.h>
+#include <core/md_vec_math.h>
 
 #include <float.h>
 #include <math.h>
@@ -11,7 +12,7 @@
 #include <string.h>
 
 // Distinct on the dark background of the plots, and none of them the yellow of the current frame
-static vec4_t palette_color(int i) {
+static md_f32x4_t palette_color(int i) {
     static const float palette[][3] = {
         {0.353f, 0.682f, 0.941f},   // blue
         {0.941f, 0.639f, 0.353f},   // orange
@@ -22,10 +23,10 @@ static vec4_t palette_color(int i) {
     };
     const int n = (int)MD_COUNTOF(palette);
     const float* c = palette[((i % n) + n) % n];
-    return vec4_set(c[0], c[1], c[2], 1.0f);
+    return md_f32x4_set(c[0], c[1], c[2], 1.0f);
 }
 
-static bool same_color(vec4_t a, vec4_t b) {
+static bool same_color(md_f32x4_t a, md_f32x4_t b) {
     return fabsf(a.x - b.x) < 1e-3f && fabsf(a.y - b.y) < 1e-3f && fabsf(a.z - b.z) < 1e-3f;
 }
 

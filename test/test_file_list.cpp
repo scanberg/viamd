@@ -5,7 +5,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_path.h>
 
 #include <string.h>
@@ -155,7 +155,7 @@ struct Read {
         static const char* names[] = { "None", "System", "Supplement", "Trajectory", "Series" };
         for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
             md_str_t name = md_str_from_cstr(plan.inputs[i].entry.path);
-            md_path_filename(&name, name);
+            name = md_path_filename(name);
             if (!s.empty()) s += " ";
             s += std::string(name.ptr, name.len) + ":" + names[plan.inputs[i].role] + ":" + std::to_string(plan.inputs[i].run);
         }

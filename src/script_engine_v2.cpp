@@ -678,28 +678,28 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
 
 static const uint32_t WHITE = 0xFFFFFFFFu;
 
-static inline vec3_t v3(const float p[3]) { return vec3_t{p[0], p[1], p[2]}; }
-static inline Vertex vtx(vec3_t p) { Vertex v; v.pos = p; v.color = WHITE; v.normal = vec3_t{0, 0, 1}; v.picking_idx = 0xFFFFFFFFu; return v; }
+static inline md_f32x3_t v3(const float p[3]) { return md_f32x3_t{p[0], p[1], p[2]}; }
+static inline Vertex vtx(md_f32x3_t p) { Vertex v; v.pos = p; v.color = WHITE; v.normal = md_f32x3_t{0, 0, 1}; v.picking_idx = 0xFFFFFFFFu; return v; }
 
-static void line(Drawing* d, vec3_t a, vec3_t b) {
+static void line(Drawing* d, md_f32x3_t a, md_f32x3_t b) {
     md_array_push(d->lines, vtx(a), d->alloc);
     md_array_push(d->lines, vtx(b), d->alloc);
 }
 
 // Two unit vectors at right angles to n and to each other
-static void basis_of(vec3_t n, vec3_t* u, vec3_t* w) {
-    n = vec3_normalize(n);
-    const vec3_t t = fabsf(n.x) < 0.9f ? vec3_t{1, 0, 0} : vec3_t{0, 1, 0};
-    *u = vec3_normalize(vec3_cross(n, t));
-    *w = vec3_cross(n, *u);
+static void basis_of(md_f32x3_t n, md_f32x3_t* u, md_f32x3_t* w) {
+    n = md_f32x3_normalize(n);
+    const md_f32x3_t t = fabsf(n.x) < 0.9f ? md_f32x3_t{1, 0, 0} : md_f32x3_t{0, 1, 0};
+    *u = md_f32x3_normalize(md_f32x3_cross(n, t));
+    *w = md_f32x3_cross(n, *u);
 }
 
-static void circle(Drawing* d, vec3_t c, vec3_t u, vec3_t w, float r, bool fill) {
+static void circle(Drawing* d, md_f32x3_t c, md_f32x3_t u, md_f32x3_t w, float r, bool fill) {
     const int N = 32;
-    vec3_t prev = vec3_add(c, vec3_mul1(u, r));
+    md_f32x3_t prev = md_f32x3_add(c, md_f32x3_mul1(u, r));
     for (int i = 1; i <= N; ++i) {
         const float a = 6.2831853f * (float)i / (float)N;
-        const vec3_t p = vec3_add(c, vec3_add(vec3_mul1(u, r * cosf(a)), vec3_mul1(w, r * sinf(a))));
+        const md_f32x3_t p = md_f32x3_add(c, md_f32x3_add(md_f32x3_mul1(u, r * cosf(a)), md_f32x3_mul1(w, r * sinf(a))));
         line(d, prev, p);
         if (fill) {
             md_array_push(d->triangles, vtx(c), d->alloc);
@@ -711,7 +711,7 @@ static void circle(Drawing* d, vec3_t c, vec3_t u, vec3_t w, float r, bool fill)
 }
 
 static void prim(Drawing* d, const md_vial_prim_t& p) {
-    const vec3_t a = v3(p.p[0]), b = v3(p.p[1]);
+    const md_f32x3_t a = v3(p.p[0]), b = v3(p.p[1]);
     switch (p.kind) {
     case MD_VIAL_PRIM_MARKER:
         md_array_push(d->points, vtx(a), d->alloc);
@@ -721,44 +721,44 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         break;
     case MD_VIAL_PRIM_ARROW: {
         line(d, a, b);
-        const vec3_t dir = vec3_sub(b, a);
-        const float len = vec3_length(dir);
+        const md_f32x3_t dir = md_f32x3_sub(b, a);
+        const float len = md_f32x3_length(dir);
         if (len <= 0.0f) break;
-        vec3_t u, w;
+        md_f32x3_t u, w;
         basis_of(dir, &u, &w);
         const float h = MD_MIN(0.25f * len, 1.0f);
-        const vec3_t back = vec3_sub(b, vec3_mul1(vec3_normalize(dir), h));
-        line(d, b, vec3_add(back, vec3_mul1(u, 0.4f * h)));
-        line(d, b, vec3_sub(back, vec3_mul1(u, 0.4f * h)));
-        line(d, b, vec3_add(back, vec3_mul1(w, 0.4f * h)));
-        line(d, b, vec3_sub(back, vec3_mul1(w, 0.4f * h)));
+        const md_f32x3_t back = md_f32x3_sub(b, md_f32x3_mul1(md_f32x3_normalize(dir), h));
+        line(d, b, md_f32x3_add(back, md_f32x3_mul1(u, 0.4f * h)));
+        line(d, b, md_f32x3_sub(back, md_f32x3_mul1(u, 0.4f * h)));
+        line(d, b, md_f32x3_add(back, md_f32x3_mul1(w, 0.4f * h)));
+        line(d, b, md_f32x3_sub(back, md_f32x3_mul1(w, 0.4f * h)));
         break;
     }
     case MD_VIAL_PRIM_SPHERE:
         // Three great circles
-        circle(d, a, vec3_t{1, 0, 0}, vec3_t{0, 1, 0}, p.r, false);
-        circle(d, a, vec3_t{0, 1, 0}, vec3_t{0, 0, 1}, p.r, false);
-        circle(d, a, vec3_t{0, 0, 1}, vec3_t{1, 0, 0}, p.r, false);
+        circle(d, a, md_f32x3_t{1, 0, 0}, md_f32x3_t{0, 1, 0}, p.r, false);
+        circle(d, a, md_f32x3_t{0, 1, 0}, md_f32x3_t{0, 0, 1}, p.r, false);
+        circle(d, a, md_f32x3_t{0, 0, 1}, md_f32x3_t{1, 0, 0}, p.r, false);
         break;
     case MD_VIAL_PRIM_ARC: {
         // The angle at a from b to c: a filled sector, at a third of the shorter arm
-        const vec3_t c = v3(p.p[2]);
-        const vec3_t x = vec3_sub(b, a), y = vec3_sub(c, a);
-        const float lx = vec3_length(x), ly = vec3_length(y);
+        const md_f32x3_t c = v3(p.p[2]);
+        const md_f32x3_t x = md_f32x3_sub(b, a), y = md_f32x3_sub(c, a);
+        const float lx = md_f32x3_length(x), ly = md_f32x3_length(y);
         if (lx <= 0.0f || ly <= 0.0f) break;
         const float r = 0.33f * MD_MIN(lx, ly);
-        const vec3_t ux = vec3_div1(x, lx), uy = vec3_div1(y, ly);
-        const float ang = acosf(MD_CLAMP(vec3_dot(ux, uy), -1.0f, 1.0f));
-        vec3_t perp = vec3_sub(uy, vec3_mul1(ux, vec3_dot(ux, uy)));
-        const float lp = vec3_length(perp);
+        const md_f32x3_t ux = md_f32x3_div1(x, lx), uy = md_f32x3_div1(y, ly);
+        const float ang = acosf(MD_CLAMP(md_f32x3_dot(ux, uy), -1.0f, 1.0f));
+        md_f32x3_t perp = md_f32x3_sub(uy, md_f32x3_mul1(ux, md_f32x3_dot(ux, uy)));
+        const float lp = md_f32x3_length(perp);
         if (lp <= 1e-6f) break;
-        perp = vec3_div1(perp, lp);
+        perp = md_f32x3_div1(perp, lp);
         const int N = MD_MAX(4, (int)(ang * 16.0f));
-        vec3_t prev = vec3_add(a, vec3_mul1(ux, r));
+        md_f32x3_t prev = md_f32x3_add(a, md_f32x3_mul1(ux, r));
         line(d, a, prev);
         for (int i = 1; i <= N; ++i) {
             const float t = ang * (float)i / (float)N;
-            const vec3_t q = vec3_add(a, vec3_add(vec3_mul1(ux, r * cosf(t)), vec3_mul1(perp, r * sinf(t))));
+            const md_f32x3_t q = md_f32x3_add(a, md_f32x3_add(md_f32x3_mul1(ux, r * cosf(t)), md_f32x3_mul1(perp, r * sinf(t))));
             line(d, prev, q);
             md_array_push(d->triangles, vtx(a), d->alloc);
             md_array_push(d->triangles, vtx(prev), d->alloc);
@@ -769,7 +769,7 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         break;
     }
     case MD_VIAL_PRIM_DISK: {
-        vec3_t u, w;
+        md_f32x3_t u, w;
         basis_of(b, &u, &w);
         circle(d, a, u, w, p.r, true);
         break;
@@ -813,7 +813,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
             // are is published beside it, script/<name>/origin and /basis
             for (size_t i = 0; i < dr.num_poses; ++i) {
                 const md_vial_pose_t& ps = dr.poses[i];
-                mat4_t M;
+                md_f32x4x4_t M;
                 memcpy(M.elem, ps.m, sizeof(M.elem));
                 md_array_push(out->sdf.matrices, M, out->alloc);
                 md_array_push(out->sdf.structures, md_bitset_from_indices(dr.atoms + ps.beg, ps.end - ps.beg, out->alloc), out->alloc);

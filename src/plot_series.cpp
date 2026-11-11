@@ -12,6 +12,7 @@
 #include <core/md_log.h>
 #include <core/md_str.h>
 #include <core/md_path.h>
+#include <core/md_vec_math.h>
 
 #include <float.h>
 #include <math.h>
@@ -1315,8 +1316,8 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     if (ao && ab && md_attribute_extract_f64(o, 3, ao, md_attribute_slice_all(), ao->unit) == 3 &&
         md_attribute_extract_f64(b, 9, ab, md_attribute_slice_all(), ab->unit) == 9) {
         out->placed = true;
-        out->origin = vec3_t{(float)o[0], (float)o[1], (float)o[2]};
-        for (int a = 0; a < 3; ++a) out->basis[a] = vec3_t{(float)b[3 * a], (float)b[3 * a + 1], (float)b[3 * a + 2]};
+        out->origin = md_f32x3_t{(float)o[0], (float)o[1], (float)o[2]};
+        for (int a = 0; a < 3; ++a) out->basis[a] = md_f32x3_t{(float)b[3 * a], (float)b[3 * a + 1], (float)b[3 * a + 2]};
     }
     snprintf(path, sizeof(path), "%s/bulk", key.path);
     const md_attribute_t* ak = md_attributes_find(table, md_str_from_cstr(path));
@@ -1490,7 +1491,7 @@ void system_series_group_label(char* buf, size_t cap, const ApplicationState* ap
         rel = md_str_substr(group, run.len + 1);
     }
     md_str_t file = system_series_group_source(app, group);
-    md_path_filename(&file, file);
+    file = md_path_filename(file);
     if (md_str_empty(file)) {
         snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(rel));
     } else {
@@ -1531,7 +1532,7 @@ void plot_layout_serialize(viamd::serialization_state_t& state, md_str_t section
             if (s.key.period != 0) {
                 viamd::write_int(state, MD_STR_LIT("Period"), (int)s.key.period);
             }
-            viamd::write_vec4(state, MD_STR_LIT("Color"),   vec4_set(s.color.x, s.color.y, s.color.z, s.color.w));
+            viamd::write_vec4(state, MD_STR_LIT("Color"),   md_f32x4_set(s.color.x, s.color.y, s.color.z, s.color.w));
             viamd::write_str (state, MD_STR_LIT("PlotType"), md_str_from_cstr(plot_type_name[s.plot_type < PlotType_Count ? s.plot_type : 0]));
             viamd::write_int (state, MD_STR_LIT("Marker"),  (int)s.marker);
             viamd::write_flt (state, MD_STR_LIT("MarkerSize"), s.marker_size);
@@ -1589,7 +1590,7 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, md_str_t sec
             } else if (md_str_eq_cstr(ident, "Path")) {
                 viamd::extract_to_char_buf(s.key.path, sizeof(s.key.path), arg);
             } else if (md_str_eq_cstr(ident, "Color")) {
-                vec4_t c = {};
+                md_f32x4_t c = {};
                 viamd::extract_vec4(c, arg);
                 s.color = ImVec4(c.x, c.y, c.z, c.w);
                 has_color = true;

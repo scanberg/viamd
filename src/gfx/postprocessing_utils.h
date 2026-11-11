@@ -3,7 +3,7 @@
 #include "gl.h"
 #include "view_param.h"
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 namespace postprocessing {
 // Legacy utility helpers used by callsites that manipulate the current bound target.
@@ -85,7 +85,7 @@ struct Settings {
     // it after the display transform, by its coverage (the geometry, through the depth of field, and the
     // isosurfaces), so it shows as picked in every mode and with every curve, and a translucent surface over it is
     // blended with it.
-    vec3_t background_color = {1.f, 1.f, 1.f};
+    md_f32x3_t background_color = {1.f, 1.f, 1.f};
 
     struct {
         ShadingMode mode = ShadingMode_PhysicallyBased;
@@ -160,10 +160,10 @@ struct Settings {
     // outline of where they are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours,
     // group k > 0 the colour groups[k - 1] with their alphas.
     struct {
-        vec4_t visible[2] = {};
-        vec4_t hidden[2]  = {};
-        vec4_t outline[2] = {};
-        vec3_t groups[7]  = {};
+        md_f32x4_t visible[2] = {};
+        md_f32x4_t hidden[2]  = {};
+        md_f32x4_t outline[2] = {};
+        md_f32x3_t groups[7]  = {};
         float highlight   = 1.0f;   // how much of the highlight shows: it fades in
         int   outline_step = 1;     // pixels between the taps that find the outline, which is about twice as wide
     } marks;
@@ -189,10 +189,10 @@ void shutdown();
 // surface facing the viewer close to as it was picked (with the Neutral curve, within about 0.02 of reference white:
 // its offset takes off 0.04, the specular reflection of these surroundings adds about 0.02).
 struct Lighting {
-    vec3_t light_dir;           // toward the key light, normalized
-    vec3_t light_irradiance;    // the key light: irradiance at normal incidence (pi: a white surface facing it is 1)
-    vec3_t sky_radiance;        // the environment above the horizon of the view (view space y > 0)
-    vec3_t ground_radiance;     // the environment below it
+    md_f32x3_t light_dir;           // toward the key light, normalized
+    md_f32x3_t light_irradiance;    // the key light: irradiance at normal incidence (pi: a white surface facing it is 1)
+    md_f32x3_t sky_radiance;        // the environment above the horizon of the view (view space y > 0)
+    md_f32x3_t ground_radiance;     // the environment below it
 };
 Lighting lighting(ShadingMode mode);
 

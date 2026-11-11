@@ -30,7 +30,7 @@ struct TimelinePeriod {
     uint32_t id = 0;                            // Unique among the periods for as long as they live, never 0
     char     name[TIMELINE_PERIOD_NAME_CAP] = "";
     char     note[TIMELINE_PERIOD_NOTE_CAP] = "";  // The annotation shown when it is hovered
-    vec4_t   color = vec4_set(1, 1, 1, 1);
+    md_f32x4_t   color = md_f32x4_set(1, 1, 1, 1);
     bool     follow = false;                    // The ends are offsets from the current frame
     int32_t  beg = 0;
     int32_t  end = 0;

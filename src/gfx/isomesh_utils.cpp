@@ -7,6 +7,7 @@
 #include <core/md_allocator.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <float.h>
@@ -301,7 +302,7 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
     if (!mesh->ibo) glGenBuffers(1, &mesh->ibo);
 
     float* interleaved = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 6 * MD_MAX(vertex_count, 1u));
-    vec3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    md_f32x3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (uint32_t i = 0; i < vertex_count; ++i) {
         for (int k = 0; k < 3; ++k) {
             const float x = position[stride * i + k];
@@ -311,8 +312,8 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
             hi.elem[k] = MD_MAX(hi.elem[k], x);
         }
     }
-    mesh->bounds_min = vertex_count ? lo : vec3_t{0, 0, 0};
-    mesh->bounds_max = vertex_count ? hi : vec3_t{0, 0, 0};
+    mesh->bounds_min = vertex_count ? lo : md_f32x3_t{0, 0, 0};
+    mesh->bounds_max = vertex_count ? hi : md_f32x3_t{0, 0, 0};
 
     glBindVertexArray(mesh->vao);
     glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo);
@@ -382,16 +383,16 @@ void mesh_field_gradient(float* out, const float* xyz, const float* values, uint
     for (uint32_t t = 0; t + 2 < index_count; t += 3) {
         const uint32_t i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];
         if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count) continue;
-        const vec3_t p0 = {xyz[3 * i0], xyz[3 * i0 + 1], xyz[3 * i0 + 2]};
-        const vec3_t e1 = vec3_t{xyz[3 * i1], xyz[3 * i1 + 1], xyz[3 * i1 + 2]} - p0;
-        const vec3_t e2 = vec3_t{xyz[3 * i2], xyz[3 * i2 + 1], xyz[3 * i2 + 2]} - p0;
-        const vec3_t n  = vec3_cross(e1, e2);
-        const float  a2 = vec3_dot(n, n);     // (twice the area)^2
+        const md_f32x3_t p0 = {xyz[3 * i0], xyz[3 * i0 + 1], xyz[3 * i0 + 2]};
+        const md_f32x3_t e1 = md_f32x3_t{xyz[3 * i1], xyz[3 * i1 + 1], xyz[3 * i1 + 2]} - p0;
+        const md_f32x3_t e2 = md_f32x3_t{xyz[3 * i2], xyz[3 * i2 + 1], xyz[3 * i2 + 2]} - p0;
+        const md_f32x3_t n  = md_f32x3_cross(e1, e2);
+        const float  a2 = md_f32x3_dot(n, n);     // (twice the area)^2
         if (!(a2 > 0.0f)) continue;
         // The gradient g of the linear interpolation in the triangle's plane: g . e1 = f1 - f0, g . e2 = f2 - f0
         const float  df1 = values[i1] - values[i0];
         const float  df2 = values[i2] - values[i0];
-        const vec3_t g   = (vec3_cross(e2, n) * df1 + vec3_cross(n, e1) * df2) * (1.0f / a2);
+        const md_f32x3_t g   = (md_f32x3_cross(e2, n) * df1 + md_f32x3_cross(n, e1) * df2) * (1.0f / a2);
         const float  w   = sqrtf(a2);
         const uint32_t tri[3] = {i0, i1, i2};
         for (uint32_t v : tri) {
@@ -683,7 +684,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
     bool any = false;
     uint64_t tris = 0;
-    vec3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    md_f32x3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (size_t i = 0; i < desc.num_surfaces; ++i) {
         const Surface& s = desc.surfaces[i];
         if (!drawable(s)) continue;
@@ -691,12 +692,12 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         tris += s.index_count / 3;
         // world space bounds, for the reference distance of the optical depth
         for (int c = 0; c < 8; ++c) {
-            const vec3_t p = {(c & 1) ? s.mesh->bounds_max.x : s.mesh->bounds_min.x,
+            const md_f32x3_t p = {(c & 1) ? s.mesh->bounds_max.x : s.mesh->bounds_min.x,
                               (c & 2) ? s.mesh->bounds_max.y : s.mesh->bounds_min.y,
                               (c & 4) ? s.mesh->bounds_max.z : s.mesh->bounds_min.z};
-            const vec3_t q = vec3_from_vec4(s.model * vec4_from_vec3(p, 1.0f));
-            lo = vec3_min(lo, q);
-            hi = vec3_max(hi, q);
+            const md_f32x3_t q = md_f32x3_from_f32x4(s.model * md_f32x4_from_f32x3(p, 1.0f));
+            lo = md_f32x3_min(lo, q);
+            hi = md_f32x3_max(hi, q);
         }
     }
 
@@ -707,11 +708,11 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     // alone: what lies outside is not read, and a new view or new bounds is a new mean.
     int rect[4] = {0, 0, (int)w, (int)h};  // x, y, width, height
     if (any) {
-        const mat4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
+        const md_f32x4x4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
         float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
         bool behind = false;
         for (int k = 0; k < 8 && !behind; ++k) {
-            const vec4_t q = PV * vec4_t{(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z, 1.0f};
+            const md_f32x4_t q = PV * md_f32x4_t{(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z, 1.0f};
             if (q.w <= 1.0e-6f) {
                 behind = true;
                 break;
@@ -744,13 +745,13 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     glBlendEquation(GL_FUNC_ADD);
 
     if (any && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
-        const mat4_t& V = desc.matrix.view;
+        const md_f32x4x4_t& V = desc.matrix.view;
         // The caller's projection, or when it is not jittered (proj as proj_no_jitter) one of its own jittered over the
         // pixel by the frame (Halton 2, 3): the mean is then of the pixel's area, the edges antialiased
-        mat4_t P = desc.matrix.proj;
-        if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(mat4_t)) == 0) {
+        md_f32x4x4_t P = desc.matrix.proj;
+        if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(md_f32x4x4_t)) == 0) {
             const uint32_t n = t->frame + 1;
-            mat4_t J = mat4_ident();
+            md_f32x4x4_t J = md_f32x4x4_ident();
             J.elem[3][0] = 2.0f * (halton(n, 2) - 0.5f) / (float)w;
             J.elem[3][1] = 2.0f * (halton(n, 3) - 0.5f) / (float)h;
             P = J * P;
@@ -760,18 +761,18 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
         // Distances along the rays are taken from the nearest point of the bounds (or the eye, inside them)
         const bool  ortho = P.elem[3][3] == 1.0f;
-        const vec3_t center = vec3_lerp(lo, hi, 0.5f);
-        const float radius = vec3_length(hi - lo) * 0.5f;
-        const vec3_t center_view = vec3_from_vec4(V * vec4_from_vec3(center, 1.0f));
-        const float od_ref = MD_MAX(0.0f, (ortho ? -center_view.z : vec3_length(center_view)) - radius);
+        const md_f32x3_t center = md_f32x3_lerp(lo, hi, 0.5f);
+        const float radius = md_f32x3_length(hi - lo) * 0.5f;
+        const md_f32x3_t center_view = md_f32x3_from_f32x4(V * md_f32x4_from_f32x3(center, 1.0f));
+        const float od_ref = MD_MAX(0.0f, (ortho ? -center_view.z : md_f32x3_length(center_view)) - radius);
 
         const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);
         const float env = MD_MAX(desc.shading.environment, 0.0f);
-        const vec3_t sky    = light.sky_radiance * env;
-        const vec3_t ground = light.ground_radiance * env;
+        const md_f32x3_t sky    = light.sky_radiance * env;
+        const md_f32x3_t ground = light.ground_radiance * env;
         const float n2 = desc.shading.ior;
         const float F0 = powf((1.0f - n2) / (1.0f + n2), 2.0f);
-        const mat4_t inv_proj = mat4_inverse(P);
+        const md_f32x4x4_t inv_proj = md_f32x4x4_inverse(P);
         const float inv_res[2] = {1.0f / (float)w, 1.0f / (float)h};
 
         bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);

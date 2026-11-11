@@ -6,6 +6,7 @@
 #include <md_util.h>
 #include <md_pdb.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <initializer_list>     // The loops over braced lists: libc++ does not bring it in through the others
@@ -16,7 +17,7 @@
 
 namespace {
 
-const vec3_t samples[] = {
+const md_f32x3_t samples[] = {
     {0.00f, 0.00f, 0.00f},
     {1.00f, 1.00f, 1.00f},
     {0.50f, 0.50f, 0.50f},
@@ -33,8 +34,8 @@ const vec3_t samples[] = {
 
 #define EXPECT_VEC3_NEAR(got, want, tol)                    \
     do {                                                    \
-        const vec3_t _g = (got);                            \
-        const vec3_t _w = (want);                           \
+        const md_f32x3_t _g = (got);                            \
+        const md_f32x3_t _w = (want);                           \
         EXPECT_NEAR((double)_w.x, (double)_g.x, (tol));     \
         EXPECT_NEAR((double)_w.y, (double)_g.y, (tol));     \
         EXPECT_NEAR((double)_w.z, (double)_g.z, (tol));     \
@@ -42,7 +43,7 @@ const vec3_t samples[] = {
 
 UTEST(viamd_color, srgb_oklab_round_trip) {
     for (size_t i = 0; i < MD_COUNTOF(samples); ++i) {
-        const vec3_t back = oklab_to_srgb(srgb_to_oklab(samples[i]));
+        const md_f32x3_t back = oklab_to_srgb(srgb_to_oklab(samples[i]));
         EXPECT_VEC3_NEAR(back, samples[i], 1.0e-4);
     }
 }
@@ -50,18 +51,18 @@ UTEST(viamd_color, srgb_oklab_round_trip) {
 UTEST(viamd_color, oklab_anchors) {
     // Oklab is built so that white sits at L = 1 with no chroma and black at the origin. If these
     // move, every lightness band and contrast target expressed in Oklab moves with them.
-    const vec3_t white = srgb_to_oklab(vec3_t{1, 1, 1});
+    const md_f32x3_t white = srgb_to_oklab(md_f32x3_t{1, 1, 1});
     EXPECT_NEAR(1.0, (double)white.x, 1.0e-3);
     EXPECT_NEAR(0.0, (double)white.y, 1.0e-3);
     EXPECT_NEAR(0.0, (double)white.z, 1.0e-3);
 
-    const vec3_t black = srgb_to_oklab(vec3_t{0, 0, 0});
+    const md_f32x3_t black = srgb_to_oklab(md_f32x3_t{0, 0, 0});
     EXPECT_NEAR(0.0, (double)black.x, 1.0e-3);
     EXPECT_NEAR(0.0, (double)black.y, 1.0e-3);
     EXPECT_NEAR(0.0, (double)black.z, 1.0e-3);
 
     // Grey has no chroma either, and its lightness rises with the grey level
-    const vec3_t mid = srgb_to_oklab(vec3_t{0.5f, 0.5f, 0.5f});
+    const md_f32x3_t mid = srgb_to_oklab(md_f32x3_t{0.5f, 0.5f, 0.5f});
     EXPECT_NEAR(0.0, (double)mid.y, 1.0e-3);
     EXPECT_NEAR(0.0, (double)mid.z, 1.0e-3);
     EXPECT_GT(mid.x, black.x);
@@ -70,22 +71,22 @@ UTEST(viamd_color, oklab_anchors) {
 
 UTEST(viamd_color, linear_srgb_round_trip) {
     for (size_t i = 0; i < MD_COUNTOF(samples); ++i) {
-        const vec3_t back = linear_srgb_to_srgb(srgb_to_linear_srgb(samples[i]));
+        const md_f32x3_t back = linear_srgb_to_srgb(srgb_to_linear_srgb(samples[i]));
         EXPECT_VEC3_NEAR(back, samples[i], 1.0e-5);
     }
 }
 
 UTEST(viamd_color, xyz_lab_round_trip) {
     for (size_t i = 0; i < MD_COUNTOF(samples); ++i) {
-        const vec3_t xyz  = rgb_to_XYZ(samples[i]);
-        const vec3_t back = XYZ_to_rgb(Lab_to_XYZ(XYZ_to_Lab(xyz)));
+        const md_f32x3_t xyz  = rgb_to_XYZ(samples[i]);
+        const md_f32x3_t back = XYZ_to_rgb(Lab_to_XYZ(XYZ_to_Lab(xyz)));
         EXPECT_VEC3_NEAR(back, samples[i], 1.0e-3);
     }
 }
 
 UTEST(viamd_color, rgb_hsv_round_trip) {
     for (size_t i = 0; i < MD_COUNTOF(samples); ++i) {
-        const vec3_t back = hsv_to_rgb(rgb_to_hsv(samples[i]));
+        const md_f32x3_t back = hsv_to_rgb(rgb_to_hsv(samples[i]));
         EXPECT_VEC3_NEAR(back, samples[i], 1.0e-5);
     }
 }
@@ -97,7 +98,7 @@ UTEST(viamd_color, rgb_hcl_round_trip_is_approximate) {
     // rather than a defect, so it is written down - if a colour path needs to survive repeated
     // conversion, Oklab is the one to use.
     for (size_t i = 0; i < MD_COUNTOF(samples); ++i) {
-        const vec3_t back = hcl_to_rgb(rgb_to_hcl(samples[i]));
+        const md_f32x3_t back = hcl_to_rgb(rgb_to_hcl(samples[i]));
         EXPECT_VEC3_NEAR(back, samples[i], 0.02);
     }
 }
@@ -107,7 +108,7 @@ UTEST(viamd_color, oklch_hue_sweep_stays_in_gamut) {
     // conversion has to come back inside the display gamut.
     for (int i = 0; i < 64; ++i) {
         const float hue = (float)i / 64.0f;
-        const vec3_t rgb = oklch_to_srgb(vec3_t{0.6f, 0.08f, hue});
+        const md_f32x3_t rgb = oklch_to_srgb(md_f32x3_t{0.6f, 0.08f, hue});
         for (int c = 0; c < 3; ++c) {
             EXPECT_GE(rgb.elem[c], 0.0f);
             EXPECT_LE(rgb.elem[c], 1.0f);
@@ -156,12 +157,12 @@ UTEST(viamd_color, oklch_mapped_keeps_lightness_and_hue) {
     for (int i = 0; i < 36; ++i) {
         const float h = (float)i / 36.0f;
         for (float L : {0.3f, 0.6f, 0.9f}) {
-            const vec3_t rgb = oklch_to_srgb_mapped(L, 0.4f, h);    // Far out of gamut at every hue
+            const md_f32x3_t rgb = oklch_to_srgb_mapped(L, 0.4f, h);    // Far out of gamut at every hue
             for (int c = 0; c < 3; ++c) {
                 EXPECT_GE(rgb.elem[c], 0.0f);
                 EXPECT_LE(rgb.elem[c], 1.0f);
             }
-            const vec3_t lab = srgb_to_oklab(rgb);
+            const md_f32x3_t lab = srgb_to_oklab(rgb);
             EXPECT_NEAR((double)L, (double)lab.x, 2.0e-3);
             const float C = sqrtf(lab.y * lab.y + lab.z * lab.z);
             if (C > 0.02f) {
@@ -176,9 +177,9 @@ UTEST(viamd_color, oklch_mapped_keeps_lightness_and_hue) {
 namespace {
 
 float oklab_distance(uint32_t a, uint32_t b, bool linear_input) {
-    vec3_t ca = vec3_from_vec4(convert_color(a)), cb = vec3_from_vec4(convert_color(b));
+    md_f32x3_t ca = md_f32x3_from_f32x4(convert_color(a)), cb = md_f32x3_from_f32x4(convert_color(b));
     if (linear_input) { ca = linear_srgb_to_srgb(ca); cb = linear_srgb_to_srgb(cb); }
-    const vec3_t d = srgb_to_oklab(ca) - srgb_to_oklab(cb);
+    const md_f32x3_t d = srgb_to_oklab(ca) - srgb_to_oklab(cb);
     return sqrtf(d.x * d.x + d.y * d.y + d.z * d.z);
 }
 
@@ -220,9 +221,9 @@ UTEST(viamd_color, optimize_colors_anchors_and_band) {
             for (int j = 0; j < 9; ++j) {
                 if (j != i) EXPECT_GT(oklab_distance(items[i].color, items[j].color, linear), 0.06f);
             }
-            vec3_t shown = vec3_from_vec4(convert_color(items[i].color));
+            md_f32x3_t shown = md_f32x3_from_f32x4(convert_color(items[i].color));
             if (linear) shown = linear_srgb_to_srgb(shown);
-            const vec3_t lab = srgb_to_oklab(shown);
+            const md_f32x3_t lab = srgb_to_oklab(shown);
             EXPECT_GE(lab.x, desc.lightness_min - 0.01f);
             EXPECT_LE(lab.x, desc.lightness_max + 0.01f);
         }
@@ -294,7 +295,7 @@ UTEST(viamd_color, optimize_colors_calm_dominant) {
     for (int i = 0; i < 8; ++i) { items[i].color = 0xFF8080C0u; items[i].weight = 1.0f; }
     items[0].weight = 20.0f;
     optimize_colors(items, 8);
-    const vec3_t dom = srgb_to_oklab(vec3_from_vec4(convert_color(items[0].color)));
+    const md_f32x3_t dom = srgb_to_oklab(md_f32x3_from_f32x4(convert_color(items[0].color)));
     const float dom_C = sqrtf(dom.y * dom.y + dom.z * dom.z);
     ColorOptimizeDesc d;
     EXPECT_GE(dom.x, d.lightness_min + 0.8f * (d.lightness_max - d.lightness_min) * 0.99f);

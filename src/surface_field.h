@@ -171,7 +171,7 @@ struct SurfaceFieldDesc {
     SurfaceFieldKind         kind = SurfaceFieldKind::EmbeddingPotential;
     const md_system_t*       sys = nullptr;
     const md_system_state_t* state = nullptr;           // the environment's sites (embedding potential)
-    const vec3_t*            basis_atom_xyz = nullptr;  // bohr, one per basis atom: the QM nuclei and where
+    const md_f32x3_t*            basis_atom_xyz = nullptr;  // bohr, one per basis atom: the QM nuclei and where
     size_t                   num_basis_atoms = 0;       // the basis sits (surface_field_uses_basis)
 
     // The surfaces: the isosurfaces at iso_values of `density`, sampled on `grid` (bohr, x fastest,

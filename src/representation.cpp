@@ -8,6 +8,7 @@
 #include <core/md_bitset.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 
 #include <color_utils.h>
 #include <color_scale.h>
@@ -1918,9 +1919,9 @@ done:
             // The group name is the identity here, the same string the path spells.
             if (!md_str_eq(groups[i].label, MD_STR_LIT("ground_state"))) continue;
 
-            vec3_t vec = {0, 0, 0};
+            md_f32x3_t vec = {0, 0, 0};
             if (!dipole_moment_read(&vec, nullptr, state->mold.sys, groups[i].key, 0)) continue;
-            if (vec3_length(vec) <= 1e-3f) continue;
+            if (md_f32x3_length(vec) <= 1e-3f) continue;
 
             Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
             dipole_rep->dipole.dipole_key   = groups[i].key;
@@ -2224,10 +2225,10 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         if (i >= 0) viamd::extract_bool(rep->electronic_structure.cuts.items[i].enabled, arg);
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructurePlane"))) {
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructurePlane"), ES_MAX_PLANES);
-        vec4_t v;
+        md_f32x4_t v;
         if (i >= 0 && viamd::extract_vec4(v, arg)) {
-            const float len = vec3_length(vec3_set(v.x, v.y, v.z));
-            if (len > 1e-6f) rep->electronic_structure.cuts.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+            const float len = md_f32x3_length(md_f32x3_set(v.x, v.y, v.z));
+            if (len > 1e-6f) rep->electronic_structure.cuts.items[i].plane = Plane{ md_f32x3_set(v.x / len, v.y / len, v.z / len), v.w / len };
         }
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructureSliceEnabled"))) {
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructureSliceEnabled"), ES_MAX_PLANES);
@@ -2240,21 +2241,21 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         // its rectangle (a workspace without one: the rectangle around where it cuts the box, es_slices_conform)
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructureSliceCenter"), ES_MAX_PLANES);
         float v[3];
-        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].center = vec3_set(v[0], v[1], v[2]);
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].center = md_f32x3_set(v[0], v[1], v[2]);
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructureSliceAxis"))) {
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructureSliceAxis"), ES_MAX_PLANES);
         float v[3];
-        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].axis = vec3_set(v[0], v[1], v[2]);
+        if (i >= 0 && viamd::extract_flt_vec(v, 3, arg)) rep->electronic_structure.slices.items[i].axis = md_f32x3_set(v[0], v[1], v[2]);
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructureSliceExtent"))) {
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructureSliceExtent"), ES_MAX_PLANES);
         float v[2];
-        if (i >= 0 && viamd::extract_flt_vec(v, 2, arg) && v[0] > 0.0f && v[1] > 0.0f) rep->electronic_structure.slices.items[i].extent = vec2_set(v[0], v[1]);
+        if (i >= 0 && viamd::extract_flt_vec(v, 2, arg) && v[0] > 0.0f && v[1] > 0.0f) rep->electronic_structure.slices.items[i].extent = md_f32x2_set(v[0], v[1]);
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructureSlice"))) {
         const int i = es_key_index(ident, MD_STR_LIT("ElectronicStructureSlice"), ES_MAX_PLANES);
-        vec4_t v;
+        md_f32x4_t v;
         if (i >= 0 && viamd::extract_vec4(v, arg)) {
-            const float len = vec3_length(vec3_set(v.x, v.y, v.z));
-            if (len > 1e-6f) rep->electronic_structure.slices.items[i].plane = Plane{ vec3_set(v.x / len, v.y / len, v.z / len), v.w / len };
+            const float len = md_f32x3_length(md_f32x3_set(v.x, v.y, v.z));
+            if (len > 1e-6f) rep->electronic_structure.slices.items[i].plane = Plane{ md_f32x3_set(v.x / len, v.y / len, v.z / len), v.w / len };
         }
     } else if (md_str_begins_with(ident, MD_STR_LIT("ElectronicStructureFieldIsoline"))) {
         // ElectronicStructureFieldIsoline<i>: the value of line i, in the field's own unit
@@ -2724,11 +2725,11 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
     bool changed = false;
     const float bw = ImGui::GetFrameHeight();
     const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
-    mat4_t box;
+    md_f32x4x4_t box;
     const bool have_box = es_volume_box(&box, es);
     // where a plane is, to turn it about: its point nearest the middle of the box
-    const vec4_t c4 = have_box ? mat4_mul_vec4(box, vec4_set(0.5f, 0.5f, 0.5f, 1.0f)) : vec4_set(0, 0, 0, 1);
-    const vec3_t centre = vec3_set(c4.x, c4.y, c4.z);
+    const md_f32x4_t c4 = have_box ? md_f32x4x4_mul_f32x4(box, md_f32x4_set(0.5f, 0.5f, 0.5f, 1.0f)) : md_f32x4_set(0, 0, 0, 1);
+    const md_f32x3_t centre = md_f32x3_set(c4.x, c4.y, c4.z);
     int remove = -1;
     const int count = set.count;
     const size_t num_selected = md_bitmask_count(&state->selection.selection_mask);
@@ -2780,11 +2781,11 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         }
         // what it turns about: a slice's rectangle's middle, a cut's point nearest the middle of the box
         const bool has_rect = slices && set.items[i].extent.x > 0.0f;
-        const vec3_t at = has_rect ? set.items[i].center : plane_project(plane, centre);
+        const md_f32x3_t at = has_rect ? set.items[i].center : plane_project(plane, centre);
         ImGui::BeginDisabled(num_selected == 0);
         if (ImGui::Button(ICON_FA_ATOM, ImVec2(bw, 0))) {
             PlaneFitInfo fit;
-            vec3_t atoms = at;
+            md_f32x3_t atoms = at;
             const Plane fitted = es_plane_fit_selection(state, plane, &fit, &atoms);
             if (fit.kind != PlaneFitKind::None) {
                 plane = fitted;
@@ -2814,8 +2815,8 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
         for (int k = 0; k < 3; ++k) {
             ImGui::SameLine(0.0f, gap);
             if (ImGui::Button(axes[k], ImVec2(bw, 0))) {
-                vec3_t n = vec3_zero();
-                n.elem[k] = vec3_dot(plane.normal, vec3_set(k == 0, k == 1, k == 2)) < 0.0f ? -1.0f : 1.0f;
+                md_f32x3_t n = md_f32x3_zero();
+                n.elem[k] = md_f32x3_dot(plane.normal, md_f32x3_set(k == 0, k == 1, k == 2)) < 0.0f ? -1.0f : 1.0f;
                 plane = plane_from_point_normal(at, n);
                 changed = true;
             }
@@ -3277,7 +3278,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
                     prop::color("##neg", tint ? es.tint_psi_neg.elem : es.col_psi_neg.elem, true);
                 } else {
-                    vec4_t& col = attachment ? (tint ? es.tint_att : es.col_att) :
+                    md_f32x4_t& col = attachment ? (tint ? es.tint_att : es.col_att) :
                                   detachment ? (tint ? es.tint_det : es.col_det) :
                                                (tint ? es.tint_den : es.col_den);
                     prop::row(tint ? "surface tint" : "color", tint ? tint_tooltip : nullptr);

@@ -93,13 +93,13 @@ static const float ref_favored[NUM_TYPES] = { 0.02f,   0.02f,  0.02f,  0.02f  };
 static const float ref_allowed[NUM_TYPES] = { 0.0005f, 0.002f, 0.002f, 0.002f };
 
 // The fills of the reference, allowed and favoured, by class (the plot of all residues takes the general's)
-static const vec4_t ref_fill_allowed[NUM_TYPES] = {
+static const md_f32x4_t ref_fill_allowed[NUM_TYPES] = {
     {0.70f, 0.91f, 1.00f, 1.0f},
     {1.00f, 0.91f, 0.77f, 1.0f},
     {0.82f, 1.00f, 0.77f, 1.0f},
     {0.70f, 0.91f, 1.00f, 1.0f},
 };
-static const vec4_t ref_fill_favored[NUM_TYPES] = {
+static const md_f32x4_t ref_fill_favored[NUM_TYPES] = {
     {0.50f, 0.85f, 1.00f, 1.0f},
     {1.00f, 0.80f, 0.50f, 1.0f},
     {0.50f, 1.00f, 0.55f, 1.0f},
@@ -114,14 +114,14 @@ enum Region : int {
 };
 
 static const char* region_names[Region_Count] = { "Favored", "Allowed", "Outlier" };
-static const vec4_t region_colors[Region_Count] = {
+static const md_f32x4_t region_colors[Region_Count] = {
     {0.95f, 0.95f, 0.95f, 1.0f},   // Favoured: the layer's own colour, this only where a colour is asked for by itself
     {1.00f, 0.76f, 0.20f, 1.0f},
     {1.00f, 0.27f, 0.27f, 1.0f},
 };
 
 // Colours for new layers, the least used first
-static const vec4_t layer_palette[] = {
+static const md_f32x4_t layer_palette[] = {
     {0.95f, 0.95f, 0.95f, 1.0f},
     {1.00f, 0.62f, 0.20f, 1.0f},
     {0.35f, 0.80f, 1.00f, 1.0f},
@@ -219,7 +219,7 @@ struct Layer {
     bool        follow_selection = false;  // The residues of the selection instead of the filter
 
     LayerStyle style = LayerStyle_Points;
-    vec4_t   color = {1, 1, 1, 1};
+    md_f32x4_t   color = {1, 1, 1, 1};
     float    opacity = 1.0f;
 
     // Contours
@@ -347,7 +347,7 @@ struct Ramachandran : viamd::EventHandler {
         float alpha[3] = { 0.85f, 0.85f, 0.85f };
         int   mode[3] = { 0, 1, 1 };    // IsoLevels, IsoLines, Colormap
         int   colormap[3] = { ImPlotColormap_Hot, ImPlotColormap_Plasma, ImPlotColormap_Viridis };
-        vec4_t isoline_color[3] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
+        md_f32x4_t isoline_color[3] = { {1,1,1,1}, {1,1,1,1}, {1,1,1,1} };
         int   show[4] = { 1, 1, 1, 1 };
         int   layout = 0;
         int   period = 0;
@@ -501,13 +501,13 @@ struct Ramachandran : viamd::EventHandler {
         return -1;
     }
 
-    vec4_t next_layer_color() const {
+    md_f32x4_t next_layer_color() const {
         int best = 0;
         int best_uses = INT32_MAX;
         for (int p = 0; p < (int)MD_COUNTOF(layer_palette); ++p) {
             int uses = 0;
             for (int i = 0; i < num_layers; ++i) {
-                if (layers[i].source == LayerSource_System && vec4_equal(layers[i].color, layer_palette[p])) ++uses;
+                if (layers[i].source == LayerSource_System && md_f32x4_equal(layers[i].color, layer_palette[p])) ++uses;
             }
             if (uses < best_uses) {
                 best = p;
@@ -602,7 +602,7 @@ struct Ramachandran : viamd::EventHandler {
         l.source = source;
         l.frames = frames;
         l.style = style;
-        l.color = source == LayerSource_Reference ? vec4_t{1, 1, 1, 1} : next_layer_color();
+        l.color = source == LayerSource_Reference ? md_f32x4_t{1, 1, 1, 1} : next_layer_color();
         if (source == LayerSource_Reference) {
             l.fill = true;
             l.lines = false;
@@ -1588,7 +1588,7 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
-    vec4_t point_color(const Layer& l, const PointSource& ps, int type, uint32_t frame, md_backbone_angles_t ang) const {
+    md_f32x4_t point_color(const Layer& l, const PointSource& ps, int type, uint32_t frame, md_backbone_angles_t ang) const {
         switch (l.point_coloring) {
         case PointColoring_Region: {
             const Region r = ref_region(type, ang.phi, ang.psi);
@@ -1670,8 +1670,8 @@ struct Ramachandran : viamd::EventHandler {
         const bool images_x = lim.Size().x > 360.0;
         const bool images_y = lim.Size().y > 360.0;
         auto for_images = [&](md_backbone_angles_t a, auto&& fn) {
-            const double x = deperiodize_ortho(MD_RAD_TO_DEG(a.phi), mid_x, 360.0);
-            const double y = deperiodize_ortho(MD_RAD_TO_DEG(a.psi), mid_y, 360.0);
+            const double x = md_f64_deperiodize_ortho(MD_RAD_TO_DEG(a.phi), mid_x, 360.0);
+            const double y = md_f64_deperiodize_ortho(MD_RAD_TO_DEG(a.psi), mid_y, 360.0);
             for (int ix = images_x ? -1 : 0; ix <= (images_x ? 1 : 0); ++ix) {
                 const double xx = x + 360.0 * ix;
                 if (xx < lim.X.Min - margin_x || xx > lim.X.Max + margin_x) continue;
@@ -1741,8 +1741,8 @@ struct Ramachandran : viamd::EventHandler {
             for (int i = 0; i < num_layers; ++i) {
                 if (!has_source[i]) continue;
                 for_each_point(layers[i], sources[i], panel, [&](int, uint32_t seg, uint32_t, md_backbone_angles_t ang) {
-                    const double x = deperiodize_ortho(MD_RAD_TO_DEG(ang.phi), cx, 360.0);
-                    const double y = deperiodize_ortho(MD_RAD_TO_DEG(ang.psi), cy, 360.0);
+                    const double x = md_f64_deperiodize_ortho(MD_RAD_TO_DEG(ang.phi), cx, 360.0);
+                    const double y = md_f64_deperiodize_ortho(MD_RAD_TO_DEG(ang.psi), cy, 360.0);
                     if (x0 <= x && x <= x1 && y0 <= y && y <= y1) {
                         mask_add_segment(highlight_mask, sys, seg);
                     }
@@ -1758,8 +1758,8 @@ struct Ramachandran : viamd::EventHandler {
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
         density_map_marks_begin(dl);
-        const vec4_t sel_col = app->selection.color.selection.outline;
-        const vec4_t hl_col = app->selection.color.highlight.outline;
+        const md_f32x4_t sel_col = app->selection.color.selection.outline;
+        const md_f32x4_t hl_col = app->selection.color.highlight.outline;
         for (int i = num_layers - 1; i >= 0; --i) {
             if (!has_source[i]) continue;
             Layer& l = layers[i];
@@ -1768,7 +1768,7 @@ struct Ramachandran : viamd::EventHandler {
             const bool many = !ps.current;   // Over frames: small squares, no outlines
             const float a = l.opacity;
             for_each_point(l, ps, panel, [&](int t, uint32_t, uint32_t frame, md_backbone_angles_t ang) {
-                vec4_t c = point_color(l, ps, t, frame, ang);
+                md_f32x4_t c = point_color(l, ps, t, frame, ang);
                 c.w *= a;
                 const ImU32 col = ImGui::ColorConvertFloat4ToU32(vec_cast(c));
                 // Counted by class and in all, whichever plots draw them
@@ -1830,7 +1830,7 @@ struct Ramachandran : viamd::EventHandler {
             const ImVec2 b = ImPlot::PlotToPixels(box.p1);
             const bool is_click = box_is_click;
             if (!is_click) {
-                const vec4_t c = box.op == SelectionOperator::Or ? sel_col : vec4_t{1.0f, 0.4f, 0.4f, 0.9f};
+                const md_f32x4_t c = box.op == SelectionOperator::Or ? sel_col : md_f32x4_t{1.0f, 0.4f, 0.4f, 0.9f};
                 ImPlot::PushPlotClipRect();
                 dl->AddRectFilled(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.12f)));
                 dl->AddRect(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
@@ -2352,8 +2352,8 @@ struct Ramachandran : viamd::EventHandler {
         const ImVec2 sw_mid = ImVec2((sw_min.x + sw_max.x) * 0.5f, (sw_min.y + sw_max.y) * 0.5f);
         const float vis_alpha = l.visible ? 1.0f : 0.35f;
         if (l.source == LayerSource_Reference) {
-            const vec4_t a = ref_fill_allowed[0];
-            const vec4_t f = ref_fill_favored[0];
+            const md_f32x4_t a = ref_fill_allowed[0];
+            const md_f32x4_t f = ref_fill_favored[0];
             dl->AddRectFilled(sw_min, sw_max, ImGui::ColorConvertFloat4ToU32(ImVec4(a.x, a.y, a.z, a.w * vis_alpha)), 3.0f);
             dl->AddCircleFilled(sw_mid, line_h * 0.28f, ImGui::ColorConvertFloat4ToU32(ImVec4(f.x * 0.8f, f.y * 0.8f, f.z * 0.9f, f.w * vis_alpha)));
         } else {

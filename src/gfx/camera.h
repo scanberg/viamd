@@ -1,10 +1,10 @@
 #pragma once
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 struct ViewTransform {
-    quat_t orientation = {0, 0, 0, 1};
-    vec3_t position = {0, 0, 0};
+    md_quat_t orientation = {0, 0, 0, 1};
+    md_f32x3_t position = {0, 0, 0};
 	float  distance = 10.0f;
 };
 

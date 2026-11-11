@@ -57,8 +57,8 @@ UTEST(viamd_serialization, scalar_round_trip) {
     viamd::write_bool(w.state, MD_STR_LIT("Ortho"),   true);
     viamd::write_flt (w.state, MD_STR_LIT("Near"),    0.25f);
     viamd::write_dbl (w.state, MD_STR_LIT("Far"),     1000.5);
-    viamd::write_vec3(w.state, MD_STR_LIT("Pos"),     vec3_t{1.5f, -2.25f, 3.0f});
-    viamd::write_quat(w.state, MD_STR_LIT("Ori"),     quat_t{0.0f, 0.0f, 0.0f, 1.0f});
+    viamd::write_vec3(w.state, MD_STR_LIT("Pos"),     md_f32x3_t{1.5f, -2.25f, 3.0f});
+    viamd::write_quat(w.state, MD_STR_LIT("Ori"),     md_quat_t{0.0f, 0.0f, 0.0f, 1.0f});
     viamd::write_str (w.state, MD_STR_LIT("Label"),   MD_STR_LIT("a simple label"));
 
     viamd::deserialization_state_t deser = w.reader();
@@ -87,13 +87,13 @@ UTEST(viamd_serialization, scalar_round_trip) {
     EXPECT_TRUE(viamd::extract_dbl(d, md_str_from_cstr(e[3].arg)));
     EXPECT_NEAR(1000.5, d, 1.0e-6);
 
-    vec3_t v = {0, 0, 0};
+    md_f32x3_t v = {0, 0, 0};
     viamd::extract_vec3(v, md_str_from_cstr(e[4].arg));
     EXPECT_NEAR( 1.50, (double)v.x, 1.0e-5);
     EXPECT_NEAR(-2.25, (double)v.y, 1.0e-5);
     EXPECT_NEAR( 3.00, (double)v.z, 1.0e-5);
 
-    quat_t q = {1, 1, 1, 1};
+    md_quat_t q = {1, 1, 1, 1};
     viamd::extract_quat(q, md_str_from_cstr(e[5].arg));
     EXPECT_NEAR(0.0, (double)q.x, 1.0e-5);
     EXPECT_NEAR(1.0, (double)q.w, 1.0e-5);

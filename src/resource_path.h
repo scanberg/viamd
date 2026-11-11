@@ -1,6 +1,5 @@
 #pragma once
 
-#include <core/md_os.h>
 #include <core/md_path.h>
 #include <core/md_str.h>
 #include <core/md_writer.h>
@@ -27,8 +26,8 @@ static inline md_str_t resource_path(md_str_writer_t* sb, md_str_t relative) {
         return {};
     }
 
-    md_str_t dir = {};
-    if (!md_path_folder(&dir, {exe, len})) {
+    const md_str_t dir = md_path_folder({exe, len});
+    if (md_str_empty(dir)) {
         return {};
     }
 

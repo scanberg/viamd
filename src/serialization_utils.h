@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <core/md_str.h>
 #include <core/md_writer.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 struct md_bitset_t;
 
@@ -60,9 +60,9 @@ void write_str(serialization_state_t& state, md_str_t ident, md_str_t str);
 // Base64 between ### markers: any bit pattern survives the line based format
 void write_bitset(serialization_state_t& state, md_str_t ident, const md_bitset_t* bs);
 
-static inline void write_vec3(serialization_state_t& state, md_str_t ident, vec3_t v)  { write_flt_vec(state, ident, v.elem, 3); }
-static inline void write_vec4(serialization_state_t& state, md_str_t ident, vec4_t v)  { write_flt_vec(state, ident, v.elem, 4); }
-static inline void write_quat(serialization_state_t& state, md_str_t ident, quat_t q)  { write_flt_vec(state, ident, q.elem, 4); }
+static inline void write_vec3(serialization_state_t& state, md_str_t ident, md_f32x3_t v)  { write_flt_vec(state, ident, v.elem, 3); }
+static inline void write_vec4(serialization_state_t& state, md_str_t ident, md_f32x4_t v)  { write_flt_vec(state, ident, v.elem, 4); }
+static inline void write_quat(serialization_state_t& state, md_str_t ident, md_quat_t q)  { write_flt_vec(state, ident, q.elem, 4); }
 static inline void write_bool(serialization_state_t& state, md_str_t ident, bool val) { write_int(state, ident, (int)val); }
 
 // 0/1, and true/false in any case
@@ -90,8 +90,8 @@ static inline bool extract_enum(T& val, md_str_t arg, int count) {
 	return false;
 }
 
-static inline bool extract_vec3(vec3_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 3, arg); }
-static inline bool extract_vec4(vec4_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 4, arg); }
-static inline bool extract_quat(quat_t& q, md_str_t arg) { return extract_flt_vec(q.elem, 4, arg); }
+static inline bool extract_vec3(md_f32x3_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 3, arg); }
+static inline bool extract_vec4(md_f32x4_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 4, arg); }
+static inline bool extract_quat(md_quat_t& q, md_str_t arg) { return extract_flt_vec(q.elem, 4, arg); }
 
 }

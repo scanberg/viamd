@@ -196,7 +196,7 @@ UTEST(viamd_loader, a_veloxchem_h5_stays_veloxchem) {
 
 /* ---- A topology without coordinates, and coordinates without atoms ------------------------------ */
 
-#include <core/md_os.h>
+#include <core/md_file.h>
 #include <md_util.h>
 #include <string.h>
 #include <stdio.h>

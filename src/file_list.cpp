@@ -3,7 +3,6 @@
 
 #include <core/md_allocator.h>
 #include <core/md_log.h>
-#include <core/md_os.h>
 #include <core/md_path.h>
 
 FileRole file_role(LoaderFlags flags) {

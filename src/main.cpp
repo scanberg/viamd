@@ -13,6 +13,7 @@
 #include <md_gl.h>
 #include <md_gfx.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_xvg.h>
 #include <md_csv.h>
 #include <md_lammps.h>
@@ -29,11 +30,13 @@
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_path.h>
 #include <core/md_unit.h>
 #include <core/md_writer.h>
 #include <core/md_parse.h>
 #include <core/md_hash.h>
+#include <core/md_vec_math.h>
 
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -331,7 +334,7 @@ static double frame_to_time(double frame, const ApplicationState& data) {
     MD_ASSERT(num_frames);
     const int64_t f0 = MD_CLAMP((int64_t)frame + 0, 0, num_frames - 1);
     const int64_t f1 = MD_CLAMP((int64_t)frame + 1, 0, num_frames - 1);
-    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
+    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], md_f64_fract(frame));
 }
 
 // Try to map time t back into frame
@@ -376,7 +379,7 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 static void update_view_param(ApplicationState* state);
 // The transforms of the copies of the scene the periodic images show (view.periodic_transforms)
-static void compute_periodic_transforms(md_array(mat4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc);
+static void compute_periodic_transforms(md_array(md_f32x4x4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc);
 
 // The lowest render scale offered: below half, too little of the detail is left to rebuild
 static constexpr float RENDER_SCALE_MIN = 0.5f;
@@ -456,16 +459,16 @@ static inline bool screenshot_offscreen(const ApplicationState* state) {
 // The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
 // picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
 // gizmo is); faint for a hidden one
-static vec4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
-    if (screenshot_offscreen(state)) return vec4_set(0, 0, 0, 0);
-    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return vec4_set(0, 0, 0, 0);
-    return enabled ? vec4_set(1.0f, 1.0f, 1.0f, 0.85f) : vec4_set(0.78f, 0.78f, 0.78f, 0.4f);
+static md_f32x4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
+    if (screenshot_offscreen(state)) return md_f32x4_set(0, 0, 0, 0);
+    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return md_f32x4_set(0, 0, 0, 0);
+    return enabled ? md_f32x4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_f32x4_set(0.78f, 0.78f, 0.78f, 0.4f);
 }
 
 // Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
 // in a screenshot without the windows, which shows it in the middle.
-static inline vec2_t view_shift(const ApplicationState* state) {
-    return screenshot_offscreen(state) ? vec2_t{0, 0} : state->view.shift;
+static inline md_f32x2_t view_shift(const ApplicationState* state) {
+    return screenshot_offscreen(state) ? md_f32x2_t{0, 0} : state->view.shift;
 }
 
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
@@ -1035,8 +1038,8 @@ int main(int argc, char** argv) {
         if (planes_capture) ImGui::EndDisabled();
         ImGui::EndCanvas();
 
-        const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
-        const mat4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
+        const md_f32x4x4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
+        const md_f32x4x4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
 
         PickingHit hit = {};
 
@@ -1116,7 +1119,7 @@ int main(int argc, char** argv) {
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
                 reset_transform.orientation = state.view.camera.orientation;
-                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
+                reset_transform.position = hit.world_pos + state.view.camera.orientation * md_f32x3_set(0, 0, state.view.target.distance);
             } else {
                 reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region,
                            &state.mold.sys, state.view.assembly);
@@ -1299,10 +1302,10 @@ int main(int argc, char** argv) {
                     
                     md_str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
-                        md_path_folder(&cwd, md_str_from_cstr(state.files.workspace));
+                        cwd = md_path_folder(md_str_from_cstr(state.files.workspace));
                     } else if (const FileEntry* run_file = file_list_run_file(&state.files.list)) {
                         // The trajectory's folder, else the structure's
-                        md_path_folder(&cwd, md_str_from_cstr(run_file->path));
+                        cwd = md_path_folder(md_str_from_cstr(run_file->path));
                     }
                     if (!md_str_empty(cwd)) {
                         md_path_set_cwd(cwd);
@@ -1508,8 +1511,8 @@ int main(int argc, char** argv) {
                 ImDrawList* dl = window->DrawList;
                 MD_ASSERT(dl);
 
-                const vec2_t res = { (float)state.app.window.width, (float)state.app.window.height };
-                const mat4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
+                const md_f32x2_t res = { (float)state.app.window.width, (float)state.app.window.height };
+                const md_f32x4x4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
 
                 // Script text
                 const ImU32 text_color = convert_color(state.script.text_color);
@@ -1522,8 +1525,8 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < num_text; ++i) {
                     const script::Text& vis_text = texts[i];
 
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(vis_text.pos, 1.0f));
-                    const vec4_t c = p / p.w;
+                    const md_f32x4_t p = md_f32x4x4_mul_f32x4(mvp, md_f32x4_from_f32x3(vis_text.pos, 1.0f));
+                    const md_f32x4_t c = p / p.w;
 
                     // A label carrying a unit is a quantity, so it is shown in the same unit as the
                     // plots and re-formatted here rather than taken as mdlib spelled it. Anything
@@ -1577,34 +1580,34 @@ int main(int argc, char** argv) {
             size_t count = md_array_size(fit_request.xyzw);
             if (count > 0) {
                 // Extract OBB from returned pointcloud
-                vec3_t com = md_util_com_compute_vec4(fit_request.xyzw, 0, count, 0);
-                mat3_t cov = mat3_covariance_matrix_vec4(fit_request.xyzw, 0, count, com);
-                mat3_eigen_t eigen = mat3_eigen(cov);
-                mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+                md_f32x3_t com = md_util_com_compute_vec4(fit_request.xyzw, 0, count, 0);
+                md_f32x3x3_t cov = md_f32x3x3_covariance_matrix_f32x4(fit_request.xyzw, 0, count, com);
+                md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(cov);
+                md_f32x3x3_t PCA = md_f32x3x3_orthonormalize(md_f32x3x3_extract_rotation(eigen.vectors));
 
                 // Compute min and maximum extent along the PCA axes
-                mat3_t basis = mat3_transpose(PCA);
-                vec3_t min_obb = vec3_set1(FLT_MAX);
-                vec3_t max_obb = vec3_set1(-FLT_MAX);
+                md_f32x3x3_t basis = md_f32x3x3_transpose(PCA);
+                md_f32x3_t min_obb = md_f32x3_set1(FLT_MAX);
+                md_f32x3_t max_obb = md_f32x3_set1(-FLT_MAX);
 
                 // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
                 for (size_t i = 0; i < count; ++i) {
-                    vec3_t xyz = vec3_from_vec4(fit_request.xyzw[i]);
-                    xyz = mat3_mul_vec3(PCA, xyz);
-                    min_obb = vec3_min(min_obb, xyz);
-                    max_obb = vec3_max(max_obb, xyz);
+                    md_f32x3_t xyz = md_f32x3_from_f32x4(fit_request.xyzw[i]);
+                    xyz = md_f32x3x3_mul_f32x3(PCA, xyz);
+                    min_obb = md_f32x3_min(min_obb, xyz);
+                    max_obb = md_f32x3_max(max_obb, xyz);
                 }
 
-				vec3_t ext = max_obb - min_obb;
+				md_f32x3_t ext = max_obb - min_obb;
 				float max_ext = MD_MAX(ext.x, MD_MAX(ext.y, ext.z));
 
                 if (max_ext > 3.0f) {
-                    vec3_t half_ext = (max_obb - min_obb) * 0.5f;
+                    md_f32x3_t half_ext = (max_obb - min_obb) * 0.5f;
                     state.view.target = compute_optimal_view(com, half_ext, basis);
                 } else {
-                    state.view.target.position = com + state.view.target.orientation * vec3_set(0, 0, state.view.target.distance);
+                    state.view.target.position = com + state.view.target.orientation * md_f32x3_set(0, 0, state.view.target.distance);
                 }
-                state.view.target.position = mat4_mul_vec3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
+                state.view.target.position = md_f32x4x4_mul_f32x3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
                 reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region, &state.mold.sys, state.view.assembly);
@@ -1772,8 +1775,8 @@ static void update_view_param(ApplicationState* data) {
 
     // The copies of the scene, as of this frame and the last: as many as before, or they did not move
     {
-        md_array(mat4_t)& curr = data->view.periodic_transforms;
-        md_array(mat4_t)& prev = data->view.periodic_transforms_prev;
+        md_array(md_f32x4x4_t)& curr = data->view.periodic_transforms;
+        md_array(md_f32x4x4_t)& prev = data->view.periodic_transforms_prev;
         md_array_shrink(prev, 0);
         md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
         compute_periodic_transforms(&curr, *data, persistent_alloc);
@@ -1796,7 +1799,7 @@ static void update_view_param(ApplicationState* data) {
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera) * data->mold.unitcell_transform;
-    param.matrix.inv.view  = mat4_inverse(data->mold.unitcell_transform) * camera_view_to_world_matrix(data->view.camera);
+    param.matrix.inv.view  = md_f32x4x4_inverse(data->mold.unitcell_transform) * camera_view_to_world_matrix(data->view.camera);
 
     const float n = data->view.camera.near_plane;
     const float f = data->view.camera.far_plane;
@@ -1807,15 +1810,15 @@ static void update_view_param(ApplicationState* data) {
         i = (i+1) % jitter_count(data);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
-            const vec2_t j = param.jitter.curr;
+            const md_f32x2_t j = param.jitter.curr;
             param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.inv.proj  = camera_clip_to_view_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
-            const vec2_t j = param.jitter.curr * scl;
+            const md_f32x2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
+            const md_f32x2_t j = param.jitter.curr * scl;
             param.matrix.curr.proj = camera_view_to_clip_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.inv.proj  = camera_clip_to_view_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_ortho(-w, w, -h, h, n, f);
@@ -1836,16 +1839,16 @@ static void update_view_param(ApplicationState* data) {
     }
 
     // What the view is focused on is seen where the windows leave it uncovered (view_shift)
-    const vec2_t shift = view_shift(data);
-    if (shift != vec2_t{0, 0}) {
-        const mat4_t to_shifted   = mat4_translate( shift.x,  shift.y, 0.0f);
-        const mat4_t from_shifted = mat4_translate(-shift.x, -shift.y, 0.0f);
+    const md_f32x2_t shift = view_shift(data);
+    if (shift != md_f32x2_t{0, 0}) {
+        const md_f32x4x4_t to_shifted   = md_f32x4x4_translate( shift.x,  shift.y, 0.0f);
+        const md_f32x4x4_t from_shifted = md_f32x4x4_translate(-shift.x, -shift.y, 0.0f);
         param.matrix.curr.proj           = to_shifted * param.matrix.curr.proj;
         param.matrix.curr.proj_no_jitter = to_shifted * param.matrix.curr.proj_no_jitter;
         param.matrix.inv.proj            = param.matrix.inv.proj * from_shifted;
     }
 
-    param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
+    param.matrix.curr.norm = md_f32x4x4_transpose(param.matrix.inv.view);
 }
 
 // The part of the main view that the windows leave in view, as a region of it: the main view is drawn over all of
@@ -2460,8 +2463,8 @@ static void draw_main_menu(ApplicationState* data) {
             if (ImGui::MenuItem("Take Screenshot")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("jpg,jpeg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                    md_str_t ext;
-                    if (!md_path_ext(&ext, {path_buf, path_len})) {
+                    md_str_t ext = md_path_ext({path_buf, path_len});
+                    if (md_str_empty(ext)) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
                         ext = MD_STR_LIT("jpg");
                     }
@@ -5629,7 +5632,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
                             if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1, s.smoothing) && pv.num_bins > 0 && pv.periods[0].valid) {
-                                const vec4_t rc = preview_range->color;
+                                const md_f32x4_t rc = preview_range->color;
                                 long long pu0 = 0;
                                 int pcount = 0;
                                 draw_range(&pu0, &pcount, pv, pviews[j]);
@@ -5832,7 +5835,7 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
-        mat4_t P = data->view.param.matrix.curr.proj;
+        md_f32x4x4_t P = data->view.param.matrix.curr.proj;
         ImGui::Text("proj_matrix:");
         ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
@@ -6363,20 +6366,20 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             const md_bitset_t* bf = md_array_size(vis.sdf.structures) > 0 ? &vis.sdf.structures[0] : nullptr;
             const int num_atoms = bf ? (int)md_bitset_count(*bf) : 0;
             // A cube's origin is its first point, the centre of voxel [0][0][0]; the script's is that voxel's corner
-            vec3_t first = volume.origin;
-            for (int a = 0; a < 3; ++a) first = vec3_add(first, vec3_mul1(volume.basis[a], 0.5f));
+            md_f32x3_t first = volume.origin;
+            for (int a = 0; a < 3; ++a) first = md_f32x3_add(first, md_f32x3_mul1(volume.basis[a], 0.5f));
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, first.x * to_bohr, first.y * to_bohr, first.z * to_bohr);
             for (int a = 0; a < 3; ++a) {
-                const vec3_t b = volume.basis[a];
+                const md_f32x3_t b = volume.basis[a];
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[a], b.x * to_bohr, b.y * to_bohr, b.z * to_bohr);
             }
             if (bf) {
                 const float scl = (float)to_bohr;
-                const mat4_t M = mat4_mul(mat4_scale(scl, scl, scl), vis.sdf.matrices[0]);
+                const md_f32x4x4_t M = md_f32x4x4_mul(md_f32x4x4_scale(scl, scl, scl), vis.sdf.matrices[0]);
                 md_bitset_iter_t it = md_bitset_iter(*bf);
                 while (md_bitset_iter_next(&it)) {
                     const size_t i = it.idx;
-                    const vec3_t coord = mat4_mul_vec3(M, md_state_coord(&state, i), 1.0f);
+                    const md_f32x3_t coord = md_f32x4x4_mul_f32x3(M, md_state_coord(&state, i), 1.0f);
                     const int anum = md_atom_atomic_number(&sys.atom, i);
                     md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, (float)anum, coord.x, coord.y, coord.z);
                 }
@@ -6391,7 +6394,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
 
             // transformation matrix from world to volume
-            mat4_t M = vis.sdf.matrices[0];
+            md_f32x4x4_t M = vis.sdf.matrices[0];
             const md_bitset_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitset_count(*bf);
             const int vol_dim[3] = {(int)volume.dim[0], (int)volume.dim[1], (int)volume.dim[2]};
@@ -6411,13 +6414,13 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[2], 0.0, 0.0, voxel_ext[2]);
 
             const float scl = angstrom_to_bohr;
-            M = mat4_mul(mat4_scale(scl, scl, scl), M);
+            M = md_f32x4x4_mul(md_f32x4x4_scale(scl, scl, scl), M);
 
             md_bitset_iter_t it = md_bitset_iter(*bf);
             while (md_bitset_iter_next(&it)) {
                 size_t i = it.idx;
-                vec3_t coord = md_state_coord(&state, i);
-                coord = mat4_mul_vec3(M, coord, 1.0f);
+                md_f32x3_t coord = md_state_coord(&state, i);
+                coord = md_f32x4x4_mul_f32x3(M, coord, 1.0f);
                 int anum     = md_atom_atomic_number(&sys.atom, i);
                 float charge = (float)anum;
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, charge, coord.x, coord.y, coord.z);
@@ -6648,12 +6651,12 @@ static void draw_property_export_window(ApplicationState* data) {
                 const bool each = count > 1 && volume_member < 0;
                 const uint32_t beg = each ? 0 : (uint32_t)MD_MAX(volume_member, 0);
                 const uint32_t end = each ? count : beg + 1;
+                const md_str_t path_ext = md_path_ext(path);
                 md_str_t stem = path;
-                md_str_t ext  = file_extension;
-                if (each && md_path_ext(&ext, path) && !md_str_contains_char(ext, '/') && !md_str_contains_char(ext, '\\')) {
-                    md_path_without_ext(&stem, path);
-                } else {
-                    ext = file_extension;
+                md_str_t ext  = file_extension;
+                if (each && !md_str_empty(path_ext)) {
+                    stem = md_path_without_ext(path);
+                    ext  = path_ext;
                 }
                 for (uint32_t m = beg; m < end; ++m) {
                     SeriesVolumeView view;
@@ -7041,14 +7044,14 @@ static void update_md_buffers(ApplicationState* data) {
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyPosition) {
-        vec3_t pbc_ext = { 0 };
+        md_f32x3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
         md_gl_mol_set_atom_position(data->mold.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
         if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
 #if EXPERIMENTAL_GFX_API
-        vec3_t aabb_min, aabb_max;
+        md_f32x3_t aabb_min, aabb_max;
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, nullptr, state.num_atoms);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
@@ -7210,8 +7213,7 @@ void create_screenshot(md_str_t path) {
         }
     }
 
-    md_str_t ext = {};
-    md_path_ext(&ext, path);
+    md_str_t ext = md_path_ext(path);
 
     bool written = false;
     switch (image_format_from_ext(ext)) {
@@ -7262,10 +7264,10 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     }
 
     if (ImGui::Begin("Coordinate Widget", nullptr, window_flags)) {
-        quat_t out_orientation = target->orientation;
+        md_quat_t out_orientation = target->orientation;
         if (ImGui::CoordinateSystemWidget(&out_orientation, current.orientation, ImGui::GetContentRegionAvail())) {
-            const vec3_t look_at = camera_get_look_at(*target);
-            target->orientation = quat_normalize(out_orientation);
+            const md_f32x3_t look_at = camera_get_look_at(*target);
+            target->orientation = md_quat_normalize(out_orientation);
             target->position = camera_position_from_look_at(look_at, target->orientation, target->distance);
         }
     }
@@ -7319,7 +7321,7 @@ static uint64_t scene_key(const ApplicationState* state) {
                               c.distance, c.near_plane, c.far_plane, c.fov_y};
     h = md_hash64(camera, sizeof(camera), h);
     h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
-    const vec2_t shift = view_shift(state);
+    const md_f32x2_t shift = view_shift(state);
     h = md_hash64(&shift, sizeof(shift), h);
     h = md_hash64(&state->mold.unitcell_transform, sizeof(state->mold.unitcell_transform), h);
 
@@ -7335,7 +7337,7 @@ static uint64_t scene_key(const ApplicationState* state) {
     h = md_hash64(&volumes, sizeof(volumes), h);
     const uint64_t vis = script_vis_shown_key(state);
     h = md_hash64(&vis, sizeof(vis), h);
-    const vec4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
+    const md_f32x4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
     h = md_hash64(vis_colors, sizeof(vis_colors), h);
     h = md_hash64(&state->render.version, sizeof(state->render.version), h);
     h = md_hash64(&use_gfx, sizeof(use_gfx), h);
@@ -7397,13 +7399,13 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
             VIAMD_LOG_DEBUG("SDF visualization returned mismatched matrix and structure counts (%zu, %zu)", num_matrices, num_structures);
         }
         if (num_sdf_items > 0) {
-            const vec4_t col_x = { 1, 0, 0, 0.7f };
-            const vec4_t col_y = { 0, 1, 0, 0.7f };
-            const vec4_t col_z = { 0, 0, 1, 0.7f };
+            const md_f32x4_t col_x = { 1, 0, 0, 0.7f };
+            const md_f32x4_t col_y = { 0, 1, 0, 0.7f };
+            const md_f32x4_t col_z = { 0, 0, 1, 0.7f };
             const float ext = vis.sdf.extent * 0.25f;
-            const vec3_t box_ext = vec3_set1(vis.sdf.extent);
+            const md_f32x3_t box_ext = md_f32x3_set1(vis.sdf.extent);
             for (size_t i = 0; i < num_sdf_items; ++i) {
-                const mat4_t model_matrix = mat4_inverse(vis.sdf.matrices[i]);
+                const md_f32x4x4_t model_matrix = md_f32x4x4_inverse(vis.sdf.matrices[i]);
                 immediate::basis(vis_scope, model_matrix, ext, col_x, col_y, col_z);
                 immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrix);
             }
@@ -7707,9 +7709,9 @@ static constexpr float BOND_LENGTH_MIN    = 5.0f;
 static float bond_length_limit(ApplicationState* state) {
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) != 0) {
-        vec3_t ext = {0};
+        md_f32x3_t ext = {0};
         md_unitcell_diag_extract_float(ext.elem, &cell);
-        return MD_MAX(3.0f, vec3_reduce_min(ext) * 0.5f);
+        return MD_MAX(3.0f, md_f32x3_reduce_min(ext) * 0.5f);
     }
 
     const md_system_t& sys = state->mold.sys;
@@ -7720,7 +7722,7 @@ static float bond_length_limit(ApplicationState* state) {
             for (size_t i = 0; i < sys.bond.count; ++i) {
                 const md_atom_pair_t pair = sys.bond.pairs[i];
                 if ((size_t)pair.idx[0] < frame.num_atoms && (size_t)pair.idx[1] < frame.num_atoms) {
-                    max_d2 = MD_MAX(max_d2, vec3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
+                    max_d2 = MD_MAX(max_d2, md_f32x3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
                 }
             }
         }
@@ -7733,22 +7735,22 @@ static float bond_length_limit(ApplicationState* state) {
 // The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
 // the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
 // None without a cell or images.
-static void compute_periodic_transforms(md_array(mat4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc) {
+static void compute_periodic_transforms(md_array(md_f32x4x4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc) {
     md_array_shrink(*transforms, 0);
     const md_unitcell_t& cell = state.mold.state.unitcell;
     const int* n = state.view.periodic_images;
     if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || state.view.assembly >= 0) return;
 
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = state.operations.state_rotation * mat4_from_mat3(A);
-    md_array_push(*transforms, mat4_ident(), alloc);
+    const md_f32x4x4_t M = state.operations.state_rotation * md_f32x4x4_from_f32x3x3(A);
+    md_array_push(*transforms, md_f32x4x4_ident(), alloc);
     for (int k = -n[2]; k <= n[2]; ++k) {
         for (int j = -n[1]; j <= n[1]; ++j) {
             for (int i = -n[0]; i <= n[0]; ++i) {
                 if (i == 0 && j == 0 && k == 0) continue;
-                const vec3_t t = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)i, (float)j, (float)k, 0.0f)));
-                md_array_push(*transforms, mat4_translate(t.x, t.y, t.z), alloc);
+                const md_f32x3_t t = md_f32x3_from_f32x4(md_f32x4x4_mul_f32x4(M, md_f32x4_set((float)i, (float)j, (float)k, 0.0f)));
+                md_array_push(*transforms, md_f32x4x4_translate(t.x, t.y, t.z), alloc);
             }
         }
     }
@@ -7809,25 +7811,25 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     const md_unitcell_t& cell = state->mold.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
 
-    mat3_t A = {0};
+    md_f32x3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = state->operations.state_rotation * mat4_from_mat3(A);
-    const uint32_t color = convert_color(vec4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
-    const uint32_t axis_color[3] = { convert_color(vec4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
+    const md_f32x4x4_t M = state->operations.state_rotation * md_f32x4x4_from_f32x3x3(A);
+    const uint32_t color = convert_color(md_f32x4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
+    const uint32_t axis_color[3] = { convert_color(md_f32x4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_f32x4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_f32x4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
 
     immediate::Scope scope(state->gfx.world, "simulation box");
 
     // The corners: bit b of i is the coordinate along cell vector b
-    vec3_t corner[8];
+    md_f32x3_t corner[8];
     for (int i = 0; i < 8; ++i) {
-        corner[i] = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
+        corner[i] = md_f32x3_from_f32x4(md_f32x4x4_mul_f32x4(M, md_f32x4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
     }
 
     // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection.
     // A point likewise, with h the view's height in points: the view is the whole window, DisplaySize in points, and a
     // screenshot at another resolution is the same view, its points as much larger as the image is.
-    const mat4_t& V = state->view.param.matrix.curr.view;
-    const mat4_t& P = state->view.param.matrix.curr.proj;
+    const md_f32x4x4_t& V = state->view.param.matrix.curr.view;
+    const md_f32x4x4_t& P = state->view.param.matrix.curr.proj;
     const float   h_px = (float)MD_MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
     const float   h_pt = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
     const bool    ortho = P.elem[3][3] == 1.0f;
@@ -7838,38 +7840,38 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     const float k = MD_MAX(0.5f * rep.box.thickness * 2.0f / (P.elem[1][1] * h_pt), 0.6f * 2.0f / (P.elem[1][1] * h_px));
     // Where the depth is less than this, the tube is clipped to it: in front of the camera, and its radius still k d
     const float min_depth = 1.0e-3f;
-    auto depth_of = [&](vec3_t p) {
-        return ortho ? 1.0f : -vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(p, 1.0f))).z;
+    auto depth_of = [&](md_f32x3_t p) {
+        return ortho ? 1.0f : -md_f32x3_from_f32x4(md_f32x4x4_mul_f32x4(V, md_f32x4_from_f32x3(p, 1.0f))).z;
     };
 
     // The planes of the view volume, inward, and the sphere of a cell about its center: a cell wholly outside of one is
     // out of view, the tubes' radius at the far side of the cell taken as the margin.
-    const mat4_t PV = P * V;
-    vec4_t plane[6];
+    const md_f32x4x4_t PV = P * V;
+    md_f32x4_t plane[6];
     for (int p = 0; p < 6; ++p) {
         const int r = p / 2;
         const float s = (p & 1) ? -1.0f : 1.0f;
-        const vec4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
-        const vec4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
-        plane[p] = vec4_add(row_w, vec4_mul1(row_r, s));
-        const float len = vec3_length(vec3_from_vec4(plane[p]));
-        plane[p] = len > 0.0f ? vec4_mul1(plane[p], 1.0f / len) : vec4_t{0, 0, 0, 1};
+        const md_f32x4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
+        const md_f32x4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
+        plane[p] = md_f32x4_add(row_w, md_f32x4_mul1(row_r, s));
+        const float len = md_f32x3_length(md_f32x3_from_f32x4(plane[p]));
+        plane[p] = len > 0.0f ? md_f32x4_mul1(plane[p], 1.0f / len) : md_f32x4_t{0, 0, 0, 1};
     }
-    const vec3_t cell_center = (corner[0] + corner[7]) * 0.5f;
+    const md_f32x3_t cell_center = (corner[0] + corner[7]) * 0.5f;
     float cell_radius = 0.0f;
-    for (int i = 0; i < 8; ++i) cell_radius = MD_MAX(cell_radius, vec3_length(corner[i] - cell_center));
+    for (int i = 0; i < 8; ++i) cell_radius = MD_MAX(cell_radius, md_f32x3_length(corner[i] - cell_center));
     cell_radius *= 1.01f;
 
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const md_array(mat4_t) transforms = state->view.periodic_transforms;
+    const md_array(md_f32x4x4_t) transforms = state->view.periodic_transforms;
     const size_t num_cells = rep.periodic_images ? MD_MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
-        const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
+        const md_f32x3_t t = c == 0 ? md_f32x3_t{0, 0, 0} : md_f32x3_from_f32x4(transforms[c].col[3]);
         const float margin = rep.box.thickness > 0.0f ? k * MD_MAX(depth_of(cell_center + t) + cell_radius, 0.0f) : 0.0f;
-        const vec4_t center = vec4_from_vec3(cell_center + t, 1.0f);
+        const md_f32x4_t center = md_f32x4_from_f32x3(cell_center + t, 1.0f);
         bool out_of_view = false;
         for (int p = 0; p < 6 && !out_of_view; ++p) {
-            out_of_view = vec4_dot(plane[p], center) < -(cell_radius + margin);
+            out_of_view = md_f32x4_dot(plane[p], center) < -(cell_radius + margin);
         }
         if (out_of_view) continue;
 
@@ -7898,12 +7900,12 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
                 if (i & (1 << b)) continue;
                 const int j = i | (1 << b);
                 const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
-                vec3_t p0 = corner[i] + t, p1 = corner[j] + t;
+                md_f32x3_t p0 = corner[i] + t, p1 = corner[j] + t;
                 float  d0 = depth[i],      d1 = depth[j];
                 if (d0 < min_depth && d1 < min_depth) continue;
                 // Clipped to min_depth where it passes behind the camera, so that the radius stays k times the depth
-                if (d0 < min_depth) { p0 = vec3_lerp(p0, p1, (min_depth - d0) / (d1 - d0)); d0 = min_depth; }
-                if (d1 < min_depth) { p1 = vec3_lerp(p1, p0, (min_depth - d1) / (d0 - d1)); d1 = min_depth; }
+                if (d0 < min_depth) { p0 = md_f32x3_lerp(p0, p1, (min_depth - d0) / (d1 - d0)); d0 = min_depth; }
+                if (d1 < min_depth) { p1 = md_f32x3_lerp(p1, p0, (min_depth - d1) / (d0 - d1)); d1 = min_depth; }
                 immediate::frustum(scope, p0, p1, k * d0, k * d1, col);
             }
         }
@@ -7920,18 +7922,18 @@ static void draw_representations_opaque(ApplicationState* state) {
 #if EXPERIMENTAL_GFX_API
     if (use_gfx) {
         const uint32_t instance_count = 10000;
-        static mat4_t* transforms = 0;
+        static md_f32x4x4_t* transforms = 0;
 
         if (transforms == 0) {
             auto rnd = []() -> float {
                 return (float)rand() / RAND_MAX;
             };
             for (uint32_t i = 0; i < instance_count; ++i) {
-                vec3_t axis = {rnd(), rnd(), rnd()};
-                quat_t ori = quat_angle_axis(rnd() * MD_TWO_PI, vec3_normalize(axis));
-                mat4_t R = mat4_from_quat(ori);
-                mat4_t T = mat4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
-                mat4_t M = T * R;
+                md_f32x3_t axis = {rnd(), rnd(), rnd()};
+                md_quat_t ori = quat_angle_axis(rnd() * MD_TWO_PI, md_f32x3_normalize(axis));
+                md_f32x4x4_t R = md_f32x4x4_from_quat(ori);
+                md_f32x4x4_t T = md_f32x4x4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
+                md_f32x4x4_t M = T * R;
                 md_urange_t range = {0, (int32_t)state->mold.sys.atom.count};
                 md_array_push(transforms, M, persistent_alloc);
             }
@@ -7997,8 +7999,8 @@ static void draw_representations_opaque(ApplicationState* state) {
             } else if (rep.type == RepresentationType::DipoleMoment) {
                 if (representation_shown(*state, rep)) {
                     // immediate draw of dipole moment as arrow
-                    vec3_t dipole_vec = { 0, 0, 0 };
-                    vec3_t dipole_org = { 0, 0, 0 };
+                    md_f32x3_t dipole_vec = { 0, 0, 0 };
+                    md_f32x3_t dipole_org = { 0, 0, 0 };
                     if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
                         // The representation's own (key, index) IS the picking address: the group's
                         // range was reserved under that key this frame, and the shader adds the base to
@@ -8011,9 +8013,9 @@ static void draw_representations_opaque(ApplicationState* state) {
                         immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
                         immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                        const vec3_t beg = rep.dipole.offset + dipole_org;
-                        const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
-                        const float  len = vec3_length(vec);
+                        const md_f32x3_t beg = rep.dipole.offset + dipole_org;
+                        const md_f32x3_t vec = dipole_vec * (float)rep.dipole.scale;
+                        const float  len = md_f32x3_length(vec);
 
                         // The head is a fixed shape in units of the shaft radius, never a share of the
                         // length: a longer dipole is a longer shaft under the same head. Below the length
@@ -8118,7 +8120,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             h = md_hash64(&es.slices, sizeof(es.slices), h);
             // the slices' edges: which is picked (its edge is drawn over the view instead), and whether they are drawn
             for (int k = 0; k < es.slices.count; ++k) {
-                const vec4_t e = es_slice_edge_color(state, rep.node.id, k, es.slices.items[k].enabled);
+                const md_f32x4_t e = es_slice_edge_color(state, rep.node.id, k, es.slices.items[k].enabled);
                 h = md_hash64(&e, sizeof(e), h);
             }
             for (const ElectronicStructurePlaneImage& im : es.plane_images) {
@@ -8165,7 +8167,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
         // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
         // the colour volume spans the box of the density volume
-        const mat4_t world_to_volume = mat4_inverse(es.density_vol.texture_to_world);
+        const md_f32x4x4_t world_to_volume = md_f32x4x4_inverse(es.density_vol.texture_to_world);
         const bool use_field  = es.coloring == SurfaceColoring::Field;
         const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
@@ -8239,11 +8241,11 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
         const bool on_planes = slice && es_plane_images_supported(state, es);
         if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.has_box || (!on_planes && !es.density_vol.tex_id)) continue;
-        vec4_t planes[ES_MAX_PLANES];
+        md_f32x4_t planes[ES_MAX_PLANES];
         float  slice_opacity[ES_MAX_PLANES];
         uint32_t images[ES_MAX_PLANES];
-        mat4_t rect_from_model[ES_MAX_PLANES];
-        vec4_t edges[ES_MAX_PLANES];
+        md_f32x4x4_t rect_from_model[ES_MAX_PLANES];
+        md_f32x4_t edges[ES_MAX_PLANES];
         int num_planes = 0;
         if (slice) {
             es_slices_conform(&es);

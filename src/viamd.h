@@ -7,6 +7,7 @@
 #include <core/md_array.h>
 
 #include <md_system.h>
+#include <md_run.h>
 #include <plane.h>
 #include <transfer_function_widget.h>
 #include <md_gto.h>
@@ -19,6 +20,7 @@
 
 #if MD_ENABLE_GPU
 #include <core/md_gpu.h>
+#include <core/md_vec_math.h>
 #endif
 
 #include <app/IconsFontAwesome6.h>
@@ -458,9 +460,9 @@ struct ElectronicStructurePlane {
     // direction (u, unit, along the plane; v = normal x u) and its half sizes along u and v (Angstrom). Not limited
     // to the box: outside it the volume's values at the box's faces carry on. An extent of 0: not set yet (the
     // rectangle around where the plane cuts the box, once the box is there: es_slices_conform).
-    vec3_t center = {};
-    vec3_t axis = {};
-    vec2_t extent = {};
+    md_f32x3_t center = {};
+    md_f32x3_t axis = {};
+    md_f32x2_t extent = {};
 };
 
 struct ElectronicStructurePlaneSet {
@@ -583,40 +585,40 @@ struct DensityProperty {
 
 // Object aligned bounding box
 struct OABB {
-    mat3_t orientation = mat3_ident();
-    vec3_t min_ext = { 0 };
-    vec3_t max_ext = { 0 };
+    md_f32x3x3_t orientation = md_f32x3x3_ident();
+    md_f32x3_t min_ext = { 0 };
+    md_f32x3_t max_ext = { 0 };
 };
 
 struct AABB {
-    vec3_t min_ext = { 0 };
-    vec3_t max_ext = { 0 };
+    md_f32x3_t min_ext = { 0 };
+    md_f32x3_t max_ext = { 0 };
 };
 
-mat3_t mat3_PCA(const vec4_t* xyzw, size_t count);
+md_f32x3x3_t mat3_PCA(const md_f32x4_t* xyzw, size_t count);
 
-void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation = mat3_ident());
+void calculate_bounds(float out_min[3], float out_max[3], const md_f32x4_t* xyzw, size_t count, const md_f32x3x3_t& orientation = md_f32x3x3_ident());
 
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
-mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent);
+md_f32x4x4_t compute_texture_to_world_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& origin, const md_f32x3_t& extent);
 
-mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin);
+md_f32x4x4_t compute_world_to_model_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& origin);
 
-mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize);
+md_f32x4x4_t compute_index_to_world_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& in_origin, const md_f32x3_t& stepsize);
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
-void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length);
+void compute_dim(int out_dim[3], const md_f32x3_t& in_ext, double samples_per_unit_length);
 
 // Grid units are BOHR, matching what md_gto evaluates in; a Volume's transforms are Angstrom,
 // matching the world the camera lives in. init_volume is where the two meet, and it is the only
 // place that conversion belongs.
-void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length);
+void init_grid(md_grid_t* grid, const md_f32x3x3_t& orientation, const md_f32x3_t& min_ext, const md_f32x3_t& max_ext, double samples_per_unit_length);
 
 struct Volume {
-    mat4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
-    mat4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
-    vec3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
+    md_f32x4x4_t world_to_model   = {};   // Roto-translation into volume local axes, no scaling applied (preserves world length units)
+    md_f32x4x4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
+    md_f32x3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
     uint32_t tex_id = 0;
 };
@@ -638,7 +640,7 @@ struct EsIsoMesh;
 struct IsoDesc {
     size_t count;
     float values[8];
-    vec4_t colors[8];
+    md_f32x4_t colors[8];
     float optical_densities[8];
 };
 
@@ -667,22 +669,22 @@ struct ElectronicStructureRepresentation {
     double iso_value = 0.05;
 
     // These are default values for different volume types.
-    vec4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
-    vec4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
-    vec4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
-    vec4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
-    vec4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
+    md_f32x4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
+    md_f32x4_t col_psi_neg = {255.f/255.f,205.f/255.f,0.f/255.f,0.75f};
+    md_f32x4_t col_den     = {255.f/255.f,255.f/255.f,255.f/255.f,0.75f};
+    md_f32x4_t col_att     = {0, 162.0f/255.0f, 135.0f/255.0f, 0.75f};
+    md_f32x4_t col_det     = {162.0f/255.0f, 35.0f/255.0f, 135.0f/255.0f, 0.75f};
 
-    vec4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
-    vec4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
-    vec4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
-    vec4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
-    vec4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    md_f32x4_t tint_psi_pos = { 1.0f, 1.0f, 1.0f, 0.75f };
+    md_f32x4_t tint_psi_neg = { 1.0f, 1.0f, 1.0f, 0.75f };
+    md_f32x4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    md_f32x4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
+    md_f32x4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
 
     struct {
         int num_isos = 0;
         double values[8];
-        vec4_t colors[8];
+        md_f32x4_t colors[8];
     } density_property;
 
     // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
@@ -737,7 +739,7 @@ struct ElectronicStructureRepresentation {
 
     // The box the volume is (or would be) evaluated in: its unit cube to the world (Angstrom), as the volume's
     // texture_to_world; set whenever the representation is updated, with or without a volume (es_volume_box)
-    mat4_t box_to_world = {};
+    md_f32x4x4_t box_to_world = {};
     bool   has_box = false;
 
     // Volume and Planes: what a value is drawn as, a colour map's colour over a range and an opacity curve over it
@@ -837,7 +839,7 @@ static inline bool electronic_structure_uses_density_iso_squared(const Electroni
            rep.source == ElectronicStructureSource::ElectronDensity;
 }
 
-static inline vec4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
+static inline md_f32x4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
     switch (idx) {
     case 0: return rep.col_psi_pos;
     case 1: return rep.col_psi_neg;
@@ -1097,15 +1099,15 @@ struct AtomAttributeColoring {
 struct DipoleRepresentation {
     md_attribute_id_t dipole_key = MD_ATTRIBUTE_INVALID;   // the vector attribute, so it survives a reload
     uint32_t dipole_index = 0;                             // which element of that group; see DipoleGroup
-    vec4_t color = { 0, 0, 0, 1 };
-    vec3_t offset = { 0, 0, 0 };
+    md_f32x4_t color = { 0, 0, 0, 1 };
+    md_f32x3_t offset = { 0, 0, 0 };
     double scale = 1.0;
 	float radius = 0.05f;
 };
 
 // The edges of the unit cell, of the frame shown (it may change with it)
 struct BoxRepresentation {
-    vec4_t color = { 0.25f, 0.25f, 0.25f, 1.0f };
+    md_f32x4_t color = { 0.25f, 0.25f, 0.25f, 1.0f };
     float thickness = 1.5f;     // pt, the width of the edges on screen (tubes, lit), never thinner than a pixel; 0 for
                                 // lines of a pixel, unlit
     bool axes = false;          // The edges along a, b and c from the origin of the cell red, green and blue
@@ -1142,27 +1144,27 @@ struct Representation {
     bool dynamic_evaluation = true; // follow the frame when what the filter picks depends on it ("auto-update")
 
     // User defined base color used in uniform mode
-    vec4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
+    md_f32x4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
     struct {
-        vec4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
-        vec4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
-        vec4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
-        vec4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+        md_f32x4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
+        md_f32x4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+        md_f32x4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+        md_f32x4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
     } secondary_structure;
 
     // Global post processing parameters applied to the final colors.
-    vec4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
+    md_f32x4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
     float tint_scale = 0.0f;
     float saturation = 1.0f;
 
     // scaling parameter (radius, width, height, etc depending on type). Cartoon: coil, sheet, helix, and the thickness of
     // the lipids and nucleic acids (w)
-    vec4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
+    md_f32x4_t scale = {1.0f, 1.0f, 1.0f, 1.0f};
 
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
-	vec4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	md_f32x4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
@@ -1238,9 +1240,9 @@ struct PickingReadbackSlot {
     uint32_t viewport_width = 0;
     uint32_t viewport_height = 0;
     
-    vec2_t surface_coord = {0};
-    vec2_t screen_coord  = {0};
-    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
+    md_f32x2_t surface_coord = {0};
+    md_f32x2_t screen_coord  = {0};
+    md_f32x4x4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
 struct PickingSurface {
@@ -1270,9 +1272,9 @@ struct PickingHit {
     uint32_t frame_idx = 0;    uint32_t raw_idx = INVALID_PICKING_IDX;
     uint32_t local_idx = 0;
 
-    vec2_t surface_coord = {0};
-    vec2_t screen_coord = {0};
-    vec3_t world_pos = {0};
+    md_f32x2_t surface_coord = {0};
+    md_f32x2_t screen_coord = {0};
+    md_f32x3_t world_pos = {0};
     float depth = 1.0f;
 };
 
@@ -1280,9 +1282,9 @@ struct PickingReadbackRequest {
     uint32_t fbo = 0;
     uint32_t width = 0;
     uint32_t height = 0;
-    vec2_t surface_coord = {0};
-    vec2_t screen_coord = {0};
-    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
+    md_f32x2_t surface_coord = {0};
+    md_f32x2_t screen_coord = {0};
+    md_f32x4x4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
 // The key of the script evaluation's slot of a distribution or a volume over a timeline period, by its id
@@ -1410,7 +1412,7 @@ struct ApplicationState {
         CameraMode mode = CameraMode::Perspective;
 
         struct {
-            vec2_t sequence[JITTER_SEQUENCE_MAX] {};
+            md_f32x2_t sequence[JITTER_SEQUENCE_MAX] {};
         } jitter;
 
 		ViewTransform target = {};
@@ -1419,7 +1421,7 @@ struct ApplicationState {
         // it was last focused with a double click (with settings.focus_in_free_space), or all of it. The projection is shifted so that the camera's
         // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
         ViewRegion region = {};
-        vec2_t shift = {0, 0};
+        md_f32x2_t shift = {0, 0};
 
         // The periodic images shown: the scene again in the neighboring cells, this many each way along a, b and c, of
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
@@ -1429,8 +1431,8 @@ struct ApplicationState {
         // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
         // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
         // update_view_param.
-        md_array(mat4_t) periodic_transforms      = 0;
-        md_array(mat4_t) periodic_transforms_prev = 0;
+        md_array(md_f32x4x4_t) periodic_transforms      = 0;
+        md_array(md_f32x4x4_t) periodic_transforms_prev = 0;
 
         // The biological assembly shown (md_system_t assembly, of a deposited structure), -1 for the coordinates as
         // they are. Shown in place of them and of the periodic images: each group of it the instances of the group, in the
@@ -1441,7 +1443,7 @@ struct ApplicationState {
 
         // Of the assembly shown, set by update_view_param: the transforms of its copies, group by group, those of group g
         // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
-        md_array(mat4_t)   assembly_transforms  = 0;
+        md_array(md_f32x4x4_t)   assembly_transforms  = 0;
         md_array(uint32_t) assembly_copy_offset = 0;
 
         // Of the assembly shown, the instances of each group as a subset of the molecule (md_gl_subset_t), which its
@@ -1489,7 +1491,7 @@ struct ApplicationState {
         // secondary structure of the displayed frame (md_util_state_backbone_angles, md_util_state_secondary_structure).
         md_system_state_t   state = {};
 
-		mat4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
+		md_f32x4x4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
 
         // "run/<name>": where the loaded trajectory, and everything sampled along it, lives in
         // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
@@ -1604,21 +1606,21 @@ struct ApplicationState {
         // are not keep 'saturation' of their colour (AtomBit_Dimmed): the scene, not what is drawn over it.
         struct {
             struct {
-                vec4_t visible = {0.15f, 0.40f, 1.00f, 0.35f};
-                vec4_t hidden  = {0.15f, 0.40f, 1.00f, 0.15f};
-                vec4_t outline = {0.25f, 0.55f, 1.00f, 0.90f};
+                md_f32x4_t visible = {0.15f, 0.40f, 1.00f, 0.35f};
+                md_f32x4_t hidden  = {0.15f, 0.40f, 1.00f, 0.15f};
+                md_f32x4_t outline = {0.25f, 0.55f, 1.00f, 0.90f};
             } selection;
 
             struct {
-                vec4_t visible = {1.00f, 0.85f, 0.10f, 0.35f};
-                vec4_t hidden  = {1.00f, 0.85f, 0.10f, 0.15f};
-                vec4_t outline = {1.00f, 0.85f, 0.10f, 0.90f};
+                md_f32x4_t visible = {1.00f, 0.85f, 0.10f, 0.35f};
+                md_f32x4_t hidden  = {1.00f, 0.85f, 0.10f, 0.15f};
+                md_f32x4_t outline = {1.00f, 0.85f, 0.10f, 0.90f};
             } highlight;
 
             // The colours of the groups of the highlight after the first, which has the highlight's own; with the
             // alphas of its colours. In an order in which each differs much from the one before it, and the last
             // from the highlight's yellow.
-            vec3_t highlight_groups[HIGHLIGHT_GROUP_COLORS - 1] = {
+            md_f32x3_t highlight_groups[HIGHLIGHT_GROUP_COLORS - 1] = {
                 {0.25f, 0.85f, 0.35f},  // green
                 {0.95f, 0.30f, 0.80f},  // magenta
                 {0.15f, 0.85f, 0.95f},  // cyan
@@ -1742,7 +1744,7 @@ struct ApplicationState {
     // --- VISUALS ---
     struct {
         struct {
-            vec3_t color = {1, 1, 1};   // shown as picked: the scene is put over it after the display transform
+            md_f32x3_t color = {1, 1, 1};   // shown as picked: the scene is put over it after the display transform
         } background;
 
         struct {
@@ -1853,7 +1855,7 @@ struct ApplicationState {
         // centred - principal axes, a chosen bond, a user supplied orientation - without having to
         // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
         // it survives a change of recenter target.
-        mat4_t alignment_mat = MD_MAT4_IDENT_INIT;
+        md_f32x4x4_t alignment_mat = MD_MAT4_IDENT_INIT;
 
         // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
         // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
@@ -1861,7 +1863,7 @@ struct ApplicationState {
         // this is the only record of it: wrapping and making whole only work in the lattice frame (see
         // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
         // Back to identity whenever mold.state is rewritten from its source.
-        mat4_t state_rotation = MD_MAT4_IDENT_INIT;
+        md_f32x4x4_t state_rotation = MD_MAT4_IDENT_INIT;
 
         struct {
             AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
@@ -1916,8 +1918,8 @@ struct ApplicationState {
             bool valid = false;
 
 			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
-            vec4_t* rel_xyzw = nullptr;
-            vec3_t  com = {};
+            md_f32x4_t* rel_xyzw = nullptr;
+            md_f32x3_t  com = {};
         } initial_frame;
 
     } operations;
@@ -1975,11 +1977,11 @@ struct ApplicationState {
     } trajectory_data;
 
     struct {
-        vec4_t point_color      = {1,0,0,0.8f};
-        vec4_t line_color       = {0,0,0,0.6f};
-        vec4_t triangle_color   = {0.55f,0.55f,1.0f,0.5f};
-        vec4_t text_color       = {1,1,1,1};
-        vec4_t text_bg_color    = {0,0,0,0.5f};
+        md_f32x4_t point_color      = {1,0,0,0.8f};
+        md_f32x4_t line_color       = {0,0,0,0.6f};
+        md_f32x4_t triangle_color   = {0.55f,0.55f,1.0f,0.5f};
+        md_f32x4_t text_color       = {1,1,1,1};
+        md_f32x4_t text_bg_color    = {0,0,0,0.5f};
 
         uint64_t text_hash = 0;     // Of the editor's text in the last frame: a change compiles it again (main.cpp)
 
@@ -2130,7 +2132,7 @@ struct RenderKey {
 struct ViewFitRequest {
     const ApplicationState& app;
 	uint64_t surface_id = 0;        // Source of the view fit request, can be used to filter out irrelevant requests or for debugging.
-	md_array(vec4_t) xyzw = nullptr;
+	md_array(md_f32x4_t) xyzw = nullptr;
 	md_allocator_i* alloc = nullptr;
     ViewFitRound round;
 };
@@ -2152,23 +2154,23 @@ struct InteractionSurfaceState {
 
     InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
 
-    vec2_t mouse_local  = {};
-    vec2_t surface_size = {};
+    md_f32x2_t mouse_local  = {};
+    md_f32x2_t surface_size = {};
 
     // Local coordinates
-    vec2_t region_min = {};
-    vec2_t region_max = {};
+    md_f32x2_t region_min = {};
+    md_f32x2_t region_max = {};
 };
 
-static inline const ImVec4& vec_cast(const vec4_t& v) { return *(const ImVec4*)(&v); }
-static inline const vec4_t& vec_cast(const ImVec4& v) { return *(const vec4_t*)(&v); }
-static inline const ImVec2& vec_cast(const vec2_t& v) { return *(const ImVec2*)(&v); }
-static inline const vec2_t& vec_cast(const ImVec2& v) { return *(const vec2_t*)(&v); }
+static inline const ImVec4& vec_cast(const md_f32x4_t& v) { return *(const ImVec4*)(&v); }
+static inline const md_f32x4_t& vec_cast(const ImVec4& v) { return *(const md_f32x4_t*)(&v); }
+static inline const ImVec2& vec_cast(const md_f32x2_t& v) { return *(const ImVec2*)(&v); }
+static inline const md_f32x2_t& vec_cast(const ImVec2& v) { return *(const md_f32x2_t*)(&v); }
 
-static inline ImVec4& vec_cast(vec4_t& v) { return *(ImVec4*)(&v); }
-static inline vec4_t& vec_cast(ImVec4& v) { return *(vec4_t*)(&v); }
-static inline ImVec2& vec_cast(vec2_t& v) { return *(ImVec2*)(&v); }
-static inline vec2_t& vec_cast(ImVec2& v) { return *(vec2_t*)(&v); }
+static inline ImVec4& vec_cast(md_f32x4_t& v) { return *(ImVec4*)(&v); }
+static inline md_f32x4_t& vec_cast(ImVec4& v) { return *(md_f32x4_t*)(&v); }
+static inline ImVec2& vec_cast(md_f32x2_t& v) { return *(ImVec2*)(&v); }
+static inline md_f32x2_t& vec_cast(ImVec2& v) { return *(md_f32x2_t*)(&v); }
 
 // Applies op to a mask (the selection, the highlight) with the set s as the operand
 static inline void modify_field(md_bitmask_t* m, md_bitset_t s, SelectionOperator op) {
@@ -2455,7 +2457,7 @@ static inline uint64_t generate_fingerprint() {
 
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
 
-//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const vec2_t& coord, const mat4_t& inv_MVP);
+//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const md_f32x2_t& coord, const md_f32x4x4_t& inv_MVP);
 
 void interrupt_async_tasks(ApplicationState* state);
 
@@ -2612,7 +2614,7 @@ bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribut
 // ENFORCES is a length. False when the key names nothing, the group has lost its origin, or the
 // index is past the end. This is the whole read path - drawing and the picking tooltip both take
 // the (key, index) they already hold and come straight here.
-bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index);
+bool dipole_moment_read(md_f32x3_t* out_vec, md_f32x3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index);
 
 // Every density property the system carries, in the attribute table's own path order. Returns how
 // many there are, which may exceed 'cap' - only the first 'cap' are written. Pass (NULL, 0) to count.
@@ -2730,11 +2732,11 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 // registry of "fields" is needed to sit between: what varies per request is the request, and what
 // is data is data.
 bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const vec3_t* atom_pos, size_t num_atom_pos,
+                         const md_f32x3_t* atom_pos, size_t num_atom_pos,
                          md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 // From coefficients the caller holds, num_ao of them
 bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                      const vec3_t* atom_pos, size_t num_atom_pos,
+                                      const md_f32x3_t* atom_pos, size_t num_atom_pos,
                                       const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 
 // Positions for a system's BASIS atoms, in the bohr and interleaved layout md_gto works in, taken
@@ -2744,7 +2746,7 @@ bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, c
 // This is what an evaluation takes INSTEAD of a state. Which geometry an orbital is drawn at - the
 // current frame, a reference, an optimisation step, a geometry that never was - is the call site's
 // decision, and an evaluation is in no position to make it.
-vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state);
+md_f32x3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state);
 
 // Blocks until every queued volume readback has landed in its GL texture. Call before destroying
 // the device scratch, the pools or a GL texture one of them writes to, and wherever a caller needs
@@ -2812,7 +2814,7 @@ static inline void task_progress_add(TaskProgressRequest* req, const char* label
 struct QmAtoms {
     size_t          count         = 0;
     const uint8_t*  atomic_number = nullptr;  // [N]
-    const dvec3_t*  coordinate    = nullptr;  // [N], Angstrom, the geometry the calculation ran at
+    const md_f64x3_t*  coordinate    = nullptr;  // [N], Angstrom, the geometry the calculation ran at
     const uint32_t* system_index  = nullptr;  // [N], or null for the identity
 };
 
@@ -2919,14 +2921,14 @@ float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_sy
 // "orbital/total/density" with no slice, "vlx/rsp/transition_density/attachment" with the excited
 // state index - and whether that matrix is stored or computed on demand is the table's business.
 bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const vec3_t* atom_pos, size_t num_atom_pos,
+                         const md_f32x3_t* atom_pos, size_t num_atom_pos,
                          md_str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
 
 // The same, over a matrix the caller already has in hand rather than a path to extract it from.
 // The transition densities are VIRTUAL and are rebuilt from the response solution on every read,
 // so a caller which needs one twice holds on to it and calls this instead.
 bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                const vec3_t* atom_pos, size_t num_atom_pos,
+                                const md_f32x3_t* atom_pos, size_t num_atom_pos,
                                 const double* density_matrix, size_t dim, md_gto_op_t op);
 
 // ---------------------------------------------------------------------------
@@ -3056,7 +3058,7 @@ void recenter_update_target_data(ApplicationState* app);
 //     rotation    = translate(cell_centre) * alignment_mat * R * translate(-cell_centre)
 // rotation is exactly the identity unless the orientation is kept or alignment_mat is set, and the
 // return value says whether it is not.
-bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app);
+bool recenter_calculate_transform(md_f32x4x4_t* translation, md_f32x4x4_t* rotation, const ApplicationState* app);
 
 // Applies the coordinate operations to mold.state in the one order that keeps them valid together:
 //     take off operations.state_rotation -> translate -> wrap -> make whole -> turn
@@ -3134,9 +3136,9 @@ bool picking_surface_submit_readback(
     uint32_t width,
     uint32_t height,
     uint32_t submitted_frame_idx,
-    vec2_t surface_coord,
-    vec2_t screen_coord,
-    const mat4_t& inv_mvp
+    md_f32x2_t surface_coord,
+    md_f32x2_t screen_coord,
+    const md_f32x4x4_t& inv_mvp
 );
 
 // Polls for the result of a picking readback request. If a hit is detected, out_hit will be filled with the details of the hit and the function will return true.
@@ -3162,7 +3164,7 @@ enum InteractionSurfaceFlags : uint32_t {
 };
 
 // Creates an invisible interactive surface which forms the basis for picking and interaction.
-InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size, InteractionSurfaceFlags flags = InteractionSurfaceFlags_None);
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const md_f32x2_t& size, InteractionSurfaceFlags flags = InteractionSurfaceFlags_None);
 
 struct InteractionSurfaceHitArgs {
     PickingSurface* picking_surface;
@@ -3170,7 +3172,7 @@ struct InteractionSurfaceHitArgs {
     uint32_t fbo;
     uint32_t width;
     uint32_t height;
-    const mat4_t& clip_to_world;
+    const md_f32x4x4_t& clip_to_world;
     float pixel_scale = 1.0f;   // the fbo's pixels per framebuffer pixel: the render scale, where it is upscaled
 };
 
@@ -3179,7 +3181,7 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
-    vec2_t view_shift = {0, 0};     // Where the projection is shifted to (see ViewRegion)
+    md_f32x2_t view_shift = {0, 0};     // Where the projection is shifted to (see ViewRegion)
 };
 
 struct InteractionSurfaceViewTransformResult {
@@ -3213,13 +3215,13 @@ struct InteractionSurfaceEvent {
     InteractionSelectionMode selection_mode = InteractionSelectionMode::None;
     InteractionSurfaceEventPhase region_phase = InteractionSurfaceEventPhase::None;
 
-    vec2_t mouse_local = {};
-    vec2_t surface_size = {};
-    vec2_t region_min = {};
-    vec2_t region_max = {};
+    md_f32x2_t mouse_local = {};
+    md_f32x2_t surface_size = {};
+    md_f32x2_t region_min = {};
+    md_f32x2_t region_max = {};
 
-    mat4_t clip_to_world = MD_MAT4_IDENT_INIT;
-    mat4_t world_to_clip = MD_MAT4_IDENT_INIT;
+    md_f32x4x4_t clip_to_world = MD_MAT4_IDENT_INIT;
+    md_f32x4x4_t world_to_clip = MD_MAT4_IDENT_INIT;
 
     PickingHit hit = {};
 };
@@ -3227,13 +3229,13 @@ struct InteractionSurfaceEvent {
 void interaction_surface_event_extract(InteractionSurfaceEvent* out_event, const InteractionSurfaceState& state, const PickingHit& hit = {});
 
 // Helper function for projecting world coordinates to surface coordinates, used for interaction surfaces and picking.
-static inline vec2_t world_to_surface_project(
-    const vec3_t& world_coord,
-    const mat4_t& world_to_clip,
-    const vec2_t& surface_size
+static inline md_f32x2_t world_to_surface_project(
+    const md_f32x3_t& world_coord,
+    const md_f32x4x4_t& world_to_clip,
+    const md_f32x2_t& surface_size
 ) {
-    const vec4_t c = world_to_clip * vec4_set(world_coord.x, world_coord.y, world_coord.z, 1.0f);
-    vec2_t out_coord = {
+    const md_f32x4_t c = world_to_clip * md_f32x4_set(world_coord.x, world_coord.y, world_coord.z, 1.0f);
+    md_f32x2_t out_coord = {
         ( c.x / c.w * 0.5f + 0.5f) * surface_size.x,
         (-c.y / c.w * 0.5f + 0.5f) * surface_size.y,
     };
@@ -3243,13 +3245,13 @@ static inline vec2_t world_to_surface_project(
 // Sets mask to the points (of candidate_mask, all of them when NULL) which project into the region
 void point_set_region_mask_compute(
     md_bitmask_t* mask,
-    const vec3_t xyz[],
+    const md_f32x3_t xyz[],
     size_t count,
     const md_bitset_t* candidate_mask,
-    const mat4_t& world_to_clip,
-    const vec2_t& region_min,
-    const vec2_t& region_max,
-    const vec2_t& surface_size
+    const md_f32x4x4_t& world_to_clip,
+    const md_f32x2_t& region_min,
+    const md_f32x2_t& region_max,
+    const md_f32x2_t& surface_size
 );
 
 // File Queue
@@ -3291,7 +3293,7 @@ static inline AssemblyGroup assembly_group(const md_assembly_data_t& a, size_t g
 
 // The transforms of the copies an assembly of the system makes, group by group, and with copy_offset (optional) where the
 // copies of each part begin, its end last. Empty for an assembly the system has not (-1: none).
-void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
+void assembly_transforms(md_array(md_f32x4x4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc);
 
 // The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
 // freed: before the molecule goes

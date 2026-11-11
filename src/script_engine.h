@@ -13,7 +13,7 @@
 #include <core/md_str.h>
 #include <core/md_bitset.h>
 #include <core/md_array.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 #include <core/md_unit.h>
 #include <core/md_executor.h>
 
@@ -248,14 +248,14 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
 // What a part of a program looks like at a frame: viamd's own arrays, allocated with the drawing's allocator.
 
 struct Vertex {
-    vec3_t   pos;
+    md_f32x3_t   pos;
     uint32_t color;
-    vec3_t   normal;
+    md_f32x3_t   normal;
     uint32_t picking_idx;
 };
 
 struct Text {
-    vec3_t    pos;
+    md_f32x3_t    pos;
     md_str_t     str;      // always set, drawable as it stands
     double    value;    // when unit is not none: the quantity, to format in units of the viewer's choosing
     md_unit_t unit;
@@ -268,7 +268,7 @@ struct Drawing {
     md_array(Vertex)         triangles = nullptr;
     md_array(Text)           text = nullptr;
     struct {
-        md_array(mat4_t)      matrices = nullptr;
+        md_array(md_f32x4x4_t)      matrices = nullptr;
         md_array(md_bitset_t) structures = nullptr;
         float                 extent = 0.0f;
     } sdf;

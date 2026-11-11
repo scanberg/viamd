@@ -1,6 +1,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_widgets.h>
 #include <imgui_internal.h>
+#include <core/md_vec_math.h>
 
 namespace ImGui {
 
@@ -567,7 +568,7 @@ void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 c
     }
 }
 
-bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientation, const ImVec2& size) {
+bool CoordinateSystemWidget(md_quat_t* out_orientation, const md_quat_t& in_orientation, const ImVec2& size) {
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     if (!window || window->SkipItems || !out_orientation)
         return false;
@@ -591,30 +592,30 @@ bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientatio
 
     const float h = dist * tanf(fovy * 0.5f);
     const float w = ar * h;
-    mat4_t P = mat4_ortho(-w, w, -h, h, near, far);
-    mat4_t V = mat4_from_quat(quat_conj(quat_normalize(in_orientation)));
-    mat4_t M = mat4_translate(-0.5f * ext, -0.5f * ext, -0.5f * ext);
+    md_f32x4x4_t P = md_f32x4x4_ortho(-w, w, -h, h, near, far);
+    md_f32x4x4_t V = md_f32x4x4_from_quat(md_quat_conj(md_quat_normalize(in_orientation)));
+    md_f32x4x4_t M = md_f32x4x4_translate(-0.5f * ext, -0.5f * ext, -0.5f * ext);
 
-    V.col[3] = vec4_set(0, 0, -dist, 1);
+    V.col[3] = md_f32x4_set(0, 0, -dist, 1);
 
-    mat4_t MV = V * M;
+    md_f32x4x4_t MV = V * M;
 
-    vec4_t vo = mat4_mul_vec4(MV, {0, 0, 0, 1});
-    vec4_t vx = mat4_mul_vec4(V,  {1, 0, 0, 1});
-    vec4_t vy = mat4_mul_vec4(V,  {0, 1, 0, 1});
-    vec4_t vz = mat4_mul_vec4(V,  {0, 0, 1, 1});
+    md_f32x4_t vo = md_f32x4x4_mul_f32x4(MV, {0, 0, 0, 1});
+    md_f32x4_t vx = md_f32x4x4_mul_f32x4(V,  {1, 0, 0, 1});
+    md_f32x4_t vy = md_f32x4x4_mul_f32x4(V,  {0, 1, 0, 1});
+    md_f32x4_t vz = md_f32x4x4_mul_f32x4(V,  {0, 0, 1, 1});
 
     // Project
-    vec4_t O = mat4_mul_vec4(P, vo);
-    vec4_t x = mat4_mul_vec4(P, vx);
-    vec4_t y = mat4_mul_vec4(P, vy);
-    vec4_t z = mat4_mul_vec4(P, vz);
+    md_f32x4_t O = md_f32x4x4_mul_f32x4(P, vo);
+    md_f32x4_t x = md_f32x4x4_mul_f32x4(P, vx);
+    md_f32x4_t y = md_f32x4x4_mul_f32x4(P, vy);
+    md_f32x4_t z = md_f32x4x4_mul_f32x4(P, vz);
 
     // Perspective divide
-    O = vec4_div1(O, O.w);
-    x = vec4_div1(x, x.w);
-    y = vec4_div1(y, y.w);
-    z = vec4_div1(z, z.w);
+    O = md_f32x4_div1(O, O.w);
+    x = md_f32x4_div1(x, x.w);
+    y = md_f32x4_div1(y, y.w);
+    z = md_f32x4_div1(z, z.w);
 
     // Vector
     const ImVec2 o = mid + ImVec2(O.x, -O.y);
@@ -712,9 +713,9 @@ bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientatio
 
     if (hovered_plane_idx != -1) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            quat_t ori = quat_normalize(in_orientation);
+            md_quat_t ori = md_quat_normalize(in_orientation);
 
-            const vec3_t dirs[3] = {
+            const md_f32x3_t dirs[3] = {
                 { 1, 0, 0},
                 { 0, 1, 0},
                 { 0, 0, 1},
@@ -723,45 +724,45 @@ bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientatio
 
             {
                 // Orientate to align with the plane
-                const vec3_t view_z = ori * vec3_set(0,0,1);
-                const float dp = vec3_dot(dirs[i], view_z);
-                const vec3_t f = dp > 0 ? dirs[i] : -dirs[i];
+                const md_f32x3_t view_z = ori * md_f32x3_set(0,0,1);
+                const float dp = md_f32x3_dot(dirs[i], view_z);
+                const md_f32x3_t f = dp > 0 ? dirs[i] : -dirs[i];
                 if (fabsf(dp) < 0.99999f) {
-                    const vec3_t axis = vec3_normalize(vec3_cross(view_z, f));
-                    const float angle = acosf(vec3_dot(view_z, f));
-                    const quat_t q = quat_axis_angle(axis, angle);
+                    const md_f32x3_t axis = md_f32x3_normalize(md_f32x3_cross(view_z, f));
+                    const float angle = acosf(md_f32x3_dot(view_z, f));
+                    const md_quat_t q = md_quat_axis_angle(axis, angle);
 
                     // Orientate to align with 'z'
-                    ori = quat_normalize(q * ori);
+                    ori = md_quat_normalize(q * ori);
                 }
             }
 
             {
-                const vec3_t view_y = ori * vec3_set(0,1,0);
+                const md_f32x3_t view_y = ori * md_f32x3_set(0,1,0);
                 // The orientation should now be aligned with the plane such that view_z is equal to +/- dirs[i]
                 // Now we want to align view_up with the x, y or z axis, whichever it coincides with the most
-                const float dx = vec3_dot(vec3_set(1,0,0), view_y);
-                const float dy = vec3_dot(vec3_set(0,1,0), view_y);
-                const float dz = vec3_dot(vec3_set(0,0,1), view_y);
-                vec3_t u;
+                const float dx = md_f32x3_dot(md_f32x3_set(1,0,0), view_y);
+                const float dy = md_f32x3_dot(md_f32x3_set(0,1,0), view_y);
+                const float dz = md_f32x3_dot(md_f32x3_set(0,0,1), view_y);
+                md_f32x3_t u;
                 float dp;
                 if (fabsf(dx) > fabsf(dy) && fabsf(dx) > fabsf(dz)) {
-                    u = (float)signf(dx) * vec3_set(1,0,0);
+                    u = (float)md_f32_sign(dx) * md_f32x3_set(1,0,0);
                     dp = dx;
                 } else if (fabsf(dy) > fabsf(dx) && fabsf(dy) > fabsf(dz)) {
-                    u = (float)signf(dy) * vec3_set(0,1,0);
+                    u = (float)md_f32_sign(dy) * md_f32x3_set(0,1,0);
                     dp = dy;
                 } else {
-                    u = (float)signf(dz) * vec3_set(0,0,1);
+                    u = (float)md_f32_sign(dz) * md_f32x3_set(0,0,1);
                     dp = dz;
                 }
                 if (fabsf(dp) < 0.99999f) {
-                    const vec3_t axis = vec3_normalize(vec3_cross(view_y, u));
-                    const float angle = acosf(vec3_dot(view_y, u));
-                    const quat_t q = quat_axis_angle(axis, angle);
+                    const md_f32x3_t axis = md_f32x3_normalize(md_f32x3_cross(view_y, u));
+                    const float angle = acosf(md_f32x3_dot(view_y, u));
+                    const md_quat_t q = md_quat_axis_angle(axis, angle);
 
                     // Orientate to align with 'y'
-                    ori = quat_normalize(q * ori);
+                    ori = md_quat_normalize(q * ori);
                 }
             }
 

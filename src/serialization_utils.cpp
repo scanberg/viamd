@@ -301,7 +301,7 @@ bool extract_bitset(md_bitset_t* bs, md_str_t arg, md_allocator_i* alloc) {
 	// Bitfield starts with ###
 	// and ends with ###
 	md_str_t token = MD_STR_INIT("###");
-	if (!md_str_eq_n(arg, token, md_str_len(token))) {
+	if (!md_str_begins_with(arg, token)) {
 		MD_LOG_ERROR("Malformed start token for bitfield");
 		return false;
 	}

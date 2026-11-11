@@ -1,5 +1,6 @@
 ﻿
 #include <md_util.h>
+#include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>
 #include <md_gto_iso.h>
@@ -13,8 +14,10 @@
 #include <core/md_path.h>
 #include <core/md_allocator.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
 #include <core/md_writer.h>
 #include <core/md_arena_allocator.h>
+#include <core/md_vec_math.h>
 
 #include <viamd.h>
 #include <representation.h>
@@ -36,29 +39,29 @@
 #include <implot.h>
 #include <implot_internal.h>
 
-mat3_t mat3_PCA(const vec4_t* xyzw, size_t count) {
-    vec3_t acc = vec3_zero();
+md_f32x3x3_t mat3_PCA(const md_f32x4_t* xyzw, size_t count) {
+    md_f32x3_t acc = md_f32x3_zero();
     for (size_t i = 0; i < count; ++i) {
-        acc = vec3_add(acc, vec3_from_vec4(xyzw[i]));
+        acc = md_f32x3_add(acc, md_f32x3_from_f32x4(xyzw[i]));
     }
-    vec3_t mean = acc / (float)count;
+    md_f32x3_t mean = acc / (float)count;
 
-    mat3_t cov = mat3_covariance_matrix_vec4(xyzw, nullptr, count, mean);
-    mat3_eigen_t eigen = mat3_eigen(cov);
-    mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+    md_f32x3x3_t cov = md_f32x3x3_covariance_matrix_f32x4(xyzw, nullptr, count, mean);
+    md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(cov);
+    md_f32x3x3_t PCA = md_f32x3x3_orthonormalize(md_f32x3x3_extract_rotation(eigen.vectors));
     return PCA;
 }
 
-void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, size_t count, const mat3_t& orientation) {
-    vec4_t min_v = vec4_set1(FLT_MAX);
-    vec4_t max_v = vec4_set1(-FLT_MAX);
+void calculate_bounds(float out_min[3], float out_max[3], const md_f32x4_t* xyzw, size_t count, const md_f32x3x3_t& orientation) {
+    md_f32x4_t min_v = md_f32x4_set1(FLT_MAX);
+    md_f32x4_t max_v = md_f32x4_set1(-FLT_MAX);
 
-    mat4_t rot = mat4_from_mat3(mat3_transpose(orientation));
+    md_f32x4x4_t rot = md_f32x4x4_from_f32x3x3(md_f32x3x3_transpose(orientation));
 
     for (size_t i = 0; i < count; ++i) {
-        vec4_t v = mat4_mul_vec4(rot, xyzw[i]);
-        min_v = vec4_min(min_v, v);
-        max_v = vec4_max(max_v, v);
+        md_f32x4_t v = md_f32x4x4_mul_f32x4(rot, xyzw[i]);
+        min_v = md_f32x4_min(min_v, v);
+        max_v = md_f32x4_max(max_v, v);
     }
 
     // Padding
@@ -72,26 +75,26 @@ void calculate_bounds(float out_min[3], float out_max[3], const vec4_t* xyzw, si
 
 // Construct texture to world transformation matrix for Volume
 // extent is the extent of the volume (dim * voxel_size)
-mat4_t compute_texture_to_world_mat(const mat3_t& orientation, const vec3_t& origin, const vec3_t& extent) {
-    mat4_t T = mat4_translate_vec3(origin);
-    mat4_t R = mat4_from_mat3(orientation);
-    mat4_t S = mat4_scale_vec3(extent);
+md_f32x4x4_t compute_texture_to_world_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& origin, const md_f32x3_t& extent) {
+    md_f32x4x4_t T = md_f32x4x4_translate_f32x3(origin);
+    md_f32x4x4_t R = md_f32x4x4_from_f32x3x3(orientation);
+    md_f32x4x4_t S = md_f32x4x4_scale_f32x3(extent);
     return T * R * S;
 }
 
-mat4_t compute_world_to_model_mat(const mat3_t& orientation, const vec3_t& origin) {
-    mat4_t world_to_model = mat4_from_mat3(mat3_transpose(orientation)) * mat4_translate_vec3(-origin);
+md_f32x4x4_t compute_world_to_model_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& origin) {
+    md_f32x4x4_t world_to_model = md_f32x4x4_from_f32x3x3(md_f32x3x3_transpose(orientation)) * md_f32x4x4_translate_f32x3(-origin);
     return world_to_model;
 }
 
-mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_origin, const vec3_t& stepsize) {
-    vec3_t step_x = orientation.col[0] * stepsize.x;
-    vec3_t step_y = orientation.col[1] * stepsize.y;
-    vec3_t step_z = orientation.col[2] * stepsize.z;
+md_f32x4x4_t compute_index_to_world_mat(const md_f32x3x3_t& orientation, const md_f32x3_t& in_origin, const md_f32x3_t& stepsize) {
+    md_f32x3_t step_x = orientation.col[0] * stepsize.x;
+    md_f32x3_t step_y = orientation.col[1] * stepsize.y;
+    md_f32x3_t step_z = orientation.col[2] * stepsize.z;
     // Shift origin by half voxel
-    vec3_t origin = in_origin + orientation * (stepsize * 0.5f);
+    md_f32x3_t origin = in_origin + orientation * (stepsize * 0.5f);
 
-    mat4_t index_to_world = {
+    md_f32x4x4_t index_to_world = {
         step_x.x, step_x.y, step_x.z, 0.0f,
         step_y.x, step_y.y, step_y.z, 0.0f,
         step_z.x, step_z.y, step_z.z, 0.0f,
@@ -102,7 +105,7 @@ mat4_t compute_index_to_world_mat(const mat3_t& orientation, const vec3_t& in_or
 }
 
 // Attempts to compute fitting volume dimensions given an input extent and a suggested number of samples per length unit
-void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_length) {
+void compute_dim(int out_dim[3], const md_f32x3_t& in_ext, double samples_per_unit_length) {
     out_dim[0] = MD_CLAMP(MD_ALIGN_TO((int)(in_ext.x * samples_per_unit_length), 8), 8, 512);
     out_dim[1] = MD_CLAMP(MD_ALIGN_TO((int)(in_ext.y * samples_per_unit_length), 8), 8, 512);
     out_dim[2] = MD_CLAMP(MD_ALIGN_TO((int)(in_ext.z * samples_per_unit_length), 8), 8, 512);
@@ -111,11 +114,11 @@ void compute_dim(int out_dim[3], const vec3_t& in_ext, double samples_per_unit_l
 // Grid units are BOHR, matching what md_gto evaluates in; a Volume's transforms are Angstrom,
 // matching the world the camera lives in. init_volume is where the two meet, and it is the only
 // place that conversion belongs.
-void init_grid(md_grid_t* grid, const mat3_t& orientation, const vec3_t& min_ext, const vec3_t& max_ext, double samples_per_unit_length) {
+void init_grid(md_grid_t* grid, const md_f32x3x3_t& orientation, const md_f32x3_t& min_ext, const md_f32x3_t& max_ext, double samples_per_unit_length) {
     MD_ASSERT(grid);
-    vec3_t extent = max_ext - min_ext;
+    md_f32x3_t extent = max_ext - min_ext;
     compute_dim(grid->dim, extent, samples_per_unit_length);
-    vec3_t voxel_size = vec3_div(extent, vec3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
+    md_f32x3_t voxel_size = md_f32x3_div(extent, md_f32x3_set((float)grid->dim[0], (float)grid->dim[1], (float)grid->dim[2]));
     grid->orientation = orientation;
     grid->origin = orientation * min_ext;
     grid->spacing = voxel_size;
@@ -128,7 +131,7 @@ void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
     // A grid is in BOHR and a Volume's transforms are in Angstrom; this is where the two meet.
     const float scl = (float)BOHR_TO_ANGSTROM;
 
-    vec3_t extent = md_grid_extent(&grid);
+    md_f32x3_t extent = md_grid_extent(&grid);
     vol->world_to_model   = compute_world_to_model_mat(grid.orientation, grid.origin * scl);
     vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
     vol->voxel_size       = grid.spacing * scl;
@@ -572,7 +575,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
 
     tooltip_atom_attribute_rows(req, state, atom_idx);
 
-    const vec3_t pos = md_state_coord(&state.mold.state, atom_idx);
+    const md_f32x3_t pos = md_state_coord(&state.mold.state, atom_idx);
     tooltip_row(req, MD_STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
@@ -641,9 +644,9 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     }
 
     // Across a periodic boundary the bond is the short way round
-    vec3_t d = vec3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
+    md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
     md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
-    tooltip_row(req, MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, vec3_length(d));
+    tooltip_row(req, MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_f32x3_length(d));
 
     md_str_writer_t source = md_str_writer_create(req->alloc);
     if (formed) {
@@ -761,10 +764,10 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     md_atom_idx_t atoms[2];
     if (md_util_chain_break_atoms(atoms, &sys, res_idx)) {
         const md_system_state_t& sys_state = state.mold.state;
-        vec3_t d = vec3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
+        md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
         md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
         md_str_writer_t span = md_str_writer_create(req->alloc);
-        md_str_writer_fmt(&span, "%.1f " TOOLTIP_ANGSTROM " (", vec3_length(d));
+        md_str_writer_fmt(&span, "%.1f " TOOLTIP_ANGSTROM " (", md_f32x3_length(d));
         tooltip_append_atom_name(&span, sys, atoms[0]);
         span += " - ";
         tooltip_append_atom_name(&span, sys, atoms[1]);
@@ -856,27 +859,27 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
 
     // Planarity: the atoms the short way round from the first across a periodic boundary, the plane through their
     // centroid with Newell's normal
-    vec3_t p[MD_RING_MAX_SIZE];
+    md_f32x3_t p[MD_RING_MAX_SIZE];
     if (count <= MD_COUNTOF(p)) {
-        const vec3_t p0 = md_state_coord(&sys_state, (size_t)atoms[0]);
-        vec3_t c = {0, 0, 0};
+        const md_f32x3_t p0 = md_state_coord(&sys_state, (size_t)atoms[0]);
+        md_f32x3_t c = {0, 0, 0};
         for (size_t i = 0; i < count; ++i) {
-            vec3_t d = vec3_sub(md_state_coord(&sys_state, (size_t)atoms[i]), p0);
+            md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, (size_t)atoms[i]), p0);
             md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
-            p[i] = vec3_add(p0, d);
-            c = vec3_add(c, p[i]);
+            p[i] = md_f32x3_add(p0, d);
+            c = md_f32x3_add(c, p[i]);
         }
-        c = vec3_mul1(c, 1.0f / (float)count);
-        vec3_t n = {0, 0, 0};
+        c = md_f32x3_mul1(c, 1.0f / (float)count);
+        md_f32x3_t n = {0, 0, 0};
         for (size_t i = 0; i < count; ++i) {
-            n = vec3_add(n, vec3_cross(vec3_sub(p[i], c), vec3_sub(p[(i + 1) % count], c)));
+            n = md_f32x3_add(n, md_f32x3_cross(md_f32x3_sub(p[i], c), md_f32x3_sub(p[(i + 1) % count], c)));
         }
-        const float len = vec3_length(n);
+        const float len = md_f32x3_length(n);
         if (len > 0.0f) {
-            n = vec3_mul1(n, 1.0f / len);
+            n = md_f32x3_mul1(n, 1.0f / len);
             float sum2 = 0.0f;
             for (size_t i = 0; i < count; ++i) {
-                const float h = vec3_dot(vec3_sub(p[i], c), n);
+                const float h = md_f32x3_dot(md_f32x3_sub(p[i], c), n);
                 sum2 += h * h;
             }
             tooltip_row(req, MD_STR_LIT("planarity"), "%.3f " TOOLTIP_ANGSTROM " RMS", sqrtf(sum2 / (float)count));
@@ -937,7 +940,7 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     const int label_len = dipole_entry_label(label, sizeof(label), group, hit.local_idx);
     tooltip_title(req, "dipole" TOOLTIP_SEP "%.*s", label_len, label);
 
-    vec3_t vec = {0, 0, 0};
+    md_f32x3_t vec = {0, 0, 0};
     if (dipole_moment_read(&vec, nullptr, sys, group.key, hit.local_idx)) {
         char unit[32];
         if (md_unit_is_atomic(group.unit)) {
@@ -945,7 +948,7 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
         } else {
             tooltip_unit_suffix(unit, sizeof(unit), group.unit);
         }
-        tooltip_row(req, MD_STR_LIT("magnitude"), "%.3f%s", vec3_length(vec), unit);
+        tooltip_row(req, MD_STR_LIT("magnitude"), "%.3f%s", md_f32x3_length(vec), unit);
         tooltip_row(req, MD_STR_LIT("vector"), "%.3f, %.3f, %.3f%s", vec.x, vec.y, vec.z, unit);
     }
 }
@@ -1333,10 +1336,7 @@ static void end_frame_extracts(ApplicationState* app) {
 // is one path segment whatever the file is called, and it is taken from the file name alone so the
 // same file gives the same run - and the same attribute ids - every time it is loaded.
 static void run_path_from_file(char* buf, size_t cap, md_str_t path) {
-    md_str_t file = path;
-    md_path_filename(&file, path);
-    const size_t dot = md_str_rfind_char(file, '.');
-    if (dot > 0) file = md_str_substr(file, 0, dot);   // MD_STR_NPOS keeps all of it
+    md_str_t file = md_path_stem(path);
     size_t len = (size_t)snprintf(buf, cap, "run/");
     for (size_t i = 0; i < file.len && len + 1 < cap; ++i) {
         const char c = file.ptr[i];
@@ -1598,7 +1598,7 @@ void init_trajectory_data(ApplicationState* data, md_str_t run_file, uint32_t tr
     }
 }
 
-void assembly_transforms(md_array(mat4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc) {
+void assembly_transforms(md_array(md_f32x4x4_t)* transforms, md_array(uint32_t)* copy_offset, const md_system_t& sys, int assembly, md_allocator_i* alloc) {
     MD_ASSERT(transforms);
     md_array_shrink(*transforms, 0);
     if (copy_offset) md_array_shrink(*copy_offset, 0);
@@ -1680,7 +1680,7 @@ void init_system_data(ApplicationState* data) {
         data->operations.recenter_query.evaluated_version = 0;
         data->operations.recenter_query.ir_fingerprint = 0;
         data->operations.initial_frame.valid = false;
-        data->operations.state_rotation = mat4_ident();
+        data->operations.state_rotation = md_f32x4x4_ident();
         recenter_mark_query_dirty(data);
         {
             // Of the bonds of another system
@@ -1710,18 +1710,18 @@ void init_system_data(ApplicationState* data) {
             upload_secondary_structure_weights(data);
         }
 
-        mat3_t A;
+        md_f32x3x3_t A;
 		md_unitcell_A_extract_float(A.elem, &data->mold.state.unitcell);
-		vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
-        data->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+		md_f32x3_t c = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.5f, 0.5f, 0.5f));
+        data->mold.unitcell_transform = md_f32x4x4_translate(-c.x, -c.y, -c.z);
 
-        vec3_t aabb_min = {};
-        vec3_t aabb_max = {};
+        md_f32x3_t aabb_min = {};
+        md_f32x3_t aabb_max = {};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.xyz, nullptr, nullptr, data->mold.state.num_atoms);
 
-        const vec3_t cell_ext = mat3_mul_vec3(A, vec3_set1(1.0f));
-        const float max_cell_ext = vec3_reduce_max(cell_ext);
-        const float max_aabb_ext = vec3_reduce_max(vec3_sub(aabb_max, aabb_min));
+        const md_f32x3_t cell_ext = md_f32x3x3_mul_f32x3(A, md_f32x3_set1(1.0f));
+        const float max_cell_ext = md_f32x3_reduce_max(cell_ext);
+        const float max_aabb_ext = md_f32x3_reduce_max(md_f32x3_sub(aabb_max, aabb_min));
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
@@ -1737,7 +1737,7 @@ void init_system_data(ApplicationState* data) {
 
 #if EXPERIMENTAL_GFX_API
         const md_system_t& mol = data->mold.sys;
-        vec3_t aabb_min, aabb_max;
+        md_f32x3_t aabb_min, aabb_max;
         md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
 
         data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
@@ -2373,7 +2373,7 @@ struct WorkspacePending {
 
     // The simulation box of a workspace from before it was a representation ([RenderSettings]), which becomes one
     bool   box_enabled;
-    vec4_t box_color;
+    md_f32x4_t box_color;
 };
 
 static void workspace_reset(ApplicationState* data) {
@@ -2480,8 +2480,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     pending.selection_mask = md_bitset_empty_set();
     pending.recenter_target = md_bitset_empty_set();
 
-    md_str_t folder = {};
-    md_path_folder(&folder, filename);
+    md_str_t folder = md_path_folder(filename);
 
     md_str_t section;
     while (viamd::next_section_header(section, state)) {
@@ -3202,7 +3201,7 @@ bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribut
     return true;
 }
 
-bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index) {
+bool dipole_moment_read(md_f32x3_t* out_vec, md_f32x3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index) {
     const md_attribute_t* vec = md_attributes_get(&sys.attributes, key);
     if (!vec) return false;
     const md_attribute_t* org = dipole_origin_of(sys, vec);
@@ -3222,8 +3221,8 @@ bool dipole_moment_read(vec3_t* out_vec, vec3_t* out_origin, const md_system_t& 
     md_attribute_extract_f32(v, MD_COUNTOF(v), vec, vec_slice, md_unit_none());
     md_attribute_extract_f32(o, MD_COUNTOF(o), org, org_slice, md_unit_angstrom());
 
-    if (out_vec)    *out_vec    = vec3_set(v[0], v[1], v[2]);
-    if (out_origin) *out_origin = vec3_set(o[0], o[1], o[2]);
+    if (out_vec)    *out_vec    = md_f32x3_set(v[0], v[1], v[2]);
+    if (out_origin) *out_origin = md_f32x3_set(o[0], o[1], o[2]);
     return true;
 }
 
@@ -3734,9 +3733,9 @@ bool es_qm_atoms(QmAtoms* out, const md_system_t& sys) {
     if (const md_attribute_t* c = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"))) {
         if (c->data && c->format.type == MD_ATTRIBUTE_TYPE_F64 && c->format.rank == 1 &&
             c->format.components == 3 && c->format.shape[0] == out->count) {
-            // dvec3_t is three doubles with no padding, and the {N,3} layout is exactly an
+            // md_f64x3_t is three doubles with no padding, and the {N,3} layout is exactly an
             // array of them, so this is a view and not a reinterpretation.
-            out->coordinate = (const dvec3_t*)c->data;
+            out->coordinate = (const md_f64x3_t*)c->data;
         } else {
             MD_LOG_ERROR("'qm/atom/coordinate' is not %zu positions", out->count);
         }
@@ -3761,7 +3760,7 @@ bool es_qm_atoms(QmAtoms* out, const md_system_t& sys) {
 // This conversion is the one input to an evaluation which is neither an attribute nor a caller
 // parameter, and that is the right shape: the basis deliberately stores no coordinates, so that it
 // survives a geometry change and the positions come from wherever the current ones live.
-static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_system_t& sys, const md_system_state_t& state, size_t num_basis_atoms) {
+static size_t basis_atom_positions_gather(md_f32x3_t* dst, size_t cap, const md_system_t& sys, const md_system_state_t& state, size_t num_basis_atoms) {
     if (!dst || num_basis_atoms == 0 || num_basis_atoms > cap) {
         return 0;
     }
@@ -3784,7 +3783,7 @@ static size_t basis_atom_positions_gather(vec3_t* dst, size_t cap, const md_syst
             MD_LOG_ERROR("Basis atom %zu is system atom %zu and the state holds %zu", i, idx, state.num_atoms);
             return 0;
         }
-        dst[i] = vec3_set(state.xyz[idx].x, state.xyz[idx].y, state.xyz[idx].z) * (float)ANGSTROM_TO_BOHR;
+        dst[i] = md_f32x3_set(state.xyz[idx].x, state.xyz[idx].y, state.xyz[idx].z) * (float)ANGSTROM_TO_BOHR;
     }
     return num_basis_atoms;
 }
@@ -4051,24 +4050,24 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
 
     // Same gather as the GL path, through the same map, so the two backends cannot disagree about
     // which atom a basis index means. Packed to vec4 because that is what the device wants.
-    vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MD_MAX(num_atoms, (size_t)1));
+    md_f32x3_t* xyz = (md_f32x3_t*)md_temp_alloc(temp, sizeof(md_f32x3_t) * MD_MAX(num_atoms, (size_t)1));
     if (!xyz || basis_atom_positions_gather(xyz, num_atoms, sys, sys_state, num_atoms) != num_atoms) {
         return false;
     }
 
     // Gather first, then decide: the gather is what the comparison is ABOUT, and it is cheap next
     // to the transfer it may save.
-    const uint64_t hash = md_hash64(xyz, sizeof(vec3_t) * num_atoms, 0);
+    const uint64_t hash = md_hash64(xyz, sizeof(md_f32x3_t) * num_atoms, 0);
     if (hash != 0 && hash == state->mold.gpu_atoms_hash) {
         return true;
     }
 
-    vec4_t* xyzw = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * MD_MAX(num_atoms, (size_t)1));
+    md_f32x4_t* xyzw = (md_f32x4_t*)md_temp_alloc(temp, sizeof(md_f32x4_t) * MD_MAX(num_atoms, (size_t)1));
     if (!xyzw) {
         return false;
     }
     for (size_t i = 0; i < num_atoms; ++i) {
-        xyzw[i] = vec4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
+        xyzw[i] = md_f32x4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
     }
 
     float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->mold.gpu_atoms, sz);
@@ -4076,7 +4075,7 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
         MD_LOG_ERROR("Failed to upload the atom positions to the device");
         return false;
     }
-    md_gto_gpu_atom_pack(dst, (const float*)xyzw, sizeof(vec4_t), num_atoms);
+    md_gto_gpu_atom_pack(dst, (const float*)xyzw, sizeof(md_f32x4_t), num_atoms);
     if (!md_gpu_upload_end(state->gpu_stream)) {
         return false;
     }
@@ -4161,7 +4160,7 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
 #endif
 }
 
-vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state) {
+md_f32x3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, const md_system_t& sys, const md_system_state_t& state) {
     if (out_count) *out_count = 0;
 
     md_gto_basis_t basis = {};
@@ -4170,7 +4169,7 @@ vec3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t temp, co
     }
 
     const size_t num_basis_atoms = md_gto_basis_num_atoms(&basis);
-    vec3_t* atom_xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * MD_MAX(num_basis_atoms, (size_t)1));
+    md_f32x3_t* atom_xyz = (md_f32x3_t*)md_temp_alloc(temp, sizeof(md_f32x3_t) * MD_MAX(num_basis_atoms, (size_t)1));
     if (!atom_xyz || basis_atom_positions_gather(atom_xyz, num_basis_atoms, sys, state, num_basis_atoms) != num_basis_atoms) {
         return nullptr;
     }
@@ -4190,7 +4189,7 @@ static bool gto_basis_context(md_gto_basis_t* out_basis, md_temp_scope_t temp, c
 
 // Every evaluation checks its positions the same way, and the count is the only thing that can be
 // wrong about them: an array of the wrong length would put shells on the wrong nuclei.
-static bool gto_positions_match_basis(const md_gto_basis_t* basis, const vec3_t* atom_pos, size_t num_atom_pos) {
+static bool gto_positions_match_basis(const md_gto_basis_t* basis, const md_f32x3_t* atom_pos, size_t num_atom_pos) {
     const size_t expected = md_gto_basis_num_atoms(basis);
     if (!atom_pos || num_atom_pos != expected) {
         MD_LOG_ERROR("The basis spans %zu atoms and %zu positions were supplied", expected, num_atom_pos);
@@ -4200,7 +4199,7 @@ static bool gto_positions_match_basis(const md_gto_basis_t* basis, const vec3_t*
 }
 
 bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const vec3_t* atom_pos, size_t num_atom_pos,
+                         const md_f32x3_t* atom_pos, size_t num_atom_pos,
                          md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -4214,7 +4213,7 @@ bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_syste
 }
 
 bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                      const vec3_t* atom_pos, size_t num_atom_pos,
+                                      const md_f32x3_t* atom_pos, size_t num_atom_pos,
                                       const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
     if (!ao_coeffs || num_ao == 0) return false;
     md_temp_scope_t temp = md_temp_begin();
@@ -4232,7 +4231,7 @@ bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, c
         return false;
     }
 
-    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), ao_coeffs, cutoff, mode, op);
+    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_f32x3_t), ao_coeffs, cutoff, mode, op);
     volume::notify_data_changed(vol_tex);
     return true;
 }
@@ -4308,7 +4307,7 @@ float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_sy
 }
 
 static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                       const vec3_t* atom_pos, size_t num_atom_pos,
+                                       const md_f32x3_t* atom_pos, size_t num_atom_pos,
                                        const float* packed, size_t dim, md_gto_op_t op) {
     if (!packed || dim == 0) {
         return false;
@@ -4330,14 +4329,14 @@ static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, 
     {
         // It times itself with a GL_TIME_ELAPSED query, which cannot run within the profiler's
         profiler::Pause pause;
-        md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), packed, false, op);
+        md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_f32x3_t), packed, false, op);
     }
     volume::notify_data_changed(vol_tex);
     return true;
 }
 
 bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                const vec3_t* atom_pos, size_t num_atom_pos,
+                                const md_f32x3_t* atom_pos, size_t num_atom_pos,
                                 const double* density_matrix, size_t dim, md_gto_op_t op) {
     if (!density_matrix || dim == 0) {
         return false;
@@ -4356,13 +4355,13 @@ bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const m
         return false;
     }
 
-    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(vec3_t), density_matrix, false, op);
+    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_f32x3_t), density_matrix, false, op);
     volume::notify_data_changed(vol_tex);
     return true;
 }
 
 bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const vec3_t* atom_pos, size_t num_atom_pos,
+                         const md_f32x3_t* atom_pos, size_t num_atom_pos,
                          md_str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -4644,16 +4643,16 @@ static int localization_poll(ApplicationState* state, Representation* rep, uint6
         if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
         md_temp_scope_t temp = md_temp_begin();
         size_t num_atoms = 0;
-        const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state->mold.sys, state->mold.state);
+        const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state->mold.sys, state->mold.state);
         job = new LocalizationJob();
         job->rep_id = rep->node.id;
         job->key = key;
         job->lol = lol;
         job->sys = &state->mold.sys;
         job->grid = grid;
-        job->atom_xyz = atom_pos ? (float*)malloc(sizeof(vec3_t) * num_atoms) : nullptr;
+        job->atom_xyz = atom_pos ? (float*)malloc(sizeof(md_f32x3_t) * num_atoms) : nullptr;
         if (job->atom_xyz) {
-            md_memcpy(job->atom_xyz, atom_pos, sizeof(vec3_t) * num_atoms);
+            md_memcpy(job->atom_xyz, atom_pos, sizeof(md_f32x3_t) * num_atoms);
             job->num_atoms = num_atoms;
         }
         md_temp_end(temp);
@@ -4688,7 +4687,7 @@ struct LocalizationGpu {
     task_system::Job   task;            // a cancelled one (a load) made nothing to be taken
     uint64_t           key = 0;         // the orbitals and occupations it is made of (density_dmat_key)
     const md_system_t* sys = nullptr;
-    vec3_t*            xyz = nullptr;   // bohr, its copy: the positions the tiles' pattern is made for
+    md_f32x3_t*            xyz = nullptr;   // bohr, its copy: the positions the tiles' pattern is made for
     size_t             num_atoms = 0;
     md_gpu_stream_t    stream = nullptr;
     md_gto_basis_t     basis = {};      // heap
@@ -4718,7 +4717,7 @@ static void localization_gpu_build(LocalizationGpu* L) {
     L->num_spins = closed ? 1 : 2;
     for (uint32_t k = 0; ok && k < L->num_spins; ++k) {
         const md_gto_gpu_dmat_desc_t dd = {
-            .basis = &L->basis, .atom_xyz = (const float*)L->xyz, .atom_xyz_stride = sizeof(vec3_t), .cutoff = ES_LOCALIZATION_CUTOFF, .margin = ES_LOCALIZATION_MARGIN };
+            .basis = &L->basis, .atom_xyz = (const float*)L->xyz, .atom_xyz_stride = sizeof(md_f32x3_t), .cutoff = ES_LOCALIZATION_CUTOFF, .margin = ES_LOCALIZATION_MARGIN };
         L->dmat[k] = md_gto_gpu_dmat_create(L->stream, &dd);
         double* rows = k == 0 ? ar : br;
         double* w = k == 0 ? aw : bw;
@@ -4766,7 +4765,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_f32x3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
     if (!xyz) return -1;
     if (L && L->key == key) {
         if (L->task.status() != task_system::Status::Completed || !L->ok) {
@@ -4776,7 +4775,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
             return -1;
         }
         bool valid = num_atoms == L->num_atoms;
-        for (uint32_t k = 0; valid && k < L->num_spins; ++k) valid = md_gto_gpu_dmat_pattern_valid(L->dmat[k], (const float*)xyz, sizeof(vec3_t));
+        for (uint32_t k = 0; valid && k < L->num_spins; ++k) valid = md_gto_gpu_dmat_pattern_valid(L->dmat[k], (const float*)xyz, sizeof(md_f32x3_t));
         if (valid) return 1;
     }
     // made (again): for other orbitals, or atoms beyond the margin
@@ -4785,7 +4784,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
     L->key = key;
     L->sys = &state->mold.sys;
     L->t0 = md_tick_now();
-    L->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+    L->xyz = (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * num_atoms);
     L->num_atoms = num_atoms;
     L->stream = L->xyz ? md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "ELF/LOL matrices") : nullptr;
     if (!L->stream) {
@@ -4793,7 +4792,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
         delete L;
         return -1;
     }
-    md_memcpy(L->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    md_memcpy(L->xyz, xyz, sizeof(md_f32x3_t) * num_atoms);
     state->mold.gpu_localization = L;
     L->task.start(MD_STR_LIT("ELF/LOL density matrices"), [L]() { localization_gpu_build(L); });
     return 0;
@@ -4911,17 +4910,17 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     md_memcpy(rep->electronic_structure.color_vol.dim, dim, sizeof(dim));
     rep->electronic_structure.color_vol.world_to_model   = rep->electronic_structure.density_vol.world_to_model;
     rep->electronic_structure.color_vol.texture_to_world = rep->electronic_structure.density_vol.texture_to_world;
-    rep->electronic_structure.color_vol.voxel_size       = vec3_set(
+    rep->electronic_structure.color_vol.voxel_size       = md_f32x3_set(
         rep->electronic_structure.density_vol.voxel_size.x * rep->electronic_structure.density_vol.dim[0] / dim[0],
         rep->electronic_structure.density_vol.voxel_size.y * rep->electronic_structure.density_vol.dim[1] / dim[1],
         rep->electronic_structure.density_vol.voxel_size.z * rep->electronic_structure.density_vol.dim[2] / dim[2]);
     gl::init_texture_3D(&rep->electronic_structure.color_vol.tex_id, dim[0], dim[1], dim[2], GL_RGBA8);
 
-    const vec3_t& voxel_size     = rep->electronic_structure.color_vol.voxel_size;
-    const mat4_t& world_to_model = rep->electronic_structure.color_vol.world_to_model;
-    mat4_t index_to_world = rep->electronic_structure.color_vol.texture_to_world
-        * mat4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
-        * mat4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
+    const md_f32x3_t& voxel_size     = rep->electronic_structure.color_vol.voxel_size;
+    const md_f32x4x4_t& world_to_model = rep->electronic_structure.color_vol.world_to_model;
+    md_f32x4x4_t index_to_world = rep->electronic_structure.color_vol.texture_to_world
+        * md_f32x4x4_scale(1.0f / dim[0], 1.0f / dim[1], 1.0f / dim[2])
+        * md_f32x4x4_translate(0.5f, 0.5f, 0.5f); // Center of the corner voxel should be at the origin
 
     // The colours are per SYSTEM atom and the splats are per BASIS atom, so the map is consulted
     // here too - and once more it is the same lookup in the same direction the evaluation used.
@@ -4931,7 +4930,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
         return;
     }
 
-    vec4_t*   point_xyzw   = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_points);
+    md_f32x4_t*   point_xyzw   = (md_f32x4_t*)md_temp_alloc(temp, sizeof(md_f32x4_t) * num_points);
     uint32_t* point_colors = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_points);
     if (!point_xyzw || !point_colors) {
         return;
@@ -4947,7 +4946,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
         // Angstrom and not Bohr: these are world coordinates for the splatting pass, which shares
         // the Volume's transforms, unlike the grid the density was evaluated on.
         const float radius = md_atom_radius(&sys.atom, idx);
-        point_xyzw[i]   = vec4_set(sys_state.xyz[idx].x, sys_state.xyz[idx].y, sys_state.xyz[idx].z, radius);
+        point_xyzw[i]   = md_f32x4_set(sys_state.xyz[idx].x, sys_state.xyz[idx].y, sys_state.xyz[idx].z, radius);
         point_colors[i] = atom_colors[idx];
     }
 
@@ -5085,19 +5084,19 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
         return false;
     }
 
-    vec3_t* xyz = (vec3_t*)md_temp_alloc(temp, sizeof(vec3_t) * num_atoms);
+    md_f32x3_t* xyz = (md_f32x3_t*)md_temp_alloc(temp, sizeof(md_f32x3_t) * num_atoms);
     if (!xyz || basis_atom_positions_gather(xyz, num_atoms, sys, state, num_atoms) != num_atoms) {
         return false;
     }
 
     // mat3_PCA and calculate_bounds both want a homogeneous point, and w == 1 is what makes the
     // rotation in calculate_bounds a rotation of a POINT rather than of a direction.
-    vec4_t* xyzw = (vec4_t*)md_temp_alloc(temp, sizeof(vec4_t) * num_atoms);
+    md_f32x4_t* xyzw = (md_f32x4_t*)md_temp_alloc(temp, sizeof(md_f32x4_t) * num_atoms);
     if (!xyzw) {
         return false;
     }
     for (size_t i = 0; i < num_atoms; ++i) {
-        xyzw[i] = vec4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
+        xyzw[i] = md_f32x4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
     }
 
     OABB oabb = {};
@@ -5192,7 +5191,7 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
     MD_DEFER { md_temp_end(temp); };
 
     size_t num_atom_pos = 0;
-    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
     return orbital_coefficients_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, ao_coeffs, num_ao, mode, op, cutoff);
 }
 
@@ -5290,7 +5289,7 @@ static bool density_dmat_fill(md_gpu_stream_t s, md_gto_gpu_dmat_t dm, const md_
 }
 
 // A dmat whose pattern is made where the atoms are (xyz, bohr), on stream s
-static md_gto_gpu_dmat_t density_dmat_pattern(md_gpu_stream_t s, const md_system_t& sys, const vec3_t* xyz) {
+static md_gto_gpu_dmat_t density_dmat_pattern(md_gpu_stream_t s, const md_system_t& sys, const md_f32x3_t* xyz) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     md_gto_basis_t basis = {};
@@ -5299,7 +5298,7 @@ static md_gto_gpu_dmat_t density_dmat_pattern(md_gpu_stream_t s, const md_system
     }
     // The cutoff of gpu_basis (system_gpu_data_update), whose radii the pattern is made with
     const md_gto_gpu_dmat_desc_t desc = {
-        .basis = &basis, .atom_xyz = (const float*)xyz, .atom_xyz_stride = sizeof(vec3_t),
+        .basis = &basis, .atom_xyz = (const float*)xyz, .atom_xyz_stride = sizeof(md_f32x3_t),
         .cutoff = DEFAULT_GTO_CUTOFF_VALUE, .margin = GPU_DMAT_MARGIN,
     };
     return md_gto_gpu_dmat_create(s, &desc);
@@ -5314,7 +5313,7 @@ struct DmatBuild {
     uint64_t key = 0;
     md_str_t path = {};                    // an es_path constant
     const md_system_t* sys = nullptr;
-    vec3_t* xyz = nullptr;              // bohr, its copy
+    md_f32x3_t* xyz = nullptr;              // bohr, its copy
     size_t num_cgtos = 0;
     md_gpu_stream_t stream = nullptr;   // the task's, destroyed by it once its work is done (its staging given back)
     md_gto_gpu_dmat_t dmat = nullptr;
@@ -5433,11 +5432,11 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_f32x3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
     if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
         return true;    // the evaluation fails as it would have
     }
-    if (state->mold.gpu_dmat && state->mold.gpu_dmat_key == key && md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(vec3_t))) {
+    if (state->mold.gpu_dmat && state->mold.gpu_dmat_key == key && md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(md_f32x3_t))) {
         return true;
     }
 
@@ -5447,14 +5446,14 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
     b->sys = &state->mold.sys;
     b->num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
     b->t0 = md_tick_now();
-    b->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+    b->xyz = (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * num_atoms);
     b->stream = b->xyz ? md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "density matrix") : nullptr;
     if (!b->stream) {
         free(b->xyz);
         delete b;
         return true;    // made where it is asked for
     }
-    md_memcpy(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+    md_memcpy(b->xyz, xyz, sizeof(md_f32x3_t) * num_atoms);
     b->task.start({}, [b]() {
         b->dmat = density_dmat_pattern(b->stream, *b->sys, b->xyz);
         if (b->dmat && !density_dmat_fill(b->stream, b->dmat, *b->sys, b->path, b->num_cgtos)) {
@@ -5541,12 +5540,12 @@ static bool density_dmat_ensure(ApplicationState* state, md_str_t density_path) 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const vec3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_f32x3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
     if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
         return false;
     }
     // A pattern made where the atoms were: kept while they stay within the margin, else made again
-    if (state->mold.gpu_dmat && !md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(vec3_t))) {
+    if (state->mold.gpu_dmat && !md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(md_f32x3_t))) {
         md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
         state->mold.gpu_dmat = nullptr;
     }
@@ -5670,7 +5669,7 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
     MD_DEFER { md_temp_end(temp); };
 
     size_t num_atom_pos = 0;
-    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
     return density_matrix_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_matrix, dim, op);
 }
 
@@ -5695,7 +5694,7 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     MD_DEFER { md_temp_end(temp); };
 
     size_t num_atom_pos = 0;
-    const vec3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
+    const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
     return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
 }
 
@@ -6137,7 +6136,7 @@ void interpolate_system_state(ApplicationState* app) {
         md_secondary_structure_t*    dst_ss;
         md_gl_secondary_structure_t* ss_weights;
 
-        mat4_t recenter_transform;
+        md_f32x4x4_t recenter_transform;
     };
 
     const InterpolationMode mode = (frames[1] == frames[2]) ? InterpolationMode::Nearest : app->animation.interpolation;
@@ -6187,7 +6186,7 @@ void interpolate_system_state(ApplicationState* app) {
 
     // Fresh coordinates, in the lattice frame of the cell: the turn the previous ones carried goes
     // with them. The System State Changed handler puts one back if the orientation is kept.
-    app->operations.state_rotation = mat4_ident();
+    app->operations.state_rotation = md_f32x4x4_ident();
 
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
@@ -6267,7 +6266,7 @@ void interpolate_system_state(ApplicationState* app) {
         case InterpolationMode::Nearest: {
             {
                 data->dst_state->unitcell = data->src_states[0]->unitcell;
-                md_memcpy(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(vec3_t) * data->dst_state->num_atoms);
+                md_memcpy(data->dst_state->xyz, data->src_states[0]->xyz, sizeof(md_f32x3_t) * data->dst_state->num_atoms);
             }
             break;
         }
@@ -6284,8 +6283,8 @@ void interpolate_system_state(ApplicationState* app) {
 
             task_system::parallel_for((uint32_t)num_atoms, grain_size, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                 size_t count = range_end - range_beg;
-                vec3_t* dst = data->dst_state->xyz + range_beg;
-                const vec3_t* src[2] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg };
+                md_f32x3_t* dst = data->dst_state->xyz + range_beg;
+                const md_f32x3_t* src[2] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg };
 
                 md_util_interpolate_linear(dst, src, count, &data->dst_state->unitcell, data->t);
             });
@@ -6309,8 +6308,8 @@ void interpolate_system_state(ApplicationState* app) {
 
             task_system::parallel_for((uint32_t)num_atoms, grain_size, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                 size_t count = range_end - range_beg;
-                vec3_t* dst = data->dst_state->xyz + range_beg;
-                const vec3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
+                md_f32x3_t* dst = data->dst_state->xyz + range_beg;
+                const md_f32x3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
 
                 md_util_interpolate_cubic_weighted(dst, src, count, &data->dst_state->unitcell, data->w);
             });
@@ -6347,12 +6346,12 @@ void interpolate_system_state(ApplicationState* app) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
                         float psi[2] = {src_angles[0][i].psi, src_angles[1][i].psi};
 
-                        phi[1] = deperiodize_orthof(phi[1], phi[0], (float)MD_TWO_PI);
-                        psi[1] = deperiodize_orthof(psi[1], psi[0], (float)MD_TWO_PI);
+                        phi[1] = md_f32_deperiodize_ortho(phi[1], phi[0], (float)MD_TWO_PI);
+                        psi[1] = md_f32_deperiodize_ortho(psi[1], psi[0], (float)MD_TWO_PI);
 
                         float final_phi = lerp(phi[0], phi[1], data->t);
                         float final_psi = lerp(psi[0], psi[1], data->t);
-                        data->dst_angle[i] = {deperiodize_orthof(final_phi, 0, (float)MD_TWO_PI), deperiodize_orthof(final_psi, 0, (float)MD_TWO_PI)};
+                        data->dst_angle[i] = {md_f32_deperiodize_ortho(final_phi, 0, (float)MD_TWO_PI), md_f32_deperiodize_ortho(final_psi, 0, (float)MD_TWO_PI)};
                     }
                 });
 
@@ -6371,18 +6370,18 @@ void interpolate_system_state(ApplicationState* app) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
                         float psi[4] = {src_angles[0][i].psi, src_angles[1][i].psi, src_angles[2][i].psi, src_angles[3][i].psi};
 
-                        phi[0] = deperiodize_orthof(phi[0], phi[1], (float)MD_TWO_PI);
-                        phi[2] = deperiodize_orthof(phi[2], phi[1], (float)MD_TWO_PI);
-                        phi[3] = deperiodize_orthof(phi[3], phi[2], (float)MD_TWO_PI);
+                        phi[0] = md_f32_deperiodize_ortho(phi[0], phi[1], (float)MD_TWO_PI);
+                        phi[2] = md_f32_deperiodize_ortho(phi[2], phi[1], (float)MD_TWO_PI);
+                        phi[3] = md_f32_deperiodize_ortho(phi[3], phi[2], (float)MD_TWO_PI);
 
-                        psi[0] = deperiodize_orthof(psi[0], psi[1], (float)MD_TWO_PI);
-                        psi[2] = deperiodize_orthof(psi[2], psi[1], (float)MD_TWO_PI);
-                        psi[3] = deperiodize_orthof(psi[3], psi[2], (float)MD_TWO_PI);
+                        psi[0] = md_f32_deperiodize_ortho(psi[0], psi[1], (float)MD_TWO_PI);
+                        psi[2] = md_f32_deperiodize_ortho(psi[2], psi[1], (float)MD_TWO_PI);
+                        psi[3] = md_f32_deperiodize_ortho(psi[3], psi[2], (float)MD_TWO_PI);
 
                         const float* w = data->w;
                         float final_phi = w[0] * phi[0] + w[1] * phi[1] + w[2] * phi[2] + w[3] * phi[3];
                         float final_psi = w[0] * psi[0] + w[1] * psi[1] + w[2] * psi[2] + w[3] * psi[3];
-                        data->dst_angle[i] = {deperiodize_orthof(final_phi, 0, (float)MD_TWO_PI), deperiodize_orthof(final_psi, 0, (float)MD_TWO_PI)};
+                        data->dst_angle[i] = {md_f32_deperiodize_ortho(final_phi, 0, (float)MD_TWO_PI), md_f32_deperiodize_ortho(final_psi, 0, (float)MD_TWO_PI)};
                     }
                 });
 
@@ -6499,15 +6498,15 @@ void interpolate_system_state(ApplicationState* app) {
     }
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
-    mat3_t A;
+    md_f32x3x3_t A;
     md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
-    vec3_t c = mat3_mul_vec3(A, vec3_set(0.5f, 0.5f, 0.5f));
-    app->mold.unitcell_transform = mat4_translate(-c.x, -c.y, -c.z);
+    md_f32x3_t c = md_f32x3x3_mul_f32x3(A, md_f32x3_set(0.5f, 0.5f, 0.5f));
+    app->mold.unitcell_transform = md_f32x4x4_translate(-c.x, -c.y, -c.z);
 
 #if 0
     if (sys.unitcell.flags) {
-        vec3_t c = sys.unitcell.basis * vec3_set1(0.5f);
-        app->mold.model_mat = mat4_translate_vec3(-c);
+        md_f32x3_t c = sys.unitcell.basis * md_f32x3_set1(0.5f);
+        app->mold.model_mat = md_f32x4x4_translate_f32x3(-c);
     }
 #endif
 
@@ -6515,8 +6514,8 @@ void interpolate_system_state(ApplicationState* app) {
 }
 
 // Exact, element by element. The identities compared against here are only ever assigned, never computed.
-static bool is_identity(const mat4_t& M) {
-    const mat4_t I = mat4_ident();
+static bool is_identity(const md_f32x4x4_t& M) {
+    const md_f32x4x4_t I = md_f32x4x4_ident();
     for (int c = 0; c < 4; ++c) {
         for (int r = 0; r < 4; ++r) {
             if (M.elem[c][r] != I.elem[c][r]) return false;
@@ -6595,12 +6594,12 @@ void recenter_update_target_data(ApplicationState* state) {
 
         md_array_resize(state->operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
-        state->operations.initial_frame.com = vec3_zero();
+        state->operations.initial_frame.com = md_f32x3_zero();
 
         if (state->operations.initial_frame.rel_xyzw && count > 0) {
             // Fetch initial frame data required for orienting the structure
             size_t num_atoms = state->mold.sys.atom.count;
-            vec3_t* temp_xyz = (vec3_t*)md_vm_arena_push(state->allocator.frame, sizeof(vec3_t) * MD_ALIGN_TO(num_atoms, 16));
+            md_f32x3_t* temp_xyz = (md_f32x3_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_f32x3_t) * MD_ALIGN_TO(num_atoms, 16));
 
             md_system_state_t temp_state = { 0 };
             temp_state.num_atoms = num_atoms;
@@ -6612,30 +6611,30 @@ void recenter_update_target_data(ApplicationState* state) {
             while (md_bitset_iter_next(&it)) {
                 uint64_t src_idx = it.idx;
                 float mass = md_atom_mass(&state->mold.sys.atom, src_idx);
-                state->operations.initial_frame.rel_xyzw[dst_idx++] = vec4_from_vec3(temp_xyz[src_idx], mass);
+                state->operations.initial_frame.rel_xyzw[dst_idx++] = md_f32x4_from_f32x3(temp_xyz[src_idx], mass);
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
             // The circular mean (md_util_com_compute_vec4 with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
-            vec3_t com = vec3_zero();
+            md_f32x3_t com = md_f32x3_zero();
             md_util_deperiodize_self_vec4(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
-            const vec4_t com4 = vec4_from_vec3(com, 0);
+            const md_f32x4_t com4 = md_f32x4_from_f32x3(com, 0);
             for (size_t i = 0; i < count; ++i) {
-                state->operations.initial_frame.rel_xyzw[i] = vec4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
+                state->operations.initial_frame.rel_xyzw[i] = md_f32x4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
             }
             state->operations.initial_frame.com = com;
         }
     }
 }
 
-bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const ApplicationState* app) {
+bool recenter_calculate_transform(md_f32x4x4_t* translation, md_f32x4x4_t* rotation, const ApplicationState* app) {
     MD_ASSERT(translation);
     MD_ASSERT(rotation);
     MD_ASSERT(app);
 
-    *translation = mat4_ident();
-    *rotation    = mat4_ident();
+    *translation = md_f32x4x4_ident();
+    *rotation    = md_f32x4x4_ident();
     bool turn = false;
 
     const md_bitset_t& target_mask = recenter_get_active_target_mask(app);
@@ -6646,16 +6645,16 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         MD_DEFER { md_temp_end(temp); };
 
         // Extract xyzw subset of target
-        vec4_t* target_xyzw = md_temp_alloc_array(temp, vec4_t, count);
+        md_f32x4_t* target_xyzw = md_temp_alloc_array(temp, md_f32x4_t, count);
 
 		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
 
         // Calculate target
-        vec3_t target = {0};
+        md_f32x3_t target = {0};
         if (md_unitcell_flags(&app->mold.state.unitcell) != 0) {
-            mat3_t A = {0};
+            md_f32x3x3_t A = {0};
             md_unitcell_A_extract_float(A.elem, &app->mold.state.unitcell);
-            target = mat3_mul_vec3(A, vec3_set1(0.5f));
+            target = md_f32x3x3_mul_f32x3(A, md_f32x3_set1(0.5f));
         } 
 
         // Place the target in mutually consistent images and take its centre. When there is a
@@ -6667,8 +6666,8 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // what makes the translation below valid - it is applied to those same coordinates, untouched.
         // A centre folded into the reference cell would place a target living outside that cell one
         // lattice vector off, and with a rotation in play, off by R times a lattice vector.
-        mat3_t R = mat3_ident();
-        vec3_t target_com = vec3_zero();
+        md_f32x3x3_t R = md_f32x3x3_ident();
+        md_f32x3_t target_com = md_f32x3_zero();
 
         // The reference has to have been built from the SAME target that is being fitted now.
         // A size match is not sufficient: the selection can change to a different set of equal
@@ -6688,9 +6687,9 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // the target occupies and is not the mean of the placed points.
         if (app->operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, vec3_zero(),
+            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, md_f32x3_zero(),
                                                    target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
-            R = mat3_orthonormalize(R);
+            R = md_f32x3x3_orthonormalize(R);
         } else {
             md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
@@ -6700,22 +6699,22 @@ bool recenter_calculate_transform(mat4_t* translation, mat4_t* rotation, const A
         // vector, so it may only be applied once every image is settled relative to the target. The
         // product is the transform this used to return in one piece,
         //     translate(target) * A * R * translate(-target_com)
-        const mat4_t A = app->operations.alignment_mat;
+        const md_f32x4x4_t A = app->operations.alignment_mat;
         turn = (app->operations.fixate_orientation && reference_valid) || !is_identity(A);
 
-        *translation = mat4_translate_vec3(vec3_sub(target, target_com));
+        *translation = md_f32x4x4_translate_f32x3(md_f32x3_sub(target, target_com));
         if (turn) {
-            *rotation = mat4_translate_vec3(target) * A * mat4_from_mat3(R) * mat4_translate_vec3(-target);
+            *rotation = md_f32x4x4_translate_f32x3(target) * A * md_f32x4x4_from_f32x3x3(R) * md_f32x4x4_translate_f32x3(-target);
         }
     }
     return turn;
 }
 
 // Every atom of mold.state through M
-static void state_transform(ApplicationState* app, const mat4_t& M) {
+static void state_transform(ApplicationState* app, const md_f32x4x4_t& M) {
     md_system_state_t& s = app->mold.state;
     task_system::parallel_for((uint32_t)s.num_atoms, 1024, [&s, M](uint32_t range_beg, uint32_t range_end) {
-        mat4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
+        md_f32x4x4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
     });
 }
 
@@ -6731,13 +6730,13 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
 
     // Into the lattice frame first. Wrapping or making whole turned coordinates against the unturned
     // cell moves atoms by vectors that are not lattice vectors, to places where they have no image.
-    const mat4_t prev_rotation = app->operations.state_rotation;
+    const md_f32x4x4_t prev_rotation = app->operations.state_rotation;
     if (!is_identity(prev_rotation)) {
-        state_transform(app, mat4_inverse(prev_rotation));
+        state_transform(app, md_f32x4x4_inverse(prev_rotation));
     }
 
     // A wrap or a make whole on its own keeps the turn the coordinates had
-    mat4_t rotation = prev_rotation;
+    md_f32x4x4_t rotation = prev_rotation;
     bool fresh_turn = false;
     if (recenter && !md_bitset_empty(recenter_get_active_target_mask(app))) {
         // Current for this target before it is fitted against. The main loop does this every frame too, but
@@ -6746,7 +6745,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
 
         // Measured on the lattice frame coordinates: the fit is against the reference, not against a
         // previous fit's output
-        mat4_t translation = mat4_ident();
+        md_f32x4x4_t translation = md_f32x4x4_ident();
         fresh_turn = recenter_calculate_transform(&translation, &rotation, app);
         state_transform(app, translation);
     }
@@ -6778,7 +6777,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     if (turn) {
         state_transform(app, rotation);
     }
-    app->operations.state_rotation = turn ? rotation : mat4_ident();
+    app->operations.state_rotation = turn ? rotation : md_f32x4x4_ident();
 
     return true;
 }
@@ -6800,10 +6799,10 @@ static bool bond_coordinates(md_system_state_t* state, const ApplicationState* a
     }
     const md_system_state_t& shown = app->mold.state;
     if (!shown.xyz || shown.num_atoms != num_atoms) return false;
-    md_memcpy(state->xyz, shown.xyz, num_atoms * sizeof(vec3_t));
+    md_memcpy(state->xyz, shown.xyz, num_atoms * sizeof(md_f32x3_t));
     state->unitcell = shown.unitcell;
     if (!is_identity(app->operations.state_rotation)) {
-        mat4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, mat4_inverse(app->operations.state_rotation));
+        md_f32x4x4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, md_f32x4x4_inverse(app->operations.state_rotation));
     }
     return true;
 }
@@ -7122,9 +7121,9 @@ bool picking_surface_submit_readback(
     uint32_t width,
     uint32_t height,
     uint32_t submitted_frame_idx,
-    vec2_t surface_coord,
-    vec2_t screen_coord,
-    const mat4_t& clip_to_world
+    md_f32x2_t surface_coord,
+    md_f32x2_t screen_coord,
+    const md_f32x4x4_t& clip_to_world
 ) {
     MD_ASSERT(surface);
 
@@ -7252,8 +7251,8 @@ bool picking_surface_poll_hit(
     out_hit->screen_coord = slot.screen_coord;
     out_hit->depth = depth;
 
-    const vec4_t viewport = {0, 0, (float)slot.viewport_width, (float)slot.viewport_height};
-    out_hit->world_pos = mat4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.clip_to_world, viewport);
+    const md_f32x4_t viewport = {0, 0, (float)slot.viewport_width, (float)slot.viewport_height};
+    out_hit->world_pos = md_f32x4x4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.clip_to_world, viewport);
 
     return true;
 }
@@ -7281,7 +7280,7 @@ bool picking_surface_submit_readback_and_poll_hit(
     return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
-InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const vec2_t& size, InteractionSurfaceFlags flags) {
+InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const md_f32x2_t& size, InteractionSurfaceFlags flags) {
     InteractionSurfaceState state = {};
 
     ImGuiWindow* window = ImGui::GetCurrentWindow();
@@ -7381,8 +7380,8 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
     InteractionSurfaceViewTransformResult result = {};
     if (state.active || state.hovered) {
         if (state.selection_mode == InteractionSelectionMode::None) {
-            const vec2_t delta = vec_cast(ImGui::GetIO().MouseDelta);
-            const vec2_t coord = state.mouse_local;
+            const md_f32x2_t delta = vec_cast(ImGui::GetIO().MouseDelta);
+            const md_f32x2_t coord = state.mouse_local;
             const float scroll_delta = ImGui::GetIO().MouseWheel;
 
             TrackballControllerInput input = {};
@@ -7449,13 +7448,13 @@ void interaction_surface_event_extract(InteractionSurfaceEvent* event, const Int
 }
 
 void point_set_region_mask_compute(md_bitmask_t* mask,
-    const vec3_t xyz[],
+    const md_f32x3_t xyz[],
     size_t count,
     const md_bitset_t* candidate_mask,
-    const mat4_t& world_to_clip,
-    const vec2_t& region_min,
-    const vec2_t& region_max,
-    const vec2_t& surface_size)
+    const md_f32x4x4_t& world_to_clip,
+    const md_f32x2_t& region_min,
+    const md_f32x2_t& region_max,
+    const md_f32x2_t& surface_size)
 {
     MD_ASSERT(mask);
     MD_ASSERT(xyz);
@@ -7472,9 +7471,9 @@ void point_set_region_mask_compute(md_bitmask_t* mask,
 
         while (md_bitset_iter_next(&it)) {
             size_t idx = it.idx;
-            vec4_t xyz1 = vec4_from_vec3(xyz[idx], 1.0f);
-            vec4_t coord = mat4_mul_vec4(world_to_clip, xyz1);
-            vec2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
+            md_f32x4_t xyz1 = md_f32x4_from_f32x3(xyz[idx], 1.0f);
+            md_f32x4_t coord = md_f32x4x4_mul_f32x4(world_to_clip, xyz1);
+            md_f32x2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
             if (region_min.x <= surf_coord.x && surf_coord.x <= region_max.x &&
                 region_min.y <= surf_coord.y && surf_coord.y <= region_max.y) {
@@ -7484,9 +7483,9 @@ void point_set_region_mask_compute(md_bitmask_t* mask,
     } else {
         // Do for full set
         for (size_t i = 0; i < count; ++i) {
-            vec4_t xyz1 = vec4_from_vec3(xyz[i], 1.0f);
-            vec4_t coord = mat4_mul_vec4(world_to_clip, xyz1);
-            vec2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
+            md_f32x4_t xyz1 = md_f32x4_from_f32x3(xyz[i], 1.0f);
+            md_f32x4_t coord = md_f32x4x4_mul_f32x4(world_to_clip, xyz1);
+            md_f32x2_t surf_coord = {( coord.x / coord.w * 0.5f + 0.5f) * surface_size.x,
                                     (-coord.y / coord.w * 0.5f + 0.5f) * surface_size.y};
             if (region_min.x <= surf_coord.x && surf_coord.x <= region_max.x &&
                 region_min.y <= surf_coord.y && surf_coord.y <= region_max.y) {
@@ -7510,8 +7509,7 @@ void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags) {
     int prio = 5;
 
 
-    md_str_t ext = {};
-    md_path_ext(&ext, path);
+    md_str_t ext = md_path_ext(path);
     loader::LoaderState detected = {};
     if (!md_str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
         // By the contents where the extension does not tell (Amber's mdout, prmtop and inpcrd have none)
@@ -7569,8 +7567,7 @@ void file_queue_process(ApplicationState* state) {
     if (!file_queue_empty(&state->file_queue) && !state->load_dataset.show_window) {
         FileQueue::Entry e = file_queue_pop(&state->file_queue);
 
-        md_str_t ext;
-        md_path_ext(&ext, e.path);
+        md_str_t ext = md_path_ext(e.path);
 
         if (md_str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
             load_workspace(state, e.path);
@@ -7643,26 +7640,26 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
         }
         const size_t max_points = 1000000;
         const uint32_t stride = (uint32_t)MD_MAX((size_t)1, MD_DIV_UP(total, max_points));
-        md_array(vec3_t) xyz = 0;
+        md_array(md_f32x3_t) xyz = 0;
         md_array_ensure(xyz, MD_MIN(total, max_points) + 1, md_temp_allocator(temp));
         for (size_t p = part_beg; p < part_end; ++p) {
             const AssemblyGroup group = assembly_group(a, p);
             for (const uint32_t* o = group.oper; o < group.oper_end; ++o) {
-                const mat4_t M = a.oper_transform[*o];
+                const md_f32x4x4_t M = a.oper_transform[*o];
                 for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
                     const md_urange_t r = md_system_instance_atom_range(sys, (size_t)*k);
                     for (uint32_t i = r.beg; i < r.end; i += stride) {
                         if (m && !md_bitset_test(*m, i)) continue;
-                        md_array_push(xyz, mat4_mul_vec3(M, state.xyz[i], 1.0f), md_temp_allocator(temp));
+                        md_array_push(xyz, md_f32x4x4_mul_f32x3(M, state.xyz[i], 1.0f), md_temp_allocator(temp));
                     }
                 }
             }
         }
         const size_t n = md_array_size(xyz);
         if (n > 0) {
-            mat3_t A = {};
+            md_f32x3x3_t A = {};
             md_unitcell_A_extract(A.elem, &state.unitcell);
-            const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
+            const md_f32x3_t cell_offset = -md_f32x3x3_mul_f32x3(A, md_f32x3_set1(0.5f));
             *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
             transform->position = transform->position + cell_offset;
             return;
@@ -7688,18 +7685,18 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     }
 
     // The world is drawn translated so that the center of the unit cell is at the origin
-    mat3_t A = {};
+    md_f32x3x3_t A = {};
     md_unitcell_A_extract(A.elem, &state.unitcell);
     const bool   has_cell    = (md_unitcell_flags(&state.unitcell) & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) != 0;
-    const vec3_t cell_offset = -mat3_mul_vec3(A, vec3_set1(0.5f));
+    const md_f32x3_t cell_offset = -md_f32x3x3_mul_f32x3(A, md_f32x3_set1(0.5f));
 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
-        vec3_t aabb_min = {}, aabb_max = {};
+        md_f32x3_t aabb_min = {}, aabb_max = {};
         md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, indices, count);
-        const vec3_t center = (aabb_min + aabb_max) * 0.5f;
+        const md_f32x3_t center = (aabb_min + aabb_max) * 0.5f;
         transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
-        transform->position = center + cell_offset + transform->orientation * vec3_set(0, 0, transform->distance);
+        transform->position = center + cell_offset + transform->orientation * md_f32x3_set(0, 0, transform->distance);
         return;
     }
 
@@ -7900,7 +7897,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 const md_bitset_t bf = m ? md_bitmask_view(m) : md_bitset_empty_set();
                 size_t popcount = md_bitset_count(bf);
                 if (popcount > 0) {
-                    vec4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
+                    md_f32x4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                     if (dst_xyzw) {
                         md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &state->mold.sys, &state->mold.state);
                     }
@@ -7917,7 +7914,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
             // The event means mold.state was just written from its source, in the lattice frame of its
             // cell: whatever turn the previous coordinates carried went with them.
-            app->operations.state_rotation = mat4_ident();
+            app->operations.state_rotation = md_f32x4x4_ident();
 
             // The bond changes of the frame are not here: bond_tracking_update keeps them up to date with the frame
             // shown once a frame, and they leave the bonds of the system as they are
@@ -8066,7 +8063,7 @@ static uint64_t vis_state_key(const md_system_state_t& st) {
     uint64_t h = md_hash64(cell, sizeof(cell), 0);
     h = md_hash64(&cell_flags, sizeof(cell_flags), h);
     if (st.xyz && st.num_atoms) {
-        h = md_hash64(st.xyz, st.num_atoms * sizeof(vec3_t), h);
+        h = md_hash64(st.xyz, st.num_atoms * sizeof(md_f32x3_t), h);
     }
     return h;
 }

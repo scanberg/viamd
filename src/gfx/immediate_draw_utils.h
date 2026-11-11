@@ -1,6 +1,7 @@
 ﻿#pragma once
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
+#include <stdint.h>
 
 namespace immediate {
 
@@ -17,15 +18,15 @@ constexpr uint32_t COLOR_GRAY = 0xff888888;
 constexpr uint32_t DEFAULT_COLOR = COLOR_BLACK;
 
 struct Vertex {
-    vec3_t   coord;
+    md_f32x3_t   coord;
     uint32_t color;
-	vec3_t   normal = {0,0,1};
+	md_f32x3_t   normal = {0,0,1};
     uint32_t picking_idx = 0xFFFFFFFF;
 };
 
 struct RenderParams {
-    mat4_t view = MD_MAT4_IDENT_INIT;
-    mat4_t proj = MD_MAT4_IDENT_INIT;
+    md_f32x4x4_t view = MD_MAT4_IDENT_INIT;
+    md_f32x4x4_t proj = MD_MAT4_IDENT_INIT;
 };
 
 struct Queue;
@@ -58,40 +59,40 @@ void queue_reset(Queue* queue);
 void render(Queue* queue, const RenderParams& params);
 
 // Direct queue API: emit commands straight into queue storage without creating a Scope.
-void set_model(Queue* queue, const mat4_t& model_mat);
+void set_model(Queue* queue, const md_f32x4x4_t& model_mat);
 void set_picking_base_idx(Queue* queue, uint32_t base_idx);
 
-void point(Queue* queue, vec3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
-void line(Queue* queue, vec3_t from, vec3_t to, uint32_t color = DEFAULT_COLOR);
-void triangle(Queue* queue, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
-void triangle_wireframe(Queue* queue, vec3_t v0, vec3_t v1, vec3_t v2, uint32_t color = DEFAULT_COLOR);
+void point(Queue* queue, md_f32x3_t pos, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+void line(Queue* queue, md_f32x3_t from, md_f32x3_t to, uint32_t color = DEFAULT_COLOR);
+void triangle(Queue* queue, md_f32x3_t v0, md_f32x3_t v1, md_f32x3_t v2, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+void triangle_wireframe(Queue* queue, md_f32x3_t v0, md_f32x3_t v1, md_f32x3_t v2, uint32_t color = DEFAULT_COLOR);
 
-void sphere(Queue* queue, vec3_t center, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int stacks = 12, int slices = 16);
-void sphere_wireframe(Queue* queue, vec3_t center, float radius, uint32_t color = DEFAULT_COLOR, int stacks = 12, int slices = 16);
+void sphere(Queue* queue, md_f32x3_t center, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int stacks = 12, int slices = 16);
+void sphere_wireframe(Queue* queue, md_f32x3_t center, float radius, uint32_t color = DEFAULT_COLOR, int stacks = 12, int slices = 16);
 
-void cylinder(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
-void cylinder_wireframe(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
+void cylinder(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void cylinder_wireframe(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 
-void cone(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
-void cone_wireframe(Queue* queue, vec3_t base, vec3_t tip, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
+void cone(Queue* queue, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void cone_wireframe(Queue* queue, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 
 // A solid arrow from 'from' to 'to': a shaft and a conical head, all in world units, as one closed surface.
 // The head is shortened to the arrow's length if it is longer; its radius is at least the shaft's.
-void arrow(Queue* queue, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 32);
+void arrow(Queue* queue, md_f32x3_t from, md_f32x3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 32);
 
 // The side of a truncated cone from 'from' to 'to', its radius going linearly from radius_from to radius_to, open at
 // both ends (closed by whatever joins it there, e.g. spheres of the same radii)
-void frustum(Queue* queue, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void frustum(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius_from, float radius_to, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
 
-void capsule(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
-void capsule_wireframe(Queue* queue, vec3_t from, vec3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
+void capsule(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF, int segments = 16);
+void capsule_wireframe(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color = DEFAULT_COLOR, int segments = 16);
 
-void box(Queue* queue, vec3_t min_box, vec3_t max_box, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+void box(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
 
-void points(Queue* queue, const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
-void lines(Queue* queue, const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
-void triangles(Queue* queue, const Vertex verts[], size_t count, vec4_t color_mult = {1,1,1,1});
-void triangles_wireframe(Queue* queue, const Vertex verts[], size_t count, vec4_t color_mult = { 1,1,1,1 });
+void points(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult = {1,1,1,1});
+void lines(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult = {1,1,1,1});
+void triangles(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult = {1,1,1,1});
+void triangles_wireframe(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult = { 1,1,1,1 });
 
 /*
 __________________
@@ -104,15 +105,15 @@ __________________
 Draws a plane given a center point and two support vectors.
 */
 
-void plane(Queue* queue, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
-void plane_wireframe(Queue* queue, vec3_t center, vec3_t plane_u, vec3_t plane_v, uint32_t color = DEFAULT_COLOR, int segments_u = 4, int segments_v = 4);
+void plane(Queue* queue, md_f32x3_t center, md_f32x3_t plane_u, md_f32x3_t plane_v, uint32_t color = DEFAULT_COLOR, uint32_t picking_idx = 0xFFFFFFFF);
+void plane_wireframe(Queue* queue, md_f32x3_t center, md_f32x3_t plane_u, md_f32x3_t plane_v, uint32_t color = DEFAULT_COLOR, int segments_u = 4, int segments_v = 4);
 
-void box_wireframe(Queue* queue, vec3_t min_box, vec3_t max_box, uint32_t color = DEFAULT_COLOR);
-void box_wireframe(Queue* queue, vec3_t min_box, vec3_t max_box, vec4_t color);
-void box_wireframe(Queue* queue, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, uint32_t color = DEFAULT_COLOR);
-void box_wireframe(Queue* queue, vec3_t min_box, vec3_t max_box, mat4_t model_matrix, vec4_t color);
+void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color = DEFAULT_COLOR);
+void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4_t color);
+void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, uint32_t color = DEFAULT_COLOR);
+void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, md_f32x4_t color);
 
-void basis(Queue* queue, mat4_t basis, float scale = 1.f, uint32_t x_color = COLOR_RED, uint32_t y_color = COLOR_GREEN, uint32_t z_color = COLOR_BLUE);
-void basis(Queue* queue, mat4_t basis, float scale = 1.f, vec4_t x_color = {1,0,0,1}, vec4_t y_color = {0,1,0,1}, vec4_t z_color = {0,0,1,1});
+void basis(Queue* queue, md_f32x4x4_t basis, float scale = 1.f, uint32_t x_color = COLOR_RED, uint32_t y_color = COLOR_GREEN, uint32_t z_color = COLOR_BLUE);
+void basis(Queue* queue, md_f32x4x4_t basis, float scale = 1.f, md_f32x4_t x_color = {1,0,0,1}, md_f32x4_t y_color = {0,1,0,1}, md_f32x4_t z_color = {0,0,1,1});
 
 }  // namespace immediate

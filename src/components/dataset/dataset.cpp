@@ -14,6 +14,7 @@
 #include <core/md_array.h>
 #include <core/md_bitset.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 #include <md_system.h>
 #include <md_util.h>
 #include <md_nonbonded.h>
@@ -103,7 +104,7 @@ struct DatasetItem {
 };
 
 struct ElementDefault {
-    vec4_t color;
+    md_f32x4_t color;
     float radius;
     float mass;
 };
@@ -127,7 +128,7 @@ struct ElementDefaultDelta {
 
 // The defaults of a standard monomer, mdlib's built in ones until the user edits them
 struct MonomerDefault {
-    vec4_t color;
+    md_f32x4_t color;
 };
 
 struct ResidueTypeItem {
@@ -217,7 +218,7 @@ struct Dataset : viamd::EventHandler {
 
     void init_element_defaults() {
         for (md_atomic_number_t z = 0; z < MD_Z_Count; ++z) {
-            element_defaults[z].color   = vec4_from_u32(md_atomic_number_cpk_color(z));
+            element_defaults[z].color   = md_f32x4_from_u32(md_atomic_number_cpk_color(z));
             element_defaults[z].mass    = md_atomic_number_mass(z);
             element_defaults[z].radius  = md_atomic_number_vdw_radius(z);
         }
@@ -225,7 +226,7 @@ struct Dataset : viamd::EventHandler {
 
     void init_monomer_defaults() {
         for (int m = 0; m < MD_MONOMER_COUNT; ++m) {
-            monomer_defaults[m].color = vec4_from_u32(md_monomer_color((md_monomer_t)m));
+            monomer_defaults[m].color = md_f32x4_from_u32(md_monomer_color((md_monomer_t)m));
         }
     }
 
@@ -331,7 +332,7 @@ struct Dataset : viamd::EventHandler {
     ElementDefaultDelta compute_element_default_delta(md_atomic_number_t z) const {
         const ElementDefault& def = element_defaults[z];
         ElementDefaultDelta delta;
-        delta.color  = u32_from_vec4(def.color) != md_atomic_number_cpk_color(z);
+        delta.color  = md_u32_from_f32x4(def.color) != md_atomic_number_cpk_color(z);
         delta.radius = def.radius != md_atomic_number_vdw_radius(z);
         delta.mass   = def.mass   != md_atomic_number_mass(z);
         return delta;
@@ -359,7 +360,7 @@ struct Dataset : viamd::EventHandler {
     void deserialize_element_default(viamd::deserialization_state_t& state) {
         int  z = -1;
         bool has_color = false, has_radius = false, has_mass = false;
-        vec4_t color = {};
+        md_f32x4_t color = {};
         float radius = 0, mass = 0;
 
         md_str_t ident, arg;
@@ -411,7 +412,7 @@ struct Dataset : viamd::EventHandler {
                 type.mass[i] = def.mass;
             }
             if (delta.color) {
-                const uint32_t color = u32_from_vec4(def.color);
+                const uint32_t color = md_u32_from_f32x4(def.color);
                 color_changed |= type.color[i] != color;
                 type.color[i] = color;
             }
@@ -446,7 +447,7 @@ struct Dataset : viamd::EventHandler {
             const ElementDefault& def = element_defaults[type.z[i]];
             if (ed.radius) base_radius = def.radius;
             if (ed.mass)   base_mass   = def.mass;
-            if (ed.color)  base_color  = u32_from_vec4(def.color);
+            if (ed.color)  base_color  = md_u32_from_f32x4(def.color);
         }
 
         ParticleTypeDelta delta;
@@ -464,11 +465,11 @@ struct Dataset : viamd::EventHandler {
     // ## Residue types: their monomer defaults, what the user changed, and the workspace
 
     bool compute_monomer_default_delta(int m) const {
-        return u32_from_vec4(monomer_defaults[m].color) != md_monomer_color((md_monomer_t)m);
+        return md_u32_from_f32x4(monomer_defaults[m].color) != md_monomer_color((md_monomer_t)m);
     }
 
     uint32_t monomer_default_color(md_monomer_t m) const {
-        return u32_from_vec4(monomer_defaults[m].color);
+        return md_u32_from_f32x4(monomer_defaults[m].color);
     }
 
     // The color a residue type is restored to: that of the defaults of its monomer when it is linked to them, else
@@ -552,7 +553,7 @@ struct Dataset : viamd::EventHandler {
     void deserialize_monomer_default(viamd::deserialization_state_t& state) {
         md_monomer_t m = MD_MONOMER_NONE;
         bool has_color = false;
-        vec4_t color = {};
+        md_f32x4_t color = {};
 
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
@@ -582,7 +583,7 @@ struct Dataset : viamd::EventHandler {
             viamd::write_section_header(state, MD_STR_LIT("ComponentType"));
             viamd::write_str(state, MD_STR_LIT("Name"), md_residue_type_name(&type, i));
             viamd::write_int(state, MD_STR_LIT("Kind"), (int)md_residue_type_kind(&type, i));
-            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"), vec4_from_u32(type.color[i]));
+            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"), md_f32x4_from_u32(type.color[i]));
             if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"), res_types[i].use_defaults);
         }
     }
@@ -610,9 +611,9 @@ struct Dataset : viamd::EventHandler {
                     ovr.kind = (md_residue_kind_t)kind;
                 }
             } else if (md_str_eq_cstr(ident, "Color")) {
-                vec4_t color = {};
+                md_f32x4_t color = {};
                 if (viamd::extract_flt_vec(color.elem, 4, arg)) {
-                    ovr.color = u32_from_vec4(color);
+                    ovr.color = md_u32_from_f32x4(color);
                     ovr.has_color = true;
                 }
             } else if (md_str_eq_cstr(ident, "UseDefaults")) {
@@ -658,7 +659,7 @@ struct Dataset : viamd::EventHandler {
             if (delta.elem)     viamd::write_int (state, MD_STR_LIT("Element"),       type.z[i]);
             if (delta.radius)   viamd::write_flt (state, MD_STR_LIT("Radius"),        type.radius[i]);
             if (delta.mass)     viamd::write_flt (state, MD_STR_LIT("Mass"),          type.mass[i]);
-            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"),         vec4_from_u32(type.color[i]));
+            if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"),         md_f32x4_from_u32(type.color[i]));
             if (delta.coarse)   viamd::write_bool(state, MD_STR_LIT("CoarseGrained"), type_is_bead(type.flags[i]));
             if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"),   item.use_defaults);
         }
@@ -692,9 +693,9 @@ struct Dataset : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "Mass")) {
                 ovr.has_mass = viamd::extract_flt(ovr.mass, arg);
             } else if (md_str_eq_cstr(ident, "Color")) {
-                vec4_t color = {};
+                md_f32x4_t color = {};
                 if (viamd::extract_flt_vec(color.elem, 4, arg)) {
-                    ovr.color = u32_from_vec4(color);
+                    ovr.color = md_u32_from_f32x4(color);
                     ovr.has_color = true;
                 }
             } else if (md_str_eq_cstr(ident, "CoarseGrained")) {
@@ -928,10 +929,10 @@ struct Dataset : viamd::EventHandler {
         int  z = -1;
     };
 
-    static bool element_button(const char* lbl, vec4_t color) {
+    static bool element_button(const char* lbl, md_f32x4_t color) {
         const float button_size = ImGui::GetFontSize() * 1.5f;
-        const vec4_t color_hover  = vec4_clamp(color + vec4_set1(0.2f), vec4_set1(0.0f), vec4_set1(1.0f));
-        const vec4_t color_active = color * vec4_set(0.8f, 0.8f, 0.8f, 1.0f);
+        const md_f32x4_t color_hover  = md_f32x4_clamp(color + md_f32x4_set1(0.2f), md_f32x4_set1(0.0f), md_f32x4_set1(1.0f));
+        const md_f32x4_t color_active = color * md_f32x4_set(0.8f, 0.8f, 0.8f, 1.0f);
 
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(color.x, color.y, color.z, color.w));
@@ -971,7 +972,7 @@ struct Dataset : viamd::EventHandler {
             bool disabled = enabled_mask ? !(enabled_mask[z / 64] & (1ULL << (z % 64))) : false;
 
             const ElementDefault& def = elem_defs[z];
-            const vec4_t color = def.color;
+            const md_f32x4_t color = def.color;
             const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
 
 			ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.25f);
@@ -1017,8 +1018,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::TextUnformatted(row.role);
 
         ImGui::TableSetColumnIndex(1);
-        md_str_t name = row.path;
-        md_path_filename(&name, row.path);
+        md_str_t name = md_path_filename(row.path);
         char name_buf[256];
         md_str_copy_to_char_buf(name_buf, sizeof(name_buf), name);
         ImGui::Selectable(name_buf, false, ImGuiSelectableFlags_SpanAllColumns);
@@ -1091,7 +1091,7 @@ struct Dataset : viamd::EventHandler {
                     md_str_t coords = {};
                     if (e.coordinates[0]) {
                         coords = md_str_from_cstr(e.coordinates);
-                        md_path_filename(&coords, coords);
+                        coords = md_path_filename(coords);
                     }
                     snprintf(d, cap, "%zu atoms%s%s" MD_STR_FMT, data.mold.sys.atom.count, md_system_is_coarse_grained(&data.mold.sys) ? ", coarse grained" : "",
                         coords.len ? ", coordinates of " : "", MD_STR_ARG(coords));
@@ -1887,9 +1887,9 @@ struct Dataset : viamd::EventHandler {
 
         // Density, with a box: a quick check that the box and the contents belong together
         const md_unitcell_t& cell = data.mold.state.unitcell;
-        mat3_t A = {0};
+        md_f32x3x3_t A = {0};
         md_unitcell_A_extract_float(A.elem, &cell);
-        const double volume = fabs((double)mat3_determinant(A));   // Angstrom^3
+        const double volume = fabs((double)md_f32x3x3_determinant(A));   // Angstrom^3
         if ((cell.flags & (MD_UNITCELL_ORTHO | MD_UNITCELL_TRICLINIC)) && volume > 0.0) {
             const double density = c.mass / volume * 1.66053906660;    // amu/A^3 -> g/cm^3
             ImGui::SameLine();
@@ -2533,7 +2533,7 @@ struct Dataset : viamd::EventHandler {
             const ElementDefault& def = element_defaults[load.z];
             if (ed.radius) radius = def.radius;
             if (ed.mass)   mass   = def.mass;
-            if (ed.color)  color  = u32_from_vec4(def.color);
+            if (ed.color)  color  = md_u32_from_f32x4(def.color);
         }
 
         radius_changed |= type.radius[i] != radius;
@@ -2551,7 +2551,7 @@ struct Dataset : viamd::EventHandler {
     void link_particle_type_to_element(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
         md_particle_type_data_t& type = data.mold.sys.atom.type;
         const ElementDefault& def = element_defaults[type.z[i]];
-        const uint32_t color = u32_from_vec4(def.color);
+        const uint32_t color = md_u32_from_f32x4(def.color);
 
         radius_changed |= type.radius[i] != def.radius;
         mass_changed   |= type.mass[i]   != def.mass;
@@ -2773,7 +2773,7 @@ struct Dataset : viamd::EventHandler {
             // from the color it was loaded with and is free
             const bool has_element = !type_is_bead(type.flags[i]) && type.z[i] != 0;
             ColorOptimizeItem it;
-            it.color  = has_element ? u32_from_vec4(element_defaults[type.z[i]].color) : particle_types[i].load.color;
+            it.color  = has_element ? md_u32_from_f32x4(element_defaults[type.z[i]].color) : particle_types[i].load.color;
             it.pull   = has_element ? color_optimize_pull : 0.0f;
             it.weight = (float)particle_types[i].count;
             md_array_push(items, it, md_temp_allocator(temp));
@@ -2789,7 +2789,7 @@ struct Dataset : viamd::EventHandler {
             DatasetItem& item = particle_types[i];
             if (items[k].pull > 0.0f) {
                 const ElementDefault& def = element_defaults[type.z[i]];
-                if (items[k].color == u32_from_vec4(def.color)) {
+                if (items[k].color == md_u32_from_f32x4(def.color)) {
                     // It kept the color of its element: linked again, when that changes nothing else
                     if (!item.use_defaults && type.radius[i] == def.radius && type.mass[i] == def.mass) item.use_defaults = true;
                 } else {
@@ -3094,7 +3094,7 @@ struct Dataset : viamd::EventHandler {
             }
             if (compute_element_default_delta((md_atomic_number_t)z)) {
                 if (ImGui::Button("Reset")) {
-                    def.color  = vec4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
+                    def.color  = md_f32x4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
                     def.radius = md_atomic_number_vdw_radius((md_atomic_number_t)z);
                     def.mass   = md_atomic_number_mass((md_atomic_number_t)z);
                     edited = true;
@@ -3550,10 +3550,10 @@ struct Dataset : viamd::EventHandler {
     }
 
     // A button in the color of a monomer, labeled with its id
-    static bool monomer_button(const char* lbl, vec4_t color, float width) {
-        const vec4_t color_hover  = vec4_clamp(color + vec4_set1(0.2f), vec4_set1(0.0f), vec4_set1(1.0f));
-        const vec4_t color_active = color * vec4_set(0.8f, 0.8f, 0.8f, 1.0f);
-        const bool light = color_is_light(u32_from_vec4(color));
+    static bool monomer_button(const char* lbl, md_f32x4_t color, float width) {
+        const md_f32x4_t color_hover  = md_f32x4_clamp(color + md_f32x4_set1(0.2f), md_f32x4_set1(0.0f), md_f32x4_set1(1.0f));
+        const md_f32x4_t color_active = color * md_f32x4_set(0.8f, 0.8f, 0.8f, 1.0f);
+        const bool light = color_is_light(md_u32_from_f32x4(color));
 
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(color.x, color.y, color.z, 1.0f));
@@ -3636,7 +3636,7 @@ struct Dataset : viamd::EventHandler {
             bool edited = ImGui::ColorEdit3("Color", def.color.elem);
             if (compute_monomer_default_delta(m)) {
                 if (ImGui::Button("Reset")) {
-                    def.color = vec4_from_u32(md_monomer_color(m));
+                    def.color = md_f32x4_from_u32(md_monomer_color(m));
                     edited = true;
                 }
                 ImGui::SetItemTooltip("Restore the built in color");

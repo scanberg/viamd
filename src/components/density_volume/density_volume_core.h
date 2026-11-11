@@ -25,8 +25,8 @@ namespace density_volume {
 // values[i][j][k], k fastest. As VIAL publishes a volume (/origin, /basis).
 struct Grid {
     uint32_t     dim[3] = {};
-    vec3_t       origin = {};
-    vec3_t       basis[3] = {};
+    md_f32x3_t       origin = {};
+    md_f32x3_t       basis[3] = {};
     const float* values = nullptr;
 };
 
@@ -37,7 +37,7 @@ struct Cube {
     float*          values = nullptr;
     size_t          num_atoms = 0;
     int*            atomic_numbers = nullptr;
-    vec3_t*         xyz = nullptr;
+    md_f32x3_t*         xyz = nullptr;
     double          bulk = 0;
     md_allocator_i* alloc = nullptr;
 };
@@ -49,8 +49,8 @@ void cube_free(Cube* cube);
 
 // The other's frame onto this one: x_this = R x_other + t
 struct Alignment {
-    mat3_t R = mat3_ident();
-    vec3_t t = {};
+    md_f32x3x3_t R = md_f32x3x3_ident();
+    md_f32x3_t t = {};
     size_t matched = 0;         // Heavy atoms paired
     size_t this_heavy = 0;      // Of this structure's and the other's heavy atoms
     size_t other_heavy = 0;
@@ -60,7 +60,7 @@ struct Alignment {
 
 // This structure, atoms of sys, at xyz: the positions of every atom of sys, in this volume's frame. False when the
 // cube has no atoms or fewer than three heavy atoms are common, which places nothing.
-bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t count, const vec3_t* xyz, const Cube& other,
+bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t count, const md_f32x3_t* xyz, const Cube& other,
            md_allocator_i* alloc, char* err = nullptr, size_t err_cap = 0);
 
 // from's values at the centres of to's voxels, through al (to's frame is this one's), trilinearly; 0 where from does

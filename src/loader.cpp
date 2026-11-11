@@ -16,6 +16,7 @@
 #include <md_dcd.h>
 #include <md_util.h>
 #include <md_system.h>
+#include <md_run.h>
 
 #include <md_molden.h>
 #include <md_itp.h>
@@ -196,8 +197,7 @@ void init(LoaderState* state, md_str_t filepath, const md_system_t* sys) {
     MD_ASSERT(state);
 	*state = { 0 };
 
-    md_str_t ext = {0};
-    md_path_ext(&ext, filepath);
+    md_str_t ext = md_path_ext(filepath);
     {
         state->type = type_from_content(filepath, ext, md_str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext));
         if (state->type != LoaderType_Undefined) {
@@ -376,8 +376,7 @@ LoaderFlags type_flags(LoaderType type) {
 }
 
 bool publish_run(md_system_t* sys, md_str_t filepath, md_str_t run, uint32_t flags) {
-    md_str_t ext = {0};
-    md_path_ext(&ext, filepath);
+    md_str_t ext = md_path_ext(filepath);
     switch (type_from_content(filepath, ext, md_str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext))) {
     case LoaderType_AMBER_NETCDF: return md_amber_netcdf_system_publish_run(sys, filepath, run, flags);
     case LoaderType_XTC:       return md_xtc_system_publish_run(sys, filepath, run, flags);

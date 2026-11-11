@@ -29,6 +29,7 @@
 
 #include <core/md_str.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 
 #include <gfx/gl_utils.h>
 
@@ -119,7 +120,7 @@ static inline float srgb_decode(float x) {
 
 // The display referred linear value of the background, the sRGB colour c, which the encoding (with its gamma
 // adjustment) shows as c
-static vec3_t background(vec3_t c, const Transform& t) {
+static md_f32x3_t background(md_f32x3_t c, const Transform& t) {
     const float k = t.gamma / 2.2f;
     return {srgb_decode(powf(MD_CLAMP(c.x, 0.0f, 1.0f), k)), srgb_decode(powf(MD_CLAMP(c.y, 0.0f, 1.0f), k)), srgb_decode(powf(MD_CLAMP(c.z, 0.0f, 1.0f), k))};
 }
@@ -139,8 +140,8 @@ struct Gl_Visibility {
     int history_height = 0;
     int history_variant = 0;
     int history_mode = 0;           // estimator the history was accumulated with
-    mat4_t history_view = {};       // view and projection the history was written with
-    mat4_t history_proj = {};
+    md_f32x4x4_t history_view = {};       // view and projection the history was written with
+    md_f32x4x4_t history_proj = {};
     uint32_t frame = 0;             // drives the per-frame permutation of the sample pattern
 };
 
@@ -531,22 +532,22 @@ void shutdown() {
 namespace compose {
 
 struct ubo_data_t {
-    vec4_t proj_info;
+    md_f32x4_t proj_info;
     float  linear_colors;   // 1: ColorSpace_Linear
     float  light_strength;  // Settings::shading.light
     float  use_shadow;      // 1: u_texture_shadow holds the visibility of the key light
     float  time;
-    vec3_t sky_radiance;
+    md_f32x3_t sky_radiance;
     float  roughness;
-    vec3_t dir_radiance;
+    md_f32x3_t dir_radiance;
     float  F0;
-    vec3_t light_dir;
+    md_f32x3_t light_dir;
     float  basic;           // 1: ShadingMode_Basic
-    vec3_t ground_radiance;
+    md_f32x3_t ground_radiance;
     float  basic_ambient;
     float  basic_specular;
     float  use_ao;
-    vec2_t inv_viewport;
+    md_f32x2_t inv_viewport;
 };
 static_assert(sizeof(ubo_data_t) == 112, "ubo_data_t must match the std140 layout of UniformData in compose_deferred.frag");
 static_assert(offsetof(ubo_data_t, inv_viewport) == 104, "std140 aligns a vec2 to 8 bytes");
@@ -1396,7 +1397,7 @@ void shutdown() {
 }
 
 void compute_linear_depth(GLuint depth_tex, float near_plane, float far_plane, bool orthographic = false) {
-    const vec4_t clip_info {near_plane * far_plane, near_plane - far_plane, far_plane, 0};
+    const md_f32x4_t clip_info {near_plane * far_plane, near_plane - far_plane, far_plane, 0};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
@@ -1424,7 +1425,7 @@ void downsample_depth(GLuint linear_depth_tex, int src_lod) {
     glBindVertexArray(0);
 }
 
-static vec4_t compute_proj_info(const float proj_mat[4][4]);
+static md_f32x4_t compute_proj_info(const float proj_mat[4][4]);
 
 // What the passes of a screen-space visibility share for a frame: the view, the sizes, the units
 struct VisibilityFrame {
@@ -1433,7 +1434,7 @@ struct VisibilityFrame {
     int half_w = 0;
     int half_h = 0;
     int variant = 0;            // 0 = orthographic, 1 = perspective
-    vec4_t proj_info = {};
+    md_f32x4_t proj_info = {};
     float px_scale = 0;         // world size of a full-res pixel at depth 1 (persp) or absolute (ortho)
     float z_max = 0;            // background pixels hold the far clip distance: at or beyond this they are skipped
 };
@@ -1458,8 +1459,8 @@ static bool visibility_history_valid(const Gl_Visibility& v, const VisibilityFra
     return temporal && v.history_valid &&
         v.history_width == f.half_w && v.history_height == f.half_h && v.history_variant == f.variant &&
         v.history_mode == mode &&
-        memcmp(&v.history_view, &view_param.matrix.prev.view, sizeof(mat4_t)) == 0 &&
-        memcmp(&v.history_proj, &view_param.matrix.prev.proj, sizeof(mat4_t)) == 0;
+        memcmp(&v.history_view, &view_param.matrix.prev.view, sizeof(md_f32x4x4_t)) == 0 &&
+        memcmp(&v.history_proj, &view_param.matrix.prev.proj, sizeof(md_f32x4x4_t)) == 0;
 }
 
 // Uniforms every estimator takes, with its program bound and the linear depth on unit 0, the normals on unit 1
@@ -1516,14 +1517,14 @@ static void filter_visibility(Gl_Visibility* v, const VisibilityFrame& f, GLuint
 
         // This frame's view space -> the previous frame's. The AO passes use view space with z into the screen (positive
         // linear depth), i.e. the GL view space mirrored in z: S * M * S with S = diag(1, 1, -1, 1).
-        mat4_t curr_to_prev = view_param.matrix.prev.view * view_param.matrix.inv.view;
+        md_f32x4x4_t curr_to_prev = view_param.matrix.prev.view * view_param.matrix.inv.view;
         for (int c = 0; c < 4; ++c) {
             for (int r = 0; r < 4; ++r) {
                 if ((c == 2) != (r == 2)) curr_to_prev.elem[c][r] = -curr_to_prev.elem[c][r];
             }
         }
-        const vec4_t proj_info_prev = compute_proj_info(view_param.matrix.prev.proj.elem);
-        const vec2_t jitter_delta   = view_param.jitter.curr - view_param.jitter.prev;
+        const md_f32x4_t proj_info_prev = compute_proj_info(view_param.matrix.prev.proj.elem);
+        const md_f32x2_t jitter_delta   = view_param.jitter.curr - view_param.jitter.prev;
 
         const GLuint program = gl.ssao.program_temporal[variant];
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, v->tex_history[hist_curr], 0);
@@ -1662,7 +1663,7 @@ void compute_ssao(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_te
 // Half-res screen-space shadows of the key light (shaders/shadows/screen_space.frag), filtered as the ambient occlusion
 // is (filter_visibility), into gl.ssao.shadow.tex_visibility, which the compose pass applies to the key light.
 // light_dir: toward the light, in the view space (GL: z toward the viewer); light_radius: its angular radius (radians).
-void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, vec3_t light_dir, float light_radius, bool temporal) {
+void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity_tex, const ViewParam& view_param, float z_far, md_f32x3_t light_dir, float light_radius, bool temporal) {
     MD_ASSERT(glIsTexture(linear_depth_tex));
     MD_ASSERT(glIsTexture(normal_tex));
     MD_ASSERT(!temporal || glIsTexture(velocity_tex));
@@ -1677,7 +1678,7 @@ void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity
     const int frame = temporal ? (int)(v->frame++ & 15) : 0;
 
     // The passes' view space has z into the screen
-    const vec3_t L = vec3_normalize(vec3_t{light_dir.x, light_dir.y, -light_dir.z});
+    const md_f32x3_t L = md_f32x3_normalize(md_f32x3_t{light_dir.x, light_dir.y, -light_dir.z});
 
     PUSH_GPU_SECTION("Shadow Rays")
     {
@@ -1701,9 +1702,9 @@ void compute_shadows(GLuint linear_depth_tex, GLuint normal_tex, GLuint velocity
 // View position = ((uv * xy + zw) * z, z) (perspective) or (uv * xy + zw, z) (orthographic), z = linear depth.
 // The y offset terms carry the same sign as the x ones. The NVIDIA original flips it, which only shows with an
 // off-centre frustum: with the TAA jitter that misplaced every reconstructed position by twice the y jitter.
-static vec4_t compute_proj_info(const float proj_mat[4][4]) {
+static md_f32x4_t compute_proj_info(const float proj_mat[4][4]) {
     if (!is_orthographic_proj_matrix(proj_mat)) {
-        return vec4_t{
+        return md_f32x4_t{
             2.0f / (proj_mat[0][0]),
             2.0f / (proj_mat[1][1]),
             -(1.0f - proj_mat[2][0]) / proj_mat[0][0],
@@ -1711,7 +1712,7 @@ static vec4_t compute_proj_info(const float proj_mat[4][4]) {
         };
     }
 
-    return vec4_t{
+    return md_f32x4_t{
         2.0f / (proj_mat[0][0]),
         2.0f / (proj_mat[1][1]),
         -(1.0f + proj_mat[3][0]) / proj_mat[0][0],
@@ -2075,7 +2076,7 @@ void apply_dof(GLuint linear_depth_tex, GLuint color_tex, float focus_depth, flo
 
 // color_tex: premultiplied radiance of the scene. coverage_tex (r): coverage of the geometry. iso_tex (a, optional): the
 // isosurfaces' coverage. background: display referred linear, put behind the scene after the curve.
-void apply_display_transform(GLuint color_tex, GLuint coverage_tex, GLuint iso_tex, const display::Transform& t, vec3_t background) {
+void apply_display_transform(GLuint color_tex, GLuint coverage_tex, GLuint iso_tex, const display::Transform& t, md_f32x3_t background) {
     MD_ASSERT(glIsTexture(color_tex));
     MD_ASSERT(glIsTexture(coverage_tex));
 
@@ -2135,16 +2136,16 @@ void apply_inverse_aa_tonemapping(GLuint color_tex) {
 }
 
 void blit_static_velocity(GLuint depth_tex, const ViewParam& view_param) {
-    //mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj * view_param.matrix.inverse.view_proj;
-    mat4_t curr_clip_to_prev_clip_mat = view_param.matrix.prev.proj * view_param.matrix.prev.view * view_param.matrix.inv.view * view_param.matrix.inv.proj;
+    //md_f32x4x4_t curr_clip_to_prev_clip_mat = view_param.matrix.previous.view_proj * view_param.matrix.inverse.view_proj;
+    md_f32x4x4_t curr_clip_to_prev_clip_mat = view_param.matrix.prev.proj * view_param.matrix.prev.view * view_param.matrix.inv.view * view_param.matrix.inv.proj;
 
 	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, depth_tex);
 
-    const vec2_t res = view_param.resolution;
-    const vec2_t jitter_uv_cur = view_param.jitter.curr / res;
-    const vec2_t jitter_uv_prev = view_param.jitter.prev / res;
-    vec4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
+    const md_f32x2_t res = view_param.resolution;
+    const md_f32x2_t jitter_uv_cur = view_param.jitter.curr / res;
+    const md_f32x2_t jitter_uv_prev = view_param.jitter.prev / res;
+    md_f32x4_t jitter_uv = {jitter_uv_cur.x, jitter_uv_cur.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glUseProgram(velocity::blit_velocity.program);
 	glUniform1i(velocity::blit_velocity.uniform_loc.tex_depth, 0);
@@ -2178,7 +2179,7 @@ void blit_tilemax(GLuint velocity_tex, GLuint linear_depth_tex) {
 void blit_neighbormax(GLuint velocity_tex, GLuint linear_depth_tex, int tex_width, int tex_height) {
     MD_ASSERT(glIsTexture(velocity_tex));
     MD_ASSERT(glIsTexture(linear_depth_tex));
-    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
+    const md_f32x2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
@@ -2198,7 +2199,7 @@ void blit_neighbormax(GLuint velocity_tex, GLuint linear_depth_tex, int tex_widt
 
 void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
     MD_ASSERT(glIsTexture(velocity_tex));
-    const vec2_t texel_size = {1.f / tex_width, 1.f / tex_height};
+    const md_f32x2_t texel_size = {1.f / tex_width, 1.f / tex_height};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, velocity_tex);
@@ -2215,23 +2216,23 @@ void blit_velocity_dilate(GLuint velocity_tex, int tex_width, int tex_height) {
 // The temporal resolve into the bound targets: the history (location 0) and the image shown (location 1), of the
 // viewport's size, out_width x out_height. The current frame is width x height, in the corner of the pipeline's textures
 // (which can be larger, shared with larger views); upscaling when it is smaller than the output.
-void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_history_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const vec2_t& curr_jitter,
-                       const vec2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time,
-                       vec2_t pixel_size, int width, int height, int out_width, int out_height) {
+void apply_temporal_aa(GLuint linear_depth_tex, GLuint color_tex, GLuint prev_history_tex, GLuint velocity_tex, GLuint velocity_neighbormax_tex, const md_f32x2_t& curr_jitter,
+                       const md_f32x2_t& prev_jitter, float feedback_min, float feedback_max, float motion_scale, float time,
+                       md_f32x2_t pixel_size, int width, int height, int out_width, int out_height) {
     const bool upscale = width != out_width || height != out_height;
     MD_ASSERT(glIsTexture(linear_depth_tex));
     MD_ASSERT(glIsTexture(color_tex));
     MD_ASSERT(glIsTexture(velocity_tex));
     MD_ASSERT(glIsTexture(velocity_neighbormax_tex));
 
-    const vec2_t res = {(float)gl.tex_width, (float)gl.tex_height};
-    const vec2_t inv_res = 1.0f / res;
-    const vec4_t texel_size = vec4_t{inv_res.x, inv_res.y, res.x, res.y};
-    const vec2_t in_size = {(float)width, (float)height};
-    const vec4_t out_texel_size = vec4_t{1.0f / (float)out_width, 1.0f / (float)out_height, (float)out_width, (float)out_height};
-    const vec2_t jitter_uv_curr = curr_jitter / res;
-    const vec2_t jitter_uv_prev = prev_jitter / res;
-    const vec4_t jitter_uv = vec4_t{jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y};
+    const md_f32x2_t res = {(float)gl.tex_width, (float)gl.tex_height};
+    const md_f32x2_t inv_res = 1.0f / res;
+    const md_f32x4_t texel_size = md_f32x4_t{inv_res.x, inv_res.y, res.x, res.y};
+    const md_f32x2_t in_size = {(float)width, (float)height};
+    const md_f32x4_t out_texel_size = md_f32x4_t{1.0f / (float)out_width, 1.0f / (float)out_height, (float)out_width, (float)out_height};
+    const md_f32x2_t jitter_uv_curr = curr_jitter / res;
+    const md_f32x2_t jitter_uv_prev = prev_jitter / res;
+    const md_f32x4_t jitter_uv = md_f32x4_t{jitter_uv_curr.x, jitter_uv_curr.y, jitter_uv_prev.x, jitter_uv_prev.y};
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, linear_depth_tex);
@@ -2737,7 +2738,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
         // A pixel's height in view space: x at linear depth 1 (perspective, y = 1) or anywhere (orthographic, y = 0).
         // The prefilter measures steps in depth by it.
         const float (*P)[4] = view_param.matrix.curr.proj.elem;
-        const vec2_t pixel_size = {2.0f / (P[1][1] * (float)height), is_orthographic_proj_matrix(P) ? 0.0f : 1.0f};
+        const md_f32x2_t pixel_size = {2.0f / (P[1][1] * (float)height), is_orthographic_proj_matrix(P) ? 0.0f : 1.0f};
 
         apply_temporal_aa(gl.linear_depth.texture, src_texture, history_prev, in.velocity, gl.velocity.tex_neighbormax, view_param.jitter.curr, view_param.jitter.prev,
                           feedback_min, feedback_max, motion_scale, time, pixel_size, width, height, out_width, out_height);
@@ -2813,13 +2814,13 @@ Lighting lighting(ShadingMode mode) {
     // Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep
     // close to their full colour. The radiances are not used.
     Lighting l = {
-        .light_dir        = vec3_normalize(vec3_set(1.0f, 1.0f, 1.0f)),
-        .light_irradiance = vec3_set1(0.87f * (float)MD_PI),
-        .sky_radiance     = vec3_set1(0.59f),
-        .ground_radiance  = vec3_set1(0.49f),
+        .light_dir        = md_f32x3_normalize(md_f32x3_set(1.0f, 1.0f, 1.0f)),
+        .light_irradiance = md_f32x3_set1(0.87f * (float)MD_PI),
+        .sky_radiance     = md_f32x3_set1(0.59f),
+        .ground_radiance  = md_f32x3_set1(0.49f),
     };
     if (mode == ShadingMode_Basic) {
-        l.light_dir = vec3_normalize(vec3_set(0.3f, 0.4f, 1.0f));
+        l.light_dir = md_f32x3_normalize(md_f32x3_set(0.3f, 0.4f, 1.0f));
     }
     return l;
 }

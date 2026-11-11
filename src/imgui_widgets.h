@@ -1,6 +1,6 @@
 #include <imgui.h>
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 struct ImRect;
 struct ImGuiWindow;
@@ -52,6 +52,6 @@ bool ColorEdit4Minimal(const char* label, float color[4]);
 
 void DrawCheckerboard(ImDrawList* draw_list, ImVec2 p_min, ImVec2 p_max, ImU32 col1, ImU32 col2, float grid_step, ImVec2 grid_off);
 
-bool CoordinateSystemWidget(quat_t* out_orientation, const quat_t& in_orientation, const ImVec2& size);
+bool CoordinateSystemWidget(md_quat_t* out_orientation, const md_quat_t& in_orientation, const ImVec2& size);
 
 }  // namespace ImGui
