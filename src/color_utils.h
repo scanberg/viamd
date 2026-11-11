@@ -13,7 +13,7 @@ inline vec3_t rgb_to_hsv(vec3_t c) {
     const vec4_t p = vec4_lerp({c.z, c.y, K.w, K.z}, {c.y, c.z, K.x, K.y}, stepf(c.z, c.y));
     const vec4_t q = vec4_lerp({p.x, p.y, p.w, c.x}, {c.x, p.y, p.z, p.x}, stepf(p.x, c.x));
 
-    const float d = q.x - MIN(q.w, q.y);
+    const float d = q.x - MD_MIN(q.w, q.y);
     const float e = 1.0e-10f;
     return {fabsf(q.z + (q.w - q.y) / (6.0f * d + e)), d / (q.x + e), q.x};
 }
@@ -37,7 +37,7 @@ constexpr inline vec3_t hcl_to_rgb(vec3_t HCL) {
         float Q = expf((1.f - C / (2.f * L)) * (HCLgamma / HCLy0));
         float U = (2.f * L - C) / (2.f * Q - 1.f);
         float V = C / Q;
-        float T = tanf((H + MIN(fractf(2.f * H) / 4.f, fractf(-2.f * H) / 8.f)) * (float)PI * 2.f);
+        float T = tanf((H + MD_MIN(fractf(2.f * H) / 4.f, fractf(-2.f * H) / 8.f)) * (float)MD_PI * 2.f);
         H *= 6.f;
         if (H <= 1.f) {
             RGB.x = 1.f;
@@ -70,8 +70,8 @@ inline vec3_t rgb_to_hcl(vec3_t rgb) {
 
     vec3_t HCL;
     float H = 0;
-    float U = MIN(rgb.x, MIN(rgb.y, rgb.z));
-    float V = MAX(rgb.x, MAX(rgb.y, rgb.z));
+    float U = MD_MIN(rgb.x, MD_MIN(rgb.y, rgb.z));
+    float V = MD_MAX(rgb.x, MD_MAX(rgb.y, rgb.z));
     float Q = HCLgamma / HCLy0;
     HCL.y = V - U;
     if (HCL.y != 0) {
@@ -79,7 +79,7 @@ inline vec3_t rgb_to_hcl(vec3_t rgb) {
         Q *= U / V;
     }
     Q = expf(Q);
-    HCL.x = fractf(H / 2.f - MIN(fractf(H), fractf(-H)) / 6.f);
+    HCL.x = fractf(H / 2.f - MD_MIN(fractf(H), fractf(-H)) / 6.f);
     HCL.y *= Q;
     HCL.z = lerp(-U, V, Q) / (HCLmaxL * 2.f);
     return HCL;
@@ -138,7 +138,7 @@ inline vec3_t Lab_to_XYZ(vec3_t Lab) {
 
 inline vec3_t linear_srgb_to_srgb(vec3_t rgb) {
     const auto encode = [](float x) {
-        x = CLAMP(x, 0.0f, 1.0f);
+        x = MD_CLAMP(x, 0.0f, 1.0f);
         return (x <= 0.0031308f) ? (12.92f * x) : (1.055f * powf(x, 1.0f / 2.4f) - 0.055f);
     };
     return {encode(rgb.x), encode(rgb.y), encode(rgb.z)};
@@ -146,7 +146,7 @@ inline vec3_t linear_srgb_to_srgb(vec3_t rgb) {
 
 inline vec3_t srgb_to_linear_srgb(vec3_t rgb) {
     const auto decode = [](float x) {
-        x = CLAMP(x, 0.0f, 1.0f);
+        x = MD_CLAMP(x, 0.0f, 1.0f);
         return (x <= 0.04045f) ? (x / 12.92f)
                                : powf((x + 0.055f) / 1.055f, 2.4f);
     };
@@ -212,7 +212,7 @@ inline vec3_t oklch_to_srgb(vec3_t oklch) {
     const float c = oklch.y;
     const float l = oklch.z;
 
-    const float ang = h * 2.0f * (float)PI;
+    const float ang = h * 2.0f * (float)MD_PI;
     const float a = c * cosf(ang);
     const float b = c * sinf(ang);
 
@@ -264,10 +264,10 @@ constexpr inline vec4_t convert_color(uint32_t rgba) {
 
 constexpr inline uint32_t convert_color(vec4_t in) {
     const uint32_t out = 
-        ((uint32_t)(CLAMP(in.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0   |
-        ((uint32_t)(CLAMP(in.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8   |
-        ((uint32_t)(CLAMP(in.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16  |
-        ((uint32_t)(CLAMP(in.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
+        ((uint32_t)(MD_CLAMP(in.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0   |
+        ((uint32_t)(MD_CLAMP(in.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8   |
+        ((uint32_t)(MD_CLAMP(in.z, 0.0f, 1.0f) * 255.0f + 0.5f)) << 16  |
+        ((uint32_t)(MD_CLAMP(in.w, 0.0f, 1.0f) * 255.0f + 0.5f)) << 24;
     return out;
 }
 
@@ -308,8 +308,8 @@ static inline uint32_t scale_saturation(uint32_t rgba_u32, float scale) {
 }
 
 static inline vec4_t tint_color(vec4_t base_rgba, vec4_t tint_rgba, float tint_strength, float saturation) {
-    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
-    const float s = CLAMP(saturation, 0.0f, 1.0f);
+    const float t = MD_CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = MD_CLAMP(saturation, 0.0f, 1.0f);
 
     vec3_t base_lab = linear_srgb_to_oklab(vec3_from_vec4(base_rgba));
     vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));

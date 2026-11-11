@@ -95,7 +95,7 @@ static StructureFunc find_structure_func(CStringView cmd) {
 }
 
 void free_structure_data(Array<StructureData>* structure_data) {
-    ASSERT(structure_data);
+    MD_ASSERT(structure_data);
     if (structure_data) {
         for (auto& s : *structure_data) {
             s.StructureData::~StructureData();
@@ -105,7 +105,7 @@ void free_structure_data(Array<StructureData>* structure_data) {
 }
 
 void init_instance_data(Array<InstanceData>* instance_data, i32 num_instances, i32 num_frames) {
-    ASSERT(instance_data);
+    MD_ASSERT(instance_data);
     free_instance_data(instance_data);
 
     *instance_data = allocate_array<InstanceData>(num_instances);
@@ -115,7 +115,7 @@ void init_instance_data(Array<InstanceData>* instance_data, i32 num_instances, i
 }
 
 void free_instance_data(Array<InstanceData>* instance_data) {
-    ASSERT(instance_data);
+    MD_ASSERT(instance_data);
     static i32 count = 0;
     count++;
     if (instance_data->ptr) {
@@ -127,8 +127,8 @@ void free_instance_data(Array<InstanceData>* instance_data) {
 }
 
 void init_structure_data(Array<StructureData>* structure_data, i32 count) {
-    ASSERT(count > 0);
-    ASSERT(structure_data);
+    MD_ASSERT(count > 0);
+    MD_ASSERT(structure_data);
     free_structure_data(structure_data);
     *structure_data = allocate_array<StructureData>(count);
     for (auto& s : *structure_data) {
@@ -138,21 +138,21 @@ void init_structure_data(Array<StructureData>* structure_data, i32 count) {
 
 // HISTOGRAMS
 void init_histogram(Histogram* hist, i32 num_bins) {
-    ASSERT(hist);
+    MD_ASSERT(hist);
     free_array(&hist->bins);
     hist->bins = allocate_array<float>(num_bins);
     hist->value_range = {0, 0};
     hist->bin_range = {0, 0};
-    ASSERT(hist->bins);
+    MD_ASSERT(hist->bins);
 }
 
 void free_histogram(Histogram* hist) {
-    ASSERT(hist);
+    MD_ASSERT(hist);
     free_array(&hist->bins);
 }
 
 void compute_histogram(Histogram* hist, Array<const float> data) {
-    ASSERT(hist);
+    MD_ASSERT(hist);
     const i32 num_bins = (i32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
@@ -163,7 +163,7 @@ void compute_histogram(Histogram* hist, Array<const float> data) {
 }
 
 void compute_histogram(Histogram* hist, Array<const float> data, Range<float> filter) {
-    ASSERT(hist);
+    MD_ASSERT(hist);
     const i32 num_bins = (i32)hist->bins.count;
     const float scl = num_bins / (hist->value_range.end - hist->value_range.beg);
     for (auto v : data) {
@@ -177,7 +177,7 @@ void compute_histogram(Histogram* hist, Array<const float> data, Range<float> fi
 }
 
 void clear_histogram(Histogram* hist) {
-    ASSERT(hist);
+    MD_ASSERT(hist);
     if (hist->bins.ptr) {
         memset(hist->bins.ptr, 0, hist->bins.count * sizeof(float));
     }
@@ -219,7 +219,7 @@ inline void shuffle(i32* arr, size_t n) {
 }
 
 void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i32> frame_range, const mat4& world_to_volume_matrix) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
         return;
@@ -289,7 +289,7 @@ static Range<float> compute_range(const Property& prop) {
 }
 
 void set_error_message(Property* prop, const char* fmt, ...) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     auto buf = prop->error_msg_buf.cstr();
     auto len = prop->error_msg_buf.capacity();
     va_list ap;
@@ -358,7 +358,7 @@ bool extract_structures(StructureData* data, CStringView arg, const MoleculeStru
 }
 
 bool extract_args_structures(Array<StructureData> data, Array<CStringView> args, const MoleculeStructure& molecule) {
-    ASSERT(data.count == args.count);
+    MD_ASSERT(data.count == args.count);
 
     for (int i = 0; i < data.count; i++) {
         if (!extract_structures(&data[i], args[i], molecule)) return false;
@@ -383,7 +383,7 @@ bool extract_args_structures(Array<StructureData> data, Array<CStringView> args,
 }
 
 bool structure_match_resname(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args.count to be > 0
     if (args.count == 0) {
@@ -403,7 +403,7 @@ bool structure_match_resname(StructureData* data, const Array<CStringView> args,
 }
 
 bool structure_match_resid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args to be  > 0
     if (args.count == 0) {
@@ -429,7 +429,7 @@ bool structure_match_resid(StructureData* data, const Array<CStringView> args, c
 }
 
 bool structure_match_residue(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args to be  > 0
     if (args.count == 0) {
@@ -469,7 +469,7 @@ bool structure_match_residue(StructureData* data, const Array<CStringView> args,
 }
 
 bool structure_match_chainid(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args.count to be > 0
     if (args.count == 0) {
@@ -490,7 +490,7 @@ bool structure_match_chainid(StructureData* data, const Array<CStringView> args,
 }
 
 bool structure_match_chain(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args to be  > 0
     if (args.count == 0) {
@@ -530,7 +530,7 @@ bool structure_match_chain(StructureData* data, const Array<CStringView> args, c
 }
 
 bool structure_match_atom(StructureData* data, const Array<CStringView> args, const MoleculeStructure& mol) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     // Expect args to be  > 0
     if (args.count == 0) {
@@ -569,7 +569,7 @@ bool structure_match_atom(StructureData* data, const Array<CStringView> args, co
 }
 
 bool structure_extract_resatom(StructureData* data, const Array<CStringView> args, const MoleculeStructure&) {
-    ASSERT(data);
+    MD_ASSERT(data);
     if (args.count != 1) {
         set_error_message(ctx.current_property, "resatom requires exactly 1 argument");
         return false;
@@ -611,7 +611,7 @@ bool structure_extract_resatom(StructureData* data, const Array<CStringView> arg
 }
 
 bool structure_apply_aggregation_strategy_com(StructureData* data, const Array<CStringView>, const MoleculeStructure&) {
-    ASSERT(data);
+    MD_ASSERT(data);
     data->strategy = AggregationStrategy::COM;
     return true;
 }
@@ -644,7 +644,7 @@ static inline float multi_distance(const float* a_x, const float* a_y, const flo
     } else {
         float total = 0.f;
         float* dist = (float*)TMP_MALLOC(count_a * count_b * sizeof(float));
-        defer { TMP_FREE(dist); };
+        MD_DEFER { TMP_FREE(dist); };
         for (i64 i = 0; i < count_a; i++) {
             for (i64 j = 0; j < count_b; j++) {
                 const float dx = a_x[i] - b_x[j];
@@ -682,7 +682,7 @@ static inline float multi_angle(const float* a_x, const float* a_y, const float*
     } else {
         float total = 0.f;
         float* angle = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
-        defer { TMP_FREE(angle); };
+        MD_DEFER { TMP_FREE(angle); };
         for (i64 i = 0; i < count_a; i++) {
             for (i64 j = 0; j < count_b; j++) {
                 for (i64 k = 0; k < count_c; k++) {
@@ -725,7 +725,7 @@ static inline float multi_dihedral(const float* a_x, const float* a_y, const flo
     } else {
         float total = 0.f;
         float* dihedral = (float*)TMP_MALLOC(count_a * count_b * count_c * sizeof(float));
-        defer { TMP_FREE(dihedral); };
+        MD_DEFER { TMP_FREE(dihedral); };
         for (i64 i = 0; i < count_a; i++) {
             for (i64 j = 0; j < count_b; j++) {
                 for (i64 k = 0; k < count_c; k++) {
@@ -759,7 +759,7 @@ static inline float multi_dihedral(const float* a_x, const float* a_y, const flo
 }
 
 static bool compute_distance(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     if (args.count != 2) {
         set_error_message(ctx.current_property, "distance expects 2 arguments");
         return false;
@@ -828,7 +828,7 @@ static bool compute_distance(Property* prop, const Array<CStringView> args, cons
 }
 
 static bool compute_angle(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     if (args.count != 3) {
         set_error_message(ctx.current_property, "angle expects 3 arguments");
         return false;
@@ -884,7 +884,7 @@ static bool compute_angle(Property* prop, const Array<CStringView> args, const M
         if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
-    prop->total_data_range = {0, math::PI};
+    prop->total_data_range = {0, math::MD_PI};
     prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
     prop->unit_buf = (const char*)u8"°";
@@ -893,7 +893,7 @@ static bool compute_angle(Property* prop, const Array<CStringView> args, const M
 }
 
 static bool compute_dihedral(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     if (args.count != 4) {
         set_error_message(ctx.current_property, "dihedral expects 4 arguments");
         return false;
@@ -950,7 +950,7 @@ static bool compute_dihedral(Property* prop, const Array<CStringView> args, cons
         if (var > 0.f) prop->std_dev_data[i] = math::sqrt(var * scl);
     }
 
-    prop->total_data_range = {-math::PI, math::PI};
+    prop->total_data_range = {-math::MD_PI, math::MD_PI};
     prop->avg_data_range = compute_range(prop->avg_data);
     prop->periodic = true;
     prop->unit_buf = (const char*)u8"°";
@@ -967,7 +967,7 @@ static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
     // ugly ugly hacks
     double* ref_tmp = (double*)TMP_MALLOC(count * sizeof(double) * 3);
     double* cur_tmp = (double*)TMP_MALLOC(count * sizeof(double) * 3);
-    defer {
+    MD_DEFER {
         TMP_FREE(ref_tmp);
         TMP_FREE(cur_tmp);
     };
@@ -987,7 +987,7 @@ static float rmsd(const float* ref_x, const float* ref_y, const float* ref_z,
 }
 
 static bool compute_rmsd(Property* prop, const Array<CStringView> args, const MoleculeDynamic& dynamic) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     if (args.count != 1) {
         set_error_message(ctx.current_property, "rmsd expects 1 argument");
         return false;
@@ -1068,7 +1068,7 @@ static DynamicArray<Property*> extract_property_dependencies(Array<Property*> pr
 }
 
 static bool compute_expression(Property* prop, const Array<CStringView> args, const MoleculeDynamic&) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     if (args.count == 0) {
         set_error_message(ctx.current_property, "expression expects 1 or more arguments");
         return false;
@@ -1321,7 +1321,7 @@ bool sync_structure_data_length(Array<StructureData> data) {
 }
 
 static bool compute_property_data(Property* prop, const MoleculeDynamic& dynamic, i32 num_frames) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
 
     ctx.current_property = prop;
     prop->error_msg_buf = "";
@@ -1458,7 +1458,7 @@ void async_update(const MoleculeDynamic& dynamic, Range<i32> frame_filter, void 
         std::thread([&dynamic, frame_filter, on_finished, usr_data]() {
             Histogram tmp_hist;
             init_histogram(&tmp_hist, NUM_BINS);
-            defer { free_histogram(&tmp_hist); };
+            MD_DEFER { free_histogram(&tmp_hist); };
             ctx.fraction_done = 0.f;
 
             // @NOTE IMPORTANT: This is the one 'true' frame count which should be used for properties.
@@ -1595,7 +1595,7 @@ Property* create_property(CStringView name, CStringView args) {
 
 static void free_property_data(Property* prop) {
     signal_stop_and_wait();
-    ASSERT(prop);
+    MD_ASSERT(prop);
     free_histogram(&prop->full_histogram);
     free_histogram(&prop->filt_histogram);
     free_structure_data(&prop->structure_data);
@@ -1604,7 +1604,7 @@ static void free_property_data(Property* prop) {
 }
 
 void remove_property(Property* prop) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     signal_stop_and_wait();
     for (auto& p : ctx.properties) {
         if (p == prop) {
@@ -1665,7 +1665,7 @@ Property* find_property(CStringView name) {
 
 void clear_property(Property* prop) {
     signal_stop_and_wait();
-    ASSERT(prop);
+    MD_ASSERT(prop);
     for (auto p : ctx.properties) {
         if (p == prop) {
             free_structure_data(&prop->structure_data);

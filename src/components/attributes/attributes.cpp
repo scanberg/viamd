@@ -79,35 +79,35 @@ static void format_string(char* buf, size_t cap, const md_attribute_format_t& fm
 }
 
 // ASCII case insensitive 'needle occurs in haystack'
-static bool contains_ignore_case(str_t haystack, str_t needle) {
+static bool contains_ignore_case(md_str_t haystack, md_str_t needle) {
     if (needle.len == 0) return true;
     if (needle.len > haystack.len) return false;
     for (size_t i = 0; i + needle.len <= haystack.len; ++i) {
-        if (str_eq_ignore_case(str_substr(haystack, i, needle.len), needle)) return true;
+        if (md_str_eq_ignore_case(md_str_substr(haystack, i, needle.len), needle)) return true;
     }
     return false;
 }
 
 // An attribute of a distribution or a volume of the script ("script/<ident>", "script/<ident>/weight")
-static bool script_aggregate_path(const ApplicationState& state, str_t path) {
-    const str_t prefix = STR_LIT("script/");
-    if (!state.script.eval_ir || !str_begins_with(path, prefix)) return false;
-    str_t ident = str_substr(path, prefix.len);
+static bool script_aggregate_path(const ApplicationState& state, md_str_t path) {
+    const md_str_t prefix = MD_STR_LIT("script/");
+    if (!state.script.eval_ir || !md_str_begins_with(path, prefix)) return false;
+    md_str_t ident = md_str_substr(path, prefix.len);
     size_t loc;
-    if (str_find_char(&loc, ident, '/')) ident = str_substr(ident, 0, loc);
+    if (md_str_find_char(&loc, ident, '/')) ident = md_str_substr(ident, 0, loc);
     return script::output_flags(state.script.eval_ir, ident) & (script::OUTPUT_DISTRIBUTION | script::OUTPUT_VOLUME);
 }
 
 // Every whitespace separated word of the filter occurs in the path, the label or the source
-static bool matches_filter(str_t filter, str_t path, str_t label, const char* source) {
-    const str_t src = str_from_cstr(source);
+static bool matches_filter(md_str_t filter, md_str_t path, md_str_t label, const char* source) {
+    const md_str_t src = md_str_from_cstr(source);
     size_t i = 0;
     while (i < filter.len) {
         while (i < filter.len && (filter.ptr[i] == ' ' || filter.ptr[i] == '\t')) ++i;
         size_t j = i;
         while (j < filter.len && filter.ptr[j] != ' ' && filter.ptr[j] != '\t') ++j;
         if (j > i) {
-            const str_t word = {filter.ptr + i, j - i};
+            const md_str_t word = {filter.ptr + i, j - i};
             if (!contains_ignore_case(path, word) && !contains_ignore_case(label, word) && !contains_ignore_case(src, word)) {
                 return false;
             }
@@ -202,7 +202,7 @@ struct Attributes : viamd::EventHandler {
         }
         md_array(Row) rows = 0;
         size_t total = 0;
-        const str_t filter_str = str_from_cstr(filter);
+        const md_str_t filter_str = md_str_from_cstr(filter);
         for (int si = 0; si < num_sources; ++si) {
             const SeriesSource source = sources[si].source;
             const uint32_t period = sources[si].period;
@@ -275,9 +275,16 @@ struct Attributes : viamd::EventHandler {
                     // The path spans the row: it is what is hovered, dragged and right clicked
                     ImGui::TableSetColumnIndex(2);
                     char path_buf[512];
-                    str_copy_to_char_buf(path_buf, sizeof(path_buf), attr.path);
+                    md_str_copy_to_char_buf(path_buf, sizeof(path_buf), attr.path);
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
                     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort);
+
+                    // An energy term of groups (Coul-SR:Protein-SOL) shows its groups while it is hovered, each in a colour of its own
+                    md_edr_term_groups_t term_groups;
+                    const bool has_groups = row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
+                    if (has_groups && ImGui::IsItemHovered()) {
+                        highlight_energy_term_groups(&state, row.attr);
+                    }
 
                     // How the script reads it, if it does: an attribute of the system the script is compiled against
                     char expr[sizeof(path_buf) + 16];
@@ -312,7 +319,7 @@ struct Attributes : viamd::EventHandler {
                         ImGui::Separator();
                         if (ImGui::MenuItem("Copy path")) {
                             char buf[512];
-                            snprintf(buf, sizeof(buf), STR_FMT, STR_ARG(attr.path));
+                            snprintf(buf, sizeof(buf), MD_STR_FMT, MD_STR_ARG(attr.path));
                             ImGui::SetClipboardText(buf);
                         }
                         if (scriptable && ImGui::MenuItem("Copy script expression", expr)) {
@@ -323,7 +330,7 @@ struct Attributes : viamd::EventHandler {
 
 
                     ImGui::TableSetColumnIndex(3);
-                    if (!str_empty(attr.label)) ImGui::TextUnformatted(attr.label.ptr, attr.label.ptr + attr.label.len);
+                    if (!md_str_empty(attr.label)) ImGui::TextUnformatted(attr.label.ptr, attr.label.ptr + attr.label.len);
 
                     ImGui::TableSetColumnIndex(4);
                     {
@@ -353,17 +360,24 @@ struct Attributes : viamd::EventHandler {
                     if (hovered) {
                         ImGui::BeginTooltip();
                         ImGui::TextUnformatted(attr.path.ptr, attr.path.ptr + attr.path.len);
+                        if (has_groups) {
+                            char text[160];
+                            energy_term_groups_text(text, sizeof(text), &state, term_groups);
+                            ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
+                        } else if (row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
+                            ImGui::TextDisabled("Of groups the system does not have: load the run's .tpr or its index file (.ndx)");
+                        }
                         if (row.period != 0) {
                             ImGui::TextDisabled("Over the frames of %s", series_period_name(&state, row.period));
                         }
-                        if (!str_empty(attr.description)) {
+                        if (!md_str_empty(attr.description)) {
                             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
-                            ImGui::TextDisabled(STR_FMT, STR_ARG(attr.description));
+                            ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(attr.description));
                             ImGui::PopTextWrapPos();
                         }
                         if (attr.format.type == MD_ATTRIBUTE_TYPE_STR && attr.format.rank <= 1 && md_attribute_value_count(&attr.format) == 1) {
-                            const str_t value = md_attribute_str(row.table, &attr, 0);
-                            ImGui::Text("Value: " STR_FMT, STR_ARG(value));
+                            const md_str_t value = md_attribute_str(row.table, &attr, 0);
+                            ImGui::Text("Value: " MD_STR_FMT, MD_STR_ARG(value));
                         }
                         ImGui::Separator();
                         const char* plots = timeline && distribution ? "a Timelines or Distributions subplot" :

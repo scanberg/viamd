@@ -61,8 +61,8 @@ struct DensityVolumeRep {
 
 // An empty filter, or 'all' (v1's) or 'particles' (VIAL's), picks all of a structure: nothing to evaluate
 static bool filter_is_all(const char* text) {
-    str_t s = str_trim(str_from_cstr(text));
-    return str_empty(s) || str_eq(s, STR_LIT("all")) || str_eq(s, STR_LIT("particles"));
+    md_str_t s = md_str_trim(md_str_from_cstr(text));
+    return md_str_empty(s) || md_str_eq(s, MD_STR_LIT("all")) || md_str_eq(s, MD_STR_LIT("particles"));
 }
 
 struct DensityVolume : viamd::EventHandler {
@@ -240,7 +240,7 @@ struct DensityVolume : viamd::EventHandler {
     }
 
     void remove_rep(size_t idx) {
-        ASSERT(idx < md_array_size(reps));
+        MD_ASSERT(idx < md_array_size(reps));
         release_rep_resources(reps[idx]);
         for (size_t i = idx; i + 1 < md_array_size(reps); ++i) {
             reps[i] = reps[i + 1];
@@ -249,7 +249,7 @@ struct DensityVolume : viamd::EventHandler {
     }
 
     void clone_rep(size_t idx) {
-        ASSERT(idx < md_array_size(reps));
+        MD_ASSERT(idx < md_array_size(reps));
         DensityVolumeRep copy = {};
         copy.rep = reps[idx].rep;
         // Its own GPU side and atoms, made when it is drawn
@@ -283,10 +283,10 @@ struct DensityVolume : viamd::EventHandler {
     void set_structures(const md_bitset_t* structs, const mat4_t* mats, size_t count) {
         md_allocator_i* heap = md_get_heap_allocator();
         structure_count = count;
-        const size_t kept = MIN(count, DENSITY_VOLUME_MAX_SHOWN_STRUCTURES);
+        const size_t kept = MD_MIN(count, DENSITY_VOLUME_MAX_SHOWN_STRUCTURES);
 
         md_array_resize(structure_mats, kept, heap);
-        if (kept) MEMCPY(structure_mats, mats, kept * sizeof(mat4_t));
+        if (kept) md_memcpy(structure_mats, mats, kept * sizeof(mat4_t));
 
         uint64_t hash = md_hash64(&kept, sizeof(kept), 0);
         for (size_t i = 0; i < kept; ++i) {
@@ -320,7 +320,7 @@ struct DensityVolume : viamd::EventHandler {
     // The structures drawn: the first, or all that are kept of an ensemble
     size_t shown_structures() const {
         const size_t n = md_array_size(structures);
-        return show_reference_ensemble ? n : MIN(n, (size_t)1);
+        return show_reference_ensemble ? n : MD_MIN(n, (size_t)1);
     }
 
     // The subsets of a representation: what its filter picks within each structure shown
@@ -328,7 +328,7 @@ struct DensityVolume : viamd::EventHandler {
         md_allocator_i* heap = md_get_heap_allocator();
         md_allocator_i* frame = state->allocator.frame;
         md_temp_scope_t temp = md_temp_begin_in(frame);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         Representation& rep = r.rep;
         rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
@@ -351,7 +351,7 @@ struct DensityVolume : viamd::EventHandler {
         bool failed = false;
         bool dynamic = false;
         md_bitset_t picked_all = md_bitset_empty_set();
-        const size_t made = MIN(shown, md_array_size(r.subsets));
+        const size_t made = MD_MIN(shown, md_array_size(r.subsets));
         for (size_t i = 0; i < made; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
@@ -371,7 +371,7 @@ struct DensityVolume : viamd::EventHandler {
                 }
             }
             const size_t count = (size_t)md_bitset_count(picked);
-            uint32_t* indices = (uint32_t*)md_temp_alloc(temp, MAX(count, (size_t)1) * sizeof(uint32_t));
+            uint32_t* indices = (uint32_t*)md_temp_alloc(temp, MD_MAX(count, (size_t)1) * sizeof(uint32_t));
             md_bitset_extract_indices(indices, count, picked);
             md_gl_subset_set_atoms(r.subsets[i], indices, (uint32_t)count);
             picked_all = md_bitset_or(picked_all, picked, frame);
@@ -422,14 +422,14 @@ struct DensityVolume : viamd::EventHandler {
     void build_colors(ApplicationState* state, DensityVolumeRep& r, size_t shown, float fade) {
         md_allocator_i* frame = state->allocator.frame;
         md_temp_scope_t temp = md_temp_begin_in(frame);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const size_t num_atoms = md_system_atom_count(&state->mold.sys);
         Representation& rep = r.rep;
         if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(state->mold.gl_mol);
 
         // Opaque: what is drawn is what the subsets hold
-        uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
+        uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MD_MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
         representation_atom_colors(colors, num_atoms, state, &rep, &rep.atom_mask);
         for (size_t i = 0; i < num_atoms; ++i) {
             colors[i] |= 0xFF000000u;
@@ -449,7 +449,7 @@ struct DensityVolume : viamd::EventHandler {
         if (shown > 1 && fade > 0.0f) {
             if (!r.members.id) r.members = md_gl_rep_create(state->mold.gl_mol);
             const vec3_t bg = state->visuals.background.color;
-            const float t = CLAMP(fade, 0.0f, 1.0f);
+            const float t = MD_CLAMP(fade, 0.0f, 1.0f);
             for (size_t i = 0; i < num_atoms; ++i) {
                 vec4_t c = convert_color(colors[i]);
                 c.x = c.x + (bg.x - c.x) * t;
@@ -501,8 +501,8 @@ struct DensityVolume : viamd::EventHandler {
         dvr.tf.dirty = true;
         iso.enabled = false;
         iso.count = 0;
-        MEMSET(iso.values, 0, sizeof(iso.values));
-        MEMSET(iso.colors, 0, sizeof(iso.colors));
+        md_memset(iso.values, 0, sizeof(iso.values));
+        md_memset(iso.colors, 0, sizeof(iso.colors));
         clip_volume.min = {0, 0, 0};
         clip_volume.max = {1, 1, 1};
         legend.enabled = true;
@@ -528,57 +528,57 @@ struct DensityVolume : viamd::EventHandler {
     }
 
     void serialize(viamd::serialization_state_t& state) {
-        viamd::write_section_header(state, STR_LIT("DensityVolume"));
+        viamd::write_section_header(state, MD_STR_LIT("DensityVolume"));
         if (volume_key.path[0] != '\0') {
-            viamd::write_str(state, STR_LIT("PropertySource"), str_from_cstr(series_source_name(volume_key.source)));
-            viamd::write_str(state, STR_LIT("PropertyPath"), str_from_cstr(volume_key.path));
+            viamd::write_str(state, MD_STR_LIT("PropertySource"), md_str_from_cstr(series_source_name(volume_key.source)));
+            viamd::write_str(state, MD_STR_LIT("PropertyPath"), md_str_from_cstr(volume_key.path));
             if (volume_key.period != 0) {
-                viamd::write_int(state, STR_LIT("PropertyPeriod"), (int)volume_key.period);
+                viamd::write_int(state, MD_STR_LIT("PropertyPeriod"), (int)volume_key.period);
             }
             if (volume_member != 0) {
-                viamd::write_int(state, STR_LIT("PropertyMember"), (int)volume_member);
+                viamd::write_int(state, MD_STR_LIT("PropertyMember"), (int)volume_member);
             }
         }
-        viamd::write_bool(state, STR_LIT("DvrEnabled"), dvr.enabled);
-        viamd::write_int (state, STR_LIT("DvrColormap"), dvr.tf.colormap);
-        viamd::write_flt (state, STR_LIT("DvrAlphaScale"), dvr.tf.alpha_scale);
+        viamd::write_bool(state, MD_STR_LIT("DvrEnabled"), dvr.enabled);
+        viamd::write_int (state, MD_STR_LIT("DvrColormap"), dvr.tf.colormap);
+        viamd::write_flt (state, MD_STR_LIT("DvrAlphaScale"), dvr.tf.alpha_scale);
         const float tf_range[2] = { dvr.tf.min_val, dvr.tf.max_val };
-        viamd::write_flt_vec(state, STR_LIT("DvrRange"), tf_range, 2);
-        viamd::write_bool(state, STR_LIT("IsoEnabled"), iso.enabled);
-        viamd::write_int (state, STR_LIT("IsoCount"), (int64_t)iso.count);
-        for (size_t i = 0; i < iso.count && i < ARRAY_SIZE(iso.values); ++i) {
+        viamd::write_flt_vec(state, MD_STR_LIT("DvrRange"), tf_range, 2);
+        viamd::write_bool(state, MD_STR_LIT("IsoEnabled"), iso.enabled);
+        viamd::write_int (state, MD_STR_LIT("IsoCount"), (int64_t)iso.count);
+        for (size_t i = 0; i < iso.count && i < MD_COUNTOF(iso.values); ++i) {
             char key[32];
             snprintf(key, sizeof(key), "IsoValue%zu", i);
-            viamd::write_flt(state, str_from_cstr(key), iso.values[i]);
+            viamd::write_flt(state, md_str_from_cstr(key), iso.values[i]);
             snprintf(key, sizeof(key), "IsoColor%zu", i);
-            viamd::write_vec4(state, str_from_cstr(key), iso.colors[i]);
+            viamd::write_vec4(state, md_str_from_cstr(key), iso.colors[i]);
         }
-        viamd::write_vec3(state, STR_LIT("ClipMin"), clip_volume.min);
-        viamd::write_vec3(state, STR_LIT("ClipMax"), clip_volume.max);
-        viamd::write_bool(state, STR_LIT("LegendEnabled"), legend.enabled);
-        viamd::write_bool(state, STR_LIT("LegendCheckerboard"), legend.checkerboard);
-        viamd::write_int (state, STR_LIT("LegendColormapMode"), legend.colormap_mode);
-        viamd::write_flt (state, STR_LIT("ResolutionScale"), resolution_scale);
-        viamd::write_vec4(state, STR_LIT("ClipVolumeColor"), clip_volume_color);
-        viamd::write_vec4(state, STR_LIT("BoundingBoxColor"), bounding_box_color);
-        viamd::write_bool(state, STR_LIT("ShowBoundingBox"), show_bounding_box);
-        viamd::write_bool(state, STR_LIT("RelativeToBulk"), relative_to_bulk);
+        viamd::write_vec3(state, MD_STR_LIT("ClipMin"), clip_volume.min);
+        viamd::write_vec3(state, MD_STR_LIT("ClipMax"), clip_volume.max);
+        viamd::write_bool(state, MD_STR_LIT("LegendEnabled"), legend.enabled);
+        viamd::write_bool(state, MD_STR_LIT("LegendCheckerboard"), legend.checkerboard);
+        viamd::write_int (state, MD_STR_LIT("LegendColormapMode"), legend.colormap_mode);
+        viamd::write_flt (state, MD_STR_LIT("ResolutionScale"), resolution_scale);
+        viamd::write_vec4(state, MD_STR_LIT("ClipVolumeColor"), clip_volume_color);
+        viamd::write_vec4(state, MD_STR_LIT("BoundingBoxColor"), bounding_box_color);
+        viamd::write_bool(state, MD_STR_LIT("ShowBoundingBox"), show_bounding_box);
+        viamd::write_bool(state, MD_STR_LIT("RelativeToBulk"), relative_to_bulk);
         if (cmp.path[0]) {
-            viamd::write_str(state, STR_LIT("CompareFile"), str_from_cstr(cmp.path));
-            viamd::write_int(state, STR_LIT("CompareShow"), cmp.show);
+            viamd::write_str(state, MD_STR_LIT("CompareFile"), md_str_from_cstr(cmp.path));
+            viamd::write_int(state, MD_STR_LIT("CompareShow"), cmp.show);
         }
-        viamd::write_bool(state, STR_LIT("ShowReferenceStructures"), show_reference_structures);
-        viamd::write_bool(state, STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
-        viamd::write_flt (state, STR_LIT("EnsembleFade"), ensemble_fade);
-        viamd::write_bool(state, STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
-        viamd::write_bool(state, STR_LIT("ShowPanel"), show_panel);
-        viamd::write_flt (state, STR_LIT("PanelWidth"), panel_width);
-        viamd::write_int (state, STR_LIT("RepresentationCount"), (int64_t)md_array_size(reps));
+        viamd::write_bool(state, MD_STR_LIT("ShowReferenceStructures"), show_reference_structures);
+        viamd::write_bool(state, MD_STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
+        viamd::write_flt (state, MD_STR_LIT("EnsembleFade"), ensemble_fade);
+        viamd::write_bool(state, MD_STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
+        viamd::write_bool(state, MD_STR_LIT("ShowPanel"), show_panel);
+        viamd::write_flt (state, MD_STR_LIT("PanelWidth"), panel_width);
+        viamd::write_int (state, MD_STR_LIT("RepresentationCount"), (int64_t)md_array_size(reps));
 
         // Each representation of the reference structures in a section of its own after this one, with the entries
         // of a representation of the Representations window
         for (size_t i = 0; i < md_array_size(reps); ++i) {
-            viamd::write_section_header(state, STR_LIT("DensityVolumeRepresentation"));
+            viamd::write_section_header(state, MD_STR_LIT("DensityVolumeRepresentation"));
             representation_write_entries(state, app, reps[i].rep);
         }
     }
@@ -593,100 +593,100 @@ struct DensityVolume : viamd::EventHandler {
         SeriesSource source = SeriesSource_Script;
         uint32_t period = 0;
         uint32_t member = 0;
-        str_t path = {};
-        str_t ident, arg;
+        md_str_t path = {};
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (str_eq_cstr(ident, "PropertySource")) {
-                str_t name;
+            if (md_str_eq_cstr(ident, "PropertySource")) {
+                md_str_t name;
                 viamd::extract_str(name, arg);
                 series_source_from_name(&source, name, &period);
-            } else if (str_eq_cstr(ident, "PropertyPeriod")) {
+            } else if (md_str_eq_cstr(ident, "PropertyPeriod")) {
                 int i = 0;
-                if (viamd::extract_int(i, arg)) period = (uint32_t)MAX(i, 0);
-            } else if (str_eq_cstr(ident, "PropertyMember")) {
+                if (viamd::extract_int(i, arg)) period = (uint32_t)MD_MAX(i, 0);
+            } else if (md_str_eq_cstr(ident, "PropertyMember")) {
                 int i = 0;
-                if (viamd::extract_int(i, arg)) member = (uint32_t)MAX(i, 0);
-            } else if (str_eq_cstr(ident, "PropertyPath")) {
+                if (viamd::extract_int(i, arg)) member = (uint32_t)MD_MAX(i, 0);
+            } else if (md_str_eq_cstr(ident, "PropertyPath")) {
                 viamd::extract_str(path, arg);
-            } else if (str_eq_cstr(ident, "DvrEnabled")) {
+            } else if (md_str_eq_cstr(ident, "DvrEnabled")) {
                 viamd::extract_bool(dvr.enabled, arg);
-            } else if (str_eq_cstr(ident, "DvrColormap")) {
+            } else if (md_str_eq_cstr(ident, "DvrColormap")) {
                 viamd::extract_int(dvr.tf.colormap, arg);
-            } else if (str_eq_cstr(ident, "DvrAlphaScale")) {
+            } else if (md_str_eq_cstr(ident, "DvrAlphaScale")) {
                 viamd::extract_flt(dvr.tf.alpha_scale, arg);
-            } else if (str_eq_cstr(ident, "DvrRange")) {
+            } else if (md_str_eq_cstr(ident, "DvrRange")) {
                 float r[2];
                 if (viamd::extract_flt_vec(r, 2, arg)) { dvr.tf.min_val = r[0]; dvr.tf.max_val = r[1]; }
-            } else if (str_eq_cstr(ident, "IsoEnabled")) {
+            } else if (md_str_eq_cstr(ident, "IsoEnabled")) {
                 viamd::extract_bool(iso.enabled, arg);
-            } else if (str_eq_cstr(ident, "IsoCount")) {
+            } else if (md_str_eq_cstr(ident, "IsoCount")) {
                 int n;
-                if (viamd::extract_int(n, arg)) iso.count = (size_t)CLAMP(n, 0, (int)ARRAY_SIZE(iso.values));
-            } else if (str_eq_cstr(ident, "ClipMin")) {
+                if (viamd::extract_int(n, arg)) iso.count = (size_t)MD_CLAMP(n, 0, (int)MD_COUNTOF(iso.values));
+            } else if (md_str_eq_cstr(ident, "ClipMin")) {
                 viamd::extract_vec3(clip_volume.min, arg);
-            } else if (str_eq_cstr(ident, "ClipMax")) {
+            } else if (md_str_eq_cstr(ident, "ClipMax")) {
                 viamd::extract_vec3(clip_volume.max, arg);
-            } else if (str_eq_cstr(ident, "LegendEnabled")) {
+            } else if (md_str_eq_cstr(ident, "LegendEnabled")) {
                 viamd::extract_bool(legend.enabled, arg);
-            } else if (str_eq_cstr(ident, "LegendCheckerboard")) {
+            } else if (md_str_eq_cstr(ident, "LegendCheckerboard")) {
                 viamd::extract_bool(legend.checkerboard, arg);
-            } else if (str_eq_cstr(ident, "LegendColormapMode")) {
+            } else if (md_str_eq_cstr(ident, "LegendColormapMode")) {
                 viamd::extract_int(legend.colormap_mode, arg);
-            } else if (str_eq_cstr(ident, "ResolutionScale")) {
+            } else if (md_str_eq_cstr(ident, "ResolutionScale")) {
                 viamd::extract_flt(resolution_scale, arg);
-            } else if (str_eq_cstr(ident, "ClipVolumeColor")) {
+            } else if (md_str_eq_cstr(ident, "ClipVolumeColor")) {
                 viamd::extract_vec4(clip_volume_color, arg);
-            } else if (str_eq_cstr(ident, "BoundingBoxColor")) {
+            } else if (md_str_eq_cstr(ident, "BoundingBoxColor")) {
                 viamd::extract_vec4(bounding_box_color, arg);
-            } else if (str_eq_cstr(ident, "ShowBoundingBox")) {
+            } else if (md_str_eq_cstr(ident, "ShowBoundingBox")) {
                 viamd::extract_bool(show_bounding_box, arg);
-            } else if (str_eq_cstr(ident, "RelativeToBulk")) {
+            } else if (md_str_eq_cstr(ident, "RelativeToBulk")) {
                 viamd::extract_bool(relative_to_bulk, arg);
-            } else if (str_eq_cstr(ident, "CompareFile")) {
-                str_t f;
+            } else if (md_str_eq_cstr(ident, "CompareFile")) {
+                md_str_t f;
                 if (viamd::extract_str(f, arg)) {
-                    str_copy_to_char_buf(cmp.path, sizeof(cmp.path), f);
+                    md_str_copy_to_char_buf(cmp.path, sizeof(cmp.path), f);
                     cmp.load = true;
                 }
-            } else if (str_eq_cstr(ident, "CompareShow")) {
+            } else if (md_str_eq_cstr(ident, "CompareShow")) {
                 viamd::extract_int(cmp.show, arg);
-                cmp.show = CLAMP(cmp.show, 0, (int)CompareShow_Other);
-            } else if (str_eq_cstr(ident, "ShowReferenceStructures")) {
+                cmp.show = MD_CLAMP(cmp.show, 0, (int)CompareShow_Other);
+            } else if (md_str_eq_cstr(ident, "ShowReferenceStructures")) {
                 viamd::extract_bool(show_reference_structures, arg);
-            } else if (str_eq_cstr(ident, "ShowReferenceEnsemble")) {
+            } else if (md_str_eq_cstr(ident, "ShowReferenceEnsemble")) {
                 viamd::extract_bool(show_reference_ensemble, arg);
-            } else if (str_eq_cstr(ident, "EnsembleFade")) {
+            } else if (md_str_eq_cstr(ident, "EnsembleFade")) {
                 viamd::extract_flt(ensemble_fade, arg);
-            } else if (str_eq_cstr(ident, "ShowCoordinateSystem")) {
+            } else if (md_str_eq_cstr(ident, "ShowCoordinateSystem")) {
                 viamd::extract_bool(show_coordinate_system_widget, arg);
-            } else if (str_eq_cstr(ident, "ShowPanel")) {
+            } else if (md_str_eq_cstr(ident, "ShowPanel")) {
                 viamd::extract_bool(show_panel, arg);
-            } else if (str_eq_cstr(ident, "PanelWidth")) {
+            } else if (md_str_eq_cstr(ident, "PanelWidth")) {
                 viamd::extract_flt(panel_width, arg);
-            } else if (str_eq_cstr(ident, "RepresentationCount")) {
+            } else if (md_str_eq_cstr(ident, "RepresentationCount")) {
                 int n = 0;
-                if (viamd::extract_int(n, arg)) workspace_rep_count = MAX(n, 0);
-            } else if (str_eq_cstr(ident, "RepType")) {
+                if (viamd::extract_int(n, arg)) workspace_rep_count = MD_MAX(n, 0);
+            } else if (md_str_eq_cstr(ident, "RepType")) {
                 // From before there were several representations: the one there was
                 viamd::extract_enum(legacy_rep()->rep.type, arg, (int)RepresentationType::Cartoon + 1);
-            } else if (str_eq_cstr(ident, "RepColorMapping")) {
+            } else if (md_str_eq_cstr(ident, "RepColorMapping")) {
                 viamd::extract_enum(legacy_rep()->rep.color_mapping, arg, (int)ColorMapping::Count);
-            } else if (str_eq_cstr(ident, "RepParam")) {
+            } else if (md_str_eq_cstr(ident, "RepParam")) {
                 // Its parameters were the scales, in the order of a representation's
                 viamd::extract_flt_vec(legacy_rep()->rep.scale.elem, 4, arg);
-            } else if (str_eq_cstr(ident, "RepColor")) {
+            } else if (md_str_eq_cstr(ident, "RepColor")) {
                 viamd::extract_vec4(legacy_rep()->rep.base_color, arg);
             } else {
-                for (size_t i = 0; i < ARRAY_SIZE(iso.values); ++i) {
+                for (size_t i = 0; i < MD_COUNTOF(iso.values); ++i) {
                     char key[32];
                     snprintf(key, sizeof(key), "IsoValue%zu", i);
-                    if (str_eq_cstr(ident, key)) { viamd::extract_flt(iso.values[i], arg); break; }
+                    if (md_str_eq_cstr(ident, key)) { viamd::extract_flt(iso.values[i], arg); break; }
                     snprintf(key, sizeof(key), "IsoColor%zu", i);
-                    if (str_eq_cstr(ident, key)) { viamd::extract_vec4(iso.colors[i], arg); break; }
+                    if (md_str_eq_cstr(ident, key)) { viamd::extract_vec4(iso.colors[i], arg); break; }
                 }
             }
         }
-        if (!str_empty(path)) {
+        if (!md_str_empty(path)) {
             volume_key = series_key(source, path, SeriesVariant_Values, period);
             volume_member = member;
         }
@@ -694,8 +694,8 @@ struct DensityVolume : viamd::EventHandler {
         if (dvr.enabled && iso.enabled) {
             iso.enabled = false;
         }
-        ensemble_fade = CLAMP(ensemble_fade, 0.0f, 1.0f);
-        panel_width = MAX(panel_width, 100.0f);
+        ensemble_fade = MD_CLAMP(ensemble_fade, 0.0f, 1.0f);
+        panel_width = MD_MAX(panel_width, 100.0f);
         dvr.tf.dirty = true;
         dirty_rep = true;
         dirty_vol = true;
@@ -703,7 +703,7 @@ struct DensityVolume : viamd::EventHandler {
 
     void deserialize_rep(viamd::deserialization_state_t& state) {
         DensityVolumeRep* r = add_rep();
-        str_t ident, arg;
+        md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
             representation_read_entry(&r->rep, ident, arg);
         }
@@ -723,7 +723,7 @@ struct DensityVolume : viamd::EventHandler {
     void update(ApplicationState* state) {
         md_allocator_i* temp_arena = state->allocator.frame;
         md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
-        defer { md_temp_end(temp_scope); };
+        MD_DEFER { md_temp_end(temp_scope); };
 
         if (dvr.tf.dirty) {
             dvr.tf.dirty = false;
@@ -744,7 +744,7 @@ struct DensityVolume : viamd::EventHandler {
         const uint32_t* vol_dim = vol_view.dim;
         volume_state = resolved ? vol_view.state : SeriesState{};
         volume_count = resolved ? vol_view.count : 0;
-        str_copy_to_char_buf(volume_label, sizeof(volume_label), str_from_cstr(vol_view.label));
+        md_str_copy_to_char_buf(volume_label, sizeof(volume_label), md_str_from_cstr(vol_view.label));
         const script::Ref vis_ref = vol_view.vis_ref;
         const uint64_t data_version = vol_view.version;
 
@@ -805,7 +805,7 @@ struct DensityVolume : viamd::EventHandler {
                         .sys = &state->mold.sys,
                         .state = &state->mold.state,
                         .eval = state->script.eval,
-                        .run = str_from_cstr(state->mold.run),
+                        .run = md_str_from_cstr(state->mold.run),
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
                     result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
@@ -857,7 +857,7 @@ struct DensityVolume : viamd::EventHandler {
                             camera = default_view;
                         }
                     }
-                    const size_t count = MIN(md_array_size(vis.sdf.structures), md_array_size(vis.sdf.matrices));
+                    const size_t count = MD_MIN(md_array_size(vis.sdf.structures), md_array_size(vis.sdf.matrices));
                     set_structures(vis.sdf.structures, vis.sdf.matrices, count);
                 } else {
                     clear_structures();
@@ -885,9 +885,9 @@ struct DensityVolume : viamd::EventHandler {
                 dirty_vol = false;
                 // Its innermost axis is the texture's width; v2's volumes differ in size, so the texture follows
                 int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
-                if (!volume_texture.id || MEMCMP(volume_texture.dim, dim, sizeof(dim)) != 0) {
+                if (!volume_texture.id || md_memcmp(volume_texture.dim, dim, sizeof(dim)) != 0) {
                     gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
-                    MEMCPY(volume_texture.dim, dim, sizeof(dim));
+                    md_memcpy(volume_texture.dim, dim, sizeof(dim));
                 }
                 const size_t n = (size_t)dim[0] * dim[1] * dim[2];
                 const bool compared = cmp.placed && cmp.show != CompareShow_This && cmp.sampled_count == n;
@@ -927,11 +927,11 @@ struct DensityVolume : viamd::EventHandler {
 
     void compare_read() {
         char path[sizeof(cmp.path)];
-        MEMCPY(path, cmp.path, sizeof(path));
+        md_memcpy(path, cmp.path, sizeof(path));
         compare_clear();
-        MEMCPY(cmp.path, path, sizeof(path));
+        md_memcpy(cmp.path, path, sizeof(path));
         if (!path[0]) return;
-        cmp.loaded = density_volume::cube_read(&cmp.cube, str_from_cstr(path), md_get_heap_allocator(), cmp.err, sizeof(cmp.err));
+        cmp.loaded = density_volume::cube_read(&cmp.cube, md_str_from_cstr(path), md_get_heap_allocator(), cmp.err, sizeof(cmp.err));
         cmp.generation += 1;
         cmp.key = 0;
     }
@@ -972,13 +972,13 @@ struct DensityVolume : viamd::EventHandler {
                 .sys = &state->mold.sys,
                 .state = &st0,
                 .eval = state->script.eval,
-                .run = str_from_cstr(state->mold.run),
+                .run = md_str_from_cstr(state->mold.run),
             };
             if (script::draw_ref(&vis, v.vis_ref, (int)v.member, ctx, script::DRAW_SDF) && md_array_size(vis.sdf.structures) > 0 &&
                 md_array_size(vis.sdf.matrices) > 0) {
                 const mat4_t M = vis.sdf.matrices[0];
                 xyz = (vec3_t*)md_alloc(temp, st0.num_atoms * sizeof(vec3_t));
-                MEMCPY(xyz, st0.xyz, st0.num_atoms * sizeof(vec3_t));
+                md_memcpy(xyz, st0.xyz, st0.num_atoms * sizeof(vec3_t));
                 md_bitset_iter_t it = md_bitset_iter(vis.sdf.structures[0]);
                 while (md_bitset_iter_next(&it)) {
                     md_array_push(atoms, (int32_t)it.idx, temp);
@@ -1000,9 +1000,9 @@ struct DensityVolume : viamd::EventHandler {
             cmp.sampled_count = n;
         }
         density_volume::Grid to;
-        MEMCPY(to.dim, v.dim, sizeof(to.dim));
+        md_memcpy(to.dim, v.dim, sizeof(to.dim));
         to.origin = v.origin;
-        MEMCPY(to.basis, v.basis, sizeof(to.basis));
+        md_memcpy(to.basis, v.basis, sizeof(to.basis));
         cmp.covered = density_volume::resample(cmp.sampled, to, cmp.cube.grid, cmp.al);
         cmp.placed = true;
     }
@@ -1011,15 +1011,15 @@ struct DensityVolume : viamd::EventHandler {
         if (!prop::section("Compare")) return;
         prop::row("with", "A volume exported from another run or system (File > Export > Gaussian Cube): placed on this one by what their reference structures have in common");
         {
-            const str_t name = cmp.path[0] ? str_from_cstr(cmp.path) : str_t{};
+            const md_str_t name = cmp.path[0] ? md_str_from_cstr(cmp.path) : md_str_t{};
             const char* base = cmp.path;
             for (const char* c = cmp.path; *c; ++c) if (*c == '/' || *c == '\\') base = c + 1;
             const float w = prop::control_width();
             const float bw = ImGui::GetFrameHeight();
             if (ImGui::Button(name.len ? base : "Open a cube file...", ImVec2(cmp.path[0] ? w - bw - ImGui::GetStyle().ItemSpacing.x : w, 0))) {
                 char buf[sizeof(cmp.path)] = "";
-                if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, STR_LIT("cube"))) {
-                    MEMCPY(cmp.path, buf, sizeof(buf));
+                if (application::file_dialog(buf, sizeof(buf), application::FileDialogFlag_Open, MD_STR_LIT("cube"))) {
+                    md_memcpy(cmp.path, buf, sizeof(buf));
                     cmp.load = true;
                 }
             }
@@ -1080,7 +1080,7 @@ struct DensityVolume : viamd::EventHandler {
                     volume_member = 0;
                 }
                 if (ImGui::IsItemHovered()) {
-                    const str_t ident = series_script_ident(key);
+                    const md_str_t ident = series_script_ident(key);
                     script_visualize_ref(state, script::output_ref(state->script.eval_ir, ident), -1, script::DRAW_DEFAULT);
                     script_set_hovered_property(state, ident);
                 }
@@ -1101,10 +1101,10 @@ struct DensityVolume : viamd::EventHandler {
 
     // Of an array of volumes ('sdf(...) in residue(1:n)'), the one shown, as the script names them
     void draw_member_slider(ApplicationState* state, float width) {
-        const str_t ident = series_script_ident(volume_key);
+        const md_str_t ident = series_script_ident(volume_key);
         int m = (int)volume_member + 1;
         char fmt[96];
-        snprintf(fmt, sizeof(fmt), STR_FMT "[%%d] of %u", STR_ARG(ident), volume_count);
+        snprintf(fmt, sizeof(fmt), MD_STR_FMT "[%%d] of %u", MD_STR_ARG(ident), volume_count);
         ImGui::SetNextItemWidth(width);
         if (ImGui::SliderInt("##member", &m, 1, (int)volume_count, fmt, ImGuiSliderFlags_AlwaysClamp)) {
             volume_member = (uint32_t)(m - 1);
@@ -1188,7 +1188,7 @@ struct DensityVolume : viamd::EventHandler {
             for (int i = 0; i < (int)iso.count; ++i) {
                 ImGui::PushID(i);
                 prop::row(i == 0 ? "isovalues" : "");
-                ImGui::SetNextItemWidth(MAX(prop::control_width() - 2.0f * (btn + gap), 1.0f));
+                ImGui::SetNextItemWidth(MD_MAX(prop::control_width() - 2.0f * (btn + gap), 1.0f));
                 ImGui::SliderFloat("##isovalue", &iso.values[i], 0.0f, 10.f, "%.3f", ImGuiSliderFlags_Logarithmic);
                 ImGui::SameLine(0.0f, gap);
                 ImGui::ColorEdit4Minimal("##color", iso.colors[i].elem);
@@ -1207,7 +1207,7 @@ struct DensityVolume : viamd::EventHandler {
                 iso.count -= 1;
             }
             prop::row(iso.count == 0 ? "isovalues" : "");
-            ImGui::BeginDisabled(iso.count >= ARRAY_SIZE(iso.values));
+            ImGui::BeginDisabled(iso.count >= MD_COUNTOF(iso.values));
             if (ImGui::Button(ICON_FA_PLUS " add")) {
                 size_t idx = iso.count++;
                 iso.values[idx] = 0.1f;
@@ -1283,7 +1283,7 @@ struct DensityVolume : viamd::EventHandler {
         const bool open = ImGui::TreeNodeEx("##node", ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
         ImGui::SameLine();
         const float buttons = 3.0f * btn + 3.0f * gap;
-        ImGui::SetNextItemWidth(MAX(right_x - ImGui::GetCursorPosX() - buttons, 1.0f));
+        ImGui::SetNextItemWidth(MD_MAX(right_x - ImGui::GetCursorPosX() - buttons, 1.0f));
         const bool invalid = !rep.filter.result.success && !r.dirty && rep.filter.text[0] != '\0';
         if (invalid) ImGui::PushInvalid();
         ImGui::InputText("##name", rep.name, sizeof(rep.name));
@@ -1397,7 +1397,7 @@ struct DensityVolume : viamd::EventHandler {
 
         md_allocator_i* temp_arena = state->allocator.frame;
         md_temp_scope_t temp_scope = md_temp_begin_in(temp_arena);
-        defer { md_temp_end(temp_scope); };
+        MD_DEFER { md_temp_end(temp_scope); };
 
         ImGui::SetNextWindowSize(ImVec2(800, 500), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
@@ -1417,7 +1417,7 @@ struct DensityVolume : viamd::EventHandler {
                 // The settings beside the view, at the right end of the bar
                 const char* label = ICON_FA_SLIDERS;
                 const float w = ImGui::CalcTextSize(label).x + 2.0f * ImGui::GetStyle().ItemSpacing.x;
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MAX(ImGui::GetContentRegionAvail().x - w, 0.0f));
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(ImGui::GetContentRegionAvail().x - w, 0.0f));
                 if (ImGui::MenuItem(label, nullptr, show_panel)) {
                     show_panel = !show_panel;
                 }
@@ -1433,13 +1433,13 @@ struct DensityVolume : viamd::EventHandler {
             const float splitter_w = 6.0f;
             float panel_w = 0.0f;
             if (show_panel) {
-                panel_w = CLAMP(panel_width, 200.0f, MAX(avail.x - 150.0f, 200.0f));
-                const float canvas_w = MAX(avail.x - panel_w - splitter_w, 50.0f);
+                panel_w = MD_CLAMP(panel_width, 200.0f, MD_MAX(avail.x - 150.0f, 200.0f));
+                const float canvas_w = MD_MAX(avail.x - panel_w - splitter_w, 50.0f);
 
                 ImGui::SetCursorScreenPos(ImVec2(origin.x + canvas_w, origin.y));
-                ImGui::InvisibleButton("##splitter", ImVec2(splitter_w, MAX(avail.y, 1.0f)));
+                ImGui::InvisibleButton("##splitter", ImVec2(splitter_w, MD_MAX(avail.y, 1.0f)));
                 if (ImGui::IsItemActive()) {
-                    panel_width = CLAMP(panel_w - ImGui::GetIO().MouseDelta.x, 200.0f, MAX(avail.x - 150.0f, 200.0f));
+                    panel_width = MD_CLAMP(panel_w - ImGui::GetIO().MouseDelta.x, 200.0f, MD_MAX(avail.x - 150.0f, 200.0f));
                 }
                 if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1449,7 +1449,7 @@ struct DensityVolume : viamd::EventHandler {
                                                     ImGui::GetColorU32(ImGui::IsItemHovered() || ImGui::IsItemActive() ? ImGuiCol_SeparatorHovered : ImGuiCol_Separator));
 
                 ImGui::SetCursorScreenPos(ImVec2(origin.x + canvas_w + splitter_w, origin.y));
-                if (ImGui::BeginChild("##panel", ImVec2(panel_w, MAX(avail.y, 1.0f)), ImGuiChildFlags_None)) {
+                if (ImGui::BeginChild("##panel", ImVec2(panel_w, MD_MAX(avail.y, 1.0f)), ImGuiChildFlags_None)) {
                     draw_panel(state);
                 }
                 ImGui::EndChild();
@@ -1575,7 +1575,7 @@ struct DensityVolume : viamd::EventHandler {
 
             if (dvr.enabled && legend.enabled) {
                 ImVec2 canvas_ext = canvas_p1 - canvas_p0;
-                ImVec2 cmap_ext = {MIN(canvas_ext.x * 0.5f, 250.0f), MIN(canvas_ext.y * 0.25f, 30.0f)};
+                ImVec2 cmap_ext = {MD_MIN(canvas_ext.x * 0.5f, 250.0f), MD_MIN(canvas_ext.y * 0.25f, 30.0f)};
                 ImVec2 cmap_pad = {10, 10};
                 ImVec2 cmap_pos = canvas_p1 - ImVec2(cmap_ext.x, cmap_ext.y) - cmap_pad;
                 ImPlotColormap cmap = dvr.tf.colormap;
@@ -1617,7 +1617,7 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             if (show_coordinate_system_widget) {
-                float  ext = MIN(canvas_rect.GetWidth(), canvas_rect.GetHeight()) * 0.2f;
+                float  ext = MD_MIN(canvas_rect.GetWidth(), canvas_rect.GetHeight()) * 0.2f;
                 float  pad = 0.1f * ext;
 			    ImVec2 size = { ext, ext };
 
@@ -1645,7 +1645,7 @@ struct DensityVolume : viamd::EventHandler {
             glDepthFunc(GL_LESS);
 
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
             glViewport(0, 0, gbuf.width, gbuf.height);
             glScissor(0, 0,  gbuf.width, gbuf.height);
 
@@ -1666,7 +1666,7 @@ struct DensityVolume : viamd::EventHandler {
                         if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, state->mold.state);
                         md_array(md_gl_draw_op_t) ops = nullptr;
                         representation_glyph_draw_ops(&ops, *state, r.rep, temp_arena);
-                        const size_t n = MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
+                        const size_t n = MD_MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
                         for (size_t k = 0; k < md_array_size(ops); ++k) {
                             for (size_t j = 0; j < n; ++j) {
                                 if (!r.glyph_subsets[j].id) continue;
@@ -1681,7 +1681,7 @@ struct DensityVolume : viamd::EventHandler {
                     }
                     if ((r.rep.type == RepresentationType::Ribbons || r.rep.type == RepresentationType::Cartoon) && !has_backbone) continue;
                     const md_gl_draw_op_t base = representation_draw_op(r.rep);
-                    const size_t n = MIN(md_array_size(r.subsets), md_array_size(structure_mats));
+                    const size_t n = MD_MIN(md_array_size(r.subsets), md_array_size(structure_mats));
                     for (size_t j = 0; j < n; ++j) {
                         if (!r.subsets[j].id) continue;
                         md_gl_draw_op_t op = base;
@@ -1888,10 +1888,10 @@ struct DensityVolume : viamd::EventHandler {
             switch (e.type) {
             case viamd::EventType_ViamdInitialize: {
                 // Initialize component
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState* state = (ApplicationState*)e.payload;
                 app = state;
-                arena = md_arena_allocator_create(state->allocator.persistent, MEGABYTES(1));
+                arena = md_arena_allocator_create(state->allocator.persistent, MD_MEGABYTES(1));
                 picking_surface_init(&picking_surface, interaction_surface_density_vol);
                 workspace_register_window("DensityVolume", &show_window);
                 add_rep();
@@ -1905,10 +1905,10 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                const str_t section = viamd::section_header(state);
-                if (str_eq(section, STR_LIT("DensityVolume"))) {
+                const md_str_t section = viamd::section_header(state);
+                if (md_str_eq(section, MD_STR_LIT("DensityVolume"))) {
                     deserialize(state);
-                } else if (str_eq(section, STR_LIT("DensityVolumeRepresentation"))) {
+                } else if (md_str_eq(section, MD_STR_LIT("DensityVolumeRepresentation"))) {
                     deserialize_rep(state);
                 }
                 break;
@@ -1926,6 +1926,10 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemInit: {
+                // Also when the system is refreshed after its structure was inferred (system_inferred_refresh), when
+                // there is no ViamdSystemFree first: the glyphs of the cartoon are made again then, of a new molecule,
+                // so the glyph subsets and representations made of the previous one name a molecule that is gone
+                release_all_rep_resources();
                 dirty_rep = true;
                 break;
             }
@@ -1937,7 +1941,7 @@ struct DensityVolume : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState* state = (ApplicationState*)e.payload;
                 draw(state);
                 break;

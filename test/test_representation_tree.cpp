@@ -241,7 +241,7 @@ UTEST(representation_tree, a_group_never_goes_within_itself) {
         { r2,      RepresentationDrop_Before    },  // beside something within it, so within it too
         { r1,      RepresentationDrop_After     },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(refused); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(refused); ++i) {
         EXPECT_FALSE(representation_tree_can_move(t.nodes, t.count, g1, refused[i].target, refused[i].drop));
         EXPECT_FALSE(representation_tree_move(t.nodes, t.count, g1, refused[i].target, refused[i].drop));
         EXPECT_STREQ("g1[r1 g2[r2]] r3", describe(t));

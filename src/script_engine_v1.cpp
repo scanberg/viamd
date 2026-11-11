@@ -21,7 +21,7 @@ static inline const md_script_ir_t* v1_ir(const Program* p) { return p ? p->v1 :
 
 // ### COMPILE ###
 
-Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc) {
+Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_allocator_i* alloc) {
     Program* p = (Program*)md_alloc(alloc, sizeof(Program));
     memset(p, 0, sizeof(*p));
     p->lang = lang;
@@ -31,7 +31,7 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         md_script_ir_add_identifier_bitset(p->v1, desc.sets[i].name, desc.sets[i].atoms);
     }
     // Empty source is not compiled (v1 would log that it is empty): the program holds the sets alone
-    if (!str_empty(src)) md_script_ir_compile_from_source(p->v1, src, desc.sys, nullptr);
+    if (!md_str_empty(src)) md_script_ir_compile_from_source(p->v1, src, desc.sys, nullptr);
 
     const size_t ne = md_script_ir_num_errors(p->v1);
     const md_log_token_t* e = md_script_ir_errors(p->v1);
@@ -69,19 +69,19 @@ const Mark*       marks(const Program* p) { return p ? p->marks : nullptr; }
 void write_diagnostics(md_writer_i* w, const Program* p) { md_script_ir_write_diagnostics(w, v1_ir(p)); }
 
 size_t       num_identifiers(const Program* p) { return p ? md_script_ir_num_identifiers(p->v1) : 0; }
-const str_t* identifiers(const Program* p) { return p ? md_script_ir_identifiers(p->v1) : nullptr; }
+const md_str_t* identifiers(const Program* p) { return p ? md_script_ir_identifiers(p->v1) : nullptr; }
 
 // ### OUTPUTS ###
 
 size_t       num_outputs(const Program* p) { return md_script_ir_property_count(v1_ir(p)); }
-const str_t* output_names(const Program* p) { return md_script_ir_property_names(v1_ir(p)); }
-uint32_t     output_flags(const Program* p, str_t name) { return (uint32_t)md_script_ir_property_flags(v1_ir(p), name); }
-Range        output_range(const Program* p, str_t name) { return range_of(md_script_ir_property_range(v1_ir(p), name)); }
-uint64_t     output_fingerprint(const Program* p, str_t name) { return md_script_ir_property_fingerprint(v1_ir(p), name); }
-Ref          output_ref(const Program* p, str_t name) { return ref_of(md_script_ir_property_vis_ref(v1_ir(p), name)); }
+const md_str_t* output_names(const Program* p) { return md_script_ir_property_names(v1_ir(p)); }
+uint32_t     output_flags(const Program* p, md_str_t name) { return (uint32_t)md_script_ir_property_flags(v1_ir(p), name); }
+Range        output_range(const Program* p, md_str_t name) { return range_of(md_script_ir_property_range(v1_ir(p), name)); }
+uint64_t     output_fingerprint(const Program* p, md_str_t name) { return md_script_ir_property_fingerprint(v1_ir(p), name); }
+Ref          output_ref(const Program* p, md_str_t name) { return ref_of(md_script_ir_property_vis_ref(v1_ir(p), name)); }
 
 bool  ref_valid(const Program* p, Ref ref) { return md_script_vis_ref_valid(v1_ir(p), v1_ref(ref)); }
-str_t ref_name(const Program* p, Ref ref) { return md_script_vis_ref_ident(v1_ir(p), v1_ref(ref)); }
+md_str_t ref_name(const Program* p, Ref ref) { return md_script_vis_ref_ident(v1_ir(p), v1_ref(ref)); }
 int   ref_dim(const Program* p, Ref ref) { return md_script_vis_ref_dim(v1_ir(p), v1_ref(ref)); }
 
 // ### EVALUATE ###
@@ -107,10 +107,10 @@ void eval_free(Eval* e) {
 
 uint64_t eval_fingerprint(const Eval* e) { return e ? md_script_eval_ir_fingerprint(e->v1) : 0; }
 size_t   eval_num_outputs(const Eval* e) { return e ? md_script_eval_property_count(e->v1) : 0; }
-uint64_t eval_output_fingerprint(const Eval* e, str_t name) { return e ? md_script_eval_property_fingerprint(e->v1, name) : 0; }
+uint64_t eval_output_fingerprint(const Eval* e, md_str_t name) { return e ? md_script_eval_property_fingerprint(e->v1, name) : 0; }
 size_t   eval_num_frames(const Eval* e) { return e ? md_script_eval_frame_count(e->v1) : 0; }
 
-md_bitset_t eval_output_frames(const Eval* e, str_t name, md_allocator_i* alloc) {
+md_bitset_t eval_output_frames(const Eval* e, md_str_t name, md_allocator_i* alloc) {
     return e ? md_script_eval_property_frames(e->v1, name, alloc) : md_bitset_empty_set();
 }
 
@@ -118,7 +118,7 @@ md_bitset_t eval_pending_frames(Eval* e, md_allocator_i* alloc) {
     return e ? md_script_eval_pending_frames(e->v1, alloc) : md_bitset_empty_set();
 }
 
-bool eval_frames(Eval* e, const Program* prog, const md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames) {
+bool eval_frames(Eval* e, const Program* prog, const md_system_t* sys, md_str_t run, const uint32_t* frames, size_t num_frames) {
     return e && md_script_eval_frames(e->v1, v1_ir(prog), sys, run, frames, num_frames);
 }
 
@@ -172,22 +172,22 @@ static inline AggregateInfo info_of(const md_script_eval_slot_info_t& s) {
     return a;
 }
 
-bool aggregate_request(Eval* e, uint64_t key, str_t name, const md_bitset_t* frames) {
+bool aggregate_request(Eval* e, uint64_t key, md_str_t name, const md_bitset_t* frames) {
     return e && md_script_eval_slot_request(e->v1, key, name, frames);
 }
 
-void aggregate_release(Eval* e, uint64_t key, str_t name) {
+void aggregate_release(Eval* e, uint64_t key, md_str_t name) {
     if (e) md_script_eval_slot_release(e->v1, key, name);
 }
 
-bool aggregate_info(AggregateInfo* out, const Eval* e, uint64_t key, str_t name) {
+bool aggregate_info(AggregateInfo* out, const Eval* e, uint64_t key, md_str_t name) {
     md_script_eval_slot_info_t s = {};
     if (!e || !md_script_eval_slot_info(&s, e->v1, key, name)) return false;
     *out = info_of(s);
     return true;
 }
 
-bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* e, uint64_t key, str_t name) {
+bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* e, uint64_t key, md_str_t name) {
     md_script_eval_slot_info_t s = {};
     if (!e) return false;
     const bool ok = md_script_eval_slot_extract(&s, values, weights, num_values, e->v1, key, name);
@@ -240,7 +240,7 @@ static void take(Drawing* d, const md_script_vis_t& v) {
     for (size_t i = 0; i < md_array_size(v.text); ++i) {
         Text t;
         t.pos = v.text[i].pos;
-        t.str = str_copy(v.text[i].str, alloc);
+        t.str = md_str_copy(v.text[i].str, alloc);
         t.value = v.text[i].value;
         t.unit = v.text[i].unit;
         md_array_push(d->text, t, alloc);
@@ -273,7 +273,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
     return ok;
 }
 
-bool draw_text(Drawing* out, str_t expr, const DrawCtx& ctx, uint32_t flags) {
+bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags) {
     md_script_vis_t v = {};
     md_script_vis_init(&v, out->alloc);
     const md_script_vis_ctx_t c = v1_ctx(ctx);
@@ -308,16 +308,16 @@ static Completions completions_of(const md_script_completions_t& c, md_allocator
 }
 
 size_t       num_keywords(Language) { return md_script_num_keywords(); }
-const str_t* keywords(Language) { return md_script_keywords(); }
-size_t       builtin_names(Language, str_t* out, size_t cap) { return md_script_builtin_identifiers(out, cap); }
+const md_str_t* keywords(Language) { return md_script_keywords(); }
+size_t       builtin_names(Language, md_str_t* out, size_t cap) { return md_script_builtin_identifiers(out, cap); }
 
-Completions complete(Language, str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
+Completions complete(Language, md_str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
     return completions_of(md_script_complete(src, cursor, sys, alloc), alloc);
 }
 
-str_t attr_path(Language, const md_attributes_t* table, const md_attribute_t* attr) { return md_script_attr_path(table, attr); }
+md_str_t attr_path(Language, const md_attributes_t* table, const md_attribute_t* attr) { return md_script_attr_path(table, attr); }
 
-bool name_valid(Language, str_t name) { return md_script_identifier_name_valid(name); }
+bool name_valid(Language, md_str_t name) { return md_script_identifier_name_valid(name); }
 
 // ### FILTERS ###
 
@@ -340,22 +340,22 @@ static FilterResult result_of(const md_filter_result_t& r) {
     return f;
 }
 
-FilterResult filter(Language, md_bitset_t* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter(Language, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     const md_filter_context_t c = v1_filter_ctx(ctx);
     return result_of(md_filter(dst, expr, &c, alloc));
 }
 
-FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     const md_filter_context_t c = v1_filter_ctx(ctx);
     return result_of(md_filter_sets(dst, expr, &c, alloc));
 }
 
-FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     const md_filter_context_t c = v1_filter_ctx(ctx);
     return result_of(md_filter_bonds(dst, expr, &c, alloc));
 }
 
-Completions filter_complete(Language, str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
+Completions filter_complete(Language, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
     const md_filter_context_t c = v1_filter_ctx(ctx);
     return completions_of(md_filter_complete(expr, cursor, &c, alloc), alloc);
 }

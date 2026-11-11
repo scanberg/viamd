@@ -73,7 +73,7 @@ static int periodic_format(double value, char* buf, int size, void* user_data) {
 }
 
 void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImPlotAxisFlags flags) {
-    ASSERT(view);
+    MD_ASSERT(view);
     const double len = periodic_view_length(*view);
     double span = view->max - view->min;
     if (!(span > 0.0) || span > len) span = len;
@@ -125,7 +125,7 @@ void periodic_axis_setup(ImAxis axis, const char* label, PeriodicView* view, ImP
 }
 
 bool periodic_axis_popup(ImAxis axis, PeriodicView* view) {
-    ASSERT(view);
+    MD_ASSERT(view);
     char id[48];
     snprintf(id, sizeof(id), "##periodic_axis_%d", (int)axis);
     // Its margin, or where its labels are within the plot (DrawInsetAxes): there it is over the plot, whose menu the
@@ -195,36 +195,36 @@ void periodic_views_serialize(viamd::serialization_state_t& state) {
     for (int i = 0; i < MAX_PERIODIC_VIEWS; ++i) {
         const PeriodicView& v = views[i];
         if (!v.used) continue;
-        viamd::write_section_header(state, STR_LIT("PeriodicView"));
-        viamd::write_dbl(state, STR_LIT("Beg"),  v.period.beg);
-        viamd::write_dbl(state, STR_LIT("End"),  v.period.end);
-        viamd::write_dbl(state, STR_LIT("Seam"), v.period.seam);
-        viamd::write_str(state, STR_LIT("Unit"), str_from_cstr(v.unit));
-        viamd::write_dbl(state, STR_LIT("Min"),  v.min);
-        viamd::write_dbl(state, STR_LIT("Max"),  v.max);
+        viamd::write_section_header(state, MD_STR_LIT("PeriodicView"));
+        viamd::write_dbl(state, MD_STR_LIT("Beg"),  v.period.beg);
+        viamd::write_dbl(state, MD_STR_LIT("End"),  v.period.end);
+        viamd::write_dbl(state, MD_STR_LIT("Seam"), v.period.seam);
+        viamd::write_str(state, MD_STR_LIT("Unit"), md_str_from_cstr(v.unit));
+        viamd::write_dbl(state, MD_STR_LIT("Min"),  v.min);
+        viamd::write_dbl(state, MD_STR_LIT("Max"),  v.max);
     }
 }
 
 bool periodic_views_deserialize(viamd::deserialization_state_t& state) {
-    if (!str_eq_cstr(viamd::section_header(state), "PeriodicView")) return false;
+    if (!md_str_eq_cstr(viamd::section_header(state), "PeriodicView")) return false;
     SeriesPeriodic p = {};
     char unit[32] = "";
     double min = 0, max = 0;
     bool has_min = false, has_max = false;
-    str_t ident, arg;
+    md_str_t ident, arg;
     while (viamd::next_entry(ident, arg, state)) {
-        if      (str_eq_cstr(ident, "Beg"))  viamd::extract_dbl(p.beg, arg);
-        else if (str_eq_cstr(ident, "End"))  viamd::extract_dbl(p.end, arg);
-        else if (str_eq_cstr(ident, "Seam")) viamd::extract_dbl(p.seam, arg);
-        else if (str_eq_cstr(ident, "Unit")) viamd::extract_to_char_buf(unit, sizeof(unit), arg);
-        else if (str_eq_cstr(ident, "Min"))  has_min = viamd::extract_dbl(min, arg);
-        else if (str_eq_cstr(ident, "Max"))  has_max = viamd::extract_dbl(max, arg);
+        if      (md_str_eq_cstr(ident, "Beg"))  viamd::extract_dbl(p.beg, arg);
+        else if (md_str_eq_cstr(ident, "End"))  viamd::extract_dbl(p.end, arg);
+        else if (md_str_eq_cstr(ident, "Seam")) viamd::extract_dbl(p.seam, arg);
+        else if (md_str_eq_cstr(ident, "Unit")) viamd::extract_to_char_buf(unit, sizeof(unit), arg);
+        else if (md_str_eq_cstr(ident, "Min"))  has_min = viamd::extract_dbl(min, arg);
+        else if (md_str_eq_cstr(ident, "Max"))  has_max = viamd::extract_dbl(max, arg);
     }
     if (series_periodic_valid(p)) {
         PeriodicView* v = periodic_view(p, unit);
         if (v && has_min && has_max && max > min) {
             v->min = min;
-            v->max = MIN(max, min + series_periodic_length(p));
+            v->max = MD_MIN(max, min + series_periodic_length(p));
         }
     }
     return true;

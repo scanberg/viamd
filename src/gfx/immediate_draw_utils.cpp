@@ -121,7 +121,7 @@ void main() {
 
 static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitive_type) {
     const uint32_t max_size = (sizeof(Index) == 2 ? 0xFFFFU : 0xFFFFFFFFU);
-    ASSERT(md_array_size(ctx.indices) + count < max_size);
+    MD_ASSERT(md_array_size(ctx.indices) + count < max_size);
     DrawCommand* last_cmd = md_array_last(ctx.commands);
     if (last_cmd &&
         last_cmd->primitive_type == primitive_type &&
@@ -137,7 +137,7 @@ static inline void append_draw_command(Queue& ctx, size_t count, GLenum primitiv
         count -= capacity;
     }
 
-    ASSERT(ctx.curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
+    MD_ASSERT(ctx.curr_model_matrix_idx > -1 && "Immediate draw model matrix not set");
     const size_t offset = md_array_size(ctx.indices) - count;
     DrawCommand cmd {(uint32_t)offset, (uint32_t)count, ctx.curr_model_matrix_idx, ctx.curr_picking_base_idx, primitive_type, ctx.curr_point_size};
     md_array_push(ctx.commands, cmd, ctx.arena);
@@ -185,7 +185,7 @@ void draw_box(Queue& ctx, vec3_t mn, vec3_t mx, uint32_t color, uint32_t picking
 // All queue APIs require an explicit queue; this helper enforces that contract
 // and lazily injects an identity model matrix for first use.
 static Queue& require_queue(Queue* queue) {
-    ASSERT(queue);
+    MD_ASSERT(queue);
     if (queue->curr_model_matrix_idx < 0) {
         queue->curr_model_matrix_idx = (int32_t)md_array_size(queue->model_matrices);
         md_array_push(queue->model_matrices, mat4_ident(), queue->arena);
@@ -359,7 +359,7 @@ void basis(Queue* queue, mat4_t basis_mat, float scale, vec4_t x_color, vec4_t y
 
 Scope::Scope(Queue* supplied_queue, const char* label) {
     (void)label;
-    ASSERT(supplied_queue);
+    MD_ASSERT(supplied_queue);
     queue = supplied_queue;
     // Begin scope: push a fresh identity model transform in the queue stream.
     set_model(queue, mat4_ident());
@@ -594,7 +594,7 @@ void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_
     md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
     Vertex* v = md_array_end(ctx.vertices) - count;
 
-    ASSERT(v);
+    MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
@@ -638,7 +638,7 @@ void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t color_m
     md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
     Vertex* v = md_array_end(ctx.vertices) - count;
 
-    ASSERT(v);
+    MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
@@ -686,7 +686,7 @@ void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, vec4_t col
     md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
     Vertex* v = md_array_end(ctx.vertices) - count;
 
-    ASSERT(v);
+    MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
         vec4_t c = convert_color(verts[i].color) * color_mult;
@@ -728,8 +728,8 @@ void draw_plane(Queue& ctx, vec3_t center, vec3_t u, vec3_t v, uint32_t color, u
 }
 
 void draw_plane_wireframe(Queue& ctx, vec3_t center, vec3_t vec_u, vec3_t vec_v, uint32_t color, int segments_u, int segments_v) {
-    ASSERT(segments_u > 0);
-    ASSERT(segments_v > 0);
+    MD_ASSERT(segments_u > 0);
+    MD_ASSERT(segments_v > 0);
 
     //const vec3_t normal = vec3_normalize(vec3_cross(vec_u, vec_v));
 
@@ -860,7 +860,7 @@ static void build_tangent_frame(vec3_t axis, vec3_t& out_u, vec3_t& out_v) {
 }
 
 void draw_sphere(Queue& ctx, vec3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
-    ASSERT(stacks >= 2 && slices >= 3);
+    MD_ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
 
@@ -916,7 +916,7 @@ void draw_sphere(Queue& ctx, vec3_t center, float radius, uint32_t color, uint32
 }
 
 void draw_sphere_wireframe(Queue& ctx, vec3_t center, float radius, uint32_t color, int stacks, int slices) {
-    ASSERT(stacks >= 2 && slices >= 3);
+    MD_ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
 
@@ -948,7 +948,7 @@ void draw_sphere_wireframe(Queue& ctx, vec3_t center, float radius, uint32_t col
 }
 
 void draw_cylinder(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
     vec3_t axis = vec3_normalize(vec3_sub(to, from));
@@ -1024,7 +1024,7 @@ void draw_cylinder(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t co
 }
 
 void draw_cylinder_wireframe(Queue& ctx, vec3_t from, vec3_t to, float radius, uint32_t color, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
     vec3_t axis = vec3_normalize(vec3_sub(to, from));
@@ -1065,7 +1065,7 @@ static Lathe lathe_init(vec3_t origin, vec3_t axis, int segments) {
     Lathe l;
     l.origin   = origin;
     l.axis     = axis;
-    l.segments = CLAMP(segments, 3, LATHE_MAX_SEGMENTS);
+    l.segments = MD_CLAMP(segments, 3, LATHE_MAX_SEGMENTS);
     build_tangent_frame(axis, l.u, l.v);
     const float tau = 6.28318530717958647692f;
     for (int i = 0; i < l.segments; ++i) {
@@ -1159,7 +1159,7 @@ static void lathe_cone_side(Queue& ctx, const Lathe& l, float h0, float radius, 
 }
 
 void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const vec3_t axis_vec = vec3_sub(tip, base);
     const float height = vec3_length(axis_vec);
     if (!(height > 0.0f) || !(radius > 0.0f)) return;
@@ -1174,13 +1174,13 @@ void draw_cone(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color
 // rim, and the head. No faces hidden inside one another, so nothing to fight in depth where shaft meets head.
 // The head is given in world units and is shortened to the arrow's length if it does not fit.
 void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const vec3_t axis_vec = vec3_sub(to, from);
     const float length = vec3_length(axis_vec);
     if (!(length > 0.0f)) return;
 
-    head_length  = CLAMP(head_length, 0.0f, length);
-    head_radius  = MAX(head_radius, shaft_radius);
+    head_length  = MD_CLAMP(head_length, 0.0f, length);
+    head_radius  = MD_MAX(head_radius, shaft_radius);
     const float shaft_length = length - head_length;
 
     const Lathe l = lathe_init(from, vec3_mul1(axis_vec, 1.0f / length), segments);
@@ -1201,12 +1201,12 @@ void draw_arrow(Queue& ctx, vec3_t from, vec3_t to, float shaft_radius, float he
 // The side of a truncated cone, open at both ends: the surface's normal at an angle is the same along the whole
 // slant, (length, radius_from - radius_to) in (radial, axial)
 void draw_frustum(Queue& ctx, vec3_t from, vec3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const vec3_t axis_vec = vec3_sub(to, from);
     const float length = vec3_length(axis_vec);
     if (!(length > 0.0f)) return;
-    radius_from = MAX(radius_from, 0.0f);
-    radius_to   = MAX(radius_to,   0.0f);
+    radius_from = MD_MAX(radius_from, 0.0f);
+    radius_to   = MD_MAX(radius_to,   0.0f);
     if (radius_from == 0.0f && radius_to == 0.0f) return;
 
     const Lathe l = lathe_init(from, vec3_mul1(axis_vec, 1.0f / length), segments);
@@ -1222,7 +1222,7 @@ void draw_frustum(Queue& ctx, vec3_t from, vec3_t to, float radius_from, float r
 }
 
 void draw_cone_wireframe(Queue& ctx, vec3_t base, vec3_t tip, float radius, uint32_t color, int segments) {
-    ASSERT(segments >= 3);
+    MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
     vec3_t axis = vec3_normalize(vec3_sub(tip, base));

@@ -124,7 +124,7 @@ static void compute_svd(const mat3& A, mat3& U, mat3& S, mat3& V) { svd(ARGS(A),
 
 #undef ARGS
 
-vec3 compute_eigen_values(const float* RESTRICT x, const float* RESTRICT y, const float* RESTRICT z, const float* RESTRICT mass, i64 count) {
+vec3 compute_eigen_values(const float* MD_RESTRICT x, const float* MD_RESTRICT y, const float* MD_RESTRICT z, const float* MD_RESTRICT mass, i64 count) {
     const vec3 com = compute_com(x, y, z, mass, count);
     const mat3 A = compute_weighted_covariance_matrix(x, y, z, mass, count, com);
     vec3 vecs[3];
@@ -156,9 +156,9 @@ mat3 compute_rotation(const float* x0, const float* y0, const float* z0,
 
 #if 0
 // clang-format off
-static void compute_residual_error(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
-                                   const float* RESTRICT src_x, const float* RESTRICT src_y, const float* RESTRICT src_z,
-                                   const float* RESTRICT ref_x, const float* RESTRICT ref_y, const float* RESTRICT ref_z,
+static void compute_residual_error(float* MD_RESTRICT out_x, float* MD_RESTRICT out_y, float* MD_RESTRICT out_z,
+                                   const float* MD_RESTRICT src_x, const float* MD_RESTRICT src_y, const float* MD_RESTRICT src_z,
+                                   const float* MD_RESTRICT ref_x, const float* MD_RESTRICT ref_y, const float* MD_RESTRICT ref_z,
                                    int64 count, const mat4& matrix)
 // clang-format on
 {
@@ -192,9 +192,9 @@ inline float Gaussian(float r) {
 
 #define RBF_FUNCTION Wendland_3_1
 
-static void compute_rbf_weights(float* RESTRICT out_x, float* RESTRICT out_y, float* RESTRICT out_z,
-                         const float* RESTRICT in_pos_x, const float* RESTRICT in_pos_y, const float* RESTRICT in_pos_z,
-                         const float* RESTRICT in_val_x, const float* RESTRICT in_val_y, const float* RESTRICT in_val_z,
+static void compute_rbf_weights(float* MD_RESTRICT out_x, float* MD_RESTRICT out_y, float* MD_RESTRICT out_z,
+                         const float* MD_RESTRICT in_pos_x, const float* MD_RESTRICT in_pos_y, const float* MD_RESTRICT in_pos_z,
+                         const float* MD_RESTRICT in_val_x, const float* MD_RESTRICT in_val_y, const float* MD_RESTRICT in_val_z,
                          int64 count, const float radial_cutoff = 10.f) {
 
     const float d2_max = radial_cutoff * radial_cutoff;
@@ -233,7 +233,7 @@ out_z[i] = x(i, 2);
 #endif
 
 static void free_structure_data(Structure* s) {
-    ASSERT(s);
+    MD_ASSERT(s);
     if (s->tracking_data.transform.rotation.absolute) FREE(s->tracking_data.transform.rotation.absolute);
     if (s->tracking_data.transform.rotation.relative) FREE(s->tracking_data.transform.rotation.relative);
     if (s->tracking_data.transform.rotation.hybrid) FREE(s->tracking_data.transform.rotation.hybrid);
@@ -247,7 +247,7 @@ static void free_structure_data(Structure* s) {
 }
 
 static void init_structure_data(Structure* s, ID id, i32 num_frames, i32 num_atoms) {
-    ASSERT(s);
+    MD_ASSERT(s);
     free_structure_data(s);
     s->id = id;
     s->tracking_data.count = num_frames;
@@ -286,12 +286,12 @@ void shutdown() {
 }
 
 ID create_structure() {
-    ASSERT(context);
+    MD_ASSERT(context);
     ID id = context->next_hash;
     context->next_hash = hash::crc32(context->next_hash);
 
     // This is to ensure that no collision happens
-    ASSERT(find_structure(id) == nullptr);
+    MD_ASSERT(find_structure(id) == nullptr);
 
     Structure* s = NEW(Structure);
     context->entries.push_back({id, s});
@@ -299,7 +299,7 @@ ID create_structure() {
 }
 
 bool remove_structure(ID id) {
-    ASSERT(context);
+    MD_ASSERT(context);
     for (auto& e : context->entries) {
         if (e.id == id) {
             if (e.ptr) free_structure_data(e.ptr);
@@ -313,7 +313,7 @@ bool remove_structure(ID id) {
 }
 
 void clear_structures() {
-    ASSERT(context);
+    MD_ASSERT(context);
     for (auto& e : context->entries) {
         if (e.ptr) free_structure_data(e.ptr);
     }
@@ -346,7 +346,7 @@ inline vec3 compute_weights(const vec3& eigen_values) {
 #endif
 
 bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bitfield atom_mask, i64 mask_offset) {
-    ASSERT(context);
+    MD_ASSERT(context);
 
     const i32 num_frames = (i32)dynamic.trajectory.num_frames;
 
@@ -368,7 +368,7 @@ bool compute_trajectory_transform_data(ID id, const MoleculeDynamic& dynamic, Bi
     // Scratch data
     const auto flt_mem_size = sizeof(float) * num_atoms * 10;
     void* flt_mem = TMP_MALLOC(flt_mem_size);
-    defer { TMP_FREE(flt_mem); };
+    MD_DEFER { TMP_FREE(flt_mem); };
     memset(flt_mem, 0, flt_mem_size);
 
     float* cur_x = (float*)flt_mem + 0 * num_atoms;
@@ -728,7 +728,7 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
 
     const auto mem_size = sizeof(float) * num_atoms * 7;
     void* mem = TMP_MALLOC(mem_size);
-    defer { TMP_FREE(mem); };
+    MD_DEFER { TMP_FREE(mem); };
     memset(mem, 0, mem_size);
 
     float* cur_x = (float*)mem + 0 * num_atoms;
@@ -776,7 +776,7 @@ void transform_to_internal_frame(MoleculeDynamic& dynamic, Bitfield atom_mask, i
 }
 
 const TrackingData* get_tracking_data(ID id) {
-    ASSERT(context);
+    MD_ASSERT(context);
     if (auto* s = find_structure(id)) {
         return &s->tracking_data;
     }

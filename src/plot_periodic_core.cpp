@@ -17,7 +17,7 @@ double periodic_wrap(double x, double beg, double len) {
 
 int periodic_polyline(double* out_x, double* out_y, int cap, const float* x, const float* y, int n, int stride, int k, double scale,
                       double base, double len, double max_step) {
-    ASSERT(out_x && out_y && x && y);
+    MD_ASSERT(out_x && out_y && x && y);
     const double top = base + len;
     const double nan = NAN;
     int m = 0;
@@ -135,7 +135,7 @@ int periodic_band_runs(double* out_x, double* out_lo, double* out_hi, int* run_b
 
 int periodic_least_populated(const float* density, int num_bins) {
     if (!density || num_bins <= 0) return -1;
-    const int r = MAX(1, num_bins / 20);
+    const int r = MD_MAX(1, num_bins / 20);
     int best = -1;
     double best_sum = DBL_MAX;
     for (int b = 0; b < num_bins; ++b) {

@@ -27,7 +27,7 @@ static inline double mass_level(int k) {
 }
 
 float density_map_threshold(const float table[DENSITY_MAP_TABLE], float level) {
-    level = CLAMP(level, 0.0f, 0.999f);
+    level = MD_CLAMP(level, 0.0f, 0.999f);
     const double x = -log10(1.0 - level) / 3.0 * (DENSITY_MAP_TABLE - 1);
     const int k = (int)x;
     if (k >= DENSITY_MAP_TABLE - 1) return table[DENSITY_MAP_TABLE - 1];
@@ -41,12 +41,12 @@ void density_map_mass_table(float table[DENSITY_MAP_TABLE], float* out_max, cons
     for (size_t i = 0; i < count; ++i) {
         if (mask && !mask[i]) continue;
         const float x = v[i * stride];
-        vmax = MAX(vmax, x);
+        vmax = MD_MAX(vmax, x);
         total += x;
     }
     *out_max = vmax;
     if (vmax <= 0.0f || total <= 0.0) {
-        MEMSET(table, 0, sizeof(float) * DENSITY_MAP_TABLE);
+        md_memset(table, 0, sizeof(float) * DENSITY_MAP_TABLE);
         return;
     }
 
@@ -55,14 +55,14 @@ void density_map_mass_table(float table[DENSITY_MAP_TABLE], float* out_max, cons
     const double bins_per_decade = NUM_BINS / DECADES;
     md_allocator_i* heap = md_get_heap_allocator();
     double* hist = (double*)md_alloc(heap, sizeof(double) * NUM_BINS);
-    MEMSET(hist, 0, sizeof(double) * NUM_BINS);
+    md_memset(hist, 0, sizeof(double) * NUM_BINS);
     const double inv_max = 1.0 / vmax;
     for (size_t i = 0; i < count; ++i) {
         if (mask && !mask[i]) continue;
         const float x = v[i * stride];
         if (x <= 0.0f) continue;
         const int b = (int)(-log10(x * inv_max) * bins_per_decade);
-        hist[CLAMP(b, 0, NUM_BINS - 1)] += x;
+        hist[MD_CLAMP(b, 0, NUM_BINS - 1)] += x;
     }
 
     table[0] = vmax;
@@ -112,7 +112,7 @@ static void blur_rows(vec4_t* out, const vec4_t* in, int dim, int r, bool period
 
 static void transpose(vec4_t* dst, const vec4_t* src, int n) {
     const int block = 8;
-    ASSERT(n % block == 0);
+    MD_ASSERT(n % block == 0);
     for (int i = 0; i < n; i += block) {
         for (int j = 0; j < n; j += block) {
             for (int k = i; k < i + block; ++k) {
@@ -134,15 +134,15 @@ static void boxes_for_gauss(int* half_w, int n, float sigma) {
     const int m = (int)(m_ideal + 0.5f);
     for (int i = 0; i < n; i++) {
         const int w = i < m ? wl : wu;
-        half_w[i] = MAX(0, (w - 1) / 2);
+        half_w[i] = MD_MAX(0, (w - 1) / 2);
     }
 }
 
 void density_map_blur(float* data, int dim, float sigma, bool periodic) {
-    STATIC_ASSERT(DENSITY_MAP_CHANNELS == 4, "the blur works on vec4_t");
-    ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
+    MD_STATIC_ASSERT(DENSITY_MAP_CHANNELS == 4, "the blur works on vec4_t");
+    MD_ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     vec4_t* grid = (vec4_t*)data;
     vec4_t* tmp = (vec4_t*)md_temp_alloc_aligned(temp, dim * dim * sizeof(vec4_t), 16);
 
@@ -177,8 +177,8 @@ void density_map_bins_init(DensityMapBins* bins, const DensityMapDomain& domain,
         const float ox = t[2 * ((k + 2) % 3)], oy = t[2 * ((k + 2) % 3) + 1];
         float nx = -(by - ay), ny = bx - ax;
         const float len = sqrtf(nx * nx + ny * ny);
-        nx /= MAX(len, 1e-12f);
-        ny /= MAX(len, 1e-12f);
+        nx /= MD_MAX(len, 1e-12f);
+        ny /= MD_MAX(len, 1e-12f);
         if (nx * (ox - ax) + ny * (oy - ay) < 0.0f) {
             nx = -nx;
             ny = -ny;
@@ -263,7 +263,7 @@ static void job_bin_chunk(DensityMapJob* job, uint32_t c) {
     bins.data = job->bins[c];
     density_map_bins_init(&bins, job->domain, job->sigma);
     job->source(c, job->num_chunks, bins, job->cancel);
-    MEMCPY(job->samples[c], bins.samples, sizeof(bins.samples));
+    md_memcpy(job->samples[c], bins.samples, sizeof(bins.samples));
     if (!job->cancel.load()) job->chunks_done.fetch_add(1);
 }
 
@@ -312,7 +312,7 @@ static void job_finalize(DensityMapJob* job) {
         density_map_mass_table(r.table[t], &r.max[t], d + t, num_texels, C, mask);
     }
     // All of them: the channels weighted by their shares, in the second buffer (merged into the first already)
-    ASSERT(job->num_bufs >= 2);
+    MD_ASSERT(job->num_bufs >= 2);
     float* all = job->bins[1];
     for (size_t i = 0; i < num_texels; ++i) {
         float v = 0.0f;
@@ -325,23 +325,23 @@ static void job_finalize(DensityMapJob* job) {
     job->ok = true;
 }
 
-DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done) {
-    ASSERT(source && done);
+DensityMapJob* density_map_launch(md_str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done) {
+    MD_ASSERT(source && done);
     md_allocator_i* heap = md_get_heap_allocator();
     DensityMapJob* job = new DensityMapJob();
     job->domain = domain;
     job->domain.triangle = domain.triangle && !domain.periodic;
     job->sigma = sigma;
-    job->sigma_texels = MAX(0.25f, sigma * DENSITY_MAP_DIM / MAX(1e-12f, domain.x_max - domain.x_min));
+    job->sigma_texels = MD_MAX(0.25f, sigma * DENSITY_MAP_DIM / MD_MAX(1e-12f, domain.x_max - domain.x_min));
     job->source = std::move(source);
     job->done = std::move(done);
 
-    const uint32_t max_chunks = (uint32_t)CLAMP(task_system::num_threads(), 1u, (uint32_t)MAX_CHUNKS);
-    job->num_chunks = CLAMP(num_chunks, 1u, max_chunks);
-    job->num_bufs = MAX(job->num_chunks, 2u);
+    const uint32_t max_chunks = (uint32_t)MD_CLAMP(task_system::num_threads(), 1u, (uint32_t)MAX_CHUNKS);
+    job->num_chunks = MD_CLAMP(num_chunks, 1u, max_chunks);
+    job->num_bufs = MD_MAX(job->num_chunks, 2u);
     for (uint32_t i = 0; i < job->num_bufs; ++i) {
         job->bins[i] = (float*)md_alloc(heap, grid_bytes());
-        MEMSET(job->bins[i], 0, grid_bytes());
+        md_memset(job->bins[i], 0, grid_bytes());
     }
 
     job->task.start(label, [job]() {
@@ -394,7 +394,7 @@ void density_map_texture_free(uint32_t* tex) {
     }
 }
 
-static constexpr str_t v_fs_triangle_src = STR_LIT(R"(
+static constexpr md_str_t v_fs_triangle_src = MD_STR_LIT(R"(
 #version 150 core
 
 void main() {
@@ -408,7 +408,7 @@ void main() {
 
 // A layer over the canvas, premultiplied: contours (fills of the regions above the levels, lines along them) or a heat
 // map, of the channels weighted. Sampled with a cubic B-spline, from four bilinear fetches.
-static constexpr str_t f_layer_src = STR_LIT(R"(
+static constexpr md_str_t f_layer_src = MD_STR_LIT(R"(
 #version 330 core
 
 out vec4 out_color;
@@ -537,7 +537,7 @@ static void gl_init() {
     GLuint f_shader = gl::compile_shader_from_source(f_layer_src, GL_FRAGMENT_SHADER);
     gl_state.program = glCreateProgram();
     const GLuint shaders[] = { v_shader, f_shader };
-    gl::attach_link_detach(gl_state.program, shaders, (int)ARRAY_SIZE(shaders));
+    gl::attach_link_detach(gl_state.program, shaders, (int)MD_COUNTOF(shaders));
     glDeleteShader(v_shader);
     glDeleteShader(f_shader);
 
@@ -577,27 +577,27 @@ void density_map_shutdown() {
 }
 
 void density_map_draw_init(DensityMapDraw* d) {
-    MEMSET(d, 0, sizeof(DensityMapDraw));
+    md_memset(d, 0, sizeof(DensityMapDraw));
     d->opacity = 1.0f;
     d->line_width = 1.5f;
 }
 
 void density_map_draw_levels(DensityMapDraw* d, const DensityMapResult& r, int channel, const float* levels, int num_levels) {
-    ASSERT(0 <= channel && channel <= DENSITY_MAP_ALL);
-    MEMSET(d->weights, 0, sizeof(d->weights));
+    MD_ASSERT(0 <= channel && channel <= DENSITY_MAP_ALL);
+    md_memset(d->weights, 0, sizeof(d->weights));
     if (channel == DENSITY_MAP_ALL) {
         for (int t = 0; t < DENSITY_MAP_CHANNELS; ++t) d->weights[t] = r.weights_all[t];
     } else {
         d->weights[channel] = 1.0f;
     }
-    d->num_levels = CLAMP(num_levels, 0, DENSITY_MAP_MAX_LEVELS);
+    d->num_levels = MD_CLAMP(num_levels, 0, DENSITY_MAP_MAX_LEVELS);
     // Levels increase in what they enclose, so their densities decrease: the densest first
     for (int i = 0; i < d->num_levels; ++i) d->levels[i] = density_map_threshold(r.table[channel], levels[i]);
     d->cmap_max = r.max[channel];
 }
 
 void density_map_draw_fills_from(DensityMapDraw* d, ImVec4 color) {
-    const int n = MAX(1, d->num_levels);
+    const int n = MD_MAX(1, d->num_levels);
     const float a = 1.0f - powf(0.2f, 1.0f / (float)n);
     for (int i = 0; i < DENSITY_MAP_MAX_LEVELS; ++i) {
         d->fill_colors[i][0] = color.x;
@@ -609,7 +609,7 @@ void density_map_draw_fills_from(DensityMapDraw* d, ImVec4 color) {
 
 void density_map_draw_colormap(DensityMapDraw* d, ImPlotColormap cmap, bool log_scale) {
     const int size = ImPlot::GetColormapSize(cmap);
-    const int n = MIN(size, 16);
+    const int n = MD_MIN(size, 16);
     d->cmap_count = n;
     d->cmap_log = log_scale;
     for (int i = 0; i < n; ++i) {
@@ -622,12 +622,12 @@ void density_map_draw_colormap(DensityMapDraw* d, ImPlotColormap cmap, bool log_
 }
 
 uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws, const float* clip_uv) {
-    ASSERT(canvas);
+    MD_ASSERT(canvas);
     if (num_draws <= 0) return 0;
     gl_init();
 
-    width  = CLAMP(width,  1, 4096);
-    height = CLAMP(height, 1, 4096);
+    width  = MD_CLAMP(width,  1, 4096);
+    height = MD_CLAMP(height, 1, 4096);
     if (!canvas->tex || canvas->width != width || canvas->height != height) {
         if (canvas->tex) glDeleteTextures(1, &canvas->tex);
         glGenTextures(1, &canvas->tex);
@@ -692,7 +692,7 @@ uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, 
         glUniform4fv(l.line_color, 1, d.line_color);
         glUniform1f(l.line_width, d.line_width);
         glUniform4fv(l.cmap, 16, d.cmap[0]);
-        glUniform1i(l.cmap_count, MAX(d.cmap_count, 1));
+        glUniform1i(l.cmap_count, MD_MAX(d.cmap_count, 1));
         glUniform1f(l.cmap_max, d.cmap_max);
         glUniform1i(l.cmap_log, d.cmap_log);
         glUniform1f(l.opacity, d.opacity);
@@ -769,11 +769,11 @@ static GLuint create_marks() {
             const float aa = 1.5f / (S * 0.5f);
             float lum = 1.0f, alpha = 0.0f;
             if (x < S) {
-                const float rim = CLAMP((r - 0.72f) / aa + 0.5f, 0.0f, 1.0f);
+                const float rim = MD_CLAMP((r - 0.72f) / aa + 0.5f, 0.0f, 1.0f);
                 lum = 1.0f - rim;
-                alpha = CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * (1.0f - 0.25f * rim);
+                alpha = MD_CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * (1.0f - 0.25f * rim);
             } else {
-                alpha = CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * CLAMP((r - 0.7f) / aa + 0.5f, 0.0f, 1.0f);
+                alpha = MD_CLAMP((1.0f - r) / aa + 0.5f, 0.0f, 1.0f) * MD_CLAMP((r - 0.7f) / aa + 0.5f, 0.0f, 1.0f);
             }
             const uint32_t l8 = (uint32_t)(lum * 255.0f + 0.5f);
             const uint32_t a8 = (uint32_t)(alpha * 255.0f + 0.5f);
@@ -818,7 +818,7 @@ bool density_map_segmented(const char* id, const char* const* labels, const int*
     bool changed = false;
     ImGui::PushID(id);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(1, ImGui::GetStyle().ItemSpacing.y));
-    const float w = fill ? MAX(1.0f, (ImGui::GetContentRegionAvail().x - (count - 1)) / count) : 0.0f;
+    const float w = fill ? MD_MAX(1.0f, (ImGui::GetContentRegionAvail().x - (count - 1)) / count) : 0.0f;
     for (int i = 0; i < count; ++i) {
         const bool on = *value == values[i];
         if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
@@ -874,7 +874,7 @@ bool density_map_levels_editor(float* levels, int* num_levels) {
     if (ImGui::Button("+##add_level")) {
         // Halfway between the outermost and all of them
         const float last = n > 0 ? levels[n - 1] : 0.5f;
-        levels[n++] = MIN(0.999f, last + (1.0f - last) * 0.5f);
+        levels[n++] = MD_MIN(0.999f, last + (1.0f - last) * 0.5f);
         changed = true;
     }
     ImGui::EndDisabled();

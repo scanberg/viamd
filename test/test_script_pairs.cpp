@@ -78,25 +78,25 @@ const Data* load(const std::string& files) {
     for (std::string f; in >> f;) names.push_back(std::string(VIAMD_TEST_DATA_DIR) + "/" + f);
     if (names.empty()) return nullptr;
 
-    d->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    d->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     d->sys = {.alloc = d->alloc};
     d->state = {.alloc = d->alloc};
-    const str_t top = {names[0].c_str(), names[0].size()};
+    const md_str_t top = {names[0].c_str(), names[0].size()};
     bool ok = ends_with(names[0], ".gro") ? md_gro_system_init_from_file(&d->sys, &d->state, top, NULL)
                                            : md_pdb_system_init_from_file(&d->sys, &d->state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     ok = ok && md_util_system_infer(&d->sys, &d->state, MD_UTIL_INFER_ALL, NULL);
     if (!ok) return nullptr;
     bool run = false;
-    if (ends_with(names[0], ".pdb") && names.size() == 1) run = md_pdb_system_publish_run(&d->sys, top, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+    if (ends_with(names[0], ".pdb") && names.size() == 1) run = md_pdb_system_publish_run(&d->sys, top, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     for (size_t i = 1; i < names.size(); ++i) {
-        const str_t f = {names[i].c_str(), names[i].size()};
-        if (ends_with(names[i], ".xtc"))      run = md_xtc_system_publish_run(&d->sys, f, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-        else if (ends_with(names[i], ".trr")) run = md_trr_system_publish_run(&d->sys, f, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-        else if (ends_with(names[i], ".edr")) run = md_edr_system_supplement_from_file(&d->sys, f, STR_LIT("run"));
+        const md_str_t f = {names[i].c_str(), names[i].size()};
+        if (ends_with(names[i], ".xtc"))      run = md_xtc_system_publish_run(&d->sys, f, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+        else if (ends_with(names[i], ".trr")) run = md_trr_system_publish_run(&d->sys, f, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+        else if (ends_with(names[i], ".edr")) run = md_edr_system_supplement_from_file(&d->sys, f, MD_STR_LIT("run"));
         else return nullptr;
     }
     if (run) {
-        const md_attribute_t* t = md_attributes_find(&d->sys.attributes, STR_LIT("run/time"));
+        const md_attribute_t* t = md_attributes_find(&d->sys.attributes, MD_STR_LIT("run/time"));
         d->num_frames = t ? (size_t)t->format.shape[0] : 0;
     }
     d->ok = true;
@@ -124,8 +124,8 @@ std::string read_file(const fs::path& p) {
 script::Eval* run_script(script::Language lang, const std::string& src, const Data& d, script::Program** out_prog, md_allocator_i* alloc) {
     script::CompileDesc cd;
     cd.sys = &d.sys;
-    cd.run = STR_LIT("run");
-    script::Program* p = script::compile(lang, str_t{src.c_str(), src.size()}, cd, alloc);
+    cd.run = MD_STR_LIT("run");
+    script::Program* p = script::compile(lang, md_str_t{src.c_str(), src.size()}, cd, alloc);
     *out_prog = p;
     if (!script::valid(p)) {
         printf("  %s does not compile:\n", lang == script::Language::V1 ? "v1" : "VIAL");
@@ -135,7 +135,7 @@ script::Eval* run_script(script::Language lang, const std::string& src, const Da
     script::EvalDesc ed;
     ed.num_frames = d.num_frames;
     ed.sys = &d.sys;
-    ed.run = STR_LIT("run");
+    ed.run = MD_STR_LIT("run");
     static test_executor_t shuffled = test_executor_shuffled(2);   // one thread, two thread_idx, pieces out of order
     ed.executor = test_executor(&shuffled);
     script::Eval* e = script::eval_create(nullptr, p, ed, alloc);
@@ -143,14 +143,14 @@ script::Eval* run_script(script::Language lang, const std::string& src, const Da
     if (d.num_frames) {
         std::vector<uint32_t> frames(d.num_frames);
         for (size_t i = 0; i < frames.size(); ++i) frames[i] = (uint32_t)i;
-        script::eval_frames(e, p, &d.sys, STR_LIT("run"), frames.data(), frames.size());
+        script::eval_frames(e, p, &d.sys, MD_STR_LIT("run"), frames.data(), frames.size());
     }
     return e;
 }
 
 const md_attribute_t* output_attr(const md_attributes_t* attrs, const std::string& name, const char* leaf = "") {
     const std::string path = "script/" + name + leaf;
-    return md_attributes_find(attrs, str_t{path.c_str(), path.size()});
+    return md_attributes_find(attrs, md_str_t{path.c_str(), path.size()});
 }
 
 std::vector<double> values_of(const md_attribute_t* a, md_unit_t unit) {
@@ -169,7 +169,7 @@ bool compare_outputs(const std::string& pair, const script::Program* p1, const s
     const md_attributes_t* a1 = script::attributes(e1);
     const md_attributes_t* a2 = script::attributes(e2);
     const size_t n1 = script::num_outputs(p1);
-    const str_t* names1 = script::output_names(p1);
+    const md_str_t* names1 = script::output_names(p1);
     bool ok = true;
     size_t compared = 0;
     for (size_t i = 0; i < n1; ++i) {
@@ -252,7 +252,7 @@ UTEST(script_pairs, outputs_agree) {
         const std::string name = f.stem().string();
         const Data* d = load(h.data);
         if (!d) { printf("  %s: data %s does not load\n", name.c_str(), h.data.c_str()); EXPECT_TRUE(false); continue; }
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         script::Program* p1 = nullptr;
         script::Program* p2 = nullptr;
         script::Eval* e1 = run_script(script::Language::V1, v1, *d, &p1, alloc);
@@ -292,16 +292,16 @@ UTEST(script_pairs, filters_agree) {
         }
         const Data* d = load(h.data);
         if (!d) { printf("  %s: data %s does not load\n", f.stem().string().c_str(), h.data.c_str()); EXPECT_TRUE(false); continue; }
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
         script::FilterCtx ctx;
         ctx.sys = &d->sys;
         ctx.state = &d->state;
-        ctx.run = STR_LIT("run");
+        ctx.run = MD_STR_LIT("run");
         for (const auto& pr : pairs) {
             ++lines;
             md_bitset_t a = md_bitset_empty_set(), b = md_bitset_empty_set();
-            const script::FilterResult r1 = script::filter(script::Language::V1, &a, str_t{pr.first.c_str(), pr.first.size()}, ctx, alloc);
-            const script::FilterResult r2 = script::filter(script::Language::V2, &b, str_t{pr.second.c_str(), pr.second.size()}, ctx, alloc);
+            const script::FilterResult r1 = script::filter(script::Language::V1, &a, md_str_t{pr.first.c_str(), pr.first.size()}, ctx, alloc);
+            const script::FilterResult r2 = script::filter(script::Language::V2, &b, md_str_t{pr.second.c_str(), pr.second.size()}, ctx, alloc);
             bool ok = r1.success && r2.success && md_bitset_equal(a, b);
             if (!r1.success) printf("  %s: v1 '%s' fails: %s\n", f.stem().string().c_str(), pr.first.c_str(), r1.error);
             if (!r2.success) printf("  %s: VIAL '%s' fails: %s\n", f.stem().string().c_str(), pr.second.c_str(), r2.error);

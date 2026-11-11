@@ -47,7 +47,7 @@ struct QuantityDesc {
     size_t        default_option;
 };
 
-#define DESC(key, label, opts, def) { key, label, opts, ARRAY_SIZE(opts), def }
+#define DESC(key, label, opts, def) { key, label, opts, MD_COUNTOF(opts), def }
 static const QuantityDesc s_desc[Quantity_Count] = {
     DESC("unit_length",      "Length",      length_options,      0),  // Å
     DESC("unit_angle",       "Angle",       angle_options,       0),  // deg
@@ -78,7 +78,7 @@ static md_unit_t parse_option(Quantity quantity, size_t option) {
     const char* str = s_desc[quantity].options[option].ini;
     if (is_derived(str)) return md_unit_none();
     md_unit_t unit;
-    if (!md_unit_parse(&unit, str_from_cstr(str))) {
+    if (!md_unit_parse(&unit, md_str_from_cstr(str))) {
         // An option this file spells wrong, which no .ini can cause and no user can fix.
         MD_LOG_ERROR("display_units: '%s' is not a parsable unit", str);
         return md_unit_none();
@@ -87,8 +87,8 @@ static md_unit_t parse_option(Quantity quantity, size_t option) {
 }
 
 void select(Quantity quantity, size_t option) {
-    ASSERT(quantity < Quantity_Count && option < s_desc[quantity].num_options);
-    str_copy_to_char_buf(s_str[quantity], sizeof(s_str[quantity]), str_from_cstr(s_desc[quantity].options[option].ini));
+    MD_ASSERT(quantity < Quantity_Count && option < s_desc[quantity].num_options);
+    md_str_copy_to_char_buf(s_str[quantity], sizeof(s_str[quantity]), md_str_from_cstr(s_desc[quantity].options[option].ini));
     s_unit[quantity] = parse_option(quantity, option);
     s_version += 1;
 }
@@ -127,7 +127,7 @@ void adopt_ini() {
         }
 
         md_unit_t unit;
-        if (!md_unit_parse(&unit, str_from_cstr(s_str[i])) || md_unit_is_none(unit)) {
+        if (!md_unit_parse(&unit, md_str_from_cstr(s_str[i])) || md_unit_is_none(unit)) {
             MD_LOG_ERROR("display_units: '%s' is not a unit, showing %s in %s instead", s_str[i], s_desc[i].label,
                          s_desc[i].options[s_desc[i].default_option].label);
             select(quantity, s_desc[i].default_option);
@@ -145,7 +145,7 @@ void adopt_ini() {
 }
 
 char* ini_buffer(Quantity quantity, size_t* cap) {
-    ASSERT(quantity < Quantity_Count);
+    MD_ASSERT(quantity < Quantity_Count);
     if (cap) *cap = sizeof(s_str[quantity]);
     return s_str[quantity];
 }
@@ -169,7 +169,7 @@ static const char* current_label(Quantity quantity) {
 }
 
 md_unit_t get(Quantity quantity) {
-    ASSERT(quantity < Quantity_Count);
+    MD_ASSERT(quantity < Quantity_Count);
     return s_unit[quantity];
 }
 
@@ -254,7 +254,7 @@ static bool can_rebuild(md_unit_t src) {
 
 static md_unit_t rebuild(md_unit_t src) {
     md_unit_t dst = md_unit_none();
-    for (size_t i = 0; i < ARRAY_SIZE(s_base); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(s_base); ++i) {
         const int p = base_power(src, i);
         if (p) dst = md_unit_mul(dst, md_unit_pow(base_unit(i), p));
     }
@@ -271,7 +271,7 @@ md_unit_t target(md_unit_t src) {
     // charge is an ampere-second nobody wants spelled out that way -- so they are recognised by
     // their dimension signature rather than rebuilt from the base preferences.
     md_unit_t dst;
-    for (size_t i = 0; i < ARRAY_SIZE(s_composites); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(s_composites); ++i) {
         if (match_composite(&dst, nullptr, src, s_unit[s_composites[i]])) return dst;
     }
 
@@ -290,7 +290,7 @@ double factor(md_unit_t* dst, md_unit_t src) {
     if (!md_unit_conversion_factor(&scl, src, unit)) {
         // target() only ever returns a unit of the same dimensions, so this is unreachable short of
         // a bug in here. Showing the value in the unit it arrived in is the harmless way to fail.
-        ASSERT(false);
+        MD_ASSERT(false);
         if (dst) *dst = src;
         return 1.0;
     }
@@ -312,7 +312,7 @@ static void put(Out* o, const char* s) {
         if (o->len + 1 < o->cap) o->buf[o->len] = *s;
         o->len += 1;
     }
-    if (o->cap) o->buf[MIN(o->len, o->cap - 1)] = '\0';
+    if (o->cap) o->buf[MD_MIN(o->len, o->cap - 1)] = '\0';
 }
 
 // ² to ⁹ as UTF-8 bytes; a power past 9 is written ^n
@@ -328,7 +328,7 @@ static void put_power(Out* o, int p) {
 static bool same_unit(md_unit_t a, md_unit_t b) {
     if (a.base.raw_bits != b.base.raw_bits) return false;
     const double sa = md_unit_scale(a), sb = md_unit_scale(b);
-    return fabs(sa - sb) <= 1e-9 * MAX(fabs(sa), fabs(sb));
+    return fabs(sa - sb) <= 1e-9 * MD_MAX(fabs(sa), fabs(sb));
 }
 
 // The label of a unit built from the base preferences: those raised to a power above, those to a power below
@@ -336,13 +336,13 @@ static size_t print_rebuilt(char* buf, size_t cap, md_unit_t unit) {
     Out o = {buf, cap, 0};
     if (cap) buf[0] = '\0';
     int num = 0, den = 0;
-    for (size_t i = 0; i < ARRAY_SIZE(s_base); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(s_base); ++i) {
         const int p = base_power(unit, i);
         num += p > 0;
         den += p < 0;
     }
     bool first = true;
-    for (size_t i = 0; i < ARRAY_SIZE(s_base); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(s_base); ++i) {
         const int p = base_power(unit, i);
         if (p <= 0) continue;
         if (!first) put(&o, "\xC2\xB7");   // ·
@@ -355,7 +355,7 @@ static size_t print_rebuilt(char* buf, size_t cap, md_unit_t unit) {
         put(&o, "/");
         if (den > 1) put(&o, "(");
         first = true;
-        for (size_t i = 0; i < ARRAY_SIZE(s_base); ++i) {
+        for (size_t i = 0; i < MD_COUNTOF(s_base); ++i) {
             const int p = base_power(unit, i);
             if (p >= 0) continue;
             if (!first) put(&o, "\xC2\xB7");
@@ -411,7 +411,7 @@ size_t print(char* buf, size_t cap, md_unit_t unit) {
             return strlen(buf);
         }
     }
-    for (size_t i = 0; i < ARRAY_SIZE(s_composites); ++i) {
+    for (size_t i = 0; i < MD_COUNTOF(s_composites); ++i) {
         const Quantity q = s_composites[i];
         md_unit_t m;
         int diff = 0;

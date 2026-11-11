@@ -33,10 +33,10 @@ struct App {
 
     ~App() { file_list_free(&list, alloc); }
 
-    static std::string name(str_t path) { return std::string(path.ptr, path.len); }
+    static std::string name(md_str_t path) { return std::string(path.ptr, path.len); }
     size_t count(const std::string& n) const { auto it = counts.find(n); return it == counts.end() ? 0 : it->second; }
 
-    LoadResult load(str_t path, const loader::LoaderState& ls, FileRole role) {
+    LoadResult load(md_str_t path, const loader::LoaderState& ls, FileRole role) {
         const std::string n = name(path);
         switch (role) {
         case FileRole_System:
@@ -71,18 +71,18 @@ struct App {
     LoadOps ops() {
         LoadOps o = {};
         o.user = this;
-        o.load = [](void* u, str_t p, const loader::LoaderState& ls, FileRole r, bool) { return ((App*)u)->load(p, ls, r); };
+        o.load = [](void* u, md_str_t p, const loader::LoaderState& ls, FileRole r, bool) { return ((App*)u)->load(p, ls, r); };
         o.system_atoms = [](void* u) { return ((App*)u)->atoms; };
         o.run_frames = [](void* u) { return ((App*)u)->run.empty() ? (size_t)0 : (size_t)10; };
         o.files = [](void* u) { return (const FileList*)&((App*)u)->list; };
-        o.atom_count = [](void* u, str_t p, const loader::LoaderState&) { return ((App*)u)->count(name(p)); };
+        o.atom_count = [](void* u, md_str_t p, const loader::LoaderState&) { return ((App*)u)->count(name(p)); };
         return o;
     }
 
     LoadResult open(const std::string& path) {
         loader::LoaderState ls = {};
-        loader::init(&ls, str_from_cstr(path.c_str()), nullptr);
-        return load_in_order(&pending, ops(), str_from_cstr(path.c_str()), ls);
+        loader::init(&ls, md_str_from_cstr(path.c_str()), nullptr);
+        return load_in_order(&pending, ops(), md_str_from_cstr(path.c_str()), ls);
     }
 
     // What there is to see once the files are loaded
@@ -137,7 +137,7 @@ UTEST(viamd_load_order, psf_binary_coordinates_and_dcd_in_any_order) {
     // A .coor is told by its contents (it may be a PDB file): this one is there, binary, of 30 atoms
     {
         md_file_t f = {};
-        ASSERT_TRUE(md_file_open(&f, STR_LIT("out.coor"), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
+        ASSERT_TRUE(md_file_open(&f, MD_STR_LIT("out.coor"), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
         const uint32_t n = 30;
         md_file_write(f, &n, 4);
         const double zero[90] = {};

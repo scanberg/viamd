@@ -19,6 +19,8 @@
 #include <md_topo.h>
 #include <md_vector_graphics.h>
 #include <md_flow.h>
+#include <md_qm_ct.h>
+#include <md_fragment.h>
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <core/md_vec_math.h>
@@ -37,6 +39,7 @@
 #include <imgui_internal.h>
 
 #include "flow_draw.h"
+#include "fragment_tree.h"
 
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -99,6 +102,7 @@
 
 constexpr uint64_t interaction_surface_nto = HASH_STR_LIT64("interaction surface nto");
 constexpr uint64_t interaction_surface_orb = HASH_STR_LIT64("interaction surface orb");
+constexpr uint64_t interaction_surface_flow = HASH_STR_LIT64("interaction surface flow");
 
 constexpr PickingDomainID PickingDomain_CriticalPoints = HASH_STR_LIT64("Picking Domain Critical Points");
 
@@ -129,7 +133,7 @@ static const CriticalPointStyle critical_point_styles[5] = {
 };
 
 static inline const CriticalPointStyle& critical_point_style(int type) {
-    return critical_point_styles[(type >= 0 && type < (int)ARRAY_SIZE(critical_point_styles)) ? type : 0];
+    return critical_point_styles[(type >= 0 && type < (int)MD_COUNTOF(critical_point_styles)) ? type : 0];
 }
 
 // The order the types are listed and sorted in: attractors, bond, ring and cage critical points
@@ -164,7 +168,7 @@ struct CriticalPointsExport {
     double rho_min   = 0.0;     // analytic: the threshold of the search
     bool   complete  = false;   // analytic: every critical point above the threshold is there
     bool   cancelled = false;
-    str_t  field     = {};      // the density's attribute path
+    md_str_t  field     = {};      // the density's attribute path
 };
 
 // The Morse index (negative eigenvalues of the Hessian): TTK's CellDimension of a critical point
@@ -206,7 +210,7 @@ static void critical_points_write_json(md_file_t f, const CriticalPointsExport& 
     md_file_printf(f, "  \"description\": \"Critical points of the electron density and the paths between them, as VIAMD found them (QTAIM terms; md_topo's in topology)\",\n");
     md_file_printf(f, "  \"units\": {\"length\": \"bohr\", \"density\": \"e bohr^-3\", \"hessian\": \"e bohr^-5\"},\n");
     md_file_printf(f, "  \"precision\": \"%s\",\n", f64 ? "float64" : "float32");
-    md_file_printf(f, "  \"field\": \"" STR_FMT "\",\n", STR_ARG(ex.field));
+    md_file_printf(f, "  \"field\": \"" MD_STR_FMT "\",\n", MD_STR_ARG(ex.field));
     md_file_printf(f, "  \"method\": \"%s\",\n", ex.analytic ? "analytic" : "volume");
     if (ex.analytic) {
         md_file_printf(f, "  \"rho_min\": ");
@@ -286,7 +290,7 @@ static void critical_points_write_vtp(md_file_t f, const CriticalPointsExport& e
     const char* real = f64 ? "Float64" : "Float32";
 
     md_file_printf(f, "<?xml version=\"1.0\"?>\n");
-    md_file_printf(f, "<!-- Critical points of the electron density (" STR_FMT ") and the paths between them, as VIAMD found them\n", STR_ARG(ex.field));
+    md_file_printf(f, "<!-- Critical points of the electron density (" MD_STR_FMT ") and the paths between them, as VIAMD found them\n", MD_STR_ARG(ex.field));
     md_file_printf(f, "     (%s). Lengths in bohr, the density in au (e bohr^-3), the Hessian in e bohr^-5; %s.\n",
                    ex.analytic ? "the analytic search" : "the volume pipeline", f64 ? "every number in double, to 17 digits" : "in float, to 9 digits");
     if (ex.analytic) {
@@ -439,18 +443,21 @@ static const char* electronic_structure_value_mode_str(ElectronicStructureSource
     }
 }
 
-// What the Charge Transfer diagram routes its flow through.
+// What the Charge Transfer diagram shows.
 //
-// Groups is the M1 view and reproduces the old two-column diagram exactly; it is kept as the
-// comparison the NTO view can be checked against, not as a feature.
+// The two routes the prototype had besides these are gone. 'Groups only' split the group to group
+// flow proportionally from its two marginals, which is a guess. 'Atoms via NTOs' routed atoms
+// through the NTO pairs with one product per pair; that drops the interference between pairs, and
+// when two local excitations mix into delocalized NTOs it shows charge transfer that is not there
+// (a CIS state of test_data/vlx/mol.h5 with three comparable pairs: 19% amine <-> phenyl transfer
+// shown, 0.5% real). The fragment route computes the transfer exactly instead (md_qm_ct.h).
 enum flow_mode_t {
-    FLOW_MODE_GROUPS = 0,   // group -> group, via compute_transition_matrix
-    FLOW_MODE_NTO,          // atom/group -> NTO pair -> atom/group
-    FLOW_MODE_ORBITALS,     // occupied MO -> NTO pair -> virtual MO
+    FLOW_MODE_FRAGMENTS = 0,    // hole fragment -> particle fragment: the exact transfer matrix
+    FLOW_MODE_ORBITALS,         // occupied MO -> NTO pair -> virtual MO
     FLOW_MODE_COUNT,
 };
 
-static const char* flow_mode_str[] = { "Groups only", "Atoms via NTOs", "Orbitals" };
+static const char* flow_mode_str[] = { "Fragments", "Orbitals" };
 
 enum x_unit_t {
     X_UNIT_EV,
@@ -477,9 +484,9 @@ static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
 // Both D and S are symmetric (num_ao x num_ao) row-major matrices.
 // The total tr(D*S) is exactly preserved: sum_g out_charge[g] == tr(D*S).
 static void attribute_charge_density(double out_charge[], const int* ao_to_idx, const double* D, const double* S, size_t num_ao) {
-	ASSERT(D);
-	ASSERT(S);
-	ASSERT(ao_to_idx);
+	MD_ASSERT(D);
+	MD_ASSERT(S);
+	MD_ASSERT(ao_to_idx);
 
 	for (size_t mu = 0; mu < num_ao; ++mu) {
 		const int idx = ao_to_idx[mu];
@@ -500,9 +507,9 @@ static void attribute_charge_density(double out_charge[], const int* ao_to_idx, 
 //
 //   q_g = sum_{mu in g} C[mu] * (S C)[mu],  and  sum_g q_g = C^T S C = 1 for a normalized orbital.
 static void attribute_orbital_density(double out_charge[], const int* ao_to_idx, const double* C, const double* S, size_t num_ao) {
-	ASSERT(C);
-	ASSERT(S);
-	ASSERT(ao_to_idx);
+	MD_ASSERT(C);
+	MD_ASSERT(S);
+	MD_ASSERT(ao_to_idx);
 
 	for (size_t mu = 0; mu < num_ao; ++mu) {
 		const double* S_row = &S[mu * num_ao];
@@ -670,12 +677,15 @@ struct FlowData {
     const double* nto_lambda  = nullptr; // [K]
     const double* C_nto_hole  = nullptr; // {K,A}
     const double* C_nto_part  = nullptr; // {K,A}
+
+    // The orbitals in the Lowdin basis, {M,A} like C_mo; null until the job computing them is done
+    const double* C_lowdin    = nullptr;
 };
 
 // The density whose critical points are reported. QTAIM is defined on the total density; a
 // calculation that publishes a single spin channel publishes only the alpha one, and that one is then
 // the total.
-static str_t critical_points_density_path(const md_system_t& sys) {
+static md_str_t critical_points_density_path(const md_system_t& sys) {
     return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
 }
 
@@ -714,7 +724,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     const md_system_t& sys = app.mold.sys;
     const md_system_state_t& state = app.mold.state;
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
@@ -730,16 +740,16 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         return nullptr;
     }
 
-    const str_t path = critical_points_density_path(sys);
+    const md_str_t path = critical_points_density_path(sys);
     size_t dim = 0;
     const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
     if (!density || dim != num_ao) {
-        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" STR_FMT "'", num_ao, STR_ARG(path));
+        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" MD_STR_FMT "'", num_ao, MD_STR_ARG(path));
         return nullptr;
     }
 
     GtoCriticalPointJob* job = new GtoCriticalPointJob();
-    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    job->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_allocator_i* alloc = job->arena;
 
     job->basis.num_shells     = basis.num_shells;
@@ -747,9 +757,9 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->basis.shells = (md_gto_shell_t*)md_alloc(alloc, sizeof(md_gto_shell_t) * basis.num_shells);
     job->basis.alpha  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
     job->basis.coeff  = (float*)md_alloc(alloc, sizeof(float) * basis.num_primitives);
-    MEMCPY(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
-    MEMCPY(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
-    MEMCPY(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
+    md_memcpy(job->basis.shells, basis.shells, sizeof(md_gto_shell_t) * basis.num_shells);
+    md_memcpy(job->basis.alpha,  basis.alpha,  sizeof(float) * basis.num_primitives);
+    md_memcpy(job->basis.coeff,  basis.coeff,  sizeof(float) * basis.num_primitives);
 
     job->atom_xyz = (float*)md_alloc(alloc, sizeof(float) * 3 * num_atoms);
     for (size_t i = 0; i < num_atoms; ++i) {
@@ -759,7 +769,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     }
 
     job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    MEMCPY(job->density, density, sizeof(double) * num_ao * num_ao);
+    md_memcpy(job->density, density, sizeof(double) * num_ao * num_ao);
 
     job->desc.basis              = &job->basis;
     job->desc.atom_xyz           = job->atom_xyz;
@@ -805,6 +815,512 @@ static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
     md_topo_extremum_graph_free(&job->graph);
     if (job->arena) md_arena_allocator_destroy(job->arena);
     delete job;
+}
+
+// The orbitals in the Lowdin basis (md_qm_lowdin_orbitals), which the charge transfer numbers are
+// computed in. One O(M^3) computation per system, so a job rather than a stall: for a system near
+// the top of what VIAMD is meant for (~10k AOs) it is a matter of minutes on one core, spread over
+// the task system's threads (products and eigendecomposition alike). Every excited state then
+// reuses the result, and the overlap and the AO to atom map it
+// keeps with it, so a state's own job (CtStateJob) needs nothing from the attribute table.
+struct LowdinJob {
+    double*   C        = nullptr;   // {M,A} input, owned
+    double*   C_lowdin = nullptr;   // {M,A} output, owned
+    double*   S        = nullptr;   // {A,A} owned
+    uint32_t* ao_atom  = nullptr;   // [A] QM atom of each AO, num_atoms for none
+    size_t    num_mo    = 0;
+    size_t    num_ao    = 0;
+    size_t    num_atoms = 0;        // QM atoms
+    bool      ok        = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void lowdin_job_destroy(LowdinJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (job->C)        md_free(heap, job->C,        sizeof(double) * job->num_mo * job->num_ao);
+    if (job->C_lowdin) md_free(heap, job->C_lowdin, sizeof(double) * job->num_mo * job->num_ao);
+    if (job->S)        md_free(heap, job->S,        sizeof(double) * job->num_ao * job->num_ao);
+    if (job->ao_atom)  md_free(heap, job->ao_atom,  sizeof(uint32_t) * job->num_ao);
+    delete job;
+}
+
+// Null when the system carries no orbitals, or no overlap or basis matching them
+static LowdinJob* lowdin_job_start(const md_system_t& sys, const md_gto_basis_t& basis, size_t num_qm_atoms) {
+    size_t num_mo = 0, num_ao = 0;
+    if (!es_orbital_extent(sys, &num_mo, &num_ao) || num_mo == 0 || num_ao == 0) return nullptr;
+    const md_attribute_t* coeff = md_attributes_find(&sys.attributes, es_path::alpha_coefficient);
+    const md_attribute_t* ovl   = md_attributes_find(&sys.attributes, es_path::overlap);
+    if (!coeff || !ovl || ovl->format.rank != 2 || ovl->format.shape[0] != num_ao || ovl->format.shape[1] != num_ao) {
+        MD_LOG_ERROR("Charge transfer: the system has no overlap matrix matching its orbitals");
+        return nullptr;
+    }
+    if (basis.num_shells == 0 || md_gto_basis_num_ao(&basis) != num_ao) {
+        MD_LOG_ERROR("Charge transfer: the basis does not match the orbitals");
+        return nullptr;
+    }
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    LowdinJob* job = new LowdinJob();
+    job->num_mo    = num_mo;
+    job->num_ao    = num_ao;
+    job->num_atoms = num_qm_atoms;
+    job->C        = (double*)  md_alloc(heap, sizeof(double) * num_mo * num_ao);
+    job->C_lowdin = (double*)  md_alloc(heap, sizeof(double) * num_mo * num_ao);
+    job->S        = (double*)  md_alloc(heap, sizeof(double) * num_ao * num_ao);
+    job->ao_atom  = (uint32_t*)md_alloc(heap, sizeof(uint32_t) * num_ao);
+    const bool read =
+        job->C && job->C_lowdin && job->S && job->ao_atom &&
+        md_attribute_extract_f64(job->C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao &&
+        md_attribute_extract_f64(job->S, num_ao * num_ao, ovl,   md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao &&
+        md_gto_basis_ao_to_atom(job->ao_atom, &basis) == num_ao;
+    if (!read) {
+        MD_LOG_ERROR("Charge transfer: could not read the orbitals and the overlap");
+        job->done.store(true, std::memory_order_release);
+        return job;
+    }
+    for (size_t i = 0; i < num_ao; ++i) {
+        if (job->ao_atom[i] >= num_qm_atoms) job->ao_atom[i] = (uint32_t)num_qm_atoms;
+    }
+    job->task.start(MD_STR_LIT("Lowdin basis"), [job]() {
+        job->ok = md_qm_lowdin_orbitals(job->C_lowdin, job->C, job->num_mo, job->num_ao, task_system::executor());
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+static bool lowdin_job_ready(const LowdinJob* job) {
+    return job && job->done.load(std::memory_order_acquire) && job->ok;
+}
+
+// One excited state's charge transfer numbers per QM ATOM, from its NTO pairs (md_qm_ct.h): the pairs in
+// the Lowdin basis, their K x K blocks per atom (which fragments sum, and the per ribbon orbital pairs are
+// computed from), and the atom to atom transfer matrix. Everything coarser is a sum over these, done on
+// the main thread when the diagram is built.
+struct CtStateJob {
+    int32_t state = -1;
+    const LowdinJob* lowdin = nullptr;  // outlives this job: destroyed after it
+    size_t  K = 0;
+    size_t  num_atoms = 0;
+    double* lambda = nullptr;           // [K]
+    double* hole   = nullptr;           // {K,A}, AO basis in; Lowdin basis after the run
+    double* part   = nullptr;
+    double* hole_blocks = nullptr;      // {N,K,K}
+    double* part_blocks = nullptr;
+    double* omega  = nullptr;           // {N,N}, normalized to sum 1, the tail below 1e-6 of it dropped
+    double* weight[2] = {};             // [N] per atom: hole (row sums), particle (column sums)
+    float   nto_dropped  = 0.0f;        // share of the excitation in the pairs left out
+    float   link_dropped = 0.0f;        // share in the atom pairs below the floor
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_state_job_destroy(CtStateJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0;
+    const size_t N = job->num_atoms, K = job->K;
+    if (job->lambda)      md_free(heap, job->lambda,      sizeof(double) * K);
+    if (job->hole)        md_free(heap, job->hole,        sizeof(double) * K * A);
+    if (job->part)        md_free(heap, job->part,        sizeof(double) * K * A);
+    if (job->hole_blocks) md_free(heap, job->hole_blocks, sizeof(double) * N * K * K);
+    if (job->part_blocks) md_free(heap, job->part_blocks, sizeof(double) * N * K * K);
+    if (job->omega)       md_free(heap, job->omega,       sizeof(double) * N * N);
+    for (int c = 0; c < 2; ++c) if (job->weight[c]) md_free(heap, job->weight[c], sizeof(double) * N);
+    delete job;
+}
+
+static bool ct_state_job_ready(const CtStateJob* job) {
+    return job && job->done.load(std::memory_order_acquire) && job->ok;
+}
+
+// A state's NTO pairs, read on the main thread from the attribute table into heap arrays the caller owns:
+// every pair above round off of the whole (with the cross terms in, a small pair can still move a large
+// share between two fragments). nto_dropped is the share of the excitation left out.
+struct NtoPairs {
+    size_t  K = 0;
+    double* lambda = nullptr;   // [K]
+    double* hole   = nullptr;   // {K,A}
+    double* part   = nullptr;   // {K,A}
+    float   nto_dropped = 0.0f;
+};
+
+static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int32_t state) {
+    *out = {};
+    if (state < 0 || A == 0) return false;
+    const md_attribute_t* lambda_attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
+    const md_attribute_t* hole_attr   = md_attributes_find(&sys.attributes, es_path::nto_hole);
+    const md_attribute_t* part_attr   = md_attributes_find(&sys.attributes, es_path::nto_particle);
+    if (!lambda_attr || !hole_attr || !part_attr) return false;
+
+    const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state);
+    const size_t L = md_attribute_slice_count(lambda_attr, slice);
+    if (L == 0 || md_attribute_slice_count(hole_attr, slice) < L * A || md_attribute_slice_count(part_attr, slice) < L * A) return false;
+
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    double* lam  = md_temp_alloc_array(temp, double, L);
+    double* hole = md_temp_alloc_array(temp, double, L * A);
+    double* part = md_temp_alloc_array(temp, double, L * A);
+    if (md_attribute_extract_f64(lam,  L,     lambda_attr, slice, md_unit_none()) < L ||
+        md_attribute_extract_f64(hole, L * A, hole_attr,   slice, md_unit_none()) < L * A ||
+        md_attribute_extract_f64(part, L * A, part_attr,   slice, md_unit_none()) < L * A) {
+        return false;
+    }
+
+    double lambda_all = 0.0;
+    for (size_t k = 0; k < L; ++k) lambda_all += MD_MAX(0.0, lam[k]);
+    if (lambda_all <= 0.0) return false;
+    size_t K = 0;
+    for (size_t k = 0; k < L; ++k) K += (lam[k] >= 1.0e-6 * lambda_all) ? 1 : 0;
+    if (K == 0) return false;
+
+    md_allocator_i* heap = md_get_heap_allocator();
+    out->K = K;
+    out->lambda = (double*)md_alloc(heap, sizeof(double) * K);
+    out->hole   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    out->part   = (double*)md_alloc(heap, sizeof(double) * K * A);
+    double lambda_kept = 0.0;
+    for (size_t k = 0, j = 0; k < L; ++k) {
+        if (!(lam[k] >= 1.0e-6 * lambda_all)) continue;
+        out->lambda[j] = lam[k];
+        lambda_kept += lam[k];
+        md_memcpy(out->hole + j * A, hole + k * A, sizeof(double) * A);
+        md_memcpy(out->part + j * A, part + k * A, sizeof(double) * A);
+        j++;
+    }
+    out->nto_dropped = (float)(1.0 - lambda_kept / lambda_all);
+    return true;
+}
+
+// The basis atoms' positions (bohr) of the current frame, copied for a worker that makes fields at them
+struct CtGeometry {
+    const md_system_t* sys = nullptr;   // outlives the jobs (a load waits for the pool)
+    vec3_t* xyz = nullptr;              // heap
+    size_t  count = 0;
+
+    bool init(const ApplicationState& state) {
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        size_t n = 0;
+        const vec3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
+        if (!p || n == 0) return false;
+        xyz = (vec3_t*)md_alloc(md_get_heap_allocator(), sizeof(vec3_t) * n);
+        md_memcpy(xyz, p, sizeof(vec3_t) * n);
+        count = n;
+        sys = &state.mold.sys;
+        return true;
+    }
+    void free() {
+        if (xyz) md_free(md_get_heap_allocator(), xyz, sizeof(vec3_t) * count);
+        *this = {};
+    }
+    IsoFieldGeometry iso() const { return { sys, xyz, count }; }
+};
+
+// The hole and particle densities of one excited state for the charge transfer window's side views, from its NTO
+// pairs: rho_hole = sum_k lambda_k h_k^2, rho_particle = sum_k lambda_k p_k^2. The same pairs the diagram partitions,
+// so the views show what its columns count (for TDA these are the detachment and attachment densities; for RPA they
+// differ slightly, which is why the views say "hole" and "particle"). As isosurface fields (md_gto_iso) of those
+// products as they are - nothing A x A is formed. The pairs are read on the main thread once they are resident
+// (es_nto_ready), the fields made on a worker: switching state never waits.
+struct CtFieldJob {
+    int32_t state = -1;
+    size_t  A = 0;
+    NtoPairs pairs = {};
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // hole, particle: owned until taken
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_field_job_destroy(CtFieldJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t K = job->pairs.K, A = job->A;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    for (int i = 0; i < 2; ++i) if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);     // never given to a pool task
+    job->geom.free();
+    delete job;
+}
+
+// The number of AOs the NTOs are written in: the last axis of the {S,L,A} coefficients
+static size_t nto_num_ao(const md_system_t& sys) {
+    const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_hole);
+    if (!attr || attr->format.rank < 1) return 0;
+    return attr->format.shape[attr->format.rank - 1];
+}
+
+// Null when the state's pairs cannot be read (yet: ask es_nto_ready first)
+static CtFieldJob* ct_field_job_start(const ApplicationState& state, int32_t s) {
+    const md_system_t& sys = state.mold.sys;
+    const size_t A = nto_num_ao(sys);
+    if (s < 0 || A == 0) return nullptr;
+    CtFieldJob* job = new CtFieldJob();
+    job->state = s;
+    job->A = A;
+    if (!nto_pairs_read(&job->pairs, sys, A, s) || !job->geom.init(state)) {
+        ct_field_job_destroy(job);
+        return nullptr;
+    }
+    for (size_t k = 0; k < job->pairs.K; ++k) job->pairs.lambda[k] = MD_MAX(0.0, job->pairs.lambda[k]);
+    job->task.start(MD_STR_LIT("Charge transfer densities"), [job]() {
+        const IsoFieldGeometry g = job->geom.iso();
+        const double* rows[2] = { job->pairs.hole, job->pairs.part };
+        bool ok = true;
+        for (int c = 0; c < 2 && ok; ++c) {
+            if (task_system::cancelled()) break;
+            job->field[c] = iso_field_create_products(g, rows[c], nullptr, job->pairs.lambda, job->pairs.K, job->A);
+            ok = job->field[c] != nullptr;
+        }
+        job->ok = ok && job->field[0] && job->field[1];
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// One ribbon's orbital pair for the side views: a block NTO (md_qm_ct_block_nto), which the main thread forms
+// in the Lowdin basis from the state's charge transfer data (K x K work and a pass over K x A), and this takes
+// back to AO coefficients, C C~^T x (O(M A) per vector), and makes the isosurface fields of: a worker's.
+struct CtOrbitalJob {
+    uint64_t key = 0;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    double*  x[2] = {};                 // [A] hole and particle in the Lowdin basis, owned
+    double*  c[2] = {};                 // [A] the same in AO coefficients, owned
+    CtGeometry geom = {};
+    md_gto_iso_field_t* field[2] = {};  // owned until taken
+    char     info[2][64] = {};
+    char     sub[96] = {};
+    bool     ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void ct_orbital_job_destroy(CtOrbitalJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0;
+    for (int i = 0; i < 2; ++i) {
+        if (job->x[i]) md_free(heap, job->x[i], sizeof(double) * A);
+        if (job->c[i]) md_free(heap, job->c[i], sizeof(double) * A);
+        if (job->field[i]) md_gto_iso_field_destroy(job->field[i]);
+    }
+    job->geom.free();
+    delete job;
+}
+
+// x[0], x[1] are taken over: allocated by the caller from the heap, A doubles each. Null without a geometry.
+static CtOrbitalJob* ct_orbital_job_start(const ApplicationState& state, const LowdinJob* lowdin, uint64_t key, double* x_hole, double* x_part) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    CtOrbitalJob* job = new CtOrbitalJob();
+    job->key    = key;
+    job->lowdin = lowdin;
+    job->x[0]   = x_hole;
+    job->x[1]   = x_part;
+    if (!job->geom.init(state)) {
+        ct_orbital_job_destroy(job);
+        return nullptr;
+    }
+    const size_t A = lowdin->num_ao;
+    job->c[0] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->c[1] = (double*)md_alloc(heap, sizeof(double) * A);
+    job->task.start(MD_STR_LIT("Ribbon orbitals"), [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const IsoFieldGeometry g = job->geom.iso();
+        bool ok = true;
+        for (int i = 0; i < 2 && ok; ++i) {
+            if (task_system::cancelled()) { ok = false; break; }
+            md_qm_lowdin_inverse_transform(job->c[i], job->x[i], 1, lw->C, lw->C_lowdin, lw->num_mo, lw->num_ao);
+            job->field[i] = iso_field_create_coefficients(g, job->c[i], lw->num_ao);
+            ok = job->field[i] != nullptr;
+        }
+        job->ok = ok;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// The NTO pairs are read here, on the main thread, from the attribute table; the rest runs on a worker.
+static CtStateJob* ct_state_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state) {
+    if (!lowdin_job_ready(lowdin) || state < 0) return nullptr;
+    NtoPairs pairs = {};
+    if (!nto_pairs_read(&pairs, sys, lowdin->num_ao, state)) return nullptr;
+
+    CtStateJob* job = new CtStateJob();
+    job->state       = state;
+    job->lowdin      = lowdin;
+    job->K           = pairs.K;
+    job->num_atoms   = lowdin->num_atoms;
+    job->lambda      = pairs.lambda;
+    job->hole        = pairs.hole;
+    job->part        = pairs.part;
+    job->nto_dropped = pairs.nto_dropped;
+
+    job->task.start({}, [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const size_t A = lw->num_ao, M = lw->num_mo, N = job->num_atoms, K = job->K;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* ht = md_temp_alloc_array(temp, double, K * A);
+        double* pt = md_temp_alloc_array(temp, double, K * A);
+        md_qm_lowdin_transform(ht, job->hole, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        md_qm_lowdin_transform(pt, job->part, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        md_memcpy(job->hole, ht, sizeof(double) * K * A);
+        md_memcpy(job->part, pt, sizeof(double) * K * A);
+
+        job->hole_blocks = (double*)md_alloc(heap, sizeof(double) * N * K * K);
+        job->part_blocks = (double*)md_alloc(heap, sizeof(double) * N * K * K);
+        job->omega       = (double*)md_alloc(heap, sizeof(double) * N * N);
+        job->weight[0]   = (double*)md_alloc(heap, sizeof(double) * N);
+        job->weight[1]   = (double*)md_alloc(heap, sizeof(double) * N);
+        if (!job->hole_blocks || !job->part_blocks || !job->omega || !job->weight[0] || !job->weight[1]) {
+            MD_LOG_ERROR("Charge transfer: out of memory (%zu atoms, %zu NTO pairs)", N, K);
+            job->done.store(true, std::memory_order_release);
+            return;
+        }
+        md_qm_ct_group_blocks(job->hole_blocks, job->hole, K, A, lw->ao_atom, N);
+        md_qm_ct_group_blocks(job->part_blocks, job->part, K, A, lw->ao_atom, N);
+        md_qm_ct_omega(job->omega, job->lambda, K, job->hole_blocks, N, job->part_blocks, N);
+
+        double total = 0.0;
+        for (size_t i = 0; i < N * N; ++i) total += job->omega[i];
+        if (total <= 0.0) { job->done.store(true, std::memory_order_release); return; }
+
+        // The atom to atom tail is not drawn below a floor. Dropping and renormalizing what is left keeps
+        // the graph exactly conserved, and what was dropped is reported.
+        const double floor = 1.0e-6 * total;
+        double kept = 0.0;
+        for (size_t i = 0; i < N * N; ++i) {
+            if (job->omega[i] < floor) job->omega[i] = 0.0;
+            kept += job->omega[i];
+        }
+        job->link_dropped = (float)(1.0 - kept / total);
+        md_memset(job->weight[0], 0, sizeof(double) * N);
+        md_memset(job->weight[1], 0, sizeof(double) * N);
+        for (size_t a = 0; a < N; ++a) {
+            for (size_t b = 0; b < N; ++b) {
+                const double w = job->omega[a * N + b] / kept;
+                job->omega[a * N + b] = w;
+                job->weight[0][a] += w;
+                job->weight[1][b] += w;
+            }
+        }
+        job->ok = true;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
+}
+
+// One state's entry in the state strip: its charge transfer between the automatic UNITS (a fixed level,
+// so states compare), the distance between its hole and particle centroids, and how many NTO pairs it
+// takes (the participation ratio of the lambdas). A light job: the transfer matrix over units, not atoms.
+struct StripJob {
+    int32_t state = -1;
+    const LowdinJob* lowdin = nullptr;  // outlives this job
+    NtoPairs pairs = {};
+    const uint32_t* ao_unit = nullptr;  // [A], owned by the caller and kept until the job is destroyed
+    size_t  num_units = 0;
+    const double* atom_xyz = nullptr;   // [N*3] Angstrom, likewise
+    float   ct = 0.0f;
+    float   distance = 0.0f;
+    float   pr = 0.0f;
+    bool    ok = false;
+    std::atomic<bool> done = false;
+    task_system::Job task;
+};
+
+static void strip_job_destroy(StripJob* job) {
+    if (!job) return;
+    job->task.cancel_and_wait();
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t A = job->lowdin ? job->lowdin->num_ao : 0, K = job->pairs.K;
+    if (job->pairs.lambda) md_free(heap, job->pairs.lambda, sizeof(double) * K);
+    if (job->pairs.hole)   md_free(heap, job->pairs.hole,   sizeof(double) * K * A);
+    if (job->pairs.part)   md_free(heap, job->pairs.part,   sizeof(double) * K * A);
+    delete job;
+}
+
+static StripJob* strip_job_start(const md_system_t& sys, const LowdinJob* lowdin, int32_t state,
+                                 const uint32_t* ao_unit, size_t num_units, const double* atom_xyz) {
+    if (!lowdin_job_ready(lowdin) || !ao_unit || num_units == 0) return nullptr;
+    StripJob* job = new StripJob();
+    job->state     = state;
+    job->lowdin    = lowdin;
+    job->ao_unit   = ao_unit;
+    job->num_units = num_units;
+    job->atom_xyz  = atom_xyz;
+    if (!nto_pairs_read(&job->pairs, sys, lowdin->num_ao, state)) {
+        job->done.store(true, std::memory_order_release);
+        return job;
+    }
+    job->task.start({}, [job]() {
+        const LowdinJob* lw = job->lowdin;
+        const size_t A = lw->num_ao, M = lw->num_mo, N = lw->num_atoms, U = job->num_units, K = job->pairs.K;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* ht = md_temp_alloc_array(temp, double, K * A);
+        double* pt = md_temp_alloc_array(temp, double, K * A);
+        md_qm_lowdin_transform(ht, job->pairs.hole, K, lw->S, lw->C, lw->C_lowdin, M, A);
+        if (task_system::cancelled()) { job->done.store(true, std::memory_order_release); return; }
+        md_qm_lowdin_transform(pt, job->pairs.part, K, lw->S, lw->C, lw->C_lowdin, M, A);
+
+        double* hb = md_temp_alloc_array(temp, double, U * K * K);
+        double* pb = md_temp_alloc_array(temp, double, U * K * K);
+        double* om = md_temp_alloc_array(temp, double, U * U);
+        md_qm_ct_group_blocks(hb, ht, K, A, job->ao_unit, U);
+        md_qm_ct_group_blocks(pb, pt, K, A, job->ao_unit, U);
+        md_qm_ct_omega(om, job->pairs.lambda, K, hb, U, pb, U);
+        double total = 0.0, local = 0.0;
+        for (size_t a = 0; a < U; ++a) {
+            for (size_t b = 0; b < U; ++b) total += om[a * U + b];
+            local += om[a * U + a];
+        }
+
+        // Centroids from the per atom hole and particle, which decompose exactly per pair
+        double rh[3] = {0, 0, 0}, rp[3] = {0, 0, 0}, sh = 0.0, sp = 0.0;
+        if (job->atom_xyz) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lw->ao_atom[mu];
+                if (atom >= N) continue;
+                double qh = 0.0, qp = 0.0;
+                for (size_t k = 0; k < K; ++k) {
+                    qh += job->pairs.lambda[k] * ht[k * A + mu] * ht[k * A + mu];
+                    qp += job->pairs.lambda[k] * pt[k * A + mu] * pt[k * A + mu];
+                }
+                for (int d = 0; d < 3; ++d) {
+                    rh[d] += qh * job->atom_xyz[atom * 3 + d];
+                    rp[d] += qp * job->atom_xyz[atom * 3 + d];
+                }
+                sh += qh;
+                sp += qp;
+            }
+        }
+        double l1 = 0.0, l2 = 0.0;
+        for (size_t k = 0; k < K; ++k) { l1 += job->pairs.lambda[k]; l2 += job->pairs.lambda[k] * job->pairs.lambda[k]; }
+
+        job->ct = total > 0.0 ? (float)(1.0 - local / total) : 0.0f;
+        if (sh > 0.0 && sp > 0.0) {
+            double d2 = 0.0;
+            for (int d = 0; d < 3; ++d) { const double x = rh[d] / sh - rp[d] / sp; d2 += x * x; }
+            job->distance = (float)sqrt(d2);
+        }
+        job->pr = l2 > 0.0 ? (float)(l1 * l1 / l2) : 0.0f;
+        job->ok = total > 0.0;
+        job->done.store(true, std::memory_order_release);
+    });
+    return job;
 }
 
 // Everything below reads the SYSTEM's attribute table. There is no reader object here any more and
@@ -1054,6 +1570,117 @@ struct QuantumChemistry : viamd::EventHandler {
         double* detach    = nullptr;
     } td_cache;
 
+    // The charge transfer window's side views: the molecule with the hole density beside the diagram's hole column and
+    // the particle density beside its particle column, one camera for both. Optional (they take room).
+    //
+    // The surfaces are meshes (md_gto_iso, iso_meshes.h): extracted from the fields themselves, sharp however close
+    // the camera comes, and drawn with the stochastic transparency of isomesh_utils.h.
+    //
+    // Nothing here waits. A state's two density fields are made from its NTO pairs on a worker (CtFieldJob), their
+    // meshes extracted on the GPU as a job over frames. Fields and meshes are kept per state in a cache of a set
+    // number of entries, least recently used out first, and while nothing else is asked the cache is filled with the
+    // other states, the selected one's neighbours first: switching state shows what is cached at once, and what is
+    // not yet keeps the last picture until it is. An iso value changed re-extracts what is shown from the fields kept.
+    struct CtViews {
+        bool   show = false;
+        float  width_frac = 0.26f;      // of the window's canvas, each side
+        double iso_val = 0.05;          // orbitals at +-iso_val, densities at iso_val^2, as the transition analysis
+        int    cache_entries = 24;      // states and orbital pairs kept
+        bool   initialized = false;
+
+        // A state's two densities, or one ribbon's orbital pair (block NTO) or the state's own NTO pair
+        struct Entry {
+            uint64_t key = 0;           // ctv_density_key, or an orbital key (top bit set)
+            int32_t  state = -1;
+            md_gto_iso_field_t* field[2] = {};  // hole, particle
+            IsoMeshes* meshes = nullptr;        // heap, both fields' surfaces
+            uint64_t used = 0;
+            bool     failed = false;    // nothing to show (no NTO pairs, or no field could be made)
+            bool     orbital = false;   // signed: both sheets, at +-iso
+            char     info[2][64] = {};  // per view, beside its caption: what is shown
+            char     sub[96] = {};      // under both
+        };
+        md_array(Entry) cache = nullptr;    // heap
+        uint64_t tick = 0;
+        uint64_t positions_hash = 0;    // the geometry the fields are of: a new one empties the cache
+        CtFieldJob* job = nullptr;
+        int32_t shown = -1;             // the state whose densities the views show
+
+        // Ribbon orbitals. Hovering a ribbon asks for its orbital pair once the cursor has rested on it for
+        // hover_delay (sweeping across the diagram asks for nothing); clicking one pins it, so that the views
+        // keep it while the cursor is off the diagram (turning them, for one). The orbital route's NTO pairs
+        // likewise, from the middle column.
+        CtOrbitalJob* orb_job = nullptr;
+        uint64_t orb_shown = 0;         // the orbital entry last shown
+        uint64_t hover_cand = 0;        // the orbital under the cursor, and since when
+        double   hover_t0 = 0.0;
+        float    hover_delay = 0.15f;
+        struct Pin {
+            bool     on = false;
+            int32_t  state = -1;
+            uint64_t src_key = 0, dst_key = 0;  // the ribbon, by its ends (fragment route)
+            uint32_t pair = 0;
+            int32_t  nto = -1;                  // the NTO pair (orbital route)
+        } pin;
+
+        GBuffer  gbuf = {};
+        uint32_t iso_tex[2] = {};
+        uint32_t out_tex[2] = {};
+        uint32_t out_fbo = 0;
+        isomesh::Target mesh_target[2] = {};
+        bool     converged = true;      // both images final: no redraw until something changes
+        uint64_t render_hash = 0;
+        PickingSurface picking_surface = {};
+        Camera camera = {};
+        ViewTransform target = {};
+        md_gl_rep_t gl_rep = {};
+    } ctv;
+
+    void ctv_entry_free(CtViews::Entry* e) {
+        if (e->meshes) {
+            if (app) iso_meshes_free(e->meshes, app);   // first: its extraction state holds the fields
+            delete e->meshes;
+            e->meshes = nullptr;
+        }
+        for (int c = 0; c < 2; ++c) {
+            iso_field_release(e->field[c]);
+            e->field[c] = nullptr;
+        }
+    }
+
+    void ctv_cache_clear() {
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) ctv_entry_free(&ctv.cache[i]);
+        md_array_shrink(ctv.cache, 0);
+        ct_field_job_destroy(ctv.job);
+        ctv.job = nullptr;
+        ct_orbital_job_destroy(ctv.orb_job);
+        ctv.orb_job = nullptr;
+        ctv.shown = -1;
+        ctv.orb_shown = 0;
+    }
+
+    void ctv_free() {
+        ctv_cache_clear();
+        md_array_free(ctv.cache, md_get_heap_allocator());
+        for (int i = 0; i < 2; ++i) {
+            if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+            if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            isomesh::target_free(&ctv.mesh_target[i]);
+        }
+        if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
+        if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
+        md_gl_rep_destroy(ctv.gl_rep);
+        const bool   show = ctv.show;           // preferences, not data
+        const float  width_frac = ctv.width_frac;
+        const double iso_val = ctv.iso_val;
+        const int    cache_entries = ctv.cache_entries;
+        ctv = CtViews{};
+        ctv.show          = show;
+        ctv.width_frac    = width_frac;
+        ctv.iso_val       = iso_val;
+        ctv.cache_entries = cache_entries;
+    }
+
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
     //
     // Separate window, separate state, but the SAME group definitions as the NTO window - asking
@@ -1062,7 +1689,7 @@ struct QuantumChemistry : viamd::EventHandler {
     struct Flow {
         bool show_window = false;
 
-        flow_mode_t mode = FLOW_MODE_NTO;
+        flow_mode_t mode = FLOW_MODE_FRAGMENTS;
 
         md_flow_graph_t  graph  = {};
         md_flow_cut_t    cut    = {};
@@ -1072,6 +1699,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
         // Group labels already live in nto.group.label; these two are ours.
         char nto_label[MAX_NTO_LABELS][40] = {};
+        uint32_t nto_index[MAX_NTO_LABELS] = {};   // the state's NTO pair each middle node stands for
 
         // Second line: the dominant MO character of each NTO, e.g. "HOMO-1 -> LUMO". Empty when
         // no single pair dominates enough to name honestly.
@@ -1098,6 +1726,46 @@ struct QuantumChemistry : viamd::EventHandler {
         // NTO pairs below this share of the transition are dropped and the rest renormalized.
         // Distinct from the cut threshold, which hides nodes that are still in the graph.
         float lambda_cutoff = 1.0e-3f;
+
+        // What the last Fragments build left out, so the window can say it. The pairs below a round
+        // off floor of the excitation (interference makes every other pair count), and the atom to
+        // atom entries too small to draw - between distant atoms there are many of them.
+        float nto_dropped  = 0.0f;
+        float link_dropped = 0.0f;
+
+        // Rows per column up to which the diagram opens fragments on its own (md_flow_cut_t.max_rows)
+        int max_rows = 12;
+
+        // The system's fragments (sys->fragment, md_fragment.h) as a tree to show (fragment_tree.h), and the
+        // two atom index spaces: QM atoms (what the basis, the NTOs and the groups are over) and system atoms
+        // (what fragments and selections are over). Made again when the topology changes (the fragments come
+        // with the system's inference, which may finish after the window opens); the arena reset frees them.
+        FragmentTree frags = {};
+        uint64_t  frags_version = 0;       // the topology version the tree was made from
+        uint32_t* qm_to_sys = nullptr;     // [num_qm_atoms]
+        int32_t*  sys_to_qm = nullptr;     // [num_sys_atoms], -1 for an atom outside the calculation
+        size_t    num_qm_atoms  = 0;
+        size_t    num_sys_atoms = 0;
+        bool      frags_built   = false;
+        int       ct_failed_state = -2;    // the state whose NTO pairs could not be read, not to be retried
+
+        // The state strip: one entry per excited state, filled one state at a time (StripJob)
+        struct StripEntry {
+            float ct = 0.0f, distance = 0.0f, pr = 0.0f;
+            bool  done = false, ok = false;
+        };
+        md_array(StripEntry) strip = nullptr;
+        uint32_t* ao_unit = nullptr;       // [A] the unit (leaf fragment, compacted) of each AO
+        size_t    num_units = 0;
+        double*   atom_xyz = nullptr;      // [N*3] the QM atoms, Angstrom
+        bool      show_strip = true;
+        bool      show_legend = true;
+        float     bar_width = 0.03f;    // the layout's node thickness, graph units: thin bars, labels outside
+
+        // The orbital pairs (block NTOs) of every visible ribbon, as shares of it: see FlowStripes
+        md_array(uint32_t) stripe_offset = nullptr;
+        md_array(float)    stripe_frac   = nullptr;
+        uint64_t           stripe_hash   = 0;
 
         FlowDrawStyle style = {};
 
@@ -1133,6 +1801,13 @@ struct QuantumChemistry : viamd::EventHandler {
         uint64_t data_hash = 0;
         bool built = false;
     } flow;
+
+    // Shared by every excited state of the system; made on first use by the Charge Transfer window
+    LowdinJob* lowdin = nullptr;
+    // The selected state's numbers per atom; replaced when another state is selected
+    CtStateJob* ct_job = nullptr;
+    // The state strip's current state, one at a time
+    StripJob* strip_job = nullptr;
 
     // Workspace group assignments, waiting for a molecule.
     //
@@ -1356,10 +2031,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
             switch (e.type) {
             case viamd::EventType_ViamdInitialize: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
-                arena = md_arena_allocator_create(state.allocator.persistent, MEGABYTES(4));
+                arena = md_arena_allocator_create(state.allocator.persistent, MD_MEGABYTES(4));
                 app = &state;
                 md_bitmask_init(&critical_points.selection_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
                 md_bitmask_init(&critical_points.highlight_mask, 0, MD_BITSET_MAX_INDEX, state.allocator.persistent);
@@ -1367,7 +2042,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Reservation only, pages are committed on demand. The high-water mark is a single
                 // RIXS map (num_photon_energies * num_grid_samples doubles, the latter capped at
                 // 4096) plus the XAS panel, so this is generous by a wide margin.
-                rixs.alloc = md_vm_arena_create(MEGABYTES(512));
+                rixs.alloc = md_vm_arena_create(MD_MEGABYTES(512));
 
                 int gl_major, gl_minor;
                 glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
@@ -1384,6 +2059,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     panel_meshes_free(&orb.mesh, app);
                     panel_meshes_free(&nto.mesh, app);
                 }
+                ctv_free();
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
@@ -1402,7 +2078,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 break;
             case viamd::EventType_ViamdFrameTick: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 // Here rather than in the window that started it, so a result lands whether or not
@@ -1449,11 +2125,11 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 break;
             case viamd::EventType_ViamdRenderTransparent: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
 				const ApplicationState& state = *(ApplicationState*)e.payload;
 
                 md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
-                defer { md_temp_end(temp); };
+                MD_DEFER { md_temp_end(temp); };
 
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
                     draw_critical_points(state, temp);
@@ -1466,7 +2142,7 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdRenderKey: {
                 // What the critical points are drawn from (RenderTransparent): they are selected and highlighted
                 // by hovering and clicking them
-                ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
                 RenderKey* rk = (RenderKey*)e.payload;
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
                     const md_topo_extremum_graph_t& g = critical_points.simp_graph;
@@ -1484,8 +2160,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdInteractionSurface: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_InteractionSurfaceEvent);
-                ASSERT(e.payload);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_InteractionSurfaceEvent);
+                MD_ASSERT(e.payload);
                 InteractionSurfaceEvent* event = (InteractionSurfaceEvent*)e.payload;
                 if (event->surface_id == interaction_surface_main) {
                     if (critical_points.enabled && arena) {
@@ -1566,8 +2242,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdPickingTooltipTextRequest: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
-                ASSERT(e.payload);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
+                MD_ASSERT(e.payload);
                 PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)e.payload;
                 if (req->hit.domain == PickingDomain_CriticalPoints) {
                     uint32_t cp_idx = req->hit.local_idx;
@@ -1578,19 +2254,19 @@ struct QuantumChemistry : viamd::EventHandler {
                         const CriticalPointStyle& style = critical_point_style(type);
                         char type_str[32];
                         const int type_len = snprintf(type_str, sizeof(type_str), "%s", style.name);
-                        convert_to_lower(type_str, (size_t)CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
+                        md_convert_to_lower(type_str, (size_t)MD_CLAMP(type_len, 0, (int)sizeof(type_str) - 1));
                         tooltip_title(req, "%s", type_str);
-                        tooltip_row(req, STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
-                        tooltip_row(req, STR_LIT("density"), "%.6g au", v.value);
+                        tooltip_row(req, MD_STR_LIT("type"), "%s %s" TOOLTIP_SEP "%s", style.label, style.signature, style.topology);
+                        tooltip_row(req, MD_STR_LIT("density"), "%.6g au", v.value);
                         // The graph is in bohr
-                        tooltip_row(req, STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
+                        tooltip_row(req, MD_STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM,
                                     v.x * BOHR_TO_ANGSTROM, v.y * BOHR_TO_ANGSTROM, v.z * BOHR_TO_ANGSTROM);
                     }
                 }
                 break;
             }
             case viamd::EventType_ViamdLoadData: {
-                 ASSERT(e.payload_type == viamd::EventPayloadType_LoadData);
+                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_LoadData);
                  LoadDataPayload& payload = *(LoadDataPayload*)e.payload;
                  ApplicationState& state = *payload.app_state;
 
@@ -1617,20 +2293,20 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSerialize: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_SerializationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_SerializationState);
                 serialize_workspace(*(viamd::serialization_state_t*)e.payload);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_DeserializationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_DeserializationState);
                 viamd::deserialization_state_t& deser = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(deser), STR_LIT("QuantumChemistry"))) {
+                if (md_str_eq(viamd::section_header(deser), MD_STR_LIT("QuantumChemistry"))) {
                     deserialize_workspace(deser);
                 }
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
                 // Nothing below reads the reader any more - the QM atom domain and the dipole both
@@ -1690,7 +2366,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdPickingRangeReserve: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_PickingSpace);
                 PickingSpace* space = (PickingSpace*)e.payload;
                 if (critical_points.enabled) {
                     size_t num_cp = md_topo_num_critical_points(&critical_points.simp_graph);
@@ -1701,7 +2377,7 @@ struct QuantumChemistry : viamd::EventHandler {
             case viamd::EventType_ViamdTaskProgressRequest: {
                 // The analytic critical point search, for the task overlay: once it has run for a moment, with the
                 // flag its cancel button raises (collected as usual: what was found so far is shown, marked)
-                ASSERT(e.payload_type == viamd::EventPayloadType_TaskProgressRequest);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_TaskProgressRequest);
                 TaskProgressRequest* req = (TaskProgressRequest*)e.payload;
                 GtoCriticalPointJob* job = critical_points.gto_job;
                 if (job && !job->cancel && !job->dropped && md_tick_to_seconds(md_tick_now() - job->start) >= 0.25) {
@@ -1710,7 +2386,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdViewFit: {
-                ASSERT(e.payload_type == viamd::EventPayloadType_ViewFitRequest);
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ViewFitRequest);
                 ViewFitRequest* req = (ViewFitRequest*)e.payload;
                 if (req && req->surface_id == interaction_surface_main) {
                     const md_bitmask_t* bf = nullptr;
@@ -1823,7 +2499,7 @@ struct QuantumChemistry : viamd::EventHandler {
         constexpr int SEG = 16;
         vec2_t circle[SEG + 1];
         for (int k = 0; k <= SEG; ++k) {
-            const float a = (float)(2.0 * PI * k / SEG);
+            const float a = (float)(2.0 * MD_PI * k / SEG);
             circle[k] = {cosf(a), sinf(a)};
         }
 
@@ -1877,10 +2553,21 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
         //md_gl_mol_destroy(gl_mol);
         md_gl_rep_destroy(gl_rep);
+        gl_rep = {};
+        // Zeroed with nto below, which would leave its slot taken for good: one for each system loaded
+        md_gl_rep_destroy(nto.gl_rep);
+        ctv_free();
         num_qm_atoms = 0;
         num_mos = 0;
         num_excited = 0;
         qm_version = 0;
+        // The charge transfer jobs read the arena (the strip's AO to unit map) and the Lowdin job: they go first
+        ct_state_job_destroy(ct_job);
+        ct_job = nullptr;
+        strip_job_destroy(strip_job);
+        strip_job = nullptr;
+        lowdin_job_destroy(lowdin);
+        lowdin = nullptr;
         md_arena_allocator_reset(arena);
         md_topo_extremum_graph_free(&critical_points.raw_graph);
         md_topo_extremum_graph_free(&critical_points.simp_graph);
@@ -1933,7 +2620,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!es_qm_atoms(&qm, sys)) return;
 
         md_temp_scope_t temp = md_temp_begin();
-		defer { md_temp_end(temp); };
+		MD_DEFER { md_temp_end(temp); };
         size_t num_atoms = qm.count;
         uint32_t* colors = (uint32_t*)md_temp_alloc_array(temp, uint32_t, num_atoms);
         // Group 0 is "not in any group", so it keeps the element colour the molecule would have
@@ -2063,12 +2750,12 @@ struct QuantumChemistry : viamd::EventHandler {
             nto.camera = nto.target;
 
 						nto.atom_group_idx = md_array_create(uint32_t, num_atoms, arena);
-            MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
+            md_memset(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
             snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
             nto.group.color[0] = vec4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
 
-            for (int i = 1; i < (int)ARRAY_SIZE(nto.group.color); ++i) {
+            for (int i = 1; i < (int)MD_COUNTOF(nto.group.color); ++i) {
                 ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
                 nto.group.color[i] = vec_cast(color);
                 snprintf(nto.group.label[i], sizeof(nto.group.label[i]), "Group %i", i);
@@ -2086,16 +2773,16 @@ struct QuantumChemistry : viamd::EventHandler {
 
             // Callculate ballpark scaling factor for dipole vectors
             vec3_t extent = aabb.max_ext - aabb.min_ext;
-            float max_ext = MAX(extent.x, MAX(extent.y, extent.z));
+            float max_ext = MD_MAX(extent.x, MD_MAX(extent.y, extent.z));
             float max_len = 0;
             {
                 md_temp_scope_t temp = md_temp_begin();
-                defer { md_temp_end(temp); };
-                max_len = (float)MAX(dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/electric_transition/vector")),
-                                     dipole_max_length(temp, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector")));
+                MD_DEFER { md_temp_end(temp); };
+                max_len = (float)MD_MAX(dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")),
+                                     dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")));
             }
             if (max_len > 0.0f) {
-                nto.dipole.vector_scale = CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
+                nto.dipole.vector_scale = MD_CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
             }
 
 #if USE_AABB_GRID
@@ -2105,19 +2792,38 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
             nto.target = default_view;
             nto.camera = nto.target;
+
+            // The charge transfer window's side views: the same view to start from, the molecule in its element
+            // colours, a grid at half the density of the main one. What a previous system left goes first.
+            ctv_free();
+            picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
+            ctv.target = default_view;
+            ctv.camera = ctv.target;
+            ctv.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            {
+                QmAtoms qm = {};
+                if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
+                    md_temp_scope_t temp = md_temp_begin();
+                    MD_DEFER { md_temp_end(temp); };
+                    uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
+                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_util_element_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
+                    md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
+                }
+            }
+            ctv.initialized = true;
         }
 
         // RSP. Oscillator strengths are what a linear response calculation produces and
         // what the absorption plot draws, so their presence is the question - a reader
         // with no response type of its own answers it just by publishing them.
-        if (md_attributes_find(&state.mold.sys.attributes, STR_LIT("vlx/rsp/oscillator_strength"))) {
+        if (md_attributes_find(&state.mold.sys.attributes, MD_STR_LIT("vlx/rsp/oscillator_strength"))) {
             rsp.hovered = -1;
             rsp.selected = 0;
         }
 
         // OPT. Opens on the last step, which is the converged geometry.
         size_t num_opt_steps = 0;
-        if (attribute_series_f64(&num_opt_steps, state.mold.sys, STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
+        if (attribute_series_f64(&num_opt_steps, state.mold.sys, MD_STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
             opt.selected = (int)(num_opt_steps - 1);
         }
 
@@ -2153,13 +2859,13 @@ struct QuantumChemistry : viamd::EventHandler {
     // slice, which is the only part that was ever ours.
 
     bool evaluate_nto(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t nto_idx, size_t lambda_idx, ElectronicStructureNtoComponent type, md_gto_op_t op) {
-        const str_t path = (type == ElectronicStructureNtoComponent::Hole) ? es_path::nto_hole : es_path::nto_particle;
+        const md_str_t path = (type == ElectronicStructureNtoComponent::Hole) ? es_path::nto_hole : es_path::nto_particle;
         const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)nto_idx, (uint32_t)lambda_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
     bool evaluate_mo(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, SpinChannel mo_type, size_t mo_idx, md_gto_op_t op) {
-        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
@@ -2189,7 +2895,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
 
@@ -2217,8 +2923,8 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         const size_t bytes = sizeof(double) * a_dim * a_dim;
-        MEMCPY(td_cache.attach, attach, bytes);
-        MEMCPY(td_cache.detach, detach, bytes);
+        md_memcpy(td_cache.attach, attach, bytes);
+        md_memcpy(td_cache.detach, detach, bytes);
         td_cache.state_idx = state_idx;
         return true;
     }
@@ -2235,7 +2941,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const double* density_matrix = td_cache.attach;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         switch (component) {
         case ElectronicStructureTransitionDensityComponent::Detachment:
@@ -2263,7 +2969,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     static inline ImVec4 make_highlight_color(const ImVec4& color, float factor = 0.2f) {
         // Ensure the factor is not too high, to avoid over-brightening
-        factor = CLAMP(factor, 0.0f, 1.0f);
+        factor = MD_CLAMP(factor, 0.0f, 1.0f);
 
         // Increase the brightness of each component by the factor
         float r = color.x + factor;
@@ -2292,10 +2998,10 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     static inline void compute_vertical_sankey_bezier(ImVec2* p1, ImVec2* p2, ImVec2* p3, ImVec2* p4, ImVec2 source_pos, ImVec2 dest_pos, float thickness) {
-        ASSERT(p1);
-        ASSERT(p2);
-        ASSERT(p3);
-        ASSERT(p4);
+        MD_ASSERT(p1);
+        MD_ASSERT(p2);
+        MD_ASSERT(p3);
+        MD_ASSERT(p4);
 
         *p1 = ImVec2(source_pos.x + thickness * 0.5f, source_pos.y);
         *p4 = ImVec2(dest_pos.x + thickness * 0.5f, dest_pos.y);
@@ -2386,7 +3092,7 @@ struct QuantumChemistry : viamd::EventHandler {
             label.pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[0]);
             label.visible = false;
 
-            for (size_t s = 0; s < ARRAY_SIZE(slot_t); ++s) {
+            for (size_t s = 0; s < MD_COUNTOF(slot_t); ++s) {
                 const ImVec2 pos = ImBezierCubicCalc(label.bezier[0], label.bezier[1], label.bezier[2], label.bezier[3], slot_t[s]);
                 const ImRect rect = { pos - half, pos + half };
 
@@ -2421,7 +3127,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!nto->transition_density_part) return;
 
         md_temp_scope_t temp = md_temp_begin_avoid(scene->alloc);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         md_vg_add_rect_filled(scene, vec2_from_imvec2(area.Min), vec2_from_imvec2(area.Max), MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
 
@@ -2436,7 +3142,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 num_bars += 1;
             }
         }
-        const int num_gaps = MAX(num_bars - 1, 0);
+        const int num_gaps = MD_MAX(num_bars - 1, 0);
         const float gap_size = plot_area.GetWidth() * 0.05f;
         const float bars_avail_width = plot_area.GetWidth() - gap_size * num_gaps;
 
@@ -2446,8 +3152,8 @@ struct QuantumChemistry : viamd::EventHandler {
             hole_sum += nto->transition_density_hole[i];
             part_sum += nto->transition_density_part[i];
         }
-        hole_sum = MAX(hole_sum, 1.0e-6f);
-        part_sum = MAX(part_sum, 1.0e-6f);
+        hole_sum = MD_MAX(hole_sum, 1.0e-6f);
+        part_sum = MD_MAX(part_sum, 1.0e-6f);
 
         float* hole_percentages = md_temp_alloc_array(temp, float, nto->group.count);
         float* part_percentages = md_temp_alloc_array(temp, float, nto->group.count);
@@ -2540,7 +3246,7 @@ struct QuantumChemistry : viamd::EventHandler {
             char label[16];
             snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
             const ImVec2 pos = aligned_text_pos(label, flow_labels[i].pos, { 0.5f, 0.5f });
-            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, str_from_cstr(label));
+            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, md_str_from_cstr(label));
         }
 
         bool* show_start_text = md_temp_alloc_array(temp, bool, nto->group.count);
@@ -2557,7 +3263,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (hide_text_overlaps) {
             for (int i = 0; i < (int)nto->group.count; ++i) {
                 size_order[i] = i;
-                text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+                text_sizes[i] = MD_MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
                 const float midpoint = start_positions[i] + bars_avail_width * hole_percentages[i] * 0.5f;
                 rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0.0f, midpoint + text_sizes[i] * 0.5f, 1.0f };
             }
@@ -2624,15 +3330,15 @@ struct QuantumChemistry : viamd::EventHandler {
             md_vg_add_rect_filled(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), vg_color_from_imvec4(bar_color), 0.0f);
             md_vg_add_rect(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), outline_color, 0.0f, 1.0f);
             if (show_start_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, str_from_cstr(start_label));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, md_str_from_cstr(start_label));
             }
 
             md_vg_add_rect_filled(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), vg_color_from_imvec4(bar_color), 0.0f);
             md_vg_add_rect(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), outline_color, 0.0f, 1.0f);
             if (show_end_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, str_from_cstr(end_label));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, md_str_from_cstr(end_label));
             }
         }
     }
@@ -2644,17 +3350,17 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         char path_buf[1024] = {};
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("svg"))) {
             return false;
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_vg_scene_t scene = {};
         md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
         vg_sankey_diagram(&scene, { 0.0f, 0.0f, size.x, size.y }, nto, hide_text_overlaps);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported transition diagram to '%s'", path_buf);
         } else {
@@ -2668,7 +3374,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!nto->transition_density_part) return;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         /*
         * A sankey diagram needs to implement bezier curves, that are connecting two points
@@ -2722,8 +3428,8 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         // Prevent division by zero
-        hole_sum = MAX(hole_sum, 1.0e-6f);
-        part_sum = MAX(part_sum, 1.0e-6f);
+        hole_sum = MD_MAX(hole_sum, 1.0e-6f);
+        part_sum = MD_MAX(part_sum, 1.0e-6f);
 
         float* hole_percentages = md_temp_alloc_array(temp, float, nto->group.count);
         float* part_percentages = md_temp_alloc_array(temp, float, nto->group.count);
@@ -2789,7 +3495,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         int vert_end = draw_list->VtxBuffer.Size;
 
                         // The width test here is clamped to be atleast some pixel in width, otherwise it would be impossible to hit thin flows
-                        bool flow_hovered = mouse_delta.x < MAX(width * 0.5f, min_test_width) && mouse_delta.y < 1.0e-4;
+                        bool flow_hovered = mouse_delta.x < MD_MAX(width * 0.5f, min_test_width) && mouse_delta.y < 1.0e-4;
 
                         // Apply a gradient based on y-value from start color to end color if they belong to different groups
                         if (end_i != beg_i) {
@@ -2807,7 +3513,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             hovered_flow_width = width;
                             hovered_flow_beg = start_pos;
                             hovered_flow_end = end_pos;
-                            MEMCPY(mouse_label, label, sizeof(label));
+                            md_memcpy(mouse_label, label, sizeof(label));
                         }
 
                         // A ribbon narrower than its own label cannot carry one at all.
@@ -2856,7 +3562,7 @@ struct QuantumChemistry : viamd::EventHandler {
             //Start texts
             for (int i = 0; i < (int)nto->group.count; i++) {
                 size_order[i] = i;
-                text_sizes[i] = MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
+                text_sizes[i] = MD_MAX(ImGui::CalcTextSize(nto->group.label[i]).x, ImGui::CalcTextSize("99.99%").x);
 
                 float midpoint = start_positions[i] + bars_avail_width * hole_percentages[i] * 0.5f;
                 rectangles[i] = { midpoint - text_sizes[i] * 0.5f, 0, midpoint + text_sizes[i] * 0.5f, 1};
@@ -2929,11 +3635,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 bool index_hovered = false;
                 if (start_bar.Contains(mouse_pos)) {
-                    MEMCPY(mouse_label, start_label1, sizeof(start_label1));
+                    md_memcpy(mouse_label, start_label1, sizeof(start_label1));
                     index_hovered = true;
                 }
                 else if (end_bar.Contains(mouse_pos)) {
-                    MEMCPY(mouse_label, end_label1, sizeof(end_label1));
+                    md_memcpy(mouse_label, end_label1, sizeof(end_label1));
                     index_hovered = true;
                 }
 
@@ -2984,7 +3690,7 @@ struct QuantumChemistry : viamd::EventHandler {
         case X_UNIT_HARTREE:
             return value;
         default:
-            ASSERT(false); // Should not happen
+            MD_ASSERT(false); // Should not happen
             return value;
         }
     }
@@ -3000,7 +3706,7 @@ struct QuantumChemistry : viamd::EventHandler {
         case X_UNIT_HARTREE:
             return value;
         default:
-            ASSERT(false); // Should not happen
+            MD_ASSERT(false); // Should not happen
             return value;
         }
     }
@@ -3030,7 +3736,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
             break;
         default:
-            ASSERT(false); // Should not happen
+            MD_ASSERT(false); // Should not happen
             break;
         }
     }
@@ -3062,7 +3768,7 @@ struct QuantumChemistry : viamd::EventHandler {
 			double dx = x - peaks_x[k];
 			y += peaks_y[k] / peaks_x[k] * gamma / fma(dx, dx, gamma2);
 		}
-        return y / PI;
+        return y / MD_PI;
     }
 
     static inline double lorentzian_ecd(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
@@ -3070,7 +3776,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     static inline double lorentzian_vib(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        return (1.0 / PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
+        return (1.0 / MD_PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
     static inline double lorentzian_tpa(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
@@ -3078,7 +3784,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     static inline double lorentzian_xps(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
-        return (1.0 / PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
+        return (1.0 / MD_PI) * lorentzian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
     }
 
     // Evaluates gaussian broadening around a point x, given a set of peaks and their strengths.
@@ -3104,31 +3810,31 @@ struct QuantumChemistry : viamd::EventHandler {
             double dx = x - peaks_x[k];
             y += peaks_y[k] / peaks_x[k] * exp(factor * dx * dx);
         }
-		return y / (sigma * sqrt(2.0 * PI));
+		return y / (sigma * sqrt(2.0 * MD_PI));
     }
 
     static inline double gaussian_ecd(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
         const double sigma = sigma_from_fwhm(fwhm);
 		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
-		return y * PI / (sigma * sqrt(2.0 * PI));
+		return y * MD_PI / (sigma * sqrt(2.0 * MD_PI));
     }
 
     static inline double gaussian_vib(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
         const double sigma = sigma_from_fwhm(fwhm);
 		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
-		return y * sqrt(2.0) / (sigma * sqrt(PI));
+		return y * sqrt(2.0) / (sigma * sqrt(MD_PI));
     }
 
     static inline double gaussian_xps(double x, const double* peaks_x, const double* peaks_y, size_t num_peaks, double fwhm) {
         const double sigma = sigma_from_fwhm(fwhm);
 		const double y = gaussian_base(x, peaks_x, peaks_y, num_peaks, fwhm);
-		return y / (sigma * sqrt(2.0 * PI));
+		return y / (sigma * sqrt(2.0 * MD_PI));
     }
 
 
     //Constructs plot limits from peaks
     static inline ImPlotRect get_plot_limits(const double* x_samples, const double* y_peaks, size_t num_peaks, size_t num_samples, double ext_fac = 0.1) {
-        ImPlotRect lim = { MIN(x_samples[0],x_samples[num_samples - 1]), MAX(x_samples[0],x_samples[num_samples - 1]),0,0};
+        ImPlotRect lim = { MD_MIN(x_samples[0],x_samples[num_samples - 1]), MD_MAX(x_samples[0],x_samples[num_samples - 1]),0,0};
         for (size_t i = 0; i < num_peaks; i++) {
             //Use Contains to check if values are within the limits, or if they should extend the limits
             if (lim.Y.Max < y_peaks[i]) {
@@ -3149,7 +3855,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         //The y limits needs to be symmetric so that the spectra is not clipped. For example, if the y peak max is a positive value but the y spectra value is negative, we get issues otherwise. This ensures space for all the data.
         //This is needed because Y2 scaling is based on the maximum peak value
-        double abs_max_y = MAX(fabs(lim.Y.Min), fabs(lim.Y.Max));
+        double abs_max_y = MD_MAX(fabs(lim.Y.Min), fabs(lim.Y.Max));
         lim.Y.Min = -abs_max_y;
         lim.Y.Max = abs_max_y;
         return lim;
@@ -3168,7 +3874,7 @@ struct QuantumChemistry : viamd::EventHandler {
         double closest_dist = DBL_MAX;
         for (size_t i = 0; i < count; ++i) {
             double dx = mouse_pos.x - xs[i];
-            double dy = CLAMP(mouse_pos.y, 0.0, ys[i]) - mouse_pos.y;
+            double dy = MD_CLAMP(mouse_pos.y, 0.0, ys[i]) - mouse_pos.y;
             double dist = sqrt(dx * dx + dy * dy);
             if (dist < distance_threshold && dist < closest_dist) {
                 closest_idx = (int)i;
@@ -3186,7 +3892,7 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t i = 0; i < count; ++i) {
             ImVec2 point = ImPlot::PlotToPixels(x_base + i * x_step, values[i]);
             double dx = mouse_pos.x - point.x;
-            double dy = CLAMP(mouse_pos.y, MIN(zero.y, point.y), MAX(zero.y, point.y)) - mouse_pos.y;
+            double dy = MD_CLAMP(mouse_pos.y, MD_MIN(zero.y, point.y), MD_MAX(zero.y, point.y)) - mouse_pos.y;
             double dist = sqrt(dx * dx + dy * dy);
             if (dist < distance_threshold && dist < closest_dist) {
                 closest_idx = (int)i;
@@ -3211,8 +3917,8 @@ struct QuantumChemistry : viamd::EventHandler {
         //Keep in mind that pixel y is 0 at the top, so you flip the comparison compared to plot y. The code below still seems to work as intended though.
 
         for (size_t i = 0; i < num_peaks; i++) {
-            y_max = MAX(pixel_peaks[i].y, pixel_y0);
-            y_min = MIN(pixel_peaks[i].y, pixel_y0);
+            y_max = MD_MAX(pixel_peaks[i].y, pixel_y0);
+            y_min = MD_MIN(pixel_peaks[i].y, pixel_y0);
 
             //Check if the y location is within the range of y_min,ymax
             if (y > y_max) {
@@ -3286,11 +3992,11 @@ struct QuantumChemistry : viamd::EventHandler {
     double compute_display_multiplier_from_peaks(const double* eps_samples, size_t eps_count, const double* peak_values, size_t peak_count) {
         double eps_max = 0.0;
         for (size_t i = 0; i < eps_count; ++i) {
-            eps_max = MAX(eps_max, fabs(eps_samples[i]));
+            eps_max = MD_MAX(eps_max, fabs(eps_samples[i]));
         }
         double peak_max = 0.0;
         for (size_t i = 0; i < peak_count; ++i) {
-            peak_max = MAX(peak_max, fabs(peak_values[i]));
+            peak_max = MD_MAX(peak_max, fabs(peak_values[i]));
         }
         if (peak_max <= 0.0 || !isfinite(peak_max) || !isfinite(eps_max)) return 1.0;
 
@@ -3310,7 +4016,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // Only valid to call within a plot context
     void plot_peaks(const char* title, const double x_values[], const double y_values[], size_t num_peaks, int& selected, int& hovered, PlotPeaksFlags flags = PlotPeaksFlags_All) {
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const double bar_width_in_pixels = 2.0;
         const double point_radius_in_pixels = 3.0;
@@ -3470,16 +4176,16 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t num_core     = 0;
         size_t num_core_osc = 0;
 
-        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, STR_LIT("vlx/rsp/rixs/photon_energy"));
-        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
-        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, STR_LIT("vlx/rsp/rixs/core_energy"));
-        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
-        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
+        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy"));
+        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
+        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, MD_STR_LIT("vlx/rsp/rixs/core_energy"));
+        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
+        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
 
         size_t cs_rows = 0, cs_cols = 0;
         size_t el_rows = 0, el_cols = 0;
-        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, STR_LIT("vlx/rsp/rixs/cross_section"));
-        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, STR_LIT("vlx/rsp/rixs/energy_loss"));
+        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"));
+        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"));
 
         // The map itself needs the photon energies, the cross sections and the energy losses.
         if (!out.photon_energies_au || !out.cross_sections || !out.energy_losses_au) return false;
@@ -3531,7 +4237,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // This is the expensive part; it is O(P * N * F) and is therefore guarded by a hash in draw_rixs_map().
     void compute_rixs_map(Rixs& r, const RixsMapInput& in) {
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         // Every array below is rebuilt from scratch, so nothing from the previous map needs to
         // survive. Rewinding here keeps the footprint at exactly one map regardless of how many
@@ -3540,7 +4246,7 @@ struct QuantumChemistry : viamd::EventHandler {
         reset_rixs_cache(r);
 
         md_allocator_i* alloc = r.alloc;
-        ASSERT(alloc);
+        MD_ASSERT(alloc);
 
         const size_t P = in.num_photon_energies;
         const size_t F = in.num_final_states;
@@ -3581,8 +4287,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double x = x_src[f * P + p] * HARTREE_TO_EV;
                 sx[f] = x;
                 sy[f] = in.cross_sections[f * P + p];
-                x_lo = MIN(x_lo, x);
-                x_hi = MAX(x_hi, x);
+                x_lo = MD_MIN(x_lo, x);
+                x_hi = MD_MAX(x_hi, x);
             }
 
             if (use_elastic) {
@@ -3590,8 +4296,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double x = 0.0;
                 sx[F] = x;
                 sy[F] = in.elastic_cross_sections[p];
-                x_lo = MIN(x_lo, x);
-                x_hi = MAX(x_hi, x);
+                x_lo = MD_MIN(x_lo, x);
+                x_hi = MD_MAX(x_hi, x);
             }
         }
 
@@ -3606,7 +4312,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         const double step = (r.x_step_ev > 0.0) ? r.x_step_ev : 0.01;
         size_t N = (size_t)((val_max - val_min) / step + 0.5);
-        N = CLAMP(N, (size_t)2, (size_t)4096);
+        N = MD_CLAMP(N, (size_t)2, (size_t)4096);
 
         md_array_resize(r.grid, N, alloc);
         for (size_t j = 0; j < N; ++j) {
@@ -3630,8 +4336,8 @@ struct QuantumChemistry : viamd::EventHandler {
             for (size_t j = 0; j < N; ++j) {
                 const double y = rixs_broaden(r.broadening_mode, r.grid[j], sx, sy, num_sticks, r.broadening_fwhm_ev);
                 row[j] = y;
-                map_lo = MIN(map_lo, y);
-                map_hi = MAX(map_hi, y);
+                map_lo = MD_MIN(map_lo, y);
+                map_hi = MD_MAX(map_hi, y);
             }
         }
 
@@ -3660,7 +4366,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // The heatmap assumes a uniform spacing; warn instead of asserting like the python version.
             for (size_t i = 1; i < P; ++i) {
                 const double d = r.photon_ev[i] - r.photon_ev[i - 1];
-                if (fabs(d - photon_step) > 1.0e-5 * MAX(1.0, fabs(photon_step))) {
+                if (fabs(d - photon_step) > 1.0e-5 * MD_MAX(1.0, fabs(photon_step))) {
                     if (!r.warned_non_uniform) {
                         r.warned_non_uniform = true;
                         MD_LOG_INFO("RIXS map: incoming photon energies are not uniformly spaced, the map will be distorted.");
@@ -3693,7 +4399,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const double xas_max_e = r.core_ev[C - 1] + 1.0;
 
             size_t M = (size_t)((xas_max_e - xas_min) / 0.01 + 0.5);
-            M = CLAMP(M, (size_t)2, (size_t)4096);
+            M = MD_CLAMP(M, (size_t)2, (size_t)4096);
 
             md_array_resize(r.xas_x, M, alloc);
             md_array_resize(r.xas_y, M, alloc);
@@ -3707,12 +4413,12 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double y = rixs_broaden(r.broadening_mode, x, r.core_ev, r.core_f, C, xas_fwhm);
                 r.xas_x[j] = x;
                 r.xas_y[j] = y;
-                y_hi = MAX(y_hi, y);
+                y_hi = MD_MAX(y_hi, y);
             }
 
             // The sticks are drawn on the same axis, so make sure they are not clipped either.
             for (size_t i = 0; i < C; ++i) {
-                y_hi = MAX(y_hi, r.core_f[i]);
+                y_hi = MD_MAX(y_hi, r.core_f[i]);
             }
             r.num_xas = M;
             r.xas_max = y_hi;
@@ -3726,7 +4432,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void plot_xas_sidebar(const Rixs& r, int& hovered, ImVec4 curve_col, ImVec4 stick_col) {
         ImDrawList& draw_list = *ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
-        defer { ImPlot::PopPlotClipRect(); };
+        MD_DEFER { ImPlot::PopPlotClipRect(); };
 
         // Fill between x = 0 and the curve. ImPlot::PlotShaded only shades along y, so the horizontal
         // equivalent of matplotlib's fill_betweenx is drawn manually, one quad per segment.
@@ -3781,8 +4487,8 @@ struct QuantumChemistry : viamd::EventHandler {
     // row of the map, so they share the broadening and the elastic line and must not drift apart.
     void draw_rixs_settings(const RixsMapInput& in, Rixs& r) {
         const float avail_width = ImGui::GetContentRegionAvail().x;
-        ImGui::PushItemWidth(MIN(avail_width, 200.0f));
-        defer { ImGui::PopItemWidth(); };
+        ImGui::PushItemWidth(MD_MIN(avail_width, 200.0f));
+        MD_DEFER { ImGui::PopItemWidth(); };
 
         static const double broadening_min = 0.01;
         static const double broadening_max = 2.0;
@@ -3804,7 +4510,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // share the ID scope of the parent window - and collide with the identically labelled
         // broadening widgets of the XPS section, which sits under the same kind of node.
         ImGui::PushID("rixs");
-        defer { ImGui::PopID(); };
+        MD_DEFER { ImGui::PopID(); };
 
         const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_NoTreePushOnOpen;
 
@@ -3831,7 +4537,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (P == 0 || F == 0 || !in.photon_energies_au || !in.cross_sections || !in.energy_losses_au) return;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         constexpr int num_broadened_samples = 2048;
 
@@ -3849,15 +4555,15 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         // The selection is kept across data sets, so it has to be validated against the current one.
-        r.selected_photon = CLAMP(r.selected_photon, 0, (int)P - 1);
+        r.selected_photon = MD_CLAMP(r.selected_photon, 0, (int)P - 1);
 
         // ---- Which row of the map to show ------------------------------------------------------------
         // Not a setting of the section: it selects the data, the broadening settings above apply to
         // both plots and are drawn once by draw_rixs_settings().
         {
             const float avail_width = ImGui::GetContentRegionAvail().x;
-            ImGui::PushItemWidth(MIN(avail_width, 200.0f));
-            defer { ImGui::PopItemWidth(); };
+            ImGui::PushItemWidth(MD_MIN(avail_width, 200.0f));
+            MD_DEFER { ImGui::PopItemWidth(); };
 
             char preview[32];
             snprintf(preview, sizeof(preview), "%.4f eV", photon_ev[r.selected_photon]);
@@ -3893,15 +4599,15 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t f = 0; f < F; ++f) {
             peaks_x[f] = in.energy_losses_au[f * P + p] * HARTREE_TO_EV;
             peaks_y[f] = in.cross_sections[f * P + p];
-            x_lo = MIN(x_lo, peaks_x[f]);
-            x_hi = MAX(x_hi, peaks_x[f]);
+            x_lo = MD_MIN(x_lo, peaks_x[f]);
+            x_hi = MD_MAX(x_hi, peaks_x[f]);
         }
         if (use_elastic) {
             // Elastic scattering: zero energy loss.
             peaks_x[F] = 0.0;
             peaks_y[F] = in.elastic_cross_sections[p];
-            x_lo = MIN(x_lo, peaks_x[F]);
-            x_hi = MAX(x_hi, peaks_x[F]);
+            x_lo = MD_MIN(x_lo, peaks_x[F]);
+            x_hi = MD_MAX(x_hi, peaks_x[F]);
         }
 
         if (!(x_lo <= x_hi)) return;  // catches NaN / empty input
@@ -4005,7 +4711,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // PlotHeatmap only rasterizes the cells it was given, so anything outside the data would fall
         // through to the window background. Painting the canvas in the color a zero sample maps to
         // makes the map read as an infinite field of zeros instead of a floating tile.
-        const double map_range = MAX(r.map_max - r.map_min, DBL_EPSILON);
+        const double map_range = MD_MAX(r.map_max - r.map_min, DBL_EPSILON);
         const float  zero_t    = ImClamp((float)((0.0 - r.map_min) / map_range), 0.0f, 1.0f);
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImPlot::SampleColormap(zero_t, r.colormap));
 
@@ -4087,7 +4793,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImPlot::SetupAxis(ImAxis_X1, "Intensity",  ImPlotAxisFlags_NoGridLines);
                 // The photon energy axis is shared with the map, so it is not labelled again here.
                 ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoLabel);
-                ImPlot::SetupAxesLimits(0.0, MAX(r.xas_max, 1.0e-12) * 1.1, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
+                ImPlot::SetupAxesLimits(0.0, MD_MAX(r.xas_max, 1.0e-12) * 1.1, r.y_min_ev, r.y_max_ev, refit ? ImPlotCond_Always : ImPlotCond_Once);
                 // The photon energy axis is linked to the map, so it carries the same constraint.
                 ImPlot::SetupAxisLimitsConstraints(ImAxis_Y1, r.y_min_ev, r.y_max_ev);
                 ImPlot::SetupFinish();
@@ -4192,15 +4898,15 @@ struct QuantumChemistry : viamd::EventHandler {
     static bool xps_table_gather(XpsTable* out, const md_system_t& sys) {
         size_t num_energy = 0;
         size_t num_element = 0;
-        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
-        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
+        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, MD_STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
+        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, MD_STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
         if (!energy || !element || num_energy == 0 || num_element != num_energy) {
             return false;
         }
 
         // A sibling whose length disagrees with the index space is dropped rather than trusted: it
         // would be read at an index that means something else in it.
-        auto column_of = [&](str_t path, md_attribute_type_t type) -> const void* {
+        auto column_of = [&](md_str_t path, md_attribute_type_t type) -> const void* {
             size_t count = 0;
             const void* data = attribute_column(&count, sys, path, type);
             return (data && count == num_energy) ? data : nullptr;
@@ -4209,10 +4915,10 @@ struct QuantumChemistry : viamd::EventHandler {
         out->count             = num_energy;
         out->ionization_energy = energy;
         out->element           = element;
-        out->contribution      = (const double*) column_of(STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
-        out->atom_index        = (const int32_t*)column_of(STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
-        out->mo_index          = (const int32_t*)column_of(STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
-        out->is_delocalized    = (const uint8_t*)column_of(STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
+        out->contribution      = (const double*) column_of(MD_STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
+        out->atom_index        = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
+        out->mo_index          = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
+        out->is_delocalized    = (const uint8_t*)column_of(MD_STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
         return true;
     }
 
@@ -4264,10 +4970,10 @@ struct QuantumChemistry : viamd::EventHandler {
             if (hovered >= (int)base && hovered < (int)(base + count)) hovered = -1;
             return false;
         }
-        defer { ImPlot::EndItem(); };
+        MD_DEFER { ImPlot::EndItem(); };
 
         ImPlot::PushPlotClipRect();
-        defer { ImPlot::PopPlotClipRect(); };
+        MD_DEFER { ImPlot::PopPlotClipRect(); };
 
         ImDrawList& draw_list = *ImPlot::GetPlotDrawList();
         const ImPlotNextItemData& s = ImPlot::GetItemData();
@@ -4353,7 +5059,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // A fixed array rather than an allocation: the gather is a scan of a column already in the
         // table and the result is used within this frame only.
         XpsGroup groups[128];
-        const size_t num_groups  = MIN(xps_groups_gather(groups, ARRAY_SIZE(groups), tbl), ARRAY_SIZE(groups));
+        const size_t num_groups  = MD_MIN(xps_groups_gather(groups, MD_COUNTOF(groups), tbl), MD_COUNTOF(groups));
         const size_t num_entries = tbl.count;
         if (num_groups == 0) return;
 
@@ -4364,10 +5070,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // axes - and the broadening widgets below collide with the identically labelled ones in the
         // RIXS section when a file carries both.
         ImGui::PushID("xps");
-        defer { ImGui::PopID(); };
+        MD_DEFER { ImGui::PopID(); };
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         constexpr int num_broadened_samples = 2048;
 
@@ -4392,20 +5098,20 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // ---- Settings ---------------------------------------------------------------------------
         const float avail_width = ImGui::GetContentRegionAvail().x;
-        ImGui::PushItemWidth(MIN(avail_width, 200.0f));
-        defer { ImGui::PopItemWidth(); };
+        ImGui::PushItemWidth(MD_MIN(avail_width, 200.0f));
+        MD_DEFER { ImGui::PopItemWidth(); };
 
         // The group list is exactly the set of elements that were computed, so listing it offers no
         // element that would draw an empty plot.
         {
-            const str_t cur_sym = md_util_element_symbol(grp->element);
+            const md_str_t cur_sym = md_util_element_symbol(grp->element);
             char preview[8];
             snprintf(preview, sizeof(preview), "%.*s", (int)cur_sym.len, cur_sym.ptr);
             if (ImGui::BeginCombo("Element", preview)) {
                 for (size_t g = 0; g < num_groups; ++g) {
                     const XpsGroup* it = &groups[g];
                     if (it->count == 0) continue;
-                    const str_t sym = md_util_element_symbol(it->element);
+                    const md_str_t sym = md_util_element_symbol(it->element);
                     char item[32];
                     snprintf(item, sizeof(item), "%.*s (%i)", (int)sym.len, sym.ptr, (int)it->count);
                     if (ImGui::Selectable(item, it->element == xps.element)) {
@@ -4463,11 +5169,11 @@ struct QuantumChemistry : viamd::EventHandler {
         double x_min = DBL_MAX;
         double x_max = -DBL_MAX;
         for (size_t i = 0; i < grp->count; ++i) {
-            x_min = MIN(x_min, peaks_x[i]);
-            x_max = MAX(x_max, peaks_x[i]);
+            x_min = MD_MIN(x_min, peaks_x[i]);
+            x_max = MD_MAX(x_max, peaks_x[i]);
         }
         const double pad = 5.0;
-        x_min = MAX(0.0, x_min - pad);
+        x_min = MD_MAX(0.0, x_min - pad);
         x_max = x_max + pad;
 
         uint64_t hash = md_hash64(&xps.broadening_fwhm_ev, sizeof(xps.broadening_fwhm_ev), xps.broadening_mode);
@@ -4545,7 +5251,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             if (plot_hovered && hov >= 0) {
                 const int32_t hov_atom_index = tbl.atom_index ? tbl.atom_index[hov] : -1;
-                const str_t sym = md_util_element_symbol(tbl.element[hov]);
+                const md_str_t sym = md_util_element_symbol(tbl.element[hov]);
                 if (ImGui::BeginTooltip()) {
                     // Atom index is shown 1-based to match the labels VeloxChem prints.
                     if (hov_atom_index >= 0) {
@@ -4616,10 +5322,10 @@ struct QuantumChemistry : viamd::EventHandler {
     // same units as the nuclear term it is subtracted from, and a conversion here would be a
     // silent change of what that subtraction means.
     static dvec3_t dipole_ground_state(const md_system_t& sys) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, STR_LIT("dipole/ground_state/vector"));
+        const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("dipole/ground_state/vector"));
         if (!attr) return {0, 0, 0};
         double v[3] = {0, 0, 0};
-        if (md_attribute_extract_f64(v, ARRAY_SIZE(v), attr, md_attribute_slice_all(), md_unit_none()) != ARRAY_SIZE(v)) {
+        if (md_attribute_extract_f64(v, MD_COUNTOF(v), attr, md_attribute_slice_all(), md_unit_none()) != MD_COUNTOF(v)) {
             return {0, 0, 0};
         }
         return {v[0], v[1], v[2]};
@@ -4627,7 +5333,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The longest vector in a {N,3} dipole attribute, or 0 when it is absent. Only the magnitude is
     // wanted - it sets an arrow scale - so the vectors themselves never have to come back.
-    static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, str_t path) {
+    static double dipole_max_length(md_temp_scope_t temp, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || attr->format.components != 3) {
             return 0.0;
@@ -4639,14 +5345,14 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         double max_len = 0.0;
         for (size_t i = 0; i + 2 < count; i += 3) {
-            max_len = MAX(max_len, dvec3_length({v[i], v[i + 1], v[i + 2]}));
+            max_len = MD_MAX(max_len, dvec3_length({v[i], v[i + 1], v[i + 2]}));
         }
         return max_len;
     }
 
     // One string out of the table, or empty when the path is absent. Pool strings are NUL
     // terminated, so str_ptr goes straight into a "%s".
-    static str_t attribute_str(const md_system_t& sys, str_t path) {
+    static md_str_t attribute_str(const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
         return md_attribute_str(&sys.attributes, attr, 0);
@@ -4658,7 +5364,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // are resident F64 and this panel prints total energies to ten decimals, which a float does not
     // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
     // the null return covers every case where it is not.
-    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, str_t path) {
+    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
         if (values && out_count) *out_count = attr->format.shape[0];
@@ -4668,14 +5374,14 @@ struct QuantumChemistry : viamd::EventHandler {
     // True when the table carries this path at all. "Does this file have X" is a question about the
     // table and nothing else: a block a file does not contain publishes nothing, so there is no
     // separate "was it parsed" to ask alongside it.
-    static bool attribute_exists(const md_system_t& sys, str_t path) {
+    static bool attribute_exists(const md_system_t& sys, md_str_t path) {
         return md_attributes_find(&sys.attributes, path) != nullptr;
     }
 
     // One single valued attribute as a double, or 'fallback' when the path is absent. Anything that
     // is not single valued returns the fallback too: md_attribute_extract_f64 refuses a cap smaller
     // than the attribute, which is exactly the guard wanted here.
-    static double attribute_scalar_f64(const md_system_t& sys, str_t path, double fallback = 0.0) {
+    static double attribute_scalar_f64(const md_system_t& sys, md_str_t path, double fallback = 0.0) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr) return fallback;
         double value = 0.0;
@@ -4686,7 +5392,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // The length of a rank 1 series without reading it. Zero when the path is absent, which is how
     // "how many optimisation steps / response frequencies / normal modes does this file carry" is
     // asked now that there is no reader to ask it of.
-    static size_t attribute_series_count(const md_system_t& sys, str_t path) {
+    static size_t attribute_series_count(const md_system_t& sys, md_str_t path) {
         size_t count = 0;
         return attribute_series_f64(&count, sys, path) ? count : 0;
     }
@@ -4696,7 +5402,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
     // shorter column - or a reader that fills it differently - would otherwise be read past its end.
     // NULL when absent, not a plain F64 series, or shorter than 'required'.
-    static const double* attribute_series_f64_covering(const md_system_t& sys, str_t path, size_t required) {
+    static const double* attribute_series_f64_covering(const md_system_t& sys, md_str_t path, size_t required) {
         size_t count = 0;
         const double* data = attribute_series_f64(&count, sys, path);
         return (data && count >= required) ? data : nullptr;
@@ -4705,7 +5411,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
     // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
     // same reason: these are resident F64 and the callers want them at that precision.
-    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 2);
         if (!values) return nullptr;
@@ -4718,7 +5424,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
     // selection index left over from a previously loaded file needs - rather than a read past the
     // end that looks like data.
-    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, str_t path, size_t row) {
+    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, md_str_t path, size_t row) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const double* data = attribute_matrix_f64(&num_rows, &num_cols, sys, path);
@@ -4731,7 +5437,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
     // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
     // this is not the matrix above with C*3 columns.
-    static const dvec3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, str_t path) {
+    static const dvec3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -4745,7 +5451,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
     // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
     // the row over the QM atoms, so a row that does not cover them is not one to read.
-    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, str_t path, size_t row, size_t min_cols) {
+    static const dvec3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
         size_t num_rows = 0;
         size_t num_cols = 0;
         const dvec3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
@@ -4754,7 +5460,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
-    static const dvec3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, str_t path) {
+    static const dvec3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -4767,7 +5473,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
     // Typed rather than converted: an atom index is an index, and a widened double of one is a
     // number that has lost the only thing that made it an index.
-    static const void* attribute_column(size_t* out_count, const md_system_t& sys, str_t path, md_attribute_type_t type) {
+    static const void* attribute_column(size_t* out_count, const md_system_t& sys, md_str_t path, md_attribute_type_t type) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != type) return nullptr;
@@ -4798,13 +5504,13 @@ struct QuantumChemistry : viamd::EventHandler {
     };
 
     static RspType response_type(const md_system_t& sys) {
-        const str_t s = attribute_str(sys, STR_LIT("vlx/rsp/type"));
-        if (str_eq(s, STR_LIT("linear")))         return RSP_LINEAR;
-        if (str_eq(s, STR_LIT("cpp")))            return RSP_CPP;
-        if (str_eq(s, STR_LIT("c6")))             return RSP_C6;
-        if (str_eq(s, STR_LIT("tpa")))            return RSP_TPA;
-        if (str_eq(s, STR_LIT("tpa_transition"))) return RSP_TPA_TRANSITION;
-        if (str_eq(s, STR_LIT("rixs")))           return RSP_RIXS;
+        const md_str_t s = attribute_str(sys, MD_STR_LIT("vlx/rsp/type"));
+        if (md_str_eq(s, MD_STR_LIT("linear")))         return RSP_LINEAR;
+        if (md_str_eq(s, MD_STR_LIT("cpp")))            return RSP_CPP;
+        if (md_str_eq(s, MD_STR_LIT("c6")))             return RSP_C6;
+        if (md_str_eq(s, MD_STR_LIT("tpa")))            return RSP_TPA;
+        if (md_str_eq(s, MD_STR_LIT("tpa_transition"))) return RSP_TPA_TRANSITION;
+        if (md_str_eq(s, MD_STR_LIT("rixs")))           return RSP_RIXS;
         return RSP_NONE;
     }
 
@@ -4817,11 +5523,11 @@ struct QuantumChemistry : viamd::EventHandler {
     };
 
     static OptType optimization_type(const md_system_t& sys) {
-        const str_t s = attribute_str(sys, STR_LIT("vlx/opt/type"));
-        if (str_eq(s, STR_LIT("geometry")))         return OPT_GEOMETRY;
-        if (str_eq(s, STR_LIT("constrained")))      return OPT_CONSTRAINED;
-        if (str_eq(s, STR_LIT("transition_state"))) return OPT_TS;
-        if (str_eq(s, STR_LIT("irc")))              return OPT_IRC;
+        const md_str_t s = attribute_str(sys, MD_STR_LIT("vlx/opt/type"));
+        if (md_str_eq(s, MD_STR_LIT("geometry")))         return OPT_GEOMETRY;
+        if (md_str_eq(s, MD_STR_LIT("constrained")))      return OPT_CONSTRAINED;
+        if (md_str_eq(s, MD_STR_LIT("transition_state"))) return OPT_TS;
+        if (md_str_eq(s, MD_STR_LIT("irc")))              return OPT_IRC;
         return OPT_NONE;
     }
 
@@ -4876,7 +5582,7 @@ struct QuantumChemistry : viamd::EventHandler {
         CriticalPoints& cp = critical_points;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         size_t num_atoms = 0;
         const vec3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
@@ -4958,7 +5664,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 #else
             md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
+            MD_DEFER { md_temp_end(temp); };
             uint32_t tex_id = 0;
             if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
                 size_t num_atom_pos = 0;
@@ -5121,7 +5827,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_topo_extremum_graph_t& graph = cp.simp_graph;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         // --- what is searched, and how
         ImGui::Checkbox("Enabled", &cp.enabled);
@@ -5129,7 +5835,7 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::SameLine();
         static const char* method_str[] = { "Analytic", "Volume" };
         ImGui::SetNextItemWidth(6.5f * em);
-        if (ImGui::Combo("##Method", &cp.method, method_str, (int)ARRAY_SIZE(method_str))) {
+        if (ImGui::Combo("##Method", &cp.method, method_str, (int)MD_COUNTOF(method_str))) {
             critical_points_reset();   // what is shown came from the other method
         }
         ImGui::SetItemTooltip("Analytic: searches the GTO density itself. Every critical point above the threshold is\n"
@@ -5209,7 +5915,7 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t vertex_count[MD_TOPO_NUM_TYPES] = { 0 };
         md_topo_count_vertex_types(vertex_count, &graph);
         if (ImGui::BeginTable("##Critical point legend", 2, ImGuiTableFlags_SizingStretchSame)) {
-            for (int k = 0; k < (int)ARRAY_SIZE(critical_point_type_order); ++k) {
+            for (int k = 0; k < (int)MD_COUNTOF(critical_point_type_order); ++k) {
                 const int type = critical_point_type_order[k];
                 const CriticalPointStyle& style = critical_point_style(type);
                 ImGui::TableNextColumn();
@@ -5408,25 +6114,25 @@ struct QuantumChemistry : viamd::EventHandler {
     // Writes the critical points and the paths between them to a file the user picks (critical_points_write).
     void critical_points_export(const ApplicationState& state) {
         char path_buf[2048];
-        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("json,vtp"))) {
-            critical_points_write(state, str_from_cstr(path_buf));
+        if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("json,vtp"))) {
+            critical_points_write(state, md_str_from_cstr(path_buf));
         }
     }
 
     // The critical points and the paths between them, in the file at path: .vtp for VTK PolyData as the Topology
     // ToolKit writes a Morse-Smale complex (ParaView, TTK), anything else as JSON. No format for this is standard:
     // QTAIM programs have their own (AIMAll's .sum), and VTK is what topological data analysis exchanges.
-    bool critical_points_write(const ApplicationState& state, str_t path) {
+    bool critical_points_write(const ApplicationState& state, md_str_t path) {
         const CriticalPoints& cp = critical_points;
-        str_t ext = {};
-        const bool vtp = extract_ext(&ext, path) && str_eq_cstr_ignore_case(ext, "vtp");
+        md_str_t ext = {};
+        const bool vtp = md_extract_ext(&ext, path) && md_str_eq_cstr_ignore_case(ext, "vtp");
 
         md_file_t file = {};
         if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-            MD_LOG_ERROR("Critical points: could not open '" STR_FMT "' for writing", STR_ARG(path));
+            MD_LOG_ERROR("Critical points: could not open '" MD_STR_FMT "' for writing", MD_STR_ARG(path));
             return false;
         }
-        defer { md_file_close(&file); };
+        MD_DEFER { md_file_close(&file); };
 
         CriticalPointsExport ex = {};
         ex.graph     = &cp.simp_graph;
@@ -5440,7 +6146,7 @@ struct QuantumChemistry : viamd::EventHandler {
         } else {
             critical_points_write_json(file, ex);
         }
-        MD_LOG_INFO("Critical points: %u points and %u paths written to '" STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, STR_ARG(path));
+        MD_LOG_INFO("Critical points: %u points and %u paths written to '" MD_STR_FMT "'", cp.simp_graph.num_vertices, cp.simp_graph.num_edges, MD_STR_ARG(path));
         return true;
     }
 
@@ -5455,7 +6161,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!summary.show_window) {
             // Parked on the converged geometry while the window is closed, so re-opening it does not
             // step the molecule back to wherever the last session left the slider.
-            opt.selected = (int)attribute_series_count(sys, STR_LIT("vlx/opt/energy")) - 1;
+            opt.selected = (int)attribute_series_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
             return;
         }
 
@@ -5464,10 +6170,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // it covers the optimization plot and the SCF plot's linear energy axis; the SCF plot's
         // log gradient axis cannot use it and pads itself, see below.
         ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.05f, 0.1f));
-        defer { ImPlot::PopStyleVar(); };
+        MD_DEFER { ImPlot::PopStyleVar(); };
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const RspType rsp_type = response_type(sys);
 
@@ -5475,8 +6181,8 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             if (ImGui::TreeNode("Level of Calculation")) {
-                const str_t basis_set = attribute_str(sys, STR_LIT("vlx/basis_set"));
-                const str_t dft_func   = attribute_str(sys, STR_LIT("vlx/dft_functional"));
+                const md_str_t basis_set = attribute_str(sys, MD_STR_LIT("vlx/basis_set"));
+                const md_str_t dft_func   = attribute_str(sys, MD_STR_LIT("vlx/dft_functional"));
 
                 // Named from the same two questions the orbital grid branches on, so the label
                 // cannot disagree with the layout it describes. A reader with no word of its own for
@@ -5485,9 +6191,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
                 const char* scf_type = unrestricted ? "Unrestricted" : open_shell ? "Restricted Open-Shell" : "Restricted";
 
-                ImGui::Text("Method: %s", str_ptr(dft_func));
+                ImGui::Text("Method: %s", md_str_ptr(dft_func));
                 ImGui::Text("SCF Type: %s", scf_type);
-                ImGui::Text("Basis Set: %s", str_ptr(basis_set));
+                ImGui::Text("Basis Set: %s", md_str_ptr(basis_set));
                 ImGui::Spacing();
                 
                 ImGui::TreePop();
@@ -5501,10 +6207,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
-                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, STR_LIT("vlx/molecular_charge")));
+                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, MD_STR_LIT("vlx/molecular_charge")));
                 ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
                 if (rsp_type == RSP_C6) {
-                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/rsp/c6")));
+                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/c6")));
                 }
                 ImGui::Spacing();
                 ImGui::TreePop();
@@ -5517,8 +6223,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // parsed" question to ask alongside it.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = attribute_series_f64(&num_iter, sys, STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = attribute_series_f64(&num_grad, sys, STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_series_f64(&num_iter, sys, MD_STR_LIT("vlx/scf/history/energy"));
+                const double* grad_norm = attribute_series_f64(&num_grad, sys, MD_STR_LIT("vlx/scf/history/gradient_norm"));
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -5552,8 +6258,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Non-positive values have no place on a log axis and would only drag the
                         // fit down to the clamp.
                         if (grad_norm[i] > 0.0) {
-                            grad_lo = MIN(grad_lo, grad_norm[i]);
-                            grad_hi = MAX(grad_hi, grad_norm[i]);
+                            grad_lo = MD_MIN(grad_lo, grad_norm[i]);
+                            grad_hi = MD_MAX(grad_hi, grad_norm[i]);
                         }
                     }
                     const bool has_grad_range = (grad_lo <= grad_hi);
@@ -5562,7 +6268,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         const double log_hi = log10(grad_hi);
                         // Ten percent of the span at each end, matching the linear axes - with a
                         // floor, because a run that barely moved has no span to take a share of.
-                        const double log_pad = MAX((log_hi - log_lo) * 0.1, 0.1);
+                        const double log_pad = MD_MAX((log_hi - log_lo) * 0.1, 0.1);
                         grad_lo = pow(10.0, log_lo - log_pad);
                         grad_hi = pow(10.0, log_hi + log_pad);
                     }
@@ -5603,14 +6309,14 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, STR_LIT("vlx/nuclear_repulsion_energy")));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy")));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
             {
                 size_t num_steps = 0;
-                const double* opt_energies = attribute_series_f64(&num_steps, sys, STR_LIT("vlx/opt/energy"));
+                const double* opt_energies = attribute_series_f64(&num_steps, sys, MD_STR_LIT("vlx/opt/energy"));
                 if (opt_energies && num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         // FitPadding is pushed once for the whole window, at the top of this function.
@@ -5618,7 +6324,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Published for an IRC only, where it names the step the path was walked out
                         // from. num_steps is out of range on purpose everywhere else, so the branch
                         // below falls through to the minimum without a second test for the kind.
-                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
+                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
                         const double* energies = opt_energies;
                         const char* y_axis_label = "Relative Energy [kJ/mol]";
                         const char* plot_label = "OPT";
@@ -5639,7 +6345,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             plot_label = "Intrinsic Reaction Coordinate (IRC)";
                         } else {
                             for (size_t i = 1; i < num_steps; i++) {
-                                ref_energy = MIN(ref_energy, energies[i]);
+                                ref_energy = MD_MIN(ref_energy, energies[i]);
                             }
                         }
 
@@ -5706,7 +6412,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
+                        set_atom_coordinates(state, attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -5719,7 +6425,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
+                    const dvec3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
                     const dvec3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -5772,8 +6478,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Both columns are optional members of the QM atom domain (see es_qm_atoms).
                         ImGui::TableNextColumn();
                         if (atom_nr) {
-                            str_t sym = md_util_element_symbol(atom_nr[row_n]);
-                            ImGui::Text(STR_FMT, STR_ARG(sym));
+                            md_str_t sym = md_util_element_symbol(atom_nr[row_n]);
+                            ImGui::Text(MD_STR_FMT, MD_STR_ARG(sym));
                         } else {
                             ImGui::TextUnformatted("-");
                         }
@@ -5816,29 +6522,29 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_rsp_spectra_export_window(ApplicationState& state) {
 #if 0
         (void)state;
-        ASSERT(&state);
+        MD_ASSERT(&state);
 
         struct ExportFormat {
-            str_t lbl;
-            str_t ext;
+            md_str_t lbl;
+            md_str_t ext;
         };
 
         ExportFormat table_formats[]{
-            {STR_INIT("XVG"), STR_INIT("xvg")},
-            {STR_INIT("CSV"), STR_INIT("csv")}
+            {MD_STR_INIT("XVG"), MD_STR_INIT("xvg")},
+            {MD_STR_INIT("CSV"), MD_STR_INIT("csv")}
         };
 
         struct ExportProperty {
             double* x = 0;
             double* y = 0;
-            str_t lable;
-            str_t y_unit;
+            md_str_t lable;
+            md_str_t y_unit;
         };
 
         ExportProperty properties[]{
-            {rsp.x_spectra, rsp.y_spectra_abs,   STR_INIT("Absorption"), STR_INIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
-            {rsp.x_spectra, rsp.y_spectra_ecd,   STR_INIT("ECD"),        STR_INIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
-            {rsp.vib_x,          rsp.vib_y, STR_INIT("Vibration"),  STR_INIT("IR Intensity (km/mol)")}
+            {rsp.x_spectra, rsp.y_spectra_abs,   MD_STR_INIT("Absorption"), MD_STR_INIT((const char*)u8"ε (L mol⁻¹ cm⁻¹)")},
+            {rsp.x_spectra, rsp.y_spectra_ecd,   MD_STR_INIT("ECD"),        MD_STR_INIT((const char*)u8"Δε(ω) (L mol⁻¹ cm⁻¹)")},
+            {rsp.vib_x,          rsp.vib_y, MD_STR_INIT("Vibration"),  MD_STR_INIT("IR Intensity (km/mol)")}
         };
         
         if (ImGui::Begin("Spectra Export", &rsp.show_export_window)) {
@@ -5850,9 +6556,9 @@ struct QuantumChemistry : viamd::EventHandler {
             
             ImGui::PushItemWidth(200);
 
-            str_t file_extension = {};
+            md_str_t file_extension = {};
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
                     }
@@ -5862,7 +6568,7 @@ struct QuantumChemistry : viamd::EventHandler {
             file_extension = table_formats[table_format].ext;
 
             if (ImGui::BeginCombo("Property", properties[property_idx].lable.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(properties); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(properties); ++i) {
                     if (ImGui::Selectable(properties[i].lable.ptr, property_idx == i)) {
                         property_idx = i;
                     }
@@ -5885,8 +6591,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (export_valid) {
                     char path_buf[1024];
                     md_array(const float*)  column_data = 0;
-                    md_array(str_t)   column_labels = 0;
-                    md_array(str_t)         legends = 0;
+                    md_array(md_str_t)   column_labels = 0;
+                    md_array(md_str_t)         legends = 0;
 
                     md_array(float) x_values = md_array_create(float, 1024, arena);
                     md_array(float) y_values = md_array_create(float, 1024, arena);
@@ -5896,21 +6602,21 @@ struct QuantumChemistry : viamd::EventHandler {
                         y_values[i] = (float)properties[property_idx].y[i];
                     }
 
-                    //str_t x_label = str_from_cstr(x_unit);
-                    md_array_push(column_labels, str_from_cstr(x_unit), arena);
-                    //str_t y_label = str_from_cstr("Y");
+                    //md_str_t x_label = md_str_from_cstr(x_unit);
+                    md_array_push(column_labels, md_str_from_cstr(x_unit), arena);
+                    //md_str_t y_label = md_str_from_cstr("Y");
                     md_array_push(column_labels, properties[property_idx].y_unit, arena);
 
                     md_array_push(column_data, x_values, arena);
                     md_array_push(column_data, y_values, arena);
 
                     if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-                        str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
+                        md_str_t path = { path_buf, strnlen(path_buf, sizeof(path_buf)) };
                         if (table_format == 0) {
                             //md_xvg_write
                             //TODO: Implement md_xvg_write_to_file
-                            str_t header = md_xvg_format_header(properties[property_idx].lable, str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
-                            str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
+                            md_str_t header = md_xvg_format_header(properties[property_idx].lable, md_str_from_cstr(x_unit), properties[property_idx].y_unit, 0, legends, arena);
+                            md_str_t xvg = md_xvg_format(header, 2, 1024, column_data, arena);
                             md_file_t file = { 0 };
                             if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                                 const size_t written_bytes = md_file_write(file, xvg.ptr, xvg.len);
@@ -5958,7 +6664,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void draw_rsp_window(ApplicationState& state) {
         md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         if (!rsp.show_window) return;
 
@@ -5968,29 +6674,29 @@ struct QuantumChemistry : viamd::EventHandler {
         // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
         // Its own length is the frequency count - there is no separate number to disagree with it.
         size_t num_frequencies = 0;
-        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, STR_LIT("vlx/rsp/frequency"));
+        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency"));
         if (!x_freq_au) num_frequencies = 0;
 
-        const size_t num_normal_modes = attribute_series_count(sys, STR_LIT("vlx/vib/frequency"));
+        const size_t num_normal_modes = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency"));
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
         // XPS is a delta-SCF property and can be the only thing in the file, so it has to be able to
         // keep this window alive on its own. Its ionization energies are the column everything else
         // in that section is indexed against, so their presence is the question.
-        const bool has_xps = attribute_exists(sys, STR_LIT("vlx/xps/ionization_energy"));
+        const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
 
         if (num_frequencies == 0 && num_normal_modes == 0 && !has_xps) return;
 
         double x_freq_au_min = DBL_MAX;
         double x_freq_au_max = -DBL_MAX;
         for (size_t i = 0; i < num_frequencies; i++) {
-            x_freq_au_min = MIN(x_freq_au_min, x_freq_au[i]);
-            x_freq_au_max = MAX(x_freq_au_max, x_freq_au[i]);
+            x_freq_au_min = MD_MIN(x_freq_au_min, x_freq_au[i]);
+            x_freq_au_max = MD_MAX(x_freq_au_max, x_freq_au[i]);
         }
 
         ImPlot::PushStyleVar(ImPlotStyleVar_FitPadding, ImVec2(0.1f, 0.1f));
-        defer { ImPlot::PopStyleVar(); };
+        MD_DEFER { ImPlot::PopStyleVar(); };
 
         // Hover hand-off between the spectra and their state tables. Each pairing runs through a
         // single index (rsp.hovered for the response spectra, vib.hovered for the vibrational ones);
@@ -6065,7 +6771,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static double x_max = 10.0;
 
                 const float avail_width = ImGui::GetContentRegionAvail().x;
-                ImGui::PushItemWidth(MIN(avail_width, 200));
+                ImGui::PushItemWidth(MD_MIN(avail_width, 200));
                 // Broadening min max values
                 static const double broadening_min = 0.05;
                 static const double broadening_max = 1.0;
@@ -6080,18 +6786,18 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
-                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
-                const double* y_samples_ord = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
-                const double* y_samples_cs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
+                const double* y_samples_sigma = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
+                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
+                const double* y_samples_ord = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
+                const double* y_samples_cs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
-                const double* y_peaks_cgs = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
+                const double* y_peaks_osc = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
+                const double* y_peaks_cgs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
+                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
+                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
 
                 bool refit = false;
 
@@ -6218,7 +6924,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 if (plot) {
                                     const double min_x = convert_value_from_au(x_freq_au_min, rsp.x_unit);
                                     const double max_x = convert_value_from_au(x_freq_au_max, rsp.x_unit);
-                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
+                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MD_MIN(min_x, max_x), MD_MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
                                     if (rsp_type == RSP_CPP) {
@@ -6235,7 +6941,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                         SpectrumGetterData data = { x_freq_au, y_peaks_osc, num_peaks, min_x, max_x, rsp.broadening_fwhm * EV_TO_HARTREE, num_broadened_samples, rsp.x_unit};
                                         for (int i = 0; i < num_broadened_samples; ++i) {
                                             ImPlotPoint point = getter(i, &data);
-                                            max_eps = MAX(max_eps, point.y);
+                                            max_eps = MD_MAX(max_eps, point.y);
                                         }
                                         
                                         plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, max_eps);
@@ -6346,13 +7052,13 @@ struct QuantumChemistry : viamd::EventHandler {
                                 if (plot) {
                                     const double min_x = convert_value_from_au(x_freq_au_min, rsp.x_unit);
                                     const double max_x = convert_value_from_au(x_freq_au_max, rsp.x_unit);
-                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
+                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MD_MIN(min_x, max_x), MD_MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
                                     if (rsp_type == RSP_CPP) {
                                         int min_idx, max_idx;
                                         find_min_max(&min_idx, &max_idx, y_samples_delta_epsilons, num_samples);
-                                        double max_delta_eps = MAX(fabs(y_samples_delta_epsilons[min_idx]), fabs(y_samples_delta_epsilons[max_idx]));
+                                        double max_delta_eps = MD_MAX(fabs(y_samples_delta_epsilons[min_idx]), fabs(y_samples_delta_epsilons[max_idx]));
                                         plot->Axes[ImAxis_Y2].FitExtents = ImPlotRange(-max_delta_eps, max_delta_eps);
                                     } else {
                                         // Find the maximum peak and calculate the maximum value over the spectrum.
@@ -6365,7 +7071,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                         SpectrumGetterData data = { x_freq_au, y_peaks_cgs, num_peaks, min_x, max_x, rsp.broadening_fwhm * EV_TO_HARTREE, num_broadened_samples, rsp.x_unit};
                                         for (int i = 0; i < num_broadened_samples; ++i) {
                                             ImPlotPoint point = getter(i, &data);
-                                            max_delta_eps = MAX(max_delta_eps, fabs(point.y));
+                                            max_delta_eps = MD_MAX(max_delta_eps, fabs(point.y));
                                         }
                                         
                                         plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(-max_delta_eps, max_delta_eps);
@@ -6416,11 +7122,11 @@ struct QuantumChemistry : viamd::EventHandler {
                                 if (plot) {
                                     const double min_x = convert_value_from_au(x_freq_au_min, rsp.x_unit);
                                     const double max_x = convert_value_from_au(x_freq_au_max, rsp.x_unit);
-                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
+                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MD_MIN(min_x, max_x), MD_MAX(min_x, max_x));
 
                                     int min_idx, max_idx;
                                     find_min_max(&min_idx, &max_idx, y_samples_ord, num_samples);
-                                    double max_ord = MAX(fabs(y_samples_ord[min_idx]), fabs(y_samples_ord[max_idx]));
+                                    double max_ord = MD_MAX(fabs(y_samples_ord[min_idx]), fabs(y_samples_ord[max_idx]));
                                     plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(-max_ord, max_ord);
                                 }
                             }
@@ -6486,7 +7192,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 if (plot) {
                                     const double min_x = convert_value_from_au(x_freq_au_min, rsp.x_unit);
                                     const double max_x = convert_value_from_au(x_freq_au_max, rsp.x_unit);
-                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MIN(min_x, max_x), MAX(min_x, max_x));
+                                    plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(MD_MIN(min_x, max_x), MD_MAX(min_x, max_x));
 
                                     // FIND MAX Y AXES
                                     if (rsp_type == RSP_TPA) {
@@ -6502,7 +7208,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                         SpectrumGetterData data = { x_freq_au, y_peaks_tpa_trans_linear, num_peaks, min_x, max_x, rsp.broadening_fwhm * EV_TO_HARTREE, num_broadened_samples, rsp.x_unit};
                                         for (int i = 0; i < num_broadened_samples; ++i) {
                                             ImPlotPoint point = getter(i, &data);
-                                            max_cs = MAX(max_cs, point.y);
+                                            max_cs = MD_MAX(max_cs, point.y);
                                         }
                                         
                                         plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, max_cs);
@@ -6632,7 +7338,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static double x_max = 10.0;
 
                     const float avail_width = ImGui::GetContentRegionAvail().x;
-                    ImGui::PushItemWidth(MIN(avail_width, 200));
+                    ImGui::PushItemWidth(MD_MIN(avail_width, 200));
 
                     bool refit = false;
 
@@ -6672,12 +7378,12 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    const double* x_peaks_raw = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/frequency"), num_normal_modes);
                     // Optional, and indexed over the normal modes - dropped when it does not cover them.
-                    const double* y_peaks_ir = attribute_series_f64_covering(sys, STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
+                    const double* y_peaks_ir = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
 
                     size_t num_external_frequencies = 0;
-                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, STR_LIT("vlx/vib/external_frequency"));
+                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, MD_STR_LIT("vlx/vib/external_frequency"));
                     if (!external_frequencies) num_external_frequencies = 0;
 
                     // {E,M}: one row of per mode activities per external frequency, so a row IS the
@@ -6687,7 +7393,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // spectrum, and dropping both is better than plotting one against the other.
                     size_t num_raman_rows = 0;
                     size_t num_raman_cols = 0;
-                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, STR_LIT("vlx/vib/raman_activity"));
+                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, MD_STR_LIT("vlx/vib/raman_activity"));
                     const double** y_raman_activities = NULL;
                     if (raman_activities && num_raman_rows == num_external_frequencies && num_raman_cols == num_normal_modes && num_external_frequencies > 0) {
                         y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
@@ -6752,17 +7458,17 @@ struct QuantumChemistry : viamd::EventHandler {
                                     if (plot) {
                                         double min_x = DBL_MAX, max_x = -DBL_MAX, max_y = -DBL_MAX;
                                         for (size_t i = 0; i < num_normal_modes; ++i) {
-                                            min_x = MIN(min_x, x_peaks[i]);
-                                            max_x = MAX(max_x, x_peaks[i]);
-                                            max_y = MAX(max_y, y_peaks_ir[i]);
+                                            min_x = MD_MIN(min_x, x_peaks[i]);
+                                            max_x = MD_MAX(max_x, x_peaks[i]);
+                                            max_y = MD_MAX(max_y, y_peaks_ir[i]);
                                         }
 
                                         double normalization_factor = 1.0;
                                         if (vib.broadening_mode == BROADENING_MODE_LORENTZIAN) {
-                                            normalization_factor = 1.0 / PI;
+                                            normalization_factor = 1.0 / MD_PI;
                                         }
                                         else {
-                                            normalization_factor = sqrt(2.0) / (sigma_from_fwhm(vib.broadening_fwhm) * sqrt(PI));
+                                            normalization_factor = sqrt(2.0) / (sigma_from_fwhm(vib.broadening_fwhm) * sqrt(MD_PI));
                                         }
 
                                         plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(min_x, max_x);
@@ -6780,7 +7486,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::TreeNodeEx("Raman Activity", tree_flags)) {
                             
                             if (num_external_frequencies > 1) {
-                                ImGui::PushItemWidth(MIN(avail_width, 200));
+                                ImGui::PushItemWidth(MD_MIN(avail_width, 200));
 
                                 char label[32];
                                 snprintf(label, sizeof(label), "%.4f", external_frequencies[vib.external_frequency_index]);
@@ -6837,13 +7543,13 @@ struct QuantumChemistry : viamd::EventHandler {
                                     if (plot) {
                                         double min_x = DBL_MAX, max_x = -DBL_MAX, max_y = -DBL_MAX;
                                         for (size_t i = 0; i < num_normal_modes; ++i) {
-                                            min_x = MIN(min_x, x_peaks[i]);
-                                            max_x = MAX(max_x, x_peaks[i]);
-                                            max_y = MAX(max_y, y_peaks_raman[i]);
+                                            min_x = MD_MIN(min_x, x_peaks[i]);
+                                            max_x = MD_MAX(max_x, x_peaks[i]);
+                                            max_y = MD_MAX(max_y, y_peaks_raman[i]);
                                         }
 
                                         plot->Axes[ImAxis_X1].FitExtents = ImPlotRange(min_x, max_x);
-                                        plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, 1.2 * max_y / (PI * vib.broadening_fwhm));
+                                        plot->Axes[ImAxis_Y1].FitExtents = ImPlotRange(0.0, 1.2 * max_y / (MD_PI * vib.broadening_fwhm));
                                         plot->Axes[ImAxis_Y2].FitExtents = ImPlotRange(0.0, 1.1 * max_y);
                                     }
                                 }
@@ -6853,11 +7559,11 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
                     }
 
-                    ImGui::PushItemWidth(MIN(avail_width, 200));
+                    ImGui::PushItemWidth(MD_MIN(avail_width, 200));
 
                     int idx = vib.selected + 1;
                     ImGui::SliderInt("Index", &idx, 0, (int)num_normal_modes);
-                    vib.selected = CLAMP(idx - 1, -1, (int)num_normal_modes - 1);
+                    vib.selected = MD_CLAMP(idx - 1, -1, (int)num_normal_modes - 1);
                     ImGui::SliderFloat((const char*)"Amplitude", &vib.displacement_amp_scl, 0.25f, 5.0f);
                     ImGui::SetItemTooltip("Displacement Amplitude Scale");
                     ImGui::SliderFloat((const char*)"Frequency", &vib.displacement_freq_scl, 0.25f, 5.0f);
@@ -6953,7 +7659,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const dvec3_t* norm_modes = attribute_vec3_row(sys, STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
+                        const dvec3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -6961,7 +7667,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
 #if 0
                             md_temp_scope_t temp = md_temp_begin();
-                            defer { md_temp_end(temp); };
+                            MD_DEFER { md_temp_end(temp); };
 
                             const double scl = vib.displacement_amp_scl * 1.0;
 
@@ -7085,10 +7791,10 @@ struct QuantumChemistry : viamd::EventHandler {
             int num_x = (unrestricted) ? 2 : orb.num_x;
             int num_y = orb.num_y;
 
-            int orb_homo_idx = MAX(homo_idx[0], homo_idx[1]);
-            int orb_lumo_idx = MIN(lumo_idx[0], lumo_idx[1]);
+            int orb_homo_idx = MD_MAX(homo_idx[0], homo_idx[1]);
+            int orb_lumo_idx = MD_MIN(lumo_idx[0], lumo_idx[1]);
             if (open_shell) {
-                orb_lumo_idx = MAX(lumo_idx[0], lumo_idx[1]);
+                orb_lumo_idx = MD_MAX(lumo_idx[0], lumo_idx[1]);
             }
 
             const int num_tot_mos = (int)num_molecular_orbitals();
@@ -7103,7 +7809,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // screen are no longer contiguous by index, and a span taken by index would show a
             // different set than the rows it highlights.
             md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
+            MD_DEFER { md_temp_end(temp); };
             int* row_to_mo = md_temp_alloc_array(temp, int, num_tot_mos);
             int* mo_to_row = md_temp_alloc_array(temp, int, num_tot_mos);
 
@@ -7444,13 +8150,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
             // The render targets, sized before the panels go into the draw list: it records the texture
             // names, and a texture reallocated later in the frame would be drawn under a dead name
-            int width  = MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
-            int height = MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
+            int width  = MD_MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
+            int height = MD_MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
 
             auto& gbuf = orb.gbuf;
             if ((int)gbuf.width != width || (int)gbuf.height != height) {
                 gbuffer_init(&gbuf, width, height);
-                for (int i = 0; i < (int)ARRAY_SIZE(orb.iso_tex); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(orb.iso_tex); ++i) {
                     if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
                     if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
                 }
@@ -7462,7 +8168,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             for (int i = 0; i < num_mos; ++i) {
                 ImGui::PushID(i);
-                defer { ImGui::PopID(); };
+                MD_DEFER { ImGui::PopID(); };
 
                 const int mo_idx = window_mo_idx((unrestricted) ? i / 2 : i);
                 int x = num_x - i % num_x - 1;
@@ -7574,7 +8280,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const ImVec2 mouse_pos_in_canvas(io.MousePos.x - origin.x, io.MousePos.y - origin.y);
 
             if (orb.show_coordinate_system_widget) {
-                float ext = MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
+                float ext = MD_MIN(orb_win_sz.x, orb_win_sz.y) * 0.4f;
                 float pad = 20.0f;
                 ImVec2 size = ImVec2(ext, ext);
                 ImGui::SetCursorScreenPos(ImVec2(canvas_min.x + pad, canvas_max.y - ext - pad));
@@ -7606,7 +8312,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         key = key ? key : 1;
                     }
                     panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
-                        const str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+                        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
                         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
                         return iso_field_create_orbital(&state, path, &slice);
                     });
@@ -7661,7 +8367,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 glEnable(GL_SCISSOR_TEST);
 
                 glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
                 glViewport(0, 0, gbuf.width, gbuf.height);
                 glScissor(0, 0, gbuf.width, gbuf.height);
 
@@ -7944,7 +8650,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (unrestricted) {
                     const char* options[2] = {"Alpha", "Beta"};
                     if (ImGui::BeginCombo("##MO_TYPE", options[export_state.mo.type])) {
-                        for (size_t i = 0; i < ARRAY_SIZE(options); ++i) {
+                        for (size_t i = 0; i < MD_COUNTOF(options); ++i) {
                             const bool is_selected = (export_state.mo.type == (SpinChannel)i);
                             if (ImGui::Selectable(options[i], is_selected)) {
                                 export_state.mo.type = (SpinChannel)i;
@@ -8021,7 +8727,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double LAMBDA_CUTOFF = 1.0e-3;
                 double lambdas[4] = {0};
                 const bool nto_ready = es_nto_ready(&state, (size_t)export_state.nto.idx);
-                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, ARRAY_SIZE(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
+                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
                 if (!nto_ready) ImGui::TextDisabled("Lambda Idx: computing...");
                 if (lambda_count > 0) {
                     if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
@@ -8082,10 +8788,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 EXPORT_FILE_FORMAT_COUNT,
             };
             const char* file_format_str[] = {"cube", "raw + mhd + xyz"};
-            str_t file_format_ext[] = {STR_INIT("cube"), STR_INIT("raw")};
+            md_str_t file_format_ext[] = {MD_STR_INIT("cube"), MD_STR_INIT("raw")};
 
-            STATIC_ASSERT(ARRAY_SIZE(file_format_str) == EXPORT_FILE_FORMAT_COUNT);
-            STATIC_ASSERT(ARRAY_SIZE(file_format_ext) == EXPORT_FILE_FORMAT_COUNT);
+            MD_STATIC_ASSERT(MD_COUNTOF(file_format_str) == EXPORT_FILE_FORMAT_COUNT);
+            MD_STATIC_ASSERT(MD_COUNTOF(file_format_ext) == EXPORT_FILE_FORMAT_COUNT);
 
             static int file_format = 0;
             ImGui::Combo("File format", &file_format, file_format_str, IM_ARRAYSIZE(file_format_str));
@@ -8094,14 +8800,14 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SetItemTooltip("Use Oriented Bounding Box for volume (rotate and fit the volume to the data)");
 
             if (ImGui::Button("Export")) {
-                str_t ext = file_format_ext[file_format];
+                md_str_t ext = file_format_ext[file_format];
                 char path_buf[2048];
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
-                    str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+                    md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
 
                     md_file_t file = { 0 };
                     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-                        MD_LOG_ERROR("Failed to open file for writing: '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_ERROR("Failed to open file for writing: '" MD_STR_FMT "'", MD_STR_ARG(path));
                         return;
                     }
 
@@ -8115,7 +8821,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     md_temp_scope_t temp = md_temp_begin();
 
-                    defer {
+                    MD_DEFER {
                         md_file_close(&file); 
                         md_temp_end(temp);
                     };
@@ -8212,7 +8918,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 }
                             }
                         }
-                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_INFO("Successfully exported electronic structure to '" MD_STR_FMT "'", MD_STR_ARG(path));
                         break;
                     }
                     case EXPORT_FILE_FORMAT_RAW_MHD_XYZ: {
@@ -8228,20 +8934,20 @@ struct QuantumChemistry : viamd::EventHandler {
                         ElementDataFile = image.raw
                         */
 
-                        str_t basepath;
-                        if (!extract_file_path_without_ext(&basepath, path)) {
+                        md_str_t basepath;
+                        if (!md_extract_file_path_without_ext(&basepath, path)) {
                             MD_LOG_ERROR("Failed to extract base path");
                             goto done;
                         }
 
-                        str_t filename_raw;
-                        if (!extract_file(&filename_raw, path)) {
+                        md_str_t filename_raw;
+                        if (!md_extract_file(&filename_raw, path)) {
                             MD_LOG_ERROR("Failed to extract filename raw");
                             goto done;
                         }
 
-                        str_t filename;
-                        if (!extract_file_path_without_ext(&filename, filename_raw)) {
+                        md_str_t filename;
+                        if (!md_extract_file_path_without_ext(&filename, filename_raw)) {
                             MD_LOG_ERROR("Failed to extract filename");
                             goto done;
                         }
@@ -8249,8 +8955,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_file_write(file, data, num_samples * sizeof(float));
 
                         md_allocator_i* temp_arena = md_temp_allocator(temp);
-                        str_t mhd_path = str_printf(temp_arena, STR_FMT ".mhd", STR_ARG(basepath));
-                        str_t xyz_path = str_printf(temp_arena, STR_FMT ".xyz", STR_ARG(basepath));
+                        md_str_t mhd_path = md_str_printf(temp_arena, MD_STR_FMT ".mhd", MD_STR_ARG(basepath));
+                        md_str_t xyz_path = md_str_printf(temp_arena, MD_STR_FMT ".xyz", MD_STR_ARG(basepath));
 
                         md_file_t mhd_file = { 0 };
                         if (!md_file_open(&mhd_file, mhd_path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -8268,7 +8974,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_file_printf(mhd_file, "HeaderSize = -1\n");
                         md_file_printf(mhd_file, "ElementSpacing = %12.6f %12.6f %12.6f\n", step.x, step.y, step.z);
                         md_file_printf(mhd_file, "ElementByteOrderMSB = False\n");
-                        md_file_printf(mhd_file, "ElementDataFile = " STR_FMT "\n", STR_ARG(filename_raw));
+                        md_file_printf(mhd_file, "ElementDataFile = " MD_STR_FMT "\n", MD_STR_ARG(filename_raw));
                         md_file_printf(mhd_file, "Position = %12.6f %12.6f %12.6f\n", pos.x, pos.y, pos.z);
                         md_file_printf(mhd_file, "Orientation =\n");
                         md_file_printf(mhd_file, "%12.6f %12.6f %12.6f\n", grid.orientation[0].x, grid.orientation[0].y, grid.orientation[0].z);
@@ -8282,23 +8988,23 @@ struct QuantumChemistry : viamd::EventHandler {
                             MD_LOG_ERROR("Failed to open .xyz file");
                             goto done;
                         }
-                        defer { md_file_close(&xyz_file); };
+                        MD_DEFER { md_file_close(&xyz_file); };
                         
                         // XYZ
                         md_file_printf(xyz_file, "%zu\n", natoms);
                         const FileEntry* system_file = file_list_system_file(&state.files.list);
                         md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
-                            str_t sym = md_util_element_symbol(qm_numbers[i]);
+                            md_str_t sym = md_util_element_symbol(qm_numbers[i]);
                             md_file_printf(xyz_file, "%-2s %12.6f %12.6f %12.6f\n", sym.ptr, qm_coords[i].x, qm_coords[i].y, qm_coords[i].z);
                         }
 
-                        MD_LOG_INFO("Successfully exported electronic structure to '" STR_FMT "'", STR_ARG(path));
+                        MD_LOG_INFO("Successfully exported electronic structure to '" MD_STR_FMT "'", MD_STR_ARG(path));
 
                         break;
                     }
                     default:
-                        ASSERT(false);
+                        MD_ASSERT(false);
                         break;
                     }
                 }
@@ -8311,7 +9017,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // Calculates the transition matrix heuristic
     static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         if (num_groups == 0) return;
 
@@ -8327,22 +9033,22 @@ struct QuantumChemistry : viamd::EventHandler {
         double part_sum = 0;
 
         for (size_t i = 0; i < num_groups; i++) {
-            const double h = MAX(0.0, (double)hole_charges[i]);
-            const double p = MAX(0.0, (double)part_charges[i]);
+            const double h = MD_MAX(0.0, (double)hole_charges[i]);
+            const double p = MD_MAX(0.0, (double)part_charges[i]);
             hole_sum += h;
             part_sum += p;
         }
 
         // Guard against degenerate inputs (no charge to attribute).
         if (hole_sum <= 0.0 || part_sum <= 0.0) {
-            MEMSET(out_matrix, 0, sizeof(float) * num_groups * num_groups);
+            md_memset(out_matrix, 0, sizeof(float) * num_groups * num_groups);
             return;
         }
 
         for (size_t i = 0; i < num_groups; i++) {
             // percentages (clamped, normalized so each sums to 1)
-            double gsCharge = MAX(0.0, (double)hole_charges[i]) / hole_sum;
-            double esCharge = MAX(0.0, (double)part_charges[i]) / part_sum;
+            double gsCharge = MD_MAX(0.0, (double)hole_charges[i]) / hole_sum;
+            double esCharge = MD_MAX(0.0, (double)part_charges[i]) / part_sum;
 
             if (gsCharge > esCharge) {
                 donors[num_donors++] = (int)i;
@@ -8350,13 +9056,13 @@ struct QuantumChemistry : viamd::EventHandler {
                 acceptors[num_acceptors++] = (int)i;
             }
 
-            out_matrix[i * num_groups + i] = (float)MIN(gsCharge, esCharge);
+            out_matrix[i * num_groups + i] = (float)MD_MIN(gsCharge, esCharge);
             charge_diff[i] = esCharge - gsCharge;
         }
 
         double total_acceptor_charge = 0;
         for (int i = 0; i < num_acceptors; i++) {
-            total_acceptor_charge += MAX(0.0, charge_diff[acceptors[i]]);
+            total_acceptor_charge += MD_MAX(0.0, charge_diff[acceptors[i]]);
         }
 
         if (total_acceptor_charge <= 0.0) {
@@ -8365,10 +9071,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (int i = 0; i < num_donors; i++) {
             int donor = donors[i];
-            double charge_deficit = MAX(0.0, -charge_diff[donor]);
+            double charge_deficit = MD_MAX(0.0, -charge_diff[donor]);
             for (int j = 0; j < num_acceptors; j++) {
                 int acceptor = acceptors[j];
-                double acc = MAX(0.0, charge_diff[acceptor]);
+                double acc = MD_MAX(0.0, charge_diff[acceptor]);
                 double contrib = charge_deficit * acc / total_acceptor_charge;
                 if (contrib < 0.0) contrib = 0.0;
                 out_matrix[acceptor * num_groups + donor] = (float)contrib;
@@ -8388,7 +9094,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         for (int i = index; i < (int)nto.group.count - 1; ++i) {
             nto.group.color[i] = nto.group.color[i + 1];
-            MEMCPY(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
+            md_memcpy(nto.group.label[i], nto.group.label[i + 1], sizeof(nto.group.label[i]));
         }
         nto.group.count--;
         snprintf(nto.group.label[nto.group.count], sizeof(nto.group.label[nto.group.count]), "Group %i", (int)nto.group.count);
@@ -8397,7 +9103,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void copy_group(int from_idx, int to_idx) {
         nto.group.color[to_idx] = nto.group.color[from_idx];
-        MEMCPY(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
+        md_memcpy(nto.group.label[to_idx], nto.group.label[from_idx], sizeof(nto.group.label[from_idx]));
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == to_idx) {
                 nto.atom_group_idx[i] = (uint32_t)from_idx;
@@ -8412,9 +9118,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
         char label_buf[sizeof(nto.group.label[a])];
         //sprintf(label_buf, nto.group.label[row_n]);
-        MEMCPY(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
-        MEMCPY(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
-        MEMCPY(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
+        md_memcpy(label_buf, nto.group.label[a], sizeof(nto.group.label[a])); //Current to buf
+        md_memcpy(nto.group.label[a], nto.group.label[b], sizeof(nto.group.label[b])); //Next to current
+        md_memcpy(nto.group.label[b], label_buf, sizeof(label_buf)); //Buf to next
 
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if ((int)nto.atom_group_idx[i] == a) {
@@ -8716,11 +9422,11 @@ struct QuantumChemistry : viamd::EventHandler {
             camera_animate(&nto.camera, nto.target, dt);
 
             ImVec2 canvas_sz = ImGui::GetContentRegionAvail();   // Resize canvas to what's available
-            canvas_sz.x = MAX(canvas_sz.x, 50.0f);
-            canvas_sz.y = MAX(canvas_sz.y, 50.0f);
+            canvas_sz.x = MD_MAX(canvas_sz.x, 50.0f);
+            canvas_sz.y = MD_MAX(canvas_sz.y, 50.0f);
 
             if (export_transition_diagram_requested) {
-                ImVec2 export_sz = { MAX(canvas_sz.x * 0.5f, 1.0f), MAX(canvas_sz.y, 1.0f) };
+                ImVec2 export_sz = { MD_MAX(canvas_sz.x * 0.5f, 1.0f), MD_MAX(canvas_sz.y, 1.0f) };
                 export_sz *= 2.0f;
                 export_transition_diagram(export_sz, &nto, hide_overlap_text);
             }
@@ -8779,13 +9485,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 // The render targets, sized before the panels go into the draw list: it records the texture
                 // names, and a texture reallocated later in the frame would be drawn under a dead name
-                int width  = MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
-                int height = MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
+                int width  = MD_MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
+                int height = MD_MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
 
                 auto& gbuf = nto.gbuf;
                 if ((int)gbuf.width != width || (int)gbuf.height != height) {
                     gbuffer_init(&gbuf, width, height);
-                    for (int i = 0; i < (int)ARRAY_SIZE(nto.iso_tex); ++i) {
+                    for (int i = 0; i < (int)MD_COUNTOF(nto.iso_tex); ++i) {
                         if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
                         if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
                     }
@@ -8798,7 +9504,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Draw Attachment / Detachment
                 for (int i = 0; i < 2; ++i) {
 					ImGui::PushID(i);
-					defer { ImGui::PopID(); };
+					MD_DEFER { ImGui::PopID(); };
 
                     int idx = nto_target_idx[i];
 
@@ -8810,7 +9516,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_list->PushClipRect(p0, p1);
                     draw_list->ChannelsSetCurrent(1);
                     ImGui::PushID(i);
-                    defer {
+                    MD_DEFER {
                         draw_list->PopClipRect();
                         ImGui::PopID();
                     };
@@ -8894,8 +9600,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const dvec3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, STR_LIT("dipole/magnetic_transition/vector"));
-                        const dvec3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, STR_LIT("dipole/electric_transition/vector"));
+                        const dvec3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
+                        const dvec3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
@@ -8965,7 +9671,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             draw_list->PathStroke(angle_color, 0, angle_thickness);
 
                             char buf[32];
-                            snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", RAD_TO_DEG(angle));
+                            snprintf(buf, sizeof(buf), (const char*)u8"%.2f°", MD_RAD_TO_DEG(angle));
                             draw_list->AddText(c, text_color, buf);
                         }
                     }
@@ -9013,7 +9719,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
 
                 if (nto.show_coordinate_system_widget) {
-                    float ext = MIN(win_sz.x, win_sz.y) * 0.3f;
+                    float ext = MD_MIN(win_sz.x, win_sz.y) * 0.3f;
                     float pad = 20.0f;
                     ImVec2 size = ImVec2(ext, ext);
                     ImGui::SetCursorScreenPos(canvas_p0 + ImVec2(pad, 2.0f * win_sz.y - ext - pad));
@@ -9096,7 +9802,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     glEnable(GL_SCISSOR_TEST);
 
                     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                    glDrawBuffers((int)ARRAY_SIZE(draw_buffers), draw_buffers);
+                    glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
                     glViewport(0, 0, gbuf.width, gbuf.height);
                     glScissor(0, 0, gbuf.width, gbuf.height);
 
@@ -9178,7 +9884,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (draw_marks) {
                         postprocess_inputs.marks = nto.gbuf.tex.marks;
                         postprocess_inputs.marks_group = nto.gbuf.tex.marks_group;
-                        marks_settings(&postprocess_settings, state, 1.0f, MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
+                        marks_settings(&postprocess_settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
                     }
 
                     ViewParam view_param = {
@@ -9398,32 +10104,36 @@ struct QuantumChemistry : viamd::EventHandler {
         // spelling on read: this section holds nothing but window flags and an NTO group
         // assignment, both of which a user re-makes in a minute, and one name in the file beats a
         // compatibility branch that has to be carried forever.
-        viamd::write_section_header(ser, STR_LIT("QuantumChemistry"));
+        viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
 
-        viamd::write_bool(ser, STR_LIT("ShowTransitionAnalysis"), nto.show_window);
-        viamd::write_bool(ser, STR_LIT("ShowChargeTransfer"),     flow.show_window);
-        viamd::write_int (ser, STR_LIT("FlowMode"),               (int64_t)flow.mode);
-        viamd::write_flt (ser, STR_LIT("FlowThreshold"),          flow.cut.threshold);
-        viamd::write_flt (ser, STR_LIT("FlowOthersCap"),          flow.cut.other_max);
-        viamd::write_flt (ser, STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
-        viamd::write_int (ser, STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, STR_LIT("FlowNodeThickness"),      flow.params.node_thickness);
-        viamd::write_flt (ser, STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonAlpha"),        flow.style.ribbon_alpha);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
-        viamd::write_int (ser, STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
-        viamd::write_int (ser, STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
-        viamd::write_flt (ser, STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, STR_LIT("FlowNodeFillTint"),       flow.style.node_fill_tint);
-        viamd::write_flt (ser, STR_LIT("FlowBorderWidth"),        flow.style.border_width);
-        viamd::write_bool(ser, STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+        viamd::write_bool(ser, MD_STR_LIT("ShowTransitionAnalysis"), nto.show_window);
+        viamd::write_bool(ser, MD_STR_LIT("ShowChargeTransfer"),     flow.show_window);
+        viamd::write_int (ser, MD_STR_LIT("FlowRoute"),              (int64_t)flow.mode);
+        viamd::write_int (ser, MD_STR_LIT("FlowRows"),               (int64_t)flow.max_rows);
+        viamd::write_flt (ser, MD_STR_LIT("FlowThreshold"),          flow.cut.threshold);
+        viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
+        viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
+        viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
+        viamd::write_flt (ser, MD_STR_LIT("FlowBarWidth"),           flow.params.node_thickness);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonOpacity"),      flow.style.ribbon_alpha);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
+        viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
+        viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
+        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeTint"),           flow.style.node_fill_tint);
+        viamd::write_flt (ser, MD_STR_LIT("FlowNodeBorder"),         flow.style.border_width);
+        viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowColorBySide"),        flow.style.color_by_side);
+        viamd::write_bool(ser, MD_STR_LIT("FlowRibbonLabels"),       flow.style.show_ribbon_labels);
+        viamd::write_bool(ser, MD_STR_LIT("FlowLegend"),             flow.show_legend);
 
-        viamd::write_int(ser, STR_LIT("GroupCount"), (int64_t)nto.group.count);
+        viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
 
         // One bitfield per group rather than one index per atom: the same information, but it
         // survives being looked at in a text editor.
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
         for (size_t g = 0; g < nto.group.count; ++g) {
@@ -9434,9 +10144,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             const md_bitset_t mask = md_bitmask_view(&b);
-            viamd::write_str(ser, STR_LIT("GroupLabel"), str_from_cstr(nto.group.label[g]));
-            viamd::write_vec4(ser, STR_LIT("GroupColor"), nto.group.color[g]);
-            viamd::write_bitset(ser, STR_LIT("GroupAtoms"), &mask);
+            viamd::write_str(ser, MD_STR_LIT("GroupLabel"), md_str_from_cstr(nto.group.label[g]));
+            viamd::write_vec4(ser, MD_STR_LIT("GroupColor"), nto.group.color[g]);
+            viamd::write_bitset(ser, MD_STR_LIT("GroupAtoms"), &mask);
         }
     }
 
@@ -9455,68 +10165,86 @@ struct QuantumChemistry : viamd::EventHandler {
         // index only advances on a label, so a malformed section cannot walk off the end.
         int64_t group_idx = -1;
 
-        str_t ident = {};
-        str_t arg   = {};
+        md_str_t ident = {};
+        md_str_t arg   = {};
         while (viamd::next_entry(ident, arg, deser)) {
-            if (str_eq_cstr(ident, "ShowTransitionAnalysis")) {
+            if (md_str_eq_cstr(ident, "ShowTransitionAnalysis")) {
                 viamd::extract_bool(nto.show_window, arg);
-            } else if (str_eq_cstr(ident, "ShowChargeTransfer")) {
+            } else if (md_str_eq_cstr(ident, "ShowChargeTransfer")) {
                 viamd::extract_bool(flow.show_window, arg);
-            } else if (str_eq_cstr(ident, "FlowMode")) {
-                int mode = FLOW_MODE_NTO;
+            } else if (md_str_eq_cstr(ident, "FlowRoute")) {
+                int mode = FLOW_MODE_FRAGMENTS;
                 if (viamd::extract_int(mode, arg)) {
-                    flow.mode = (flow_mode_t)CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
+                    flow.mode = (flow_mode_t)MD_CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
                 }
-            } else if (str_eq_cstr(ident, "FlowThreshold")) {
+            } else if (md_str_eq_cstr(ident, "FlowRows")) {
+                int rows = flow.max_rows;
+                if (viamd::extract_int(rows, arg)) flow.max_rows = MD_CLAMP(rows, 2, 40);
+            } else if (md_str_eq_cstr(ident, "FlowMode")) {
+                // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
+                int mode = 0;
+                if (viamd::extract_int(mode, arg)) {
+                    flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
+                }
+            } else if (md_str_eq_cstr(ident, "FlowThreshold")) {
                 viamd::extract_flt(flow.cut.threshold, arg);
-            } else if (str_eq_cstr(ident, "FlowOthersCap")) {
+            } else if (md_str_eq_cstr(ident, "FlowOthersCap")) {
                 viamd::extract_flt(flow.cut.other_max, arg);
-            } else if (str_eq_cstr(ident, "FlowSizeNormalize")) {
+            } else if (md_str_eq_cstr(ident, "FlowSizeNormalize")) {
                 viamd::extract_flt(flow.size_normalize, arg);
-            } else if (str_eq_cstr(ident, "FlowOthersExpanded")) {
+            } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
                 int mask = 0;
-                if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MAX(0, mask);
-            } else if (str_eq_cstr(ident, "FlowNodeThickness")) {
-                viamd::extract_flt(flow.params.node_thickness, arg);
-            } else if (str_eq_cstr(ident, "FlowNodeGap")) {
+                if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
+            } else if (md_str_eq_cstr(ident, "FlowBarWidth")) {
+                if (viamd::extract_flt(flow.bar_width, arg)) flow.params.node_thickness = flow.bar_width;
+            } else if (md_str_eq_cstr(ident, "FlowNodeThickness") || md_str_eq_cstr(ident, "FlowRibbonAlpha") ||
+                       md_str_eq_cstr(ident, "FlowNodeFillTint") || md_str_eq_cstr(ident, "FlowBorderWidth")) {
+                // the boxed style's settings: they do not carry over to the bars
+            } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
                 viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (str_eq_cstr(ident, "FlowRibbonAlpha")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonOpacity")) {
                 viamd::extract_flt(flow.style.ribbon_alpha, arg);
-            } else if (str_eq_cstr(ident, "FlowRibbonCurvature")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
                 viamd::extract_flt(flow.style.ribbon_curvature, arg);
-            } else if (str_eq_cstr(ident, "FlowOrder")) {
+            } else if (md_str_eq_cstr(ident, "FlowOrder")) {
                 int order = MD_FLOW_ORDER_WEIGHT;
                 if (viamd::extract_int(order, arg)) {
-                    flow.params.order = (md_flow_order_t)CLAMP(order, 0, 1);
+                    flow.params.order = (md_flow_order_t)MD_CLAMP(order, 0, (int)MD_FLOW_ORDER_GRAPH);
                 }
-            } else if (str_eq_cstr(ident, "FlowRibbonMinPx")) {
+            } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
                 viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (str_eq_cstr(ident, "FlowNodeFillTint")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeTint")) {
                 viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (str_eq_cstr(ident, "FlowBorderWidth")) {
+            } else if (md_str_eq_cstr(ident, "FlowNodeBorder")) {
                 viamd::extract_flt(flow.style.border_width, arg);
-            } else if (str_eq_cstr(ident, "FlowColorLabels")) {
+            } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
                 viamd::extract_bool(flow.style.color_labels, arg);
-            } else if (str_eq_cstr(ident, "FlowSweeps")) {
+            } else if (md_str_eq_cstr(ident, "FlowColorBySide")) {
+                viamd::extract_bool(flow.style.color_by_side, arg);
+            } else if (md_str_eq_cstr(ident, "FlowRibbonLabels")) {
+                viamd::extract_bool(flow.style.show_ribbon_labels, arg);
+            } else if (md_str_eq_cstr(ident, "FlowLegend")) {
+                viamd::extract_bool(flow.show_legend, arg);
+            } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
                 int sweeps = 2;
                 if (viamd::extract_int(sweeps, arg)) {
-                    flow.params.barycentre_sweeps = (uint32_t)CLAMP(sweeps, 0, 8);
+                    flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
                 }
-            } else if (str_eq_cstr(ident, "GroupCount")) {
+            } else if (md_str_eq_cstr(ident, "GroupCount")) {
                 int count = 0;
                 if (viamd::extract_int(count, arg)) {
-                    pending_groups.count = (size_t)CLAMP(count, 0, MAX_NTO_GROUPS);
+                    pending_groups.count = (size_t)MD_CLAMP(count, 0, MAX_NTO_GROUPS);
                 }
-            } else if (str_eq_cstr(ident, "GroupLabel")) {
+            } else if (md_str_eq_cstr(ident, "GroupLabel")) {
                 group_idx += 1;
                 if (group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
                 }
-            } else if (str_eq_cstr(ident, "GroupColor")) {
+            } else if (md_str_eq_cstr(ident, "GroupColor")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_vec4(pending_groups.color[group_idx], arg);
                 }
-            } else if (str_eq_cstr(ident, "GroupAtoms")) {
+            } else if (md_str_eq_cstr(ident, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
                     viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
@@ -9525,8 +10253,8 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         // Trust the labels actually present over a GroupCount that disagrees with them.
-        pending_groups.count = MAX(pending_groups.count, (size_t)(group_idx + 1));
-        pending_groups.count = MIN(pending_groups.count, (size_t)MAX_NTO_GROUPS);
+        pending_groups.count = MD_MAX(pending_groups.count, (size_t)(group_idx + 1));
+        pending_groups.count = MD_MIN(pending_groups.count, (size_t)MAX_NTO_GROUPS);
     }
 
     // Consume-once: a buffered grouping belongs to the workspace that was just opened, and must
@@ -9538,7 +10266,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!nto.atom_group_idx || pending_groups.count == 0) return;
 
         const size_t num_atoms = md_array_size(nto.atom_group_idx);
-        MEMSET(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
+        md_memset(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
         nto.group.count = pending_groups.count;
         for (size_t g = 0; g < pending_groups.count; ++g) {
@@ -9569,12 +10297,14 @@ struct QuantumChemistry : viamd::EventHandler {
         FLOW_LEVEL_GROUP = 0,
         FLOW_LEVEL_ATOM  = 1,
         FLOW_LEVEL_MO    = 2,   // a canonical molecular orbital; owns no atoms
+        FLOW_LEVEL_NTO   = 3,   // an NTO pair; owns no atoms either
+        FLOW_LEVEL_FRAGMENT = 4,   // a node of the fragment tree (fragment_tree.h), index into flow.frags
     };
 
     // Whether a node stands for a set of atoms. Orbital nodes - NTOs and MOs alike - do not, so
     // they take no part in atom selection, region sweeps or group assignment.
     static inline bool flow_level_has_atoms(uint32_t level) {
-        return level == FLOW_LEVEL_GROUP || level == FLOW_LEVEL_ATOM;
+        return level == FLOW_LEVEL_GROUP || level == FLOW_LEVEL_ATOM || level == FLOW_LEVEL_FRAGMENT;
     }
 
     static inline uint64_t flow_node_key(uint32_t column, uint32_t level, uint32_t index) {
@@ -9582,6 +10312,10 @@ struct QuantumChemistry : viamd::EventHandler {
     }
     static inline uint32_t flow_key_index(uint64_t key) { return (uint32_t)(key & 0xFFFFFFFFu); }
     static inline uint32_t flow_key_level(uint64_t key) { return (uint32_t)((key >> 32) & 0xFFu); }
+    // What a node stands for regardless of its column (md_flow_node_t.entity): never 0
+    static inline uint64_t flow_entity(uint32_t level, uint32_t index) {
+        return ((uint64_t)(level + 1) << 32) | (uint64_t)index;
+    }
 
     static const size_t FLOW_ATOM_LABEL_STRIDE = 12;   // "Xx" + up to 8 digits + nul
 
@@ -9616,7 +10350,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t num_mo = num_mos;
         if (num_mo > 0 && !flow.mo_labels) {
             flow.mo_labels = (char*)md_alloc(arena, num_mo * FLOW_ATOM_LABEL_STRIDE);
-            MEMSET(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
+            md_memset(flow.mo_labels, 0, num_mo * FLOW_ATOM_LABEL_STRIDE);
             flow.num_mo_labels = num_mo;
         }
         flow_build_atom_labels(sys);
@@ -9635,97 +10369,12 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (size_t i = 0; i < num_atoms; ++i) {
             char* dst = flow.atom_labels + i * FLOW_ATOM_LABEL_STRIDE;
-            const str_t sym = z ? md_util_element_symbol(z[i]) : str_from_cstr("X");
+            const md_str_t sym = z ? md_util_element_symbol(z[i]) : md_str_from_cstr("X");
             // One-based, matching how the rest of VIAMD numbers atoms to the user.
             snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%.*s%zu", (int)sym.len, sym.ptr, i + 1);
         }
     }
 
-    // The M1 view: two columns of groups, exactly what the old diagram showed, but through the
-    // md_flow model. Kept so the NTO view below has something to be checked against.
-    bool build_flow_graph_groups() {
-        md_flow_graph_init(&flow.graph, 2, arena);
-
-        if (!nto.transition_matrix || nto.transition_matrix_dim != nto.group.count) return false;
-
-        const size_t num_groups = nto.group.count;
-        if (num_groups == 0) return false;
-
-        double hole_sum = 0.0;
-        double part_sum = 0.0;
-        for (size_t i = 0; i < num_groups; ++i) {
-            hole_sum += MAX(0.0f, nto.transition_density_hole[i]);
-            part_sum += MAX(0.0f, nto.transition_density_part[i]);
-        }
-        if (hole_sum <= 0.0 || part_sum <= 0.0) return false;
-
-        uint32_t src_node[MAX_NTO_GROUPS];
-        uint32_t dst_node[MAX_NTO_GROUPS];
-        for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
-            src_node[i] = MD_FLOW_INVALID_INDEX;
-            dst_node[i] = MD_FLOW_INVALID_INDEX;
-        }
-
-        // A group can donate without accepting (or the reverse), so the two columns hold
-        // different node sets rather than one set drawn twice.
-        for (size_t i = 0; i < num_groups; ++i) {
-            const float w = (float)(MAX(0.0f, nto.transition_density_hole[i]) / hole_sum);
-            if (w <= 0.0f) continue;
-            md_flow_node_t node = {
-                .column = 0,
-                .parent = MD_FLOW_INVALID_INDEX,
-                .level  = 0,
-                .weight = w,
-                .color  = nto.group.color[i],
-                .label  = str_from_cstr(nto.group.label[i]),
-                .key    = flow_node_key(0, FLOW_LEVEL_GROUP, (uint32_t)i),
-            };
-            src_node[i] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-        for (size_t i = 0; i < num_groups; ++i) {
-            const float w = (float)(MAX(0.0f, nto.transition_density_part[i]) / part_sum);
-            if (w <= 0.0f) continue;
-            md_flow_node_t node = {
-                .column = 1,
-                .parent = MD_FLOW_INVALID_INDEX,
-                .level  = 0,
-                .weight = w,
-                .color  = nto.group.color[i],
-                .label  = str_from_cstr(nto.group.label[i]),
-                .key    = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)i),
-            };
-            dst_node[i] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-
-        // compute_transition_matrix() already normalizes so that a donor's row sums to its hole
-        // share and an acceptor's column to its particle share, which is exactly invariant (4).
-        // If that ever stops being true the validation below says so instead of drawing nonsense.
-        for (size_t src = 0; src < num_groups; ++src) {
-            if (src_node[src] == MD_FLOW_INVALID_INDEX) continue;
-            for (size_t dst = 0; dst < num_groups; ++dst) {
-                if (dst_node[dst] == MD_FLOW_INVALID_INDEX) continue;
-                const float w = nto.transition_matrix[dst * num_groups + src];
-                if (w > 0.0f) {
-                    md_flow_graph_add_link(&flow.graph, src_node[src], dst_node[dst], w);
-                }
-            }
-        }
-
-        return true;
-    }
-
-    // The M2 view: group -> NTO pair -> group.
-    //
-    // This is the first version that measures the group-to-group flow instead of guessing it.
-    // compute_transition_matrix() only ever had the two marginals and split the difference
-    // proportionally; routing through the NTOs gives
-    //
-    //     flow(g1 -> g2) = sum_k lambda_k * q_hole[k][g1] * q_part[k][g2]
-    //
-    // which is a real joint distribution. It is not the FULL one - the product form asserts that
-    // hole and particle are independent once you know which NTO pair you are in, which is exactly
-    // what the NTO decomposition claims and no more. The occupied x virtual amplitude matrix (M4)
-    // drops that assumption too.
     // Fills the flow procedures' input out of the system's attribute table. Every field here is
     // either a read of a published path or a pure function of the basis - nothing reaches for
     // md_vlx - which is what lets a system published by another QM reader drive the same diagram.
@@ -9734,7 +10383,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // Returns false only when there is no calculation to speak of; a missing OPTIONAL part leaves
     // its field null and is the caller's to check, not an error.
     bool flow_qm_data_gather(FlowData* out, md_temp_scope_t temp, const md_system_t& sys) {
-        ASSERT(out);
+        MD_ASSERT(out);
         *out = {};
 
         if (!es_orbital_extent(sys, &out->num_mo, &out->num_ao)) return false;
@@ -9744,6 +10393,10 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_ao == 0 || num_mo == 0) return false;
 
         out->homo_idx = homo_idx[0];
+
+        if (lowdin_job_ready(lowdin) && lowdin->num_mo == num_mo && lowdin->num_ao == num_ao) {
+            out->C_lowdin = lowdin->C_lowdin;
+        }
 
         // Extracted rather than pointed at, so a producer that publishes either of these through a
         // provider instead of storing them works here unchanged.
@@ -9791,7 +10444,7 @@ struct QuantumChemistry : viamd::EventHandler {
             if (lambda_attr && hole_attr && part_attr) {
                 // Bounded by the label storage the builders write into, which is the real
                 // constraint - not by any reader's idea of how many pairs a state may have.
-                const size_t num_nto = MIN(md_attribute_slice_count(lambda_attr, slice), ARRAY_SIZE(flow.nto_label));
+                const size_t num_nto = MD_MIN(md_attribute_slice_count(lambda_attr, slice), MD_COUNTOF(flow.nto_label));
                 const size_t block   = num_nto * num_ao;
 
                 if (num_nto > 0 &&
@@ -9816,196 +10469,190 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
-    bool build_flow_graph_nto(const FlowData& qm) {
-        md_flow_graph_init(&flow.graph, 3, arena);
+    // The automatic fragments and the QM <-> system atom maps, once per system
+    void flow_build_fragments(const md_system_t& sys) {
+        if (flow.frags_built && flow.frags_version == sys.topology_version) return;
+        const bool again = flow.frags_built;
+        flow.frags_built = true;
+        flow.frags_version = sys.topology_version;
+        if (again) {
+            // what was made of the old tree: the strip's units
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+            flow.ao_unit = nullptr;
+            md_array_shrink(flow.strip, 0);
+        }
 
-        if (rsp.selected < 0 || !nto.atom_group_idx) return false;
+        QmAtoms qm = {};
+        if (!es_qm_atoms(&qm, sys) || qm.count == 0) return;
+        const size_t ns = md_atom_count(&sys.atom);
+        flow.num_qm_atoms  = qm.count;
+        flow.num_sys_atoms = ns;
+        flow.qm_to_sys = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * qm.count);
+        flow.sys_to_qm = (int32_t*) md_alloc(arena, sizeof(int32_t) * (ns ? ns : 1));
+        for (size_t i = 0; i < ns; ++i) flow.sys_to_qm[i] = -1;
+        for (size_t a = 0; a < qm.count; ++a) {
+            const uint32_t s = qm.system_index ? qm.system_index[a] : (uint32_t)a;
+            flow.qm_to_sys[a] = s;
+            if (s < ns) flow.sys_to_qm[s] = (int32_t)a;
+        }
+        // the molecules with an atom in the calculation
+        bool* include = (bool*)md_alloc(arena, sizeof(bool) * (ns ? ns : 1));
+        for (size_t i = 0; i < ns; ++i) include[i] = flow.sys_to_qm[i] >= 0;
+        if (!frag_tree_build(&flow.frags, &sys, include, arena)) {
+            MD_LOG_ERROR("Charge transfer: could not work out the fragments of the system");
+        }
+    }
 
-        const size_t num_groups = nto.group.count;
-        const size_t num_ao     = qm.num_ao;
-        const double* S         = qm.S;
-        const int* ao_to_atom   = qm.ao_to_atom;
+    uint32_t flow_qm_to_sys(uint32_t qm_atom) const {
+        return (flow.qm_to_sys && qm_atom < flow.num_qm_atoms) ? flow.qm_to_sys[qm_atom] : qm_atom;
+    }
 
-        if (num_groups == 0 || num_ao == 0 || !S || !ao_to_atom) return false;
+    // The leaf fragment of a QM atom, MD_FRAGMENT_NONE for none
+    uint32_t flow_fragment_of(uint32_t qm_atom) const {
+        const uint32_t s = flow_qm_to_sys(qm_atom);
+        return (s < flow.frags.num_atoms) ? flow.frags.atom_fragment[s] : MD_FRAGMENT_NONE;
+    }
+
+    uint32_t flow_group_of(uint32_t qm_atom) const {
+        return (qm_atom < md_array_size(nto.atom_group_idx)) ? nto.atom_group_idx[qm_atom] : 0u;
+    }
+
+    // A fragment's colour. Leaves (what a molecule is made of) cycle a palette; the levels above them are
+    // a quiet grey-blue, so the colour on screen says which unit, not which tree level.
+    vec4_t flow_fragment_color(uint32_t f) const {
+        if (!frag_tree_is_leaf(&flow.frags, f)) return vec4_t{0.42f, 0.47f, 0.58f, 1.0f};
+        uint32_t leaf_rank = 0;
+        for (uint32_t i = 0; i < f; ++i) leaf_rank += frag_tree_is_leaf(&flow.frags, i) ? 1 : 0;
+        return vec_cast(ImPlot::GetColormapColor((int)(leaf_rank % 10), ImPlotColormap_Deep));
+    }
+
+    // hole fragment -> particle fragment: the exact transfer matrix (md_qm_ct.h), from the selected state's
+    // job (CtStateJob), which holds it per ATOM pair.
+    //
+    // The atoms are the leaves, and every coarser node is a sum of its atoms - exact, because the blocks
+    // add - so collapsing and expanding cannot disagree. Above the atoms: the user's groups at the top
+    // level, then the automatic fragments (md_fragment.h) of whatever is in none of them.
+    //
+    // Both columns list the same nodes in the same order, and a node is the same ENTITY on both sides
+    // (md_flow_node_t.entity): a flow from a fragment to itself is local excitation, drawn inside the
+    // node, and every band that crosses the diagram is a genuine transfer. Between atoms most of any
+    // excitation crosses - neighbours in a pi system always exchange - which is why fragments open first.
+    bool build_flow_graph_fragments() {
+        md_flow_graph_init(&flow.graph, 2, arena);
+        flow.nto_dropped = 0.0f;
+        flow.link_dropped = 0.0f;
+
+        const CtStateJob* job = ct_job;
+        if (!ct_state_job_ready(job) || job->state != rsp.selected) return false;
+        const size_t N = job->num_atoms;
+        if (N == 0) return false;
+        flow.nto_dropped  = job->nto_dropped;
+        flow.link_dropped = job->link_dropped;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
-        const double* lambdas = qm.nto_lambda;
-        const double* C_hole  = qm.C_nto_hole;
-        const double* C_part  = qm.C_nto_part;
-        const size_t num_nto  = qm.num_nto;
-        if (num_nto == 0 || !lambdas || !C_hole || !C_part) return false;
+        const FragmentTree& F = flow.frags;
+        const size_t num_frags = F.count;
+        const size_t num_groups = MD_MIN((size_t)nto.group.count, (size_t)MAX_NTO_GROUPS);
 
-        // Attribute to ATOMS, not to groups. The group numbers are then sums over their members,
-        // which is what makes the collapsed and expanded views incapable of disagreeing (invariant
-        // 3). Attributing per group and separately per atom would be two computations of the same
-        // thing, and the moment they diverge the diagram lies in one of its two states.
-        const size_t num_atoms = md_array_size(nto.atom_group_idx);
-        if (num_atoms == 0) return false;
-
-        int* ao_to_atom_clamped = md_temp_alloc_array(temp, int, num_ao);
-        for (size_t i = 0; i < num_ao; ++i) {
-            const int atom_idx = ao_to_atom[i];
-            ao_to_atom_clamped[i] = (atom_idx >= 0 && (size_t)atom_idx < num_atoms) ? atom_idx : 0;
-        }
-
-        double* q_hole = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
-        double* q_part = md_temp_alloc_zero_array(temp, double, num_nto * num_atoms);
-
-        // Mulliken populations of a single orbital are not guaranteed non-negative - that is a
-        // known artifact of the partitioning, not a bug here. A negative share of a flow means
-        // nothing on a diagram, so clamp and renormalize, and accept that the renormalization is
-        // an approximation rather than pretending the raw numbers were clean.
-        double* lambda_keep = md_temp_alloc_zero_array(temp, double, num_nto);
-        double lambda_sum = 0.0;
-        size_t num_keep = 0;
-
-        for (size_t k = 0; k < num_nto; ++k) {
-            if (lambdas[k] < (double)flow.lambda_cutoff) continue;
-
-            attribute_orbital_density(q_hole + num_keep * num_atoms, ao_to_atom_clamped, C_hole + k * num_ao, S, num_ao);
-            attribute_orbital_density(q_part + num_keep * num_atoms, ao_to_atom_clamped, C_part + k * num_ao, S, num_ao);
-
-            double hsum = 0.0, psum = 0.0;
-            for (size_t a = 0; a < num_atoms; ++a) {
-                double* h = q_hole + num_keep * num_atoms + a;
-                double* p = q_part + num_keep * num_atoms + a;
-                *h = MAX(0.0, *h);
-                *p = MAX(0.0, *p);
-                hsum += *h;
-                psum += *p;
-            }
-            if (hsum <= 0.0 || psum <= 0.0) continue;
-            for (size_t a = 0; a < num_atoms; ++a) {
-                q_hole[num_keep * num_atoms + a] /= hsum;
-                q_part[num_keep * num_atoms + a] /= psum;
-            }
-
-            lambda_keep[num_keep] = lambdas[k];
-            lambda_sum += lambdas[k];
-            snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
-            flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
-                               C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
-            num_keep++;
-        }
-
-        if (num_keep == 0 || lambda_sum <= 0.0) return false;
-
-        // Lambdas are truncated at MAX_NTO_LABELS and again by the cutoff, so they do not
-        // sum to one on their own. Renormalizing over what is kept is what makes the diagram add
-        // up; it also means the percentages are shares of the RETAINED transition, which the
-        // window says out loud when anything was dropped.
-        for (size_t k = 0; k < num_keep; ++k) {
-            lambda_keep[k] /= lambda_sum;
-        }
-
-        // Per-atom column weights, and the group totals they add up to.
-        double* atom_hole = md_temp_alloc_zero_array(temp, double, num_atoms);
-        double* atom_part = md_temp_alloc_zero_array(temp, double, num_atoms);
-        for (size_t a = 0; a < num_atoms; ++a) {
-            for (size_t k = 0; k < num_keep; ++k) {
-                atom_hole[a] += lambda_keep[k] * q_hole[k * num_atoms + a];
-                atom_part[a] += lambda_keep[k] * q_part[k * num_atoms + a];
+        // Fragment weights per column, over the atoms in no user group
+        double* frag_weight[2] = {
+            md_temp_alloc_zero_array(temp, double, num_frags ? num_frags : 1),
+            md_temp_alloc_zero_array(temp, double, num_frags ? num_frags : 1),
+        };
+        for (uint32_t a = 0; a < N; ++a) {
+            if (flow_group_of(a) != 0) continue;
+            const uint32_t f = flow_fragment_of(a);
+            if (f == MD_FRAGMENT_NONE) continue;
+            for (int c = 0; c < 2; ++c) {
+                for (uint32_t g = f; g != MD_FRAGMENT_NONE; g = F.parent[g]) frag_weight[c][g] += job->weight[c][a];
             }
         }
 
-        uint32_t* atom_src = md_temp_alloc_array(temp, uint32_t, num_atoms);
-        uint32_t* atom_dst = md_temp_alloc_array(temp, uint32_t, num_atoms);
-        uint32_t* mid_node = md_temp_alloc_array(temp, uint32_t, num_keep);
-        for (size_t a = 0; a < num_atoms; ++a) {
-            atom_src[a] = MD_FLOW_INVALID_INDEX;
-            atom_dst[a] = MD_FLOW_INVALID_INDEX;
-        }
+        uint32_t* atom_node[2] = {
+            md_temp_alloc_array(temp, uint32_t, N),
+            md_temp_alloc_array(temp, uint32_t, N),
+        };
+        for (size_t a = 0; a < N; ++a) atom_node[0][a] = atom_node[1][a] = MD_FLOW_INVALID_INDEX;
+        uint32_t* frag_node = md_temp_alloc_array(temp, uint32_t, num_frags ? num_frags : 1);
 
-        // md_flow requires a parent to be an EARLIER node in the same column, so each group node
-        // goes in before its atoms - which also means the group's weight has to be known first.
-        // Two passes per column, and no post-hoc fixups.
-        const int columns[2] = { 0, 2 };
-        const double* column_weight[2] = { atom_hole, atom_part };
-        uint32_t* column_atom_node[2] = { atom_src, atom_dst };
+        for (uint32_t column = 0; column < 2; ++column) {
+            const double* weight = job->weight[column];
+            uint32_t* nodes = atom_node[column];
 
-        for (int ci = 0; ci < 2; ++ci) {
-            const uint32_t column = (uint32_t)columns[ci];
-            const double* weight = column_weight[ci];
-            uint32_t* atom_node = column_atom_node[ci];
-
-            // Atoms are the fundamental level; a group is an OPTIONAL layer above them. Group 0 is
-            // the "not in any group" bucket every atom starts in, so its atoms are roots rather
-            // than children of a node standing for a group the user never made.
-            for (size_t a = 0; a < num_atoms; ++a) {
-                if (nto.atom_group_idx[a] != 0 || weight[a] <= 0.0) continue;
+            auto add_atom = [&](uint32_t a, uint32_t parent, vec4_t color) {
+                if (weight[a] <= 0.0) return;
                 md_flow_node_t node = {
-                    .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_ATOM,
-                    .weight = (float)weight[a],
-                    .color  = flow_atom_color((uint32_t)a, column),
-                    .label  = str_from_cstr(flow_atom_label((uint32_t)a)),
-                    .key    = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
+                    .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
+                    .weight = (float)weight[a], .color = color,
+                    .label  = md_str_from_cstr(flow_atom_label(a)),
+                    .key    = flow_node_key(column, FLOW_LEVEL_ATOM, a),
+                    .entity = flow_entity(FLOW_LEVEL_ATOM, a),
                 };
-                atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
-            }
+                nodes[a] = md_flow_graph_add_node(&flow.graph, &node);
+            };
 
-            // md_flow requires a parent to be an EARLIER node in the same column, so each group
-            // node goes in before its atoms - which also means the group's weight has to be known
-            // first. Two passes per group, and no post-hoc fixups.
-            for (size_t g = 1; g < num_groups; ++g) {
+            // The user's groups, at the top
+            for (uint32_t g = 1; g < num_groups; ++g) {
                 double group_weight = 0.0;
-                for (size_t a = 0; a < num_atoms; ++a) {
-                    if (nto.atom_group_idx[a] == (uint32_t)g) group_weight += weight[a];
-                }
+                for (uint32_t a = 0; a < N; ++a) if (flow_group_of(a) == g) group_weight += weight[a];
                 if (group_weight <= 0.0) continue;
-
                 md_flow_node_t group_node = {
                     .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                     .weight = (float)group_weight, .color = nto.group.color[g],
-                    .label = str_from_cstr(nto.group.label[g]),
-                    .key = flow_node_key(column, FLOW_LEVEL_GROUP, (uint32_t)g),
+                    .label  = md_str_from_cstr(nto.group.label[g]),
+                    .key    = flow_node_key(column, FLOW_LEVEL_GROUP, g),
+                    .entity = flow_entity(FLOW_LEVEL_GROUP, g),
                 };
                 const uint32_t parent = md_flow_graph_add_node(&flow.graph, &group_node);
                 if (parent == MD_FLOW_INVALID_INDEX) continue;
-
-                for (size_t a = 0; a < num_atoms; ++a) {
-                    if (nto.atom_group_idx[a] != (uint32_t)g || weight[a] <= 0.0) continue;
-
-                    // An atom inside a group wears the group's colour: the expanded view has to
-                    // read as a closer look at the collapsed one, not as a different quantity.
-                    md_flow_node_t node = {
-                        .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
-                        .weight = (float)weight[a], .color = nto.group.color[g],
-                        .label = str_from_cstr(flow_atom_label((uint32_t)a)),
-                        .key = flow_node_key(column, FLOW_LEVEL_ATOM, (uint32_t)a),
-                    };
-                    atom_node[a] = md_flow_graph_add_node(&flow.graph, &node);
+                for (uint32_t a = 0; a < N; ++a) {
+                    if (flow_group_of(a) == g) add_atom(a, parent, nto.group.color[g]);
                 }
+            }
+
+            // The automatic fragments of the rest, in their own (pre-)order
+            for (size_t f = 0; f < num_frags; ++f) {
+                frag_node[f] = MD_FLOW_INVALID_INDEX;
+                if (frag_weight[column][f] <= 0.0) continue;
+                uint32_t parent = MD_FLOW_INVALID_INDEX;
+                for (uint32_t p = F.parent[f]; p != MD_FRAGMENT_NONE; p = F.parent[p]) {
+                    if (frag_node[p] != MD_FLOW_INVALID_INDEX) { parent = frag_node[p]; break; }
+                }
+                const vec4_t color = flow_fragment_color((uint32_t)f);
+                md_flow_node_t node = {
+                    .column = column, .parent = parent, .level = FLOW_LEVEL_FRAGMENT,
+                    .weight = (float)frag_weight[column][f], .color = color,
+                    .label  = frag_tree_name(&F, f),
+                    .key    = flow_node_key(column, FLOW_LEVEL_FRAGMENT, (uint32_t)f),
+                    .entity = flow_entity(FLOW_LEVEL_FRAGMENT, (uint32_t)f),
+                };
+                frag_node[f] = md_flow_graph_add_node(&flow.graph, &node);
+                if (frag_node[f] == MD_FLOW_INVALID_INDEX || !frag_tree_is_leaf(&F, f)) continue;
+                for (uint32_t k = F.atom_beg[f]; k < F.atom_end[f]; ++k) {
+                    const int32_t s = F.atom_idx[k];
+                    const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
+                    if (a < 0 || (size_t)a >= N || flow_group_of((uint32_t)a) != 0) continue;
+                    add_atom((uint32_t)a, frag_node[f], color);
+                }
+            }
+
+            // QM atoms in no fragment (none, when the system has its atoms): roots of their own
+            for (uint32_t a = 0; a < N; ++a) {
+                if (flow_group_of(a) != 0 || flow_fragment_of(a) != MD_FRAGMENT_NONE) continue;
+                add_atom(a, MD_FLOW_INVALID_INDEX, flow_atom_color(a, column));
             }
         }
 
-        for (size_t k = 0; k < num_keep; ++k) {
-            // Middle-column nodes take their colour from the colormap rather than from a group:
-            // an NTO belongs to the transition, not to either side of it.
-            const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
-            md_flow_node_t node = {
-                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
-                .weight = (float)lambda_keep[k], .color = vec_cast(c),
-                .label = str_from_cstr(flow.nto_label[k]),
-                .sublabel = str_from_cstr(flow.nto_character[k]),
-                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
-            };
-            mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
-        }
-
-        // Links live between LEAVES - atoms here. Everything coarser is a sum over these, which is
-        // why collapsing a group can never disagree with expanding it.
-        for (size_t k = 0; k < num_keep; ++k) {
-            for (size_t a = 0; a < num_atoms; ++a) {
-                if (atom_src[a] != MD_FLOW_INVALID_INDEX) {
-                    const float w = (float)(lambda_keep[k] * q_hole[k * num_atoms + a]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_src[a], mid_node[k], w);
-                }
-                if (atom_dst[a] != MD_FLOW_INVALID_INDEX) {
-                    const float w = (float)(lambda_keep[k] * q_part[k * num_atoms + a]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, mid_node[k], atom_dst[a], w);
-                }
+        for (size_t a = 0; a < N; ++a) {
+            if (atom_node[0][a] == MD_FLOW_INVALID_INDEX) continue;
+            const double* row = job->omega + a * N;
+            for (size_t b = 0; b < N; ++b) {
+                if (atom_node[1][b] == MD_FLOW_INVALID_INDEX) continue;
+                const float w = (float)row[b];
+                if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_node[0][a], atom_node[1][b], w);
             }
         }
 
@@ -10048,7 +10695,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_ao == 0 || num_mo == 0 || homo + 1 >= num_mo) return;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         double* sc = md_temp_alloc_array(temp, double, num_ao);
 
         size_t best[2] = { num_mo, num_mo };
@@ -10116,7 +10763,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (nocc == 0 || nocc >= num_mo) return false;
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const double* lambdas = qm.nto_lambda;
         const double* C_hole  = qm.C_nto_hole;
@@ -10139,6 +10786,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         for (size_t k = 0; k < num_nto; ++k) {
             if (lambdas[k] < (double)flow.lambda_cutoff) continue;
+            if (num_keep >= MAX_NTO_LABELS) break;  // the labels' room; the rest weigh least (descending)
 
             for (int side = 0; side < 2; ++side) {
                 const double* C_nto = (side == 0 ? C_hole : C_part) + k * num_ao;
@@ -10170,6 +10818,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             snprintf(flow.nto_label[num_keep], sizeof(flow.nto_label[0]), "NTO %zu", k + 1);
+            flow.nto_index[num_keep] = (uint32_t)k;
             flow_nto_character(flow.nto_character[num_keep], sizeof(flow.nto_character[0]), qm,
                                C_hole + k * num_ao, C_part + k * num_ao, 0.35f);
 
@@ -10213,7 +10862,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 .level  = FLOW_LEVEL_MO,
                 .weight = (float)w,
                 .color  = occupied ? vec4_t{0.78f, 0.24f, 0.22f, 1.0f} : vec4_t{0.13f, 0.56f, 0.35f, 1.0f},
-                .label  = str_from_cstr(dst),
+                .label  = md_str_from_cstr(dst),
                 .key    = flow_node_key(occupied ? 0u : 2u, FLOW_LEVEL_MO, (uint32_t)mo),
             };
             (occupied ? occ_node : vir_node)[mo] = md_flow_graph_add_node(&flow.graph, &node);
@@ -10222,11 +10871,11 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t k = 0; k < num_keep; ++k) {
             const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
             md_flow_node_t node = {
-                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_NTO,
                 .weight = (float)lambda_keep[k], .color = vec_cast(c),
-                .label = str_from_cstr(flow.nto_label[k]),
-                .sublabel = str_from_cstr(flow.nto_character[k]),
-                .key = flow_node_key(1, FLOW_LEVEL_GROUP, (uint32_t)k),
+                .label = md_str_from_cstr(flow.nto_label[k]),
+                .sublabel = md_str_from_cstr(flow.nto_character[k]),
+                .key = flow_node_key(1, FLOW_LEVEL_NTO, (uint32_t)k),
             };
             mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
         }
@@ -10247,30 +10896,45 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
-    void rebuild_flow_graph(const FlowData& qm) {
-        md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+    static int flow_key_cmp(const void* a, const void* b) {
+        const uint64_t x = *(const uint64_t*)a, y = *(const uint64_t*)b;
+        return x < y ? -1 : x > y ? 1 : 0;
+    }
+    static bool flow_key_in(const md_array(uint64_t) sorted, uint64_t key) {
+        return sorted && bsearch(&key, sorted, md_array_size(sorted), sizeof(uint64_t), flow_key_cmp) != nullptr;
+    }
 
-        // The cut stores expansion by node INDEX, and a rebuild renumbers every node - a new
-        // excited state, a regroup or a route change would otherwise leave the user's open groups
-        // pointing at whatever now happens to sit at those indices. Carry the state across by KEY,
-        // which is what the key field exists for.
-        md_array(uint64_t) expanded_keys = 0;
+    // qm: what the Orbitals route is built from; the Fragments route reads the state's job instead
+    void rebuild_flow_graph(const FlowData* qm) {
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        // The cut stores what the user opened, closed and unfolded by node INDEX, and a rebuild renumbers
+        // every node - a new excited state or a regroup would otherwise leave the pins on whatever now
+        // happens to sit at those indices. Carried across by KEY, which is what the key field exists for.
+        md_array(uint64_t) pinned_open = 0;
+        md_array(uint64_t) pinned_closed = 0;
+        md_array(uint64_t) others_open = 0;
         md_array(uint64_t) known_keys = 0;
         for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
-            md_array_push(known_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
-            if (md_flow_cut_is_expanded(&flow.cut, (uint32_t)i)) {
-                md_array_push(expanded_keys, flow.graph.nodes[i].key, md_temp_allocator(temp));
-            }
+            const uint64_t key = flow.graph.nodes[i].key;
+            md_array_push(known_keys, key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.expanded,   (uint32_t)i)) md_array_push(pinned_open,   key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.collapsed,  (uint32_t)i)) md_array_push(pinned_closed, key, talloc);
+            if (md_bitmask_test_bit(&flow.cut.other_open, (uint32_t)i)) md_array_push(others_open,   key, talloc);
+        }
+        md_array(uint64_t) lists[4] = { pinned_open, pinned_closed, others_open, known_keys };
+        for (int l = 0; l < 4; ++l) {
+            if (lists[l]) qsort(lists[l], md_array_size(lists[l]), sizeof(uint64_t), flow_key_cmp);
         }
 
         md_flow_graph_free(&flow.graph);
         flow.built = false;
         flow.hover = FlowHit{};     // a cut index, and stale now (selection is by key, so it lives)
 
-        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? build_flow_graph_orbitals(qm)
-                      : (flow.mode == FLOW_MODE_NTO)      ? build_flow_graph_nto(qm)
-                                                          : build_flow_graph_groups();
+        const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? (qm && build_flow_graph_orbitals(*qm))
+                                                          : build_flow_graph_fragments();
         if (!ok) {
             md_flow_graph_free(&flow.graph);
             return;
@@ -10285,25 +10949,18 @@ struct QuantumChemistry : viamd::EventHandler {
             return;
         }
 
-        // Atoms are the level the diagram is about, so a group opens by default and its band
-        // brackets its members. A group the user has deliberately closed stays closed - which is
-        // why "was this key expanded" and "did this key exist at all" are different questions.
-        md_flow_cut_collapse_all(&flow.cut);
+        // Fragments: what opens is the row budget's call unless the user pinned it, and the pins live.
+        // Orbitals has no hierarchy; everything new opens.
+        const bool fragments = flow.mode == FLOW_MODE_FRAGMENTS;
+        flow.cut.mirror   = fragments;
+        flow.cut.max_rows = fragments ? (uint32_t)MD_MAX(flow.max_rows, 0) : 0u;
+        md_flow_cut_clear_pins(&flow.cut);
+        md_bitmask_clear(&flow.cut.other_open);
         for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
             const uint64_t key = flow.graph.nodes[i].key;
-
-            bool was_expanded = false;
-            for (size_t k = 0; k < md_array_size(expanded_keys); ++k) {
-                if (key == expanded_keys[k]) { was_expanded = true; break; }
-            }
-            bool was_known = false;
-            for (size_t k = 0; k < md_array_size(known_keys); ++k) {
-                if (key == known_keys[k]) { was_known = true; break; }
-            }
-
-            if (was_expanded || !was_known) {
-                md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
-            }
+            if (flow_key_in(lists[0], key) || (!fragments && !flow_key_in(lists[3], key))) md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
+            if (flow_key_in(lists[1], key)) md_bitmask_set_bit(&flow.cut.collapsed,  (uint32_t)i);
+            if (flow_key_in(lists[2], key)) md_bitmask_set_bit(&flow.cut.other_open, (uint32_t)i);
         }
 
         flow.built = true;
@@ -10317,53 +10974,94 @@ struct QuantumChemistry : viamd::EventHandler {
     // and looks wrong: the layout's unit square bounds the NODES, while bands hang off the sides
     // and captions sit above the top row. Those are sized in pixels by the drawing backend, so the
     // fit has to reserve pixels for them and only then convert to a zoom.
+    // What the diagram's columns mean, for the backend to draw: captions, the state with its split into
+    // charge transfer and local excitation at the level open now, and a legend.
+    void flow_annotations(FlowAnnotations* notes, char* subtitle, size_t cap) const {
+        *notes = {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            notes->caption[0] = "Occupied";
+            notes->caption[1] = "NTO pairs";
+            notes->caption[2] = "Virtual";
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+            notes->subtitle = subtitle;
+            notes->legend_ribbon = "Ribbon = hole to particle through an orbital pair";
+            return;
+        }
+        notes->caption[0] = "Hole";
+        notes->caption[2] = "Particle";
+        float local = 0.0f, total = 0.0f;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_link_t* l = flow.cut.links + i;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (a && b && a->entity != 0 && a->entity == b->entity) local += l->weight;
+            total += l->weight;
+        }
+        if (total > 0.0f) {
+            snprintf(subtitle, cap, "S%d \xC2\xB7 CT %.0f%% \xC2\xB7 LE %.0f%%", rsp.selected + 1,
+                     100.0f * (1.0f - local / total), 100.0f * local / total);
+        } else {
+            snprintf(subtitle, cap, "S%d", rsp.selected + 1);
+        }
+        notes->subtitle = subtitle;
+        if (flow.show_legend) {
+            notes->legend_ribbon = "Ribbon = transfer between fragments";
+            notes->legend_local  = "Solid = local excitation";
+        }
+    }
+
+    // Pan and zoom that put the nodes' box, with the room its labels and annotations take, inside a
+    // canvas of 'canvas_size' pixels.
+    void flow_fit(vec2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
+        *pan = { 0, 0 };
+        *zoom = 1.0f;
+        if (md_array_size(layout.nodes) == 0) return;
+
+        vec2_t bb_min = { 1.0e30f,  1.0e30f };
+        vec2_t bb_max = {-1.0e30f, -1.0e30f };
+        for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
+            const md_flow_layout_node_t* n = layout.nodes + i;
+            bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
+            bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
+        }
+        // the bands too: an open group's level can be the outermost
+        for (size_t i = 0; i < md_array_size(layout.bands); ++i) {
+            bb_min.x = MD_MIN(bb_min.x, layout.bands[i].min.x);
+            bb_max.x = MD_MAX(bb_max.x, layout.bands[i].max.x);
+        }
+        const float bb_w = MD_MAX(bb_max.x - bb_min.x, 1.0e-4f);
+        const float bb_h = MD_MAX(bb_max.y - bb_min.y, 1.0e-4f);
+
+        // a plain margin as well, so the diagram is not welded to the window edge
+        const float margin = 12.0f;
+        const float pad_l = margin + m.left,  pad_r = margin + m.right;
+        const float pad_t = margin + m.top,   pad_b = margin + m.bottom;
+        const float avail_w = MD_MAX(canvas_size.x - pad_l - pad_r, 16.0f);
+        const float avail_h = MD_MAX(canvas_size.y - pad_t - pad_b, 16.0f);
+
+        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
+        // bb_w * zoom * canvas_size.x pixels.
+        *zoom = MD_CLAMP(MD_MIN(avail_w / (bb_w * canvas_size.x), avail_h / (bb_h * canvas_size.y)), 0.1f, 12.0f);
+
+        // Centred in what the pads leave
+        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
+        const float target_x = 0.5f + (pad_l - pad_r) * 0.5f / canvas_size.x;
+        const float target_y = 0.5f + (pad_t - pad_b) * 0.5f / canvas_size.y;
+        pan->x = target_x - bb_center.x * *zoom;
+        pan->y = target_y - bb_center.y * *zoom;
+    }
+
     void flow_fit_view(ImVec2 canvas_size) {
-        if (!flow.built || md_array_size(flow.layout.nodes) == 0) {
+        if (!flow.built) {
             flow.pan = {0, 0};
             flow.zoom = 1.0f;
             return;
         }
-
-        vec2_t bb_min = { 1.0e30f,  1.0e30f };
-        vec2_t bb_max = {-1.0e30f, -1.0e30f };
-        for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-            const md_flow_layout_node_t* n = flow.layout.nodes + i;
-            bb_min.x = MIN(bb_min.x, n->min.x);  bb_min.y = MIN(bb_min.y, n->min.y);
-            bb_max.x = MAX(bb_max.x, n->max.x);  bb_max.y = MAX(bb_max.y, n->max.y);
-        }
-
-        const float bb_w = MAX(bb_max.x - bb_min.x, 1.0e-4f);
-        const float bb_h = MAX(bb_max.y - bb_min.y, 1.0e-4f);
-
-        // Room for the decorations the layout knows nothing about, plus a plain margin so the
-        // diagram is not welded to the window edge.
-        const float margin   = 12.0f;
-        const float caption  = ImGui::GetTextLineHeight() + 8.0f;
-        const float band_w   = flow.style.band_offset_px + flow.style.band_width_px;
-        const float band_lbl = md_array_size(flow.layout.bands) > 0 ? 64.0f : 0.0f;
-
-        const float pad_x = margin + band_w + band_lbl;
-        const float pad_y_top = margin + caption;
-        const float pad_y_bot = margin;
-
-        const float avail_w = MAX(canvas_size.x - pad_x * 2.0f, 16.0f);
-        const float avail_h = MAX(canvas_size.y - pad_y_top - pad_y_bot, 16.0f);
-
-        // Graph units are fractions of the canvas, so a graph-space extent of bb_w occupies
-        // bb_w * zoom * canvas_size.x pixels.
-        const float zoom_x = avail_w / (bb_w * canvas_size.x);
-        const float zoom_y = avail_h / (bb_h * canvas_size.y);
-        flow.zoom = CLAMP(MIN(zoom_x, zoom_y), 0.25f, 12.0f);
-
-        // Centre the content in what is left after the padding. The vertical target is offset by
-        // half the difference between the top and bottom pads, so the caption band does not push
-        // the diagram off-centre.
-        const vec2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
-        const float target_x = 0.5f;
-        const float target_y = 0.5f + (pad_y_top - pad_y_bot) * 0.5f / canvas_size.y;
-
-        flow.pan.x = target_x - bb_center.x * flow.zoom;
-        flow.pan.y = target_y - bb_center.y * flow.zoom;
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
+        const FlowMargins m = flow_measure_margins(&flow.graph, &flow.cut, &flow.layout, flow.style, &notes);
+        flow_fit(&flow.pan, &flow.zoom, flow.layout, canvas_size, m);
     }
 
     // Visible nodes whose on-screen rect overlaps a region, in cut index space.
@@ -10394,7 +11092,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
         if (group_idx >= nto.group.count) return;
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (md_bitmask_test_bit(&state.selection.selection_mask, i)) {
+            if (md_bitmask_test_bit(&state.selection.selection_mask, flow_qm_to_sys((uint32_t)i))) {
                 nto.atom_group_idx[i] = group_idx;
             }
         }
@@ -10443,7 +11141,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const md_bitset_t mask = flow_node_atom_mask(cut_idx, md_temp_allocator(temp));
         if (selected) {
@@ -10467,23 +11165,955 @@ struct QuantumChemistry : viamd::EventHandler {
         // Orbitals own no atoms; selecting "all the atoms an NTO touches" would be the whole
         // molecule and mean nothing. Gated on the LEVEL rather than the column, because in the
         // Orbitals route the outer columns are orbitals too.
-        const md_flow_node_t* n = node;
-        if (!flow_level_has_atoms(n->level)) return md_bitset_empty_set();
+        if (!flow_level_has_atoms(node->level)) return md_bitset_empty_set();
 
-        const uint32_t index = flow_key_index(n->key);
-        if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
-            return md_bitset_range(index, index + 1);
+        // Atoms are QM atoms here and system atoms in the mask
+        const uint32_t index = flow_key_index(node->key);
+        if (node->level == FLOW_LEVEL_ATOM) {
+            const uint32_t s = flow_qm_to_sys(index);
+            return md_bitset_range(s, s + 1);
         }
         md_temp_scope_t temp = md_temp_begin_avoid(alloc);
         md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, md_temp_allocator(temp));
-        for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (nto.atom_group_idx[i] == index) {
-                md_bitmask_set_bit(&b, (uint32_t)i);
+        for (size_t a = 0; a < md_array_size(nto.atom_group_idx); ++a) {
+            bool in = false;
+            if (node->level == FLOW_LEVEL_GROUP) {
+                in = nto.atom_group_idx[a] == index;
+            } else if (node->level == FLOW_LEVEL_FRAGMENT && nto.atom_group_idx[a] == 0) {
+                for (uint32_t f = flow_fragment_of((uint32_t)a); f != MD_FRAGMENT_NONE && !in; f = flow.frags.parent[f]) in = f == index;
             }
+            if (in) md_bitmask_set_bit(&b, flow_qm_to_sys((uint32_t)a));
         }
         const md_bitset_t result = md_bitmask_extract(&b, alloc);
         md_temp_end(temp);
         return result;
+    }
+
+    // The part of a visible node's weight that flows to the same entity on the other side: local
+    // excitation, in the fragment route.
+    float flow_node_self_weight(uint32_t cut_idx) const {
+        float sum = 0.0f;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_link_t* l = flow.cut.links + i;
+            if (l->src != cut_idx && l->dst != cut_idx) continue;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (a && b && a->entity != 0 && a->entity == b->entity) sum += l->weight;
+        }
+        return sum;
+    }
+
+    // The QM atoms a visible node stands for; false for an "Others" and for orbitals
+    bool flow_node_qm_atoms(md_array(uint32_t)* out, uint32_t cut_idx, md_allocator_i* alloc) const {
+        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER) || !flow_level_has_atoms(node->level)) return false;
+        const uint32_t index = flow_key_index(node->key);
+        const size_t N = md_array_size(nto.atom_group_idx);
+        if (node->level == FLOW_LEVEL_ATOM) {
+            md_array_push(*out, index, alloc);
+        } else if (node->level == FLOW_LEVEL_GROUP) {
+            for (uint32_t a = 0; a < N; ++a) if (nto.atom_group_idx[a] == index) md_array_push(*out, a, alloc);
+        } else if (index < flow.frags.count) {
+            for (uint32_t k = flow.frags.atom_beg[index]; k < flow.frags.atom_end[index]; ++k) {
+                const int32_t s = flow.frags.atom_idx[k];
+                const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
+                if (a >= 0 && (size_t)a < N && nto.atom_group_idx[a] == 0) md_array_push(*out, (uint32_t)a, alloc);
+            }
+        }
+        return true;
+    }
+
+    // What each visible ribbon is made of: the singular value decomposition of its block of the Lowdin
+    // transition density (md_qm_ct_block_nto), from the K x K blocks of its two ends, which are sums of
+    // their atoms' blocks. Exact, never negative, and adding up to the ribbon. Recomputed when the
+    // visible links change.
+    void flow_update_stripes() {
+        const bool active = flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected;
+        const size_t L = md_array_size(flow.cut.links);
+        const uint64_t hash = active ? md_hash64(flow.cut.links, sizeof(md_flow_link_t) * L, flow.data_hash ^ 0x57121e5ull) : 0;
+        if (hash == flow.stripe_hash && (active || md_array_size(flow.stripe_offset) == 0)) return;
+        flow.stripe_hash = hash;
+        md_array_shrink(flow.stripe_offset, 0);
+        md_array_shrink(flow.stripe_frac, 0);
+        if (!active) return;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const size_t K = ct_job->K, KK = K * K;
+        const size_t cut_space = md_array_size(flow.graph.nodes) + md_array_size(flow.cut.other);
+        double** block = md_temp_alloc_zero_array(temp, double*, cut_space ? cut_space : 1);
+        auto node_block = [&](uint32_t cut_idx, const double* atom_blocks) -> const double* {
+            if (cut_idx >= cut_space) return nullptr;
+            if (block[cut_idx]) return block[cut_idx];
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, cut_idx, talloc) || md_array_size(atoms) == 0) return nullptr;
+            double* b = md_temp_alloc_zero_array(temp, double, KK);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= ct_job->num_atoms) continue;
+                const double* ab = atom_blocks + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) b[k] += ab[k];
+            }
+            return block[cut_idx] = b;
+        };
+
+        double* w = md_temp_alloc_array(temp, double, K);
+        for (size_t l = 0; l < L; ++l) {
+            md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+            const md_flow_link_t* link = flow.cut.links + l;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+            if (!a || !b || (a->entity != 0 && a->entity == b->entity)) continue;    // local: drawn in the node
+            const double* H = node_block(link->src, ct_job->hole_blocks);
+            const double* P = node_block(link->dst, ct_job->part_blocks);
+            if (!H || !P) continue;
+            const size_t n = md_qm_ct_block_nto(w, nullptr, nullptr, ct_job->lambda, K, H, P);
+            double sum = 0.0;
+            for (size_t j = 0; j < n; ++j) sum += w[j];
+            if (n < 2 || sum <= 0.0) continue;
+            // the pairs that matter, and the rest as one
+            double cum = 0.0;
+            for (size_t j = 0; j < n; ++j) {
+                const double f = w[j] / sum;
+                if (f < 0.01 || cum > 0.995) {
+                    md_array_push(flow.stripe_frac, (float)(1.0 - cum), arena);
+                    break;
+                }
+                md_array_push(flow.stripe_frac, (float)f, arena);
+                cum += f;
+            }
+        }
+        md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
+    }
+
+    // The strip's inputs, once the fragments and the Lowdin basis are there: the unit of every AO (the leaf
+    // fragments, numbered compactly) and the QM atoms' positions
+    void flow_build_strip_inputs(const md_system_t& sys) {
+        if (flow.ao_unit || !lowdin_job_ready(lowdin)) return;
+        const size_t A = lowdin->num_ao, N = lowdin->num_atoms;
+        const FragmentTree& F = flow.frags;
+
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        uint32_t* leaf_id = md_temp_alloc_array(temp, uint32_t, F.count ? F.count : 1);
+        uint32_t U = 0;
+        for (size_t f = 0; f < F.count; ++f) leaf_id[f] = frag_tree_is_leaf(&F, f) ? U++ : MD_FRAGMENT_NONE;
+
+        flow.ao_unit = (uint32_t*)md_alloc(arena, sizeof(uint32_t) * A);
+        for (size_t mu = 0; mu < A; ++mu) {
+            const uint32_t atom = lowdin->ao_atom[mu];
+            const uint32_t f = atom < N ? flow_fragment_of(atom) : MD_FRAGMENT_NONE;
+            flow.ao_unit[mu] = (f != MD_FRAGMENT_NONE) ? leaf_id[f] : U;    // U and above: in no unit, left out
+        }
+        flow.num_units = U;
+
+        QmAtoms qm = {};
+        if (es_qm_atoms(&qm, sys) && qm.coordinate && qm.count == N) {
+            flow.atom_xyz = (double*)md_alloc(arena, sizeof(double) * 3 * N);
+            for (size_t a = 0; a < N; ++a) {
+                flow.atom_xyz[a * 3 + 0] = qm.coordinate[a].x;
+                flow.atom_xyz[a * 3 + 1] = qm.coordinate[a].y;
+                flow.atom_xyz[a * 3 + 2] = qm.coordinate[a].z;
+            }
+        }
+        md_array_resize(flow.strip, num_excited, arena);
+        for (size_t s = 0; s < num_excited; ++s) flow.strip[s] = {};
+    }
+
+    // One state at a time: collect what finished, start the next (the selected one first). Asking for a
+    // state's NTOs starts reading them on a worker (es_nto_ready); the strip job starts once they are in.
+    void flow_step_strip(ApplicationState& state) {
+        flow_build_strip_inputs(state.mold.sys);
+        if (!flow.ao_unit || md_array_size(flow.strip) == 0) return;
+
+        if (strip_job && strip_job->done.load(std::memory_order_acquire)) {
+            if ((size_t)strip_job->state < md_array_size(flow.strip)) {
+                QuantumChemistry::Flow::StripEntry& e = flow.strip[strip_job->state];
+                e.done = true;
+                e.ok = strip_job->ok;
+                e.ct = strip_job->ct;
+                e.distance = strip_job->distance;
+                e.pr = strip_job->pr;
+            }
+            strip_job_destroy(strip_job);
+            strip_job = nullptr;
+        }
+        if (strip_job) return;
+
+        int32_t next = -1;
+        if (rsp.selected >= 0 && (size_t)rsp.selected < md_array_size(flow.strip) && !flow.strip[rsp.selected].done) {
+            next = rsp.selected;
+        } else {
+            for (size_t s = 0; s < md_array_size(flow.strip); ++s) {
+                if (!flow.strip[s].done) { next = (int32_t)s; break; }
+            }
+        }
+        if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
+        strip_job = strip_job_start(state.mold.sys, lowdin, next, flow.ao_unit, flow.num_units, flow.atom_xyz);
+        if (!strip_job) flow.strip[next].done = true;   // nothing to compute it from: not to be retried
+    }
+
+    // Every excited state at a glance, above the diagram: bar height the oscillator strength, colour the
+    // charge transfer between units (grey-blue local, orange transfer), hollow while not yet computed.
+    // Click to select a state.
+    void draw_flow_strip(ApplicationState& state) {
+        const size_t S = md_array_size(flow.strip);
+        if (S == 0) return;
+        size_t num_f = 0, num_e = 0;
+        const double* osc = attribute_series_f64(&num_f, state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength"));
+        const double* ene = attribute_series_f64(&num_e, state.mold.sys, MD_STR_LIT("vlx/rsp/frequency"));
+        double f_max = 0.0;
+        for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
+
+        const float h = 46.0f;
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float w = MD_MAX(ImGui::GetContentRegionAvail().x, 64.0f);
+        ImGui::InvisibleButton("##state_strip", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(p0, p0 + ImVec2(w, h), IM_COL32(250, 250, 250, 255));
+
+        const float slot = w / (float)S;
+        const float bar_w = MD_CLAMP(slot * 0.6f, 2.0f, 14.0f);
+        const float base_y = p0.y + h - 12.0f;
+        const float max_h = h - 16.0f;
+        const vec4_t local_col = { 0.55f, 0.60f, 0.70f, 1.0f };
+        const vec4_t ct_col    = { 0.88f, 0.42f, 0.12f, 1.0f };
+        const ImVec2 mouse = ImGui::GetMousePos();
+        int32_t hover = -1;
+
+        for (size_t s = 0; s < S; ++s) {
+            const float cx = p0.x + slot * ((float)s + 0.5f);
+            const double f = (s < num_f && f_max > 0.0) ? osc[s] / f_max : 0.0;
+            // square root: a dark state is still a visible stub, a bright one does not flatten the rest
+            const float bh = MD_MAX(3.0f, (float)sqrt(MD_MAX(f, 0.0)) * max_h);
+            const ImVec2 b0 = { cx - bar_w * 0.5f, base_y - bh };
+            const ImVec2 b1 = { cx + bar_w * 0.5f, base_y };
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[s];
+            if (e.done && e.ok) {
+                const vec4_t c = vec4_lerp(local_col, ct_col, MD_CLAMP(e.ct, 0.0f, 1.0f));
+                dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 1.5f);
+            } else {
+                dl->AddRect(b0, b1, IM_COL32(150, 150, 150, 255), 1.5f);
+            }
+            if ((int32_t)s == rsp.selected) {
+                dl->AddTriangleFilled({ cx, base_y + 2.0f }, { cx - 4.0f, base_y + 9.0f }, { cx + 4.0f, base_y + 9.0f }, IM_COL32(30, 30, 30, 255));
+            }
+            if (hovered && mouse.x >= p0.x + slot * (float)s && mouse.x < p0.x + slot * (float)(s + 1)) hover = (int32_t)s;
+        }
+
+        if (hover >= 0) {
+            const QuantumChemistry::Flow::StripEntry& e = flow.strip[hover];
+            char details[160] = "computing...";
+            if (e.done && e.ok) {
+                snprintf(details, sizeof(details), "Charge transfer %.0f%% (between units)\nHole to particle %.2f \xc3\x85\nNTO pairs %.1f",
+                         100.0f * e.ct, e.distance, e.pr);
+            } else if (e.done) {
+                snprintf(details, sizeof(details), "no NTO pairs");
+            }
+            const double ev = (size_t)hover < num_e ? ene[hover] * HARTREE_TO_EV : 0.0;
+            const double fo = (size_t)hover < num_f ? osc[hover] : 0.0;
+            ImGui::SetTooltip("S%d   %.3f eV   f = %.4f\n%s\n\nClick to select", hover + 1, ev, fo, details);
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) rsp.selected = hover;
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // The side views of the charge transfer window (CtViews)
+    // ---------------------------------------------------------------------------
+
+    static uint64_t ctv_density_key(int32_t s) { return (uint64_t)(uint32_t)s + 1; }    // never 0, top bit clear
+    static uint64_t ctv_orbital_key(uint64_t h) { return h | (1ull << 63); }
+
+    CtViews::Entry* ctv_find_key(uint64_t key) {
+        if (!key) return nullptr;
+        for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+            if (ctv.cache[i].key == key) return &ctv.cache[i];
+        }
+        return nullptr;
+    }
+    CtViews::Entry* ctv_find(int32_t s) { return ctv_find_key(ctv_density_key(s)); }
+
+    // The lattice the side views' meshes are extracted on: the main views' middle resolution
+    static double ctv_cell_size() { return iso_meshes_cell_size(VolumeResolution::Mid); }
+
+    // An entry's two surfaces at the current iso value: a density's positive sheet, an orbital's both
+    uint32_t ctv_slots(IsoMeshSlot out[2], const CtViews::Entry& e) const {
+        if (e.failed || !e.field[0] || !e.field[1] || !(ctv.iso_val > 0.0)) return 0;
+        const double   iso    = e.orbital ? ctv.iso_val : ctv.iso_val * ctv.iso_val;
+        const uint32_t sheets = e.orbital ? (uint32_t)MD_GTO_ISO_SHEET_BOTH : (uint32_t)MD_GTO_ISO_SHEET_POSITIVE;
+        out[0] = { e.field[0], iso, sheets };
+        out[1] = { e.field[1], iso, sheets };
+        return 2;
+    }
+
+    // Its meshes are of the current iso value
+    bool ctv_entry_current(const CtViews::Entry& e) const {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, e);
+        return n && e.meshes && iso_meshes_current(e.meshes, iso_meshes_slots_key(slots, n, ctv_cell_size(), e.key));
+    }
+
+    // It has meshes to draw: of the current iso value or of an earlier one, until the new ones are in
+    static bool ctv_entry_drawable(const CtViews::Entry& e) {
+        return !e.failed && e.meshes && e.meshes->ok && e.meshes->num_slots == 2;
+    }
+
+    // Brings its meshes on: a GPU extraction is a job that each call advances for a few milliseconds at most, the
+    // mesh shown staying the previous one until it is done. Without a GPU device the extraction is done here.
+    void ctv_mesh_update(ApplicationState& state, CtViews::Entry* e) {
+        IsoMeshSlot slots[2];
+        const uint32_t n = ctv_slots(slots, *e);
+        if (n == 0) return;
+        if (!e->meshes) e->meshes = new IsoMeshes();
+        iso_meshes_update(e->meshes, &state, slots, n, ctv_cell_size(), e->key);
+    }
+
+    // Room for one more entry: the least recently used out, never the one asked for or one on screen
+    void ctv_make_room(uint64_t keep) {
+        const size_t cap = (size_t)MD_MAX(ctv.cache_entries, 4);
+        while (md_array_size(ctv.cache) >= cap) {
+            int64_t victim = -1;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                const CtViews::Entry& e = ctv.cache[i];
+                if (e.key == keep || e.key == ctv_density_key(ctv.shown) || e.key == ctv.orb_shown) continue;
+                if (victim < 0 || e.used < ctv.cache[victim].used) victim = (int64_t)i;
+            }
+            if (victim < 0) return;
+            ctv_entry_free(&ctv.cache[victim]);
+            md_array_swap_back_and_pop(ctv.cache, (size_t)victim);
+        }
+    }
+
+    // Once a frame while the views are on. Takes the fields of the density job that finished and starts the next:
+    // the selected state when it is not cached, otherwise, when nothing is asked and the extraction runs off this
+    // thread, the uncached state nearest the selected one while there is room. And brings on the meshes of one
+    // cached state a frame that are not of the current iso value, the nearest first, once the selected one's are.
+    void ctv_update(ApplicationState& state) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        // The fields are of one geometry
+        const uint64_t positions = panel_positions_hash(state);
+        if (positions != ctv.positions_hash) {
+            ctv_cache_clear();
+            ctv.positions_hash = positions;
+        }
+
+        if (ctv.job && ctv.job->done.load(std::memory_order_acquire)) {
+            CtFieldJob* job = ctv.job;
+            ctv.job = nullptr;
+            const uint64_t key = ctv_density_key(job->state);
+            if (!ctv_find_key(key)) {
+                ctv_make_room(key);
+                CtViews::Entry e = {};
+                e.key = key;
+                e.state = job->state;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
+                }
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_field_job_destroy(job);
+        }
+
+        const int32_t S = (int32_t)num_excited;
+        const bool gpu = gpu_volume_evaluation_available(&state);
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        const bool sel_settled = sel && (sel->failed || ctv_entry_current(*sel));
+
+        if (!ctv.job) {
+            int32_t next = -1;
+            if (rsp.selected >= 0 && rsp.selected < S && !sel) {
+                next = rsp.selected;
+            } else if (gpu && sel_settled && md_array_size(ctv.cache) + 1 < (size_t)MD_MAX(ctv.cache_entries, 4)) {
+                // nothing waiting: the nearest uncached state, with room to spare (a prefetch evicts nothing)
+                for (int32_t d = 1; d < S && next < 0; ++d) {
+                    const int32_t c[2] = { rsp.selected + d, rsp.selected - d };
+                    for (int32_t s : c) if (s >= 0 && s < S && !ctv_find(s)) { next = s; break; }
+                }
+            }
+            if (next >= 0 && es_nto_ready(&state, (size_t)next)) {
+                ctv.job = ct_field_job_start(state, next);
+                if (!ctv.job) {
+                    // nothing to make the densities of: remembered, so that it is not asked again every frame
+                    ctv_make_room(ctv_density_key(next));
+                    CtViews::Entry e = {};
+                    e.key = ctv_density_key(next);
+                    e.state = next;
+                    e.failed = true;
+                    md_array_push(ctv.cache, e, heap);
+                }
+            }
+        }
+
+        // Meshes ahead of being asked for: on the GPU only (the CPU extraction blocks), one entry a frame
+        if (gpu && sel_settled) {
+            CtViews::Entry* best = nullptr;
+            int32_t best_d = INT32_MAX;
+            for (size_t i = 0; i < md_array_size(ctv.cache); ++i) {
+                CtViews::Entry& e = ctv.cache[i];
+                if (e.orbital || e.failed || e.state == rsp.selected || ctv_entry_current(e)) continue;
+                const int32_t d = abs(e.state - rsp.selected);
+                if (d < best_d) { best_d = d; best = &e; }
+            }
+            if (best) ctv_mesh_update(state, best);
+        }
+    }
+
+    // ---- ribbon orbitals ----
+
+    // An orbital the views can show: a ribbon's block NTO pair (fragment route) or an NTO pair of the state
+    // (orbital route). key 0 for none.
+    struct CtOrbReq {
+        uint64_t key = 0;
+        int32_t  link = -1;     // cut link (fragment route)
+        uint32_t pair = 0;      // block NTO pair of the ribbon, descending
+        int32_t  nto = -1;      // NTO pair index of the state (orbital route)
+    };
+
+    bool ctv_block_ready() const {
+        return flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected && lowdin_job_ready(lowdin);
+    }
+
+    // The NTO pair a node of the orbital route's middle column stands for, -1 for any other node
+    int32_t ctv_nto_of_cut_node(uint32_t cut_idx) const {
+        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!n || (n->flags & MD_FLOW_NODE_FLAG_OTHER) || n->level != FLOW_LEVEL_NTO) return -1;
+        const uint32_t k = flow_key_index(n->key);
+        return k < MAX_NTO_LABELS ? (int32_t)flow.nto_index[k] : -1;
+    }
+
+    CtOrbReq ctv_request(int32_t link, int32_t stripe, int32_t node) const {
+        CtOrbReq r = {};
+        if (rsp.selected < 0) return r;
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+            if (link < 0 || (size_t)link >= md_array_size(flow.cut.links) || !ctv_block_ready()) return r;
+            const md_flow_link_t* l = flow.cut.links + link;
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (!a || !b || (a->flags & MD_FLOW_NODE_FLAG_OTHER) || (b->flags & MD_FLOW_NODE_FLAG_OTHER)) return r;
+            if (!flow_level_has_atoms(a->level) || !flow_level_has_atoms(b->level)) return r;
+            r.link = link;
+            r.pair = stripe > 0 ? (uint32_t)stripe : 0;
+            const uint64_t h[4] = { (uint64_t)rsp.selected, a->key, b->key, r.pair };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0xb10c4a0ull));
+        } else if (flow.mode == FLOW_MODE_ORBITALS) {
+            int32_t k = node >= 0 ? ctv_nto_of_cut_node((uint32_t)node) : -1;
+            if (k < 0 && link >= 0 && (size_t)link < md_array_size(flow.cut.links)) {
+                k = ctv_nto_of_cut_node(flow.cut.links[link].src);
+                if (k < 0) k = ctv_nto_of_cut_node(flow.cut.links[link].dst);
+            }
+            if (k < 0) return r;
+            r.nto = k;
+            const uint64_t h[2] = { (uint64_t)rsp.selected, (uint64_t)k };
+            r.key = ctv_orbital_key(md_hash64(h, sizeof(h), 0x7e0ull));
+        }
+        return r;
+    }
+
+    // The pinned orbital as a request, its ribbon found again among the visible ones by its ends
+    CtOrbReq ctv_pin_request() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected) return {};
+        if (flow.mode == FLOW_MODE_ORBITALS) {
+            if (p.nto < 0) return {};
+            for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                if (flow.graph.nodes[i].level == FLOW_LEVEL_NTO && ctv_nto_of_cut_node((uint32_t)i) == p.nto) return ctv_request(-1, -1, (int32_t)i);
+            }
+            return {};
+        }
+        const int32_t l = ctv_pin_link();
+        return l >= 0 ? ctv_request(l, (int32_t)p.pair, -1) : CtOrbReq{};
+    }
+
+    int32_t ctv_pin_link() const {
+        const CtViews::Pin& p = ctv.pin;
+        if (!p.on || p.state != rsp.selected || flow.mode != FLOW_MODE_FRAGMENTS) return -1;
+        for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].dst);
+            if (a && b && a->key == p.src_key && b->key == p.dst_key) return (int32_t)i;
+        }
+        return -1;
+    }
+
+    void ctv_pin_toggle(const CtOrbReq& r) {
+        const CtOrbReq cur = ctv_pin_request();
+        if (cur.key && cur.key == r.key) { ctv.pin = {}; return; }
+        ctv.pin = {};
+        if (!r.key) return;
+        ctv.pin.on = true;
+        ctv.pin.state = rsp.selected;
+        ctv.pin.nto = r.nto;
+        ctv.pin.pair = r.pair;
+        if (r.link >= 0) {
+            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].src);
+            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].dst);
+            ctv.pin.src_key = a ? a->key : 0;
+            ctv.pin.dst_key = b ? b->key : 0;
+        }
+    }
+
+    // A ribbon's block NTO pair in the Lowdin basis: the pair'th singular pair of the ribbon's block of the
+    // transition density, each confined to its end's atoms. x_hole and x_part are A doubles; false when the
+    // ribbon has no such pair.
+    bool ctv_block_pair(double* x_hole, double* x_part, char info[2][64], char* sub, size_t sub_cap, int32_t link, uint32_t pair) {
+        const size_t K = ct_job->K, KK = K * K, A = lowdin->num_ao, N = ct_job->num_atoms;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_allocator_i* talloc = md_temp_allocator(temp);
+
+        const md_flow_link_t* l = flow.cut.links + link;
+        const uint32_t end[2] = { l->src, l->dst };
+        const double* x_lowdin[2] = { ct_job->hole, ct_job->part };
+        const double* blocks[2]   = { ct_job->hole_blocks, ct_job->part_blocks };
+        double* B[2];
+        bool* in[2];
+        for (int side = 0; side < 2; ++side) {
+            md_array(uint32_t) atoms = 0;
+            if (!flow_node_qm_atoms(&atoms, end[side], talloc) || md_array_size(atoms) == 0) return false;
+            B[side]  = md_temp_alloc_zero_array(temp, double, KK);
+            in[side] = md_temp_alloc_zero_array(temp, bool, N + 1);
+            for (size_t i = 0; i < md_array_size(atoms); ++i) {
+                if (atoms[i] >= N) continue;
+                in[side][atoms[i]] = true;
+                const double* ab = blocks[side] + (size_t)atoms[i] * KK;
+                for (size_t k = 0; k < KK; ++k) B[side][k] += ab[k];
+            }
+        }
+        double* w  = md_temp_alloc_array(temp, double, K);
+        double* hc = md_temp_alloc_array(temp, double, KK);
+        double* pc = md_temp_alloc_array(temp, double, KK);
+        const size_t n = md_qm_ct_block_nto(w, hc, pc, ct_job->lambda, K, B[0], B[1]);
+        if (n == 0) return false;
+        const size_t j = MD_MIN((size_t)pair, n - 1);
+        double sum = 0.0;
+        for (size_t i = 0; i < n; ++i) sum += w[i];
+
+        const double* coef[2] = { hc + j * K, pc + j * K };
+        double* out[2] = { x_hole, x_part };
+        for (int side = 0; side < 2; ++side) {
+            for (size_t mu = 0; mu < A; ++mu) {
+                const uint32_t atom = lowdin->ao_atom[mu];
+                double v = 0.0;
+                if (atom < N && in[side][atom]) {
+                    for (size_t k = 0; k < K; ++k) v += coef[side][k] * x_lowdin[side][k * A + mu];
+                }
+                out[side][mu] = v;
+            }
+            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, end[side]);
+            snprintf(info[side], 64, "%.*s", node ? (int)node->label.len : 0, node && node->label.ptr ? node->label.ptr : "");
+        }
+        if (n > 1) {
+            snprintf(sub, sub_cap, "pair %zu of %zu, %.0f%% of the ribbon (%.1f%%)", j + 1, n, sum > 0.0 ? 100.0 * w[j] / sum : 0.0, 100.0 * l->weight);
+        } else {
+            snprintf(sub, sub_cap, "the ribbon's one pair (%.1f%%)", 100.0 * l->weight);
+        }
+        return true;
+    }
+
+    // Once a frame while the views are on, after ctv_update: collects the orbital job that finished, and starts
+    // the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job: they
+    // are published as AO coefficients and go straight to the evaluation.
+
+    // Once a frame while the views are on, after ctv_update: takes the fields of the orbital job that finished, and
+    // starts the one asked for when it is neither cached nor under way. The orbital route's NTO pairs need no job:
+    // they are published as AO coefficients, and a field of one orbital is made in no time.
+    void ctv_orbital_update(ApplicationState& state, const CtOrbReq& req) {
+        if (!ctv.initialized) return;
+        md_allocator_i* heap = md_get_heap_allocator();
+
+        if (ctv.orb_job && ctv.orb_job->done.load(std::memory_order_acquire)) {
+            CtOrbitalJob* job = ctv.orb_job;
+            ctv.orb_job = nullptr;
+            if (!ctv_find_key(job->key)) {
+                ctv_make_room(job->key);
+                CtViews::Entry e = {};
+                e.key = job->key;
+                e.state = rsp.selected;
+                e.orbital = true;
+                e.used = ++ctv.tick;
+                e.failed = !job->ok;
+                md_memcpy(e.info, job->info, sizeof(e.info));
+                md_memcpy(e.sub, job->sub, sizeof(e.sub));
+                if (job->ok) {
+                    for (int c = 0; c < 2; ++c) { e.field[c] = job->field[c]; job->field[c] = nullptr; }
+                }
+                md_array_push(ctv.cache, e, heap);
+            }
+            ct_orbital_job_destroy(job);
+        }
+
+        if (!req.key || ctv_find_key(req.key)) return;
+        if (req.nto >= 0) {
+            // the state's own NTO pair, from the attribute table
+            if (!es_nto_ready(&state, (size_t)rsp.selected)) return;
+            ctv_make_room(req.key);
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.used = ++ctv.tick;
+            snprintf(e.info[0], sizeof(e.info[0]), "NTO %d", req.nto + 1);
+            snprintf(e.info[1], sizeof(e.info[1]), "NTO %d", req.nto + 1);
+            const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto);
+            const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
+            double lambda = 0.0;
+            if (lam && md_attribute_extract_f64(&lambda, 1, lam, slice, md_unit_none()) == 1) {
+                snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
+            }
+            e.field[0] = iso_field_create_orbital(&state, es_path::nto_hole, &slice);
+            e.field[1] = iso_field_create_orbital(&state, es_path::nto_particle, &slice);
+            e.failed = !e.field[0] || !e.field[1];
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        if (ctv.orb_job || req.link < 0 || !ctv_block_ready()) return;
+
+        const size_t A = lowdin->num_ao;
+        double* x_hole = (double*)md_alloc(heap, sizeof(double) * A);
+        double* x_part = (double*)md_alloc(heap, sizeof(double) * A);
+        char info[2][64] = {};
+        char sub[96] = {};
+        CtOrbitalJob* job = nullptr;
+        if (ctv_block_pair(x_hole, x_part, info, sub, sizeof(sub), req.link, req.pair)) {
+            job = ct_orbital_job_start(state, lowdin, req.key, x_hole, x_part);     // takes x_hole and x_part
+        } else {
+            md_free(heap, x_hole, sizeof(double) * A);
+            md_free(heap, x_part, sizeof(double) * A);
+        }
+        if (!job) {
+            ctv_make_room(req.key);
+            CtViews::Entry e = {};
+            e.key = req.key;
+            e.state = rsp.selected;
+            e.orbital = true;
+            e.failed = true;
+            md_array_push(ctv.cache, e, heap);
+            return;
+        }
+        md_memcpy(job->info, info, sizeof(info));
+        md_memcpy(job->sub, sub, sizeof(sub));
+        ctv.orb_job = job;
+    }
+
+    void draw_ct_views(ApplicationState& state, const ImRect r[2], uint64_t orb_key, bool keep_orbital) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 sz = r[0].GetSize();
+        if (sz.x < 16.0f || sz.y < 16.0f || !ctv.initialized) return;
+
+        camera_animate(&ctv.camera, ctv.target, state.app.timing.delta_s);
+
+        // What to show: the selected state once it has meshes, the last state shown until then
+        CtViews::Entry* sel = rsp.selected >= 0 ? ctv_find(rsp.selected) : nullptr;
+        if (sel && !sel->failed) {
+            ctv_mesh_update(state, sel);
+            if (ctv_entry_drawable(*sel)) ctv.shown = rsp.selected;
+        }
+        CtViews::Entry* shown = ctv.shown >= 0 ? ctv_find(ctv.shown) : nullptr;
+        if (shown && !ctv_entry_drawable(*shown)) shown = nullptr;
+        if (sel && sel->failed) shown = nullptr;    // the last state's densities would read as this one's
+        bool updating = !(sel && sel->failed) && (ctv.shown != rsp.selected || (shown && !ctv_entry_current(*shown)));
+        const char* failed_status = (sel && sel->failed) ? "no NTO pairs" : nullptr;
+
+        // An orbital over the densities, when one is asked for
+        if (orb_key || keep_orbital) {
+            CtViews::Entry* want = ctv_find_key(orb_key);
+            if (want && !want->failed) ctv_mesh_update(state, want);
+            if (want && ctv_entry_drawable(*want)) {
+                ctv.orb_shown = orb_key;
+                shown = want;
+                updating = !ctv_entry_current(*want);
+                failed_status = nullptr;
+            } else if (want && want->failed) {
+                shown = nullptr;
+                updating = false;
+                failed_status = "no orbital pair";
+            } else {
+                CtViews::Entry* last = keep_orbital ? ctv_find_key(ctv.orb_shown) : nullptr;
+                if (last && ctv_entry_drawable(*last) && last->state == rsp.selected) shown = last;
+                updating = orb_key != 0;
+            }
+        }
+        if (shown) shown->used = ++ctv.tick;
+        const bool orbital = shown && shown->orbital;
+
+        const float aspect = sz.x / sz.y;
+        const mat4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
+        const mat4_t proj_mat     = camera_view_to_clip_matrix_persp(ctv.camera, aspect);
+        const mat4_t inv_view_mat = camera_view_to_world_matrix(ctv.camera);
+        const mat4_t inv_proj_mat = camera_clip_to_view_matrix_persp(ctv.camera, aspect);
+        const mat4_t world_to_clip = proj_mat * view_mat;
+        const mat4_t clip_to_world = inv_view_mat * inv_proj_mat;
+
+        const int width  = MD_MAX(1, (int)(sz.x * io.DisplayFramebufferScale.x));
+        const int height = MD_MAX(1, (int)(sz.y * io.DisplayFramebufferScale.y));
+        // Sized before the images go into the draw list, which records the texture names
+        if ((int)ctv.gbuf.width != width || (int)ctv.gbuf.height != height) {
+            gbuffer_init(&ctv.gbuf, width, height);
+            for (int i = 0; i < 2; ++i) {
+                if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
+                if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
+            }
+        }
+        for (int i = 0; i < 2; ++i) {
+            if (!ctv.iso_tex[i]) gl::init_texture_2D(&ctv.iso_tex[i], width, height, GL_RGBA16F);
+            if (!ctv.out_tex[i]) gl::init_texture_2D(&ctv.out_tex[i], width, height, GL_RGBA8);
+        }
+
+        vec4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
+        colors[0].w = colors[1].w = 0.75f;
+        // orbitals in the orbital window's lobe colours: the positive sheet, the negative
+        const vec4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
+
+        // Camera control in either view; the picking reads the shared buffer, the same in both
+        for (int i = 0; i < 2; ++i) {
+            ImGui::PushID(i + 0x5c7);
+            ImGui::SetCursorScreenPos(r[i].Min);
+            InteractionSurfaceState surface = interaction_surface(interaction_surface_flow, vec_cast(sz));
+            InteractionSurfaceViewTransformArgs view_args = {
+                .camera = ctv.camera,
+                .trackball_param = state.view.trackball_param,
+            };
+            InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&ctv.target, surface, view_args);
+            if (view_result.reset_requested) ctv.target = default_view;
+            if (surface.hovered) {
+                InteractionSurfaceHitArgs hit_args = {
+                    .picking_surface = &ctv.picking_surface,
+                    .picking_handler = state.picking_handler,
+                    .fbo = ctv.gbuf.fbo,
+                    .width = ctv.gbuf.width,
+                    .height = ctv.gbuf.height,
+                    .clip_to_world = clip_to_world,
+                };
+                PickingHit hit = {};
+                interaction_surface_hit_extract(&hit, surface, hit_args);
+                InteractionSurfaceEvent event = {};
+                interaction_surface_event_extract(&event, surface, hit);
+                event.clip_to_world = clip_to_world;
+                event.world_to_clip = world_to_clip;
+                if (event.kind != InteractionSurfaceEventKind::ContextMenu && event.kind != InteractionSurfaceEventKind::RegionSelect) {
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
+                }
+            }
+            ImGui::PopID();
+        }
+
+        uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)ctv.gl_rep.id);
+        {
+            const int layout[2] = { width, height };
+            render_hash = md_hash64(layout, sizeof(layout), render_hash);
+            render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
+            const uint64_t s = shown ? shown->key : 0;
+            render_hash = md_hash64(&s, sizeof(s), render_hash);
+            if (shown) {
+                render_hash = md_hash64(&shown->meshes->mesh.version, sizeof(shown->meshes->mesh.version), render_hash);
+                render_hash = md_hash64(shown->meshes->index_offset, sizeof(shown->meshes->index_offset), render_hash);
+                render_hash = md_hash64(shown->meshes->index_count, sizeof(shown->meshes->index_count), render_hash);
+            }
+            render_hash = md_hash64(colors, sizeof(colors), render_hash);
+            render_hash = md_hash64(orb_colors, sizeof(orb_colors), render_hash);
+            render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
+            render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
+            render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
+            render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
+            render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+            render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
+            render_hash = render_hash ? render_hash : 1;
+        }
+
+        // Redrawn when anything it shows changed, and while the meshes' images are being refined over the frames
+        if (render_hash != ctv.render_hash || !ctv.converged) {
+            ctv.render_hash = render_hash;
+            bool converged = true;
+            GBuffer& gbuf = ctv.gbuf;
+            gbuffer_clear(&gbuf);
+
+            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                                            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+            glDepthMask(GL_TRUE);
+            glEnable(GL_SCISSOR_TEST);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glScissor(0, 0, gbuf.width, gbuf.height);
+
+            auto draw_rep = [&state, &view_mat, &proj_mat](md_gl_rep_t rep, md_gl_shaders_t& shaders, uint32_t atom_mask) {
+                md_gl_draw_op_t draw_op = {};
+                draw_op.type = MD_GL_REP_BALL_AND_STICK;
+                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
+                draw_op.args.ball_and_stick.stick_radius = 1.0f;
+                draw_op.args.ball_and_stick.bond_orders  = true;
+                draw_op.rep = rep;
+                md_gl_draw_args_t draw_args = {
+                    .shaders = shaders,
+                    .draw_operations = { .count = 1, .ops = &draw_op },
+                    .view_transform = {
+                        .view_matrix = (const float*)view_mat.elem,
+                        .proj_matrix = (const float*)proj_mat.elem,
+                    },
+                    .picking_offset = gl_picking_offset(state),
+                    .atom_mask = atom_mask,
+                };
+                md_gl_draw(&draw_args);
+            };
+            draw_rep(ctv.gl_rep, state.gl.shaders, 0);
+
+            const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
+            if (draw_marks) {
+                gbuffer_marks_begin(&gbuf);
+                draw_rep(ctv.gl_rep, state.gl.shaders_marks, AtomBit_Marked);
+                gbuffer_marks_end(&gbuf);
+            }
+
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
+            glViewport(0, 0, gbuf.width, gbuf.height);
+            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDepthFunc(GL_LESS);
+            glDepthMask(0);
+            glColorMask(1, 1, 1, 1);
+
+            postprocess_pipeline::Settings pp = {};
+            postprocess_pipeline::Inputs in = {};
+            pp.background_color   = state.visuals.background.color;
+            pp.shading.mode       = state.visuals.shading.mode;
+            pp.shading.ambient    = state.visuals.shading.ambient;
+            pp.shading.specular   = state.visuals.shading.specular;
+            pp.shading.colors     = state.visuals.shading.colors;
+            pp.shading.light      = state.visuals.shading.light;
+            pp.shading.environment = state.visuals.shading.environment;
+            pp.tonemap.enabled    = state.visuals.tonemapping.enabled;
+            pp.tonemap.mode       = state.visuals.tonemapping.tonemapper;
+            pp.tonemap.exposure   = state.visuals.tonemapping.exposure;
+            pp.tonemap.gamma      = state.visuals.tonemapping.gamma;
+            pp.shadows.enabled = false;
+            pp.ssao.enabled    = false;
+            pp.dof.enabled     = false;
+            pp.fxaa.enabled    = true;
+            pp.taa.enabled     = false;
+            pp.sharpen.enabled = false;
+            in.depth        = gbuf.tex.depth;
+            in.color        = gbuf.tex.color;
+            in.normal       = gbuf.tex.normal;
+            in.velocity     = gbuf.tex.velocity;
+            in.transparency = gbuf.tex.transparency;
+            if (draw_marks) {
+                in.marks       = gbuf.tex.marks;
+                in.marks_group = gbuf.tex.marks_group;
+                marks_settings(&pp, state, 1.0f, MD_MAX(1, (int)roundf(io.DisplayFramebufferScale.x)));
+            }
+            ViewParam view_param = {
+                .matrix = {
+                    .curr = { .view = view_mat, .proj = proj_mat, .norm = view_mat },
+                    .inv  = { .proj = inv_proj_mat },
+                },
+                .clip_planes = { .near = ctv.camera.near_plane, .far = ctv.camera.far_plane },
+                .resolution = { sz.x, sz.y },
+                .fov_y = ctv.camera.fov_y,
+            };
+
+            glDisable(GL_SCISSOR_TEST);
+            if (!ctv.out_fbo) glGenFramebuffers(1, &ctv.out_fbo);
+            for (int i = 0; i < 2; ++i) {
+                bool iso_written = false;
+                if (shown) {
+                    // view i shows slot i: a density's positive sheet in the side's colour, an orbital's two
+                    const IsoMeshes& m = *shown->meshes;
+                    isomesh::Surface surfaces[2];
+                    size_t num_surfaces = 0;
+                    for (int sheet = 0; sheet < 2; ++sheet) {
+                        if (m.index_count[i][sheet] == 0) continue;
+                        isomesh::Surface& surf = surfaces[num_surfaces++];
+                        surf = {};
+                        surf.mesh = &m.mesh;
+                        surf.index_offset = m.index_offset[i][sheet];
+                        surf.index_count  = m.index_count[i][sheet];
+                        surf.model = iso_meshes_model_matrix();
+                        surf.color = orbital ? orb_colors[sheet] : colors[i];
+                    }
+                    const isomesh::RenderDesc desc = {
+                        .render_target = {
+                            .depth  = gbuf.tex.depth,
+                            .color  = ctv.iso_tex[i],
+                            .width  = gbuf.width,
+                            .height = gbuf.height,
+                            .clear_color = true,
+                        },
+                        .matrix = {
+                            .view = view_mat,
+                            .proj = proj_mat,
+                            .proj_no_jitter = proj_mat,
+                        },
+                        .surfaces = surfaces,
+                        .num_surfaces = num_surfaces,
+                        .shading = {
+                            .roughness = 0.3f,
+                            .ior = 1.5f,
+                            .mode = pp.shading.mode,
+                            .ambient = pp.shading.ambient,
+                            .specular = pp.shading.specular,
+                            .colors = pp.shading.colors,
+                            .light = pp.shading.light,
+                            .environment = pp.shading.environment,
+                        },
+                        .scene_hash = render_hash,
+                    };
+                    bool view_converged = true;
+                    iso_written = isomesh::render(&ctv.mesh_target[i], desc, &view_converged);
+                    converged &= view_converged;
+                }
+                in.transparency_hdr = iso_written ? ctv.iso_tex[i] : 0;
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctv.out_fbo);
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctv.out_tex[i], 0);
+                glDrawBuffer(GL_COLOR_ATTACHMENT0);
+                glViewport(0, 0, gbuf.width, gbuf.height);
+                postprocess_pipeline::execute(in, pp, view_param);
+            }
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDrawBuffer(GL_BACK);
+            glDisable(GL_SCISSOR_TEST);
+            ctv.converged = converged;
+        }
+
+        static const char* lbl[2] = { "Hole", "Particle" };
+        for (int i = 0; i < 2; ++i) {
+            dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
+            dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
+            const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
+            const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(vec4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
+            dl->AddText(tp, caption_col, lbl[i]);
+            float y = tp.y + ImGui::GetTextLineHeight();
+            if (orbital) {
+                // what it is the orbital of, under the caption, clipped to the view
+                dl->PushClipRect(r[i].Min, r[i].Max, true);
+                dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 200), shown->info[i]);
+                y += ImGui::GetTextLineHeight();
+                if (shown->sub[0]) dl->AddText(ImVec2(tp.x, y), IM_COL32(0, 0, 0, 130), shown->sub);
+                dl->PopClipRect();
+            }
+            const char* status = failed_status ? failed_status : updating ? "updating..." : nullptr;
+            if (status) {
+                const ImVec2 ts = ImGui::CalcTextSize(status);
+                dl->AddText(ImVec2(r[i].Max.x - ts.x - 6.0f, r[i].Min.y + 4.0f), IM_COL32(0, 0, 0, 140), status);
+            }
+            if (i == 0 && ctv.pin.on && orbital && shown->key == ctv_pin_request().key) {
+                const char* pinned = "pinned (click it again, or Esc)";
+                const ImVec2 ts = ImGui::CalcTextSize(pinned);
+                dl->AddText(ImVec2(r[i].Min.x + 6.0f, r[i].Max.y - ts.y - 4.0f), IM_COL32(0, 0, 0, 120), pinned);
+            }
+        }
     }
 
     void draw_flow_window(ApplicationState& state) {
@@ -10496,6 +12126,11 @@ struct QuantumChemistry : viamd::EventHandler {
             md_flow_cut_init(&flow.cut, arena);
             md_flow_layout_init(&flow.layout, arena);
             flow.params = md_flow_layout_params_default();
+            // The same fragments in the same order on both sides: a straight band is local, a
+            // slanted one is transfer.
+            flow.params.order = MD_FLOW_ORDER_GRAPH;
+            // Thin bars: the labels sit outside them, and the width between belongs to the ribbons
+            flow.params.node_thickness = flow.bar_width;
             flow.cut.threshold = flow.initial_threshold;
             // Uncapped on purpose. A cap makes "Show above 1%" stop being true - folding halts
             // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
@@ -10512,24 +12147,49 @@ struct QuantumChemistry : viamd::EventHandler {
         hash ^= (uint64_t)nto.group.count;
         hash ^= (uint64_t)(rsp.selected + 1) << 8;
         hash ^= (uint64_t)flow.mode << 24;
-        if (nto.transition_matrix) {
-            const size_t dim = nto.transition_matrix_dim;
-            hash = md_hash64(nto.transition_matrix, sizeof(float) * dim * (dim + 2), hash);
+        hash ^= flow.frags_version * 0x9E3779B97F4A7C15ull;
+
+        // The fragment route: the fragments and the Lowdin basis once per system, then one job per selected
+        // state. Both on workers; the last diagram stays on screen while they run.
+        const bool nto_pending = rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
+        bool lowdin_pending = false;
+        bool ct_pending = false;
+        if (flow.mode == FLOW_MODE_FRAGMENTS || flow.show_strip) {
+            flow_build_fragments(state.mold.sys);
+            if (!lowdin && flow.num_qm_atoms > 0) {
+                lowdin = lowdin_job_start(state.mold.sys, basis, flow.num_qm_atoms);
+            }
         }
-        // the NTO diagram not until the state's NTOs have been read (on a worker thread): the last one stays
-        const bool nto_pending = flow.mode == FLOW_MODE_NTO && rsp.selected >= 0 && !es_nto_ready(&state, (size_t)rsp.selected);
-        if (hash != flow.data_hash && !nto_pending) {
+        if (flow.show_strip) {
+            flow_step_strip(state);
+        }
+        if (flow.mode == FLOW_MODE_FRAGMENTS) {
+            lowdin_pending = lowdin && !lowdin->done.load(std::memory_order_acquire);
+            if (lowdin_job_ready(lowdin) && rsp.selected >= 0 && !nto_pending && (!ct_job || ct_job->state != rsp.selected) &&
+                flow.ct_failed_state != rsp.selected) {
+                ct_state_job_destroy(ct_job);
+                ct_job = ct_state_job_start(state.mold.sys, lowdin, rsp.selected);
+                if (!ct_job) flow.ct_failed_state = rsp.selected;   // no NTO pairs to read: do not ask every frame
+            }
+            ct_pending = ct_job && (!ct_job->done.load(std::memory_order_acquire) || ct_job->state != rsp.selected);
+            hash ^= (uint64_t)lowdin_job_ready(lowdin) << 32;
+            if (ct_job) hash ^= ((uint64_t)(ct_job->state + 1) << 40) ^ ((uint64_t)ct_state_job_ready(ct_job) << 56);
+        }
+
+        const bool waiting = nto_pending || lowdin_pending || ct_pending;
+        if (hash != flow.data_hash && !waiting) {
             flow.data_hash = hash;
-
-            // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
-            // know nothing about a system, an attribute table or a reader. This is the one place
-            // that has to, and it is the place that already holds the system.
-            md_temp_scope_t temp = md_temp_begin();
-            defer { md_temp_end(temp); };
-
-            FlowData qm = {};
-            flow_qm_data_gather(&qm, temp, state.mold.sys);
-            rebuild_flow_graph(qm);
+            if (flow.mode == FLOW_MODE_ORBITALS) {
+                // Gathered HERE and not inside: the flow graph procedures work on arrays and counts and
+                // know nothing about a system, an attribute table or a reader.
+                md_temp_scope_t temp = md_temp_begin();
+                MD_DEFER { md_temp_end(temp); };
+                FlowData qm = {};
+                flow_qm_data_gather(&qm, temp, state.mold.sys);
+                rebuild_flow_graph(&qm);
+            } else {
+                rebuild_flow_graph(nullptr);
+            }
         }
 
         bool export_requested = false;
@@ -10542,29 +12202,64 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Settings")) {
-                    ImGui::SliderFloat("Box tint", &flow.style.node_fill_tint, 0.0f, 0.5f);
-                    ImGui::SetItemTooltip("How much of a node's colour survives in its interior.\n"
-                                          "0 is white; the colour itself lives on the border.");
-                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Colour by side", &flow.style.color_by_side);
+                    ImGui::SetItemTooltip("Hole nodes in one colour, particle nodes in another, ribbons in a third.\n"
+                                          "Off: every node in its own colour, ribbons blending between them.");
+                    ImGui::BeginDisabled(flow.style.color_by_side);
                     ImGui::Checkbox("Colour the labels", &flow.style.color_labels);
+                    ImGui::EndDisabled();
+                    ImGui::SliderFloat("Node tint", &flow.style.node_fill_tint, 0.0f, 0.6f);
+                    ImGui::SetItemTooltip("How much of a node's colour fills its interior. 0 is white.");
+                    ImGui::SliderFloat("Border width", &flow.style.border_width, 0.5f, 4.0f, "%.1f px");
+                    ImGui::Checkbox("Ribbon labels", &flow.style.show_ribbon_labels);
+                    ImGui::SetItemTooltip("The share of every ribbon thick enough to carry it, at its middle.");
+                    ImGui::Checkbox("Legend", &flow.show_legend);
                     ImGui::Separator();
                     ImGui::SliderFloat("Ribbon opacity", &flow.style.ribbon_alpha, 0.05f, 1.0f);
                     ImGui::SliderFloat("Ribbon curvature", &flow.style.ribbon_curvature, 0.0f, 1.0f);
                     ImGui::SliderInt("Ribbon segments", &flow.style.ribbon_segments, 4, 64);
                     ImGui::Separator();
-                    ImGui::SliderFloat("Node thickness", &flow.params.node_thickness, 0.01f, 0.25f);
+                    ImGui::SliderFloat("Bar width", &flow.params.node_thickness, 0.01f, 0.25f);
                     ImGui::SliderFloat("Node gap", &flow.params.node_gap, 0.0f, 0.1f);
                     ImGui::BeginDisabled(flow.params.order != MD_FLOW_ORDER_BARYCENTRE);
                     int sweeps = (int)flow.params.barycentre_sweeps;
                     if (ImGui::SliderInt("Crossing sweeps", &sweeps, 0, 4)) {
-                        flow.params.barycentre_sweeps = (uint32_t)MAX(0, sweeps);
+                        flow.params.barycentre_sweeps = (uint32_t)MD_MAX(0, sweeps);
                     }
                     ImGui::EndDisabled();
                     ImGui::SetItemTooltip("Only used by the 'Fewest crossings' row order.");
                     ImGui::Separator();
+                    ImGui::Checkbox("State strip", &flow.show_strip);
+                    ImGui::SetItemTooltip("Every excited state above the diagram: bar height the oscillator strength,\n"
+                                          "colour the charge transfer between the automatic units.");
+                    ImGui::SliderFloat("Local fill opacity", &flow.style.self_alpha, 0.0f, 1.0f);
+                    ImGui::SetItemTooltip("How strongly the local excitation inside a node is filled in.");
+                    {
+                        float other_pct = flow.cut.other_max * 100.0f;
+                        if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
+                            flow.cut.other_max = other_pct * 0.01f;
+                            md_flow_cut_resolve(&flow.cut, &flow.graph);
+                        }
+                        ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
+                                              "which means rows under 'Fold below' STAY on screen. Leave it at 100%%\n"
+                                              "unless you want that.");
+                    }
                     ImGui::SliderFloat("Hide ribbons under", &flow.style.ribbon_min_px, 0.0f, 6.0f, "%.1f px");
                     ImGui::SetItemTooltip("A ribbon thinner than this is not drawn - it reads as noise rather\n"
                                           "than as a quantity. The flow is still in the model and still counted.");
+                    ImGui::Separator();
+                    ImGui::Checkbox("3D views", &ctv.show);
+                    ImGui::BeginDisabled(!ctv.show);
+                    ImGui::SliderFloat("View width", &ctv.width_frac, 0.1f, 0.4f, "%.2f");
+                    ImGui::SetItemTooltip("Of the window's width, each side.");
+                    float iso = (float)ctv.iso_val;
+                    if (ImGui::SliderFloat("Iso value", &iso, 0.005f, 0.2f, "%.3f", ImGuiSliderFlags_Logarithmic)) ctv.iso_val = iso;
+                    ImGui::SetItemTooltip("Orbitals are drawn at plus and minus it, densities at its square, as the\n"
+                                          "transition analysis draws them.");
+                    ImGui::SliderInt("Cache", &ctv.cache_entries, 4, 128, "%d entries");
+                    ImGui::SetItemTooltip("States' densities and orbital pairs kept as meshes, so that switching between them\n"
+                                          "shows them at once. The selected state's neighbours are prepared ahead.");
+                    ImGui::EndDisabled();
                     ImGui::EndMenu();
                 }
                 ImGui::EndMenuBar();
@@ -10583,78 +12278,95 @@ struct QuantumChemistry : viamd::EventHandler {
             if (ImGui::Combo("Route", &mode, flow_mode_str, FLOW_MODE_COUNT)) {
                 flow.mode = (flow_mode_t)mode;
             }
-            ImGui::SetItemTooltip("'Groups only' reproduces the old two-column diagram, where the\n"
-                                  "group-to-group flow is inferred from the two marginals.\n"
-                                  "'Atoms via NTOs' measures it instead.\n"
-                                  "'Orbitals' drops atoms entirely and shows which canonical MOs the\n"
-                                  "NTOs are built from - every band there is exact.");
+            ImGui::SetItemTooltip("'Fragments': where the excitation takes its electron from (left) and\n"
+                                  "where it puts it (right), as the exact charge transfer numbers in the\n"
+                                  "Lowdin basis. Local excitation fills the nodes; bands are transfer.\n"
+                                  "'Orbitals': which canonical MOs the NTO pairs are built from.\n"
+                                  "Every band there is exact too.");
             ImGui::PopItemWidth();
 
+            const bool fragments = flow.mode == FLOW_MODE_FRAGMENTS;
+            if (fragments) {
+                ImGui::SameLine();
+                ImGui::PushItemWidth(120.0f);
+                if (ImGui::SliderInt("Rows", &flow.max_rows, 2, 40)) {
+                    flow.cut.max_rows = (uint32_t)flow.max_rows;
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SetItemTooltip("How many rows a column may show. Fragments open on their own, the\n"
+                                      "heaviest first, until the next would not fit - so the detail goes where\n"
+                                      "the hole and the particle are. What you open or close yourself stays so.");
+                ImGui::PopItemWidth();
+            }
+
             ImGui::SameLine();
-            ImGui::PushItemWidth(160.0f);
+            ImGui::PushItemWidth(120.0f);
             float threshold_pct = flow.cut.threshold * 100.0f;
-            if (ImGui::SliderFloat("Show above", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
+            if (ImGui::SliderFloat("Fold below", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
                 flow.cut.threshold = threshold_pct * 0.01f;
                 md_flow_cut_resolve(&flow.cut, &flow.graph);
             }
-            ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Everything below folds\n"
-                                  "into 'Others'; double click that to draw its members individually.");
+            ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Siblings below it fold into\n"
+                                  "an 'Others' inside their parent; double click that to draw them.");
             ImGui::PopItemWidth();
 
-            ImGui::SameLine();
-            ImGui::PushItemWidth(140.0f);
-            float other_pct = flow.cut.other_max * 100.0f;
-            if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
-                flow.cut.other_max = other_pct * 0.01f;
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
+            if (!fragments) {
+                ImGui::SameLine();
+                ImGui::PushItemWidth(120.0f);
+                ImGui::SliderFloat("Even sizes", &flow.size_normalize, 0.0f, 1.0f, "%.2f");
+                ImGui::SetItemTooltip("Flattens the orbital columns' heights so a 1%% channel is still big\n"
+                                      "enough to read and click. Ribbons keep their true widths and simply\n"
+                                      "taper into the column.");
+                ImGui::PopItemWidth();
             }
-            ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
-                                  "which means sub-threshold rows STAY on screen - so 'Show above' no\n"
-                                  "longer means what it says. Leave it at 100%% unless you want that.");
-            ImGui::PopItemWidth();
 
-            ImGui::SameLine();
-            ImGui::PushItemWidth(140.0f);
-            ImGui::SliderFloat("Even sizes", &flow.size_normalize, 0.0f, 1.0f, "%.2f");
-            ImGui::SetItemTooltip("Flattens the ORBITAL columns' heights so a 1%% channel is still big\n"
-                                  "enough to read and click. Atom columns stay strictly proportional -\n"
-                                  "their sizes are the charge transfer itself.\n"
-                                  "Ribbons keep their true widths and simply taper into the column.");
-            ImGui::PopItemWidth();
-
-            ImGui::SameLine();
-            // 'Groups only' has no atom level to open. Its links come from the two marginals and
-            // carry no information about which ATOM within a group donated to which - splitting
-            // them proportionally would invent detail one level finer than the data supports,
-            // which is the exact failure this window exists to stop doing.
-            const bool expandable = (flow.mode == FLOW_MODE_NTO);   // only that route has a hierarchy
-            ImGui::BeginDisabled(!expandable);
-            if (ImGui::Button("Expand all")) {
-                md_flow_cut_expand_all(&flow.cut, &flow.graph);
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Collapse all")) {
-                md_flow_cut_collapse_all(&flow.cut);
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
-            }
-            ImGui::EndDisabled();
-            if (!expandable) {
-                ImGui::SetItemTooltip("Only 'Atoms via NTOs' has a hierarchy to open.\n"
-                                      "'Groups only' infers its flow from the two marginals and says\n"
-                                      "nothing about which atom went where; 'Orbitals' has no atoms.");
+            if (fragments) {
+                ImGui::SameLine();
+                if (ImGui::Button("Expand all")) {
+                    md_flow_cut_expand_all(&flow.cut, &flow.graph);
+                    md_bitmask_clear(&flow.cut.collapsed);
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Collapse all")) {
+                    md_bitmask_clear(&flow.cut.expanded);
+                    for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
+                        if (!md_flow_node_is_leaf(&flow.graph, (uint32_t)i)) md_bitmask_set_bit(&flow.cut.collapsed, (uint32_t)i);
+                    }
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Auto")) {
+                    md_flow_cut_clear_pins(&flow.cut);
+                    md_bitmask_clear(&flow.cut.other_open);
+                    flow.cut.other_expanded = 0;
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+                ImGui::SetItemTooltip("Forget what was opened and closed by hand: the row budget decides again.");
             }
 
             ImGui::SameLine();
             ImGui::PushItemWidth(150.0f);
             int order = (int)flow.params.order;
-            static const char* order_str[] = { "By contribution", "Fewest crossings" };
+            // In md_flow_order_t's order
+            static const char* order_str[] = { "By contribution", "Fewest crossings", "As listed" };
             if (ImGui::Combo("Order", &order, order_str, IM_ARRAYSIZE(order_str))) {
                 flow.params.order = (md_flow_order_t)order;
             }
-            ImGui::SetItemTooltip("Rows within a column. 'By contribution' puts the largest at the top;\n"
-                                  "either way a group's atoms stay together inside the group's slot.");
+            ImGui::SetItemTooltip("Rows within a column. 'As listed' keeps the fragments in the same order\n"
+                                  "on both sides, so a straight band is local and a slanted one is transfer.\n"
+                                  "'By contribution' puts the largest at the top. Either way a group's\n"
+                                  "atoms stay together inside the group's slot.");
             ImGui::PopItemWidth();
+
+            ImGui::SameLine();
+            ImGui::Checkbox("3D", &ctv.show);
+            ImGui::SetItemTooltip("The molecule on either side of the diagram: the hole density left, the particle\n"
+                                  "density right, from the state's NTO pairs. The states are prepared in the\n"
+                                  "background, so switching between them does not wait. Sizes under Settings.\n\n"
+                                  "Rest the cursor on a ribbon for the orbital pair that carries it (the stripe\n"
+                                  "under the cursor, where there are several); click it to keep it there, click\n"
+                                  "it again, empty space or Esc to let go. In the orbital route, an NTO pair.");
 
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -10664,11 +12376,52 @@ struct QuantumChemistry : viamd::EventHandler {
                                   "Double click opens a node; double click on empty space refits.\n"
                                   "Right click for group actions on the selection.");
 
-            const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
-            ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
-            canvas_sz.x = MAX(canvas_sz.x, 64.0f);
-            canvas_sz.y = MAX(canvas_sz.y, 64.0f);
+
+            if (flow.show_strip) {
+                draw_flow_strip(state);
+            }
+
+            // The side views, when on, take a share of the width on either side: the hole density beside the hole
+            // column, the particle density beside the particle column. Too narrow to read, they are left out.
+            const ImVec2 area_p0 = ImGui::GetCursorScreenPos();
+            const ImVec2 area_sz = ImGui::GetContentRegionAvail();
+            const float side_gap = 4.0f;
+            float side_w = 0.0f;
+            if (ctv.show && ctv.initialized) {
+                side_w = floorf(area_sz.x * MD_CLAMP(ctv.width_frac, 0.1f, 0.4f));
+                if (side_w < 96.0f || area_sz.y < 64.0f) side_w = 0.0f;
+            }
+            const float side_take = side_w > 0.0f ? side_w + side_gap : 0.0f;
+            const ImVec2 canvas_p0 = area_p0 + ImVec2(side_take, 0.0f);
+            ImVec2 canvas_sz = area_sz - ImVec2(2.0f * side_take, 0.0f);
+            canvas_sz.x = MD_MAX(canvas_sz.x, 64.0f);
+            canvas_sz.y = MD_MAX(canvas_sz.y, 64.0f);
             const ImVec2 canvas_p1 = canvas_p0 + canvas_sz;
+
+            if (side_w > 0.0f) {
+                const ImRect side_rect[2] = {
+                    { area_p0, area_p0 + ImVec2(side_w, canvas_sz.y) },
+                    { ImVec2(canvas_p1.x + side_gap, area_p0.y), ImVec2(canvas_p1.x + side_gap + side_w, area_p0.y + canvas_sz.y) },
+                };
+                // The orbital asked for: the one under the cursor once it has rested there, else the pinned one.
+                // From the last frame's hit, the diagram being drawn after the views.
+                if (ctv.pin.on && ctv.pin.state != rsp.selected) ctv.pin = {};
+                const CtOrbReq cand = ctv_request(flow.hover.link, flow.hover.stripe, flow.hover.node);
+                const double now = ImGui::GetTime();
+                if (cand.key != ctv.hover_cand) {
+                    ctv.hover_cand = cand.key;
+                    ctv.hover_t0 = now;
+                }
+                const CtOrbReq pinned = ctv_pin_request();
+                CtOrbReq req = {};
+                if (cand.key && now - ctv.hover_t0 >= (double)ctv.hover_delay) req = cand;
+                else if (!cand.key) req = pinned;
+
+                ctv_update(state);
+                ctv_orbital_update(state, req);
+                draw_ct_views(state, side_rect, req.key, cand.key != 0 || pinned.key != 0);
+                ImGui::SetCursorScreenPos(canvas_p0);
+            }
 
             ImGui::InvisibleButton("##flow_canvas", canvas_sz,
                 ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
@@ -10677,10 +12430,15 @@ struct QuantumChemistry : viamd::EventHandler {
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(255, 255, 255, 255));
-            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 60));
+            draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(0, 0, 0, 22));
 
             if (!flow.built) {
-                const char* msg = "No transition data for this state";
+                const char* msg = lowdin_pending ? "Computing the Lowdin basis (once per system)..."
+                                : nto_pending    ? "Computing the natural transition orbitals..."
+                                : ct_pending     ? "Computing the charge transfer numbers..."
+                                : (flow.mode == FLOW_MODE_FRAGMENTS && lowdin && !lowdin_job_ready(lowdin))
+                                                 ? "The Lowdin basis could not be computed (see the log)"
+                                                 : "No transition data for this state";
                 draw_list->AddText(canvas_p0 + (canvas_sz - ImGui::CalcTextSize(msg)) * 0.5f, IM_COL32(0, 0, 0, 160), msg);
                 ImGui::End();
                 return;
@@ -10695,7 +12453,7 @@ struct QuantumChemistry : viamd::EventHandler {
             if (canvas_hovered && io.MouseWheel != 0.0f) {
                 const ImVec2 rel = (io.MousePos - canvas_p0) / canvas_sz;
                 const vec2_t p = { (rel.x - flow.pan.x) / flow.zoom, (rel.y - flow.pan.y) / flow.zoom };
-                flow.zoom = CLAMP(flow.zoom * (1.0f + io.MouseWheel * 0.12f), 0.25f, 12.0f);
+                flow.zoom = MD_CLAMP(flow.zoom * (1.0f + io.MouseWheel * 0.12f), 0.25f, 12.0f);
                 flow.pan.x = rel.x - p.x * flow.zoom;
                 flow.pan.y = rel.y - p.y * flow.zoom;
             }
@@ -10711,19 +12469,17 @@ struct QuantumChemistry : viamd::EventHandler {
                 flow.pan.y += io.MouseDelta.y / canvas_sz.y;
             }
 
-            // Map the slider onto a per-column exponent. Orbital columns get it; atom columns stay
-            // proportional. In the Orbitals route every column is orbitals.
+            // Map the slider onto a per-column exponent. Orbital columns get it; fragment columns stay
+            // proportional, because their proportions ARE the charge transfer.
             {
                 const float e = 1.0f - flow.size_normalize * 0.85f;   // 1.0 .. 0.15
-                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) flow.params.weight_exponent[c] = 1.0f;
-                flow.params.weight_exponent[1] = e;
-                if (flow.mode == FLOW_MODE_ORBITALS) {
-                    flow.params.weight_exponent[0] = e;
-                    flow.params.weight_exponent[2] = e;
+                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) {
+                    flow.params.weight_exponent[c] = (flow.mode == FLOW_MODE_ORBITALS) ? e : 1.0f;
                 }
             }
 
             md_flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
+            flow_layout_indent(&flow.layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
             // The layout lives in graph space and knows nothing about pan or zoom, so fitting
             // after it is computed costs nothing and needs no second pass.
@@ -10743,51 +12499,78 @@ struct QuantumChemistry : viamd::EventHandler {
             // without any event plumbing - and it is why there is no local copy to fall out of
             // step with the rest of VIAMD.
             md_temp_scope_t draw_temp = md_temp_begin();
-            defer { md_temp_end(draw_temp); };
+            MD_DEFER { md_temp_end(draw_temp); };
 
             const size_t cut_space = md_array_size(flow.graph.nodes) + md_array_size(flow.cut.other);
             uint8_t* node_state = md_temp_alloc_zero_array(draw_temp, uint8_t, cut_space ? cut_space : 1);
 
             const size_t num_atoms = md_array_size(nto.atom_group_idx);
 
-            // One pass over the atoms gives both the per-atom answer and the per-group tallies, so
-            // a group node is a lookup rather than a rescan.
+            // One pass over the atoms gives the per-atom answer and the tallies per group and per
+            // fragment (summed up the fragment tree), so a group or fragment node is a lookup.
+            // Atoms are QM atoms; the masks are over system atoms.
             uint32_t* group_total = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
             uint32_t* group_sel   = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
             uint32_t* group_hi    = md_temp_alloc_zero_array(draw_temp, uint32_t, MAX_NTO_GROUPS);
+            const size_t num_frags = flow.frags.count;
+            uint32_t* frag_total = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            uint32_t* frag_sel   = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            uint32_t* frag_hi    = md_temp_alloc_zero_array(draw_temp, uint32_t, num_frags ? num_frags : 1);
+            bool* atom_sel = md_temp_alloc_zero_array(draw_temp, bool, num_atoms ? num_atoms : 1);
+            bool* atom_hi  = md_temp_alloc_zero_array(draw_temp, bool, num_atoms ? num_atoms : 1);
             bool selection_touches_atoms = false;
 
             for (size_t a = 0; a < num_atoms; ++a) {
                 const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
-                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, a);
-                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, a);
+                const uint32_t s = flow_qm_to_sys((uint32_t)a);
+                const bool sel = md_bitmask_test_bit(&state.selection.selection_mask, s);
+                const bool hi  = md_bitmask_test_bit(&state.selection.highlight_mask, s);
+                atom_sel[a] = sel;
+                atom_hi[a]  = hi;
                 group_total[g] += 1;
                 group_sel[g]   += sel ? 1 : 0;
                 group_hi[g]    += hi  ? 1 : 0;
                 selection_touches_atoms |= sel;
+                if (g == 0) {
+                    for (uint32_t f = flow_fragment_of((uint32_t)a); f != MD_FRAGMENT_NONE; f = flow.frags.parent[f]) {
+                        frag_total[f] += 1;
+                        frag_sel[f]   += sel ? 1 : 0;
+                        frag_hi[f]    += hi  ? 1 : 0;
+                    }
+                }
             }
+
+            // A set is only "selected" when all of it is. Anything less is partial - otherwise one
+            // selected atom would claim the whole group, and there would be no way to see the difference.
+            auto set_state = [](uint32_t total, uint32_t sel, uint32_t hi) -> uint8_t {
+                uint8_t st = 0;
+                if (total == 0) return st;
+                if (sel == total) st |= FlowNodeState_Selected;
+                else if (sel > 0) st |= FlowNodeState_Partial;
+                if (hi > 0)       st |= FlowNodeState_Highlight;
+                return st;
+            };
 
             for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
                 const md_flow_node_t* n = flow.graph.nodes + i;
                 uint8_t st = 0;
-
-                if (!flow_level_has_atoms(n->level)) {
-                    if (flow_orbital_is_selected(n->key)) st |= FlowNodeState_Selected;
-                } else {
-                    const uint32_t index = flow_key_index(n->key);
-                    if (flow_key_level(n->key) == FLOW_LEVEL_ATOM) {
-                        if (index < num_atoms) {
-                            if (md_bitmask_test_bit(&state.selection.selection_mask, index)) st |= FlowNodeState_Selected;
-                            if (md_bitmask_test_bit(&state.selection.highlight_mask, index)) st |= FlowNodeState_Highlight;
-                        }
-                    } else if (index < MAX_NTO_GROUPS && group_total[index] > 0) {
-                        // A group is only "selected" when all of it is. Anything less is partial -
-                        // otherwise one selected atom would claim the whole group, and there would
-                        // be no way to see the difference.
-                        if (group_sel[index] == group_total[index])  st |= FlowNodeState_Selected;
-                        else if (group_sel[index] > 0)               st |= FlowNodeState_Partial;
-                        if (group_hi[index] > 0)                     st |= FlowNodeState_Highlight;
+                const uint32_t index = flow_key_index(n->key);
+                switch (n->level) {
+                case FLOW_LEVEL_ATOM:
+                    if (index < num_atoms) {
+                        if (atom_sel[index]) st |= FlowNodeState_Selected;
+                        if (atom_hi[index])  st |= FlowNodeState_Highlight;
                     }
+                    break;
+                case FLOW_LEVEL_GROUP:
+                    if (index < MAX_NTO_GROUPS) st = set_state(group_total[index], group_sel[index], group_hi[index]);
+                    break;
+                case FLOW_LEVEL_FRAGMENT:
+                    if (index < num_frags) st = set_state(frag_total[index], frag_sel[index], frag_hi[index]);
+                    break;
+                default:    // orbitals
+                    if (flow_orbital_is_selected(n->key)) st |= FlowNodeState_Selected;
+                    break;
                 }
                 node_state[i] = st;
             }
@@ -10798,43 +12581,55 @@ struct QuantumChemistry : viamd::EventHandler {
             emphasis.any_selected = selection_touches_atoms || md_array_size(flow.selected_orbital_keys) > 0;
             emphasis.hover_node = flow.hover.node;
             emphasis.hover_link = flow.hover.link;
+            if (side_w > 0.0f && flow.hover.node < 0 && flow.hover.link < 0) {
+                emphasis.hover_link = ctv_pin_link();     // the pinned ribbon stands out while nothing is hovered
+            }
+
+            flow_update_stripes();
+            FlowStripes stripes = {};
+            stripes.offset    = flow.stripe_offset;
+            stripes.frac      = flow.stripe_frac;
+            stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+
+            FlowAnnotations notes = {};
+            char subtitle[96];
+            flow_annotations(&notes, subtitle, sizeof(subtitle));
 
             draw_list->PushClipRect(canvas_p0, canvas_p1, true);
             const FlowHit hit = flow_draw_imgui(draw_list, view, &flow.graph, &flow.cut, &flow.layout,
-                                                flow.style, emphasis);
+                                                flow.style, emphasis, &stripes, &notes);
             draw_list->PopClipRect();
 
             flow.hover = canvas_hovered ? hit : FlowHit{};
 
-            // Column captions. They belong to the window rather than to the backend: the backend
-            // draws a graph and has no idea what its columns mean.
-            // Captions belong to the COLUMNS, so they live in graph space and pan and zoom with
-            // them. Pinned to the window corners they would drift away from what they name the
-            // moment anyone moved the view.
-            {
-                const ImU32 caption_col = IM_COL32(0, 0, 0, 200);
-                const char* caption_atoms[3]    = { "DONATING (hole)", "NTO PAIRS", "ACCEPTING (particle)" };
-                const char* caption_orbitals[3] = { "OCCUPIED MOs",    "NTO PAIRS", "VIRTUAL MOs" };
-                const char** caption = (flow.mode == FLOW_MODE_ORBITALS) ? caption_orbitals : caption_atoms;
-
-                for (uint32_t c = 0; c < flow.graph.num_columns; ++c) {
-                    float x0 = 0.0f, x1 = 0.0f, top = 1.0e30f;
-                    bool found = false;
-                    for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-                        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, flow.layout.nodes[i].cut_idx);
-                        if (!n || n->column != c) continue;
-                        x0 = flow.layout.nodes[i].min.x;
-                        x1 = flow.layout.nodes[i].max.x;
-                        top = MIN(top, flow.layout.nodes[i].min.y);
-                        found = true;
-                    }
-                    if (!found) continue;
-
-                    const char* lbl = (flow.graph.num_columns == 2 && c == 1) ? caption[2] : caption[MIN(c, 2u)];
-                    const ImVec2 mid = flow_view_to_screen(view, vec2_t{ (x0 + x1) * 0.5f, top });
-                    const ImVec2 size = ImGui::CalcTextSize(lbl);
-                    draw_list->AddText({ mid.x - size.x * 0.5f, mid.y - size.y - 6.0f }, caption_col, lbl);
+            // With the side views on: a click on a ribbon (or, in the orbital route, an NTO pair) pins its orbitals
+            // in them, again unpins; a click on empty space or Esc lets go. A press and release in place.
+            if (side_w > 0.0f) {
+                if (canvas_hovered && hit.toggle < 0 && !io.KeyShift && !flow.region_active &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const CtOrbReq r = ctv_request(hit.link, hit.stripe, hit.node);
+                    if (r.key) ctv_pin_toggle(r);
+                    else if (hit.node < 0 && hit.link < 0) ctv.pin = {};
                 }
+                if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ctv.pin = {};
+            }
+
+            // A group's arrow: one click opens or closes it, pinned (the row budget leaves it so) and on both
+            // sides. A click is a press and release in place, as everywhere here, since a drag pans.
+            if (canvas_hovered && hit.toggle >= 0 && !io.KeyShift && !flow.region_active) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
+                    const uint32_t idx = (uint32_t)hit.toggle;
+                    md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
+                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                }
+            }
+            if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
+                ImGui::SetTooltip("Between the nodes as they are open now: a fragment's share that stays on\n"
+                                  "it is local excitation (LE), the rest is charge transfer (CT). Opening a\n"
+                                  "fragment into atoms turns most of its local part into transfer between its atoms.%s%s",
+                                  flow.nto_dropped  > 1.0e-3f ? "\n\nNTO pairs below round off are left out." : "",
+                                  flow.link_dropped > 1.0e-3f ? "\n\nAtom pairs below 1e-6 of the total are not drawn." : "");
             }
 
             // ---- selection: rubber band, or a click when the band never opened ----
@@ -10864,7 +12659,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     const bool dragged = ImLengthSqr(io.MousePos - flow.region_start) >= slop * slop;
 
                     md_temp_scope_t rtemp = md_temp_begin();
-                    defer { md_temp_end(rtemp); };
+                    MD_DEFER { md_temp_end(rtemp); };
                     md_allocator_i* ralloc = md_temp_allocator(rtemp);
 
                     if (ImGui::IsMouseDown(button)) {
@@ -10963,18 +12758,32 @@ struct QuantumChemistry : viamd::EventHandler {
                                       "Double click to draw them individually",
                                       node->weight * 100.0f, count, flow.cut.threshold * 100.0f);
                 } else if (node) {
-                    const char* what = (node->column == 0) ? "detachment"
-                                     : (node->column == 1) ? "transition" : "attachment";
+                    const bool two_columns = flow.graph.num_columns == 2;
+                    const char* what = (node->column == 0) ? (two_columns ? "hole" : "detachment")
+                                     : (node->column == 1 && !two_columns) ? "transition"
+                                     : (two_columns ? "particle" : "attachment");
                     const bool has_children = (uint32_t)hit.node < md_array_size(flow.graph.nodes)
                                               && !md_flow_node_is_leaf(&flow.graph, (uint32_t)hit.node);
+                    // Of a fragment's share, what stays on it (drawn inside the node) and what moves
+                    char local[96] = "";
+                    if (flow.mode == FLOW_MODE_FRAGMENTS && node->weight > 0.0f) {
+                        const float self = flow_node_self_weight((uint32_t)hit.node);
+                        snprintf(local, sizeof(local), "\n%.1f%% of it local, %.1f%% %s",
+                                 100.0f * self / node->weight, 100.0f * (1.0f - self / node->weight),
+                                 node->column == 0 ? "transferred away" : "transferred in");
+                    }
                     if (has_children) {
-                        const bool open = md_flow_cut_is_expanded(&flow.cut, (uint32_t)hit.node);
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s\n\nDouble click to %s",
-                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what,
-                            open ? "collapse" : "show its atoms");
+                        const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
+                        // a group with an arrow (its band) says so; a fragment of atoms has none
+                        bool has_arrow = flow_node_is_container(&flow.graph, &flow.cut, (uint32_t)hit.node);
+                        for (size_t b = 0; b < md_array_size(flow.layout.bands); ++b) has_arrow |= flow.layout.bands[b].node == (uint32_t)hit.node;
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s\n\n%s to %s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local,
+                            has_arrow ? "Click the arrow, or double click," : "Double click",
+                            open ? "collapse" : "open it");
                     } else {
-                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s",
-                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what);
+                        ImGui::SetTooltip("%.*s\n%.1f%% of the %s%s",
+                            (int)node->label.len, node->label.ptr, node->weight * 100.0f, what, local);
                     }
                 }
                 // Hovering previews in the viewport; committing to a selection takes shift, so a
@@ -10985,21 +12794,25 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_bitmask_assign(&state.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
                 }
 
-                // Double click opens or closes a node - including an "Others", which opens by
-                // suspending the threshold for its column. That is what lets the threshold hide
-                // things honestly: everything below it goes, and you can still look.
-                if (!io.KeyShift && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                // Double click opens or closes a node - including an "Others", which opens by drawing
+                // its members individually. That is what lets the threshold hide things honestly:
+                // everything below it goes, and you can still look. What the user opens or closes is
+                // PINNED, so the row budget leaves it as it is; a fragment is pinned on both sides.
+                // Not on an arrow: its two clicks have already closed and opened it again
+                if (!io.KeyShift && hit.toggle < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     const uint32_t idx = (uint32_t)hit.node;
                     const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
                     if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
-                        md_flow_cut_set_other_expanded(&flow.cut, n->column, true);
+                        md_flow_cut_open_other(&flow.cut, &flow.graph, n, true);
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
                     } else if (idx < md_array_size(flow.graph.nodes) && !md_flow_node_is_leaf(&flow.graph, idx)) {
-                        md_flow_cut_set_expanded(&flow.cut, idx, !md_flow_cut_is_expanded(&flow.cut, idx));
+                        md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
-                    } else if (n && md_flow_cut_is_other_expanded(&flow.cut, n->column)) {
-                        // Double clicking a node in an opened column closes it again - the pair of
+                    } else if (n && md_flow_cut_is_other_open_for(&flow.cut, n)) {
+                        // Double clicking a member of an opened "Others" folds it again - the pair of
                         // gestures is symmetric, since the "Others" itself is gone while open.
+                        const md_flow_node_t other = { .column = n->column, .parent = n->parent };
+                        md_flow_cut_open_other(&flow.cut, &flow.graph, &other, false);
                         md_flow_cut_set_other_expanded(&flow.cut, n->column, false);
                         md_flow_cut_resolve(&flow.cut, &flow.graph);
                     }
@@ -11023,10 +12836,25 @@ struct QuantumChemistry : viamd::EventHandler {
                 const md_flow_node_t* src = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
                 const md_flow_node_t* dst = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
                 if (src && dst) {
-                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%",
+                    // What it is made of: the orbital pairs of this transfer, when there are several
+                    char pairs[160] = "";
+                    const size_t num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+                    if ((size_t)hit.link < num_links) {
+                        const uint32_t beg = flow.stripe_offset[hit.link], end = flow.stripe_offset[hit.link + 1];
+                        if (end - beg >= 2) {
+                            int len = snprintf(pairs, sizeof(pairs), "\nCarried by %u orbital pairs:", end - beg);
+                            for (uint32_t j = beg; j < end && len > 0 && (size_t)len < sizeof(pairs); ++j) {
+                                len += snprintf(pairs + len, sizeof(pairs) - (size_t)len, " %.0f%%", 100.0f * flow.stripe_frac[j]);
+                            }
+                            if (hit.stripe >= 0 && (uint32_t)hit.stripe < end - beg && len > 0 && (size_t)len < sizeof(pairs)) {
+                                snprintf(pairs + len, sizeof(pairs) - (size_t)len, "\n(pair %d under the cursor)", hit.stripe + 1);
+                            }
+                        }
+                    }
+                    ImGui::SetTooltip("%.*s  ->  %.*s\n%.2f%%%s",
                         (int)src->label.len, src->label.ptr,
                         (int)dst->label.len, dst->label.ptr,
-                        link->weight * 100.0f);
+                        link->weight * 100.0f, pairs);
                 }
             }
         }
@@ -11044,12 +12872,12 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         char path_buf[1024] = {};
-        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("svg"))) {
+        if (!application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("svg"))) {
             return false;
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         md_vg_scene_t scene = {};
         md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
@@ -11060,15 +12888,29 @@ struct QuantumChemistry : viamd::EventHandler {
         md_flow_layout_t layout = {};
         md_flow_layout_init(&layout, md_temp_allocator(temp));
         md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
+        flow_layout_indent(&layout, &flow.graph, &flow.cut, flow.style.level_gap);
+
+        FlowAnnotations notes = {};
+        char subtitle[96];
+        flow_annotations(&notes, subtitle, sizeof(subtitle));
 
         FlowView view = {};
         view.area_min = { 0.0f, 0.0f };
         view.area_max = size;
-        view.zoom = 1.0f;
+        vec2_t pan = {};
+        flow_fit(&pan, &view.zoom, layout, size, flow_measure_margins_vg(&flow.graph, &flow.cut, &layout, flow.style, &notes));
+        view.pan = { pan.x, pan.y };
 
-        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style);
+        // the page under it, so the file reads the same in any viewer's theme
+        md_vg_add_rect_filled(&scene, { 0.0f, 0.0f }, { size.x, size.y }, MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, str_from_cstr(path_buf));
+        FlowStripes stripes = {};
+        stripes.offset    = flow.stripe_offset;
+        stripes.frac      = flow.stripe_frac;
+        stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
+        flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes, &notes);
+
+        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported charge transfer diagram to '%s'", path_buf);
         } else {
@@ -11123,14 +12965,14 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             // Clear all of the values to zero (matrix, group values)
-            MEMSET(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+            md_memset(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
 
 			if (rsp.selected != -1) {
 				const size_t nto_idx = (size_t)rsp.selected;
 #if 1
 				{
 					md_temp_scope_t temp = md_temp_begin();
-                    defer { md_temp_end(temp); };
+                    MD_DEFER { md_temp_end(temp); };
 
 					// Full-density Mulliken attribution from attachment / detachment AO matrices.
 					// hole charges  <- detachment density (D-)
@@ -11171,7 +13013,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
 							for (size_t i = 0; i < num_aos; i++) {
 								const uint32_t atom_idx = ao_to_atom[i];
-								ASSERT(atom_idx < num_group_atoms);
+								MD_ASSERT(atom_idx < num_group_atoms);
 								int g = (atom_idx < num_group_atoms) ? (int)nto.atom_group_idx[atom_idx] : 0;
 								if (g < 0 || g >= MAX_NTO_GROUPS) g = 0;
 								ao_to_group[i] = g;
@@ -11184,8 +13026,8 @@ struct QuantumChemistry : viamd::EventHandler {
 								// Mulliken populations of the attachment / detachment density are non-negative
 								// in exact arithmetic. Clamp tiny negative numerical noise to zero so that
 								// the downstream transition matrix cannot acquire spurious negative entries.
-								nto.transition_density_part[g1] = (float)MAX(0.0, group_density_part[g1]);
-								nto.transition_density_hole[g1] = (float)MAX(0.0, group_density_hole[g1]);
+								nto.transition_density_part[g1] = (float)MD_MAX(0.0, group_density_part[g1]);
+								nto.transition_density_hole[g1] = (float)MD_MAX(0.0, group_density_hole[g1]);
 							}
 							compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
 						}
@@ -11208,7 +13050,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Particle, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
                         compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Hole,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
                     {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
+                        task_system::ID compute_matrix_task = task_system::create_main_task(MD_STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
                             compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
                             // Print out the groups and the values for debugging
 #if 1

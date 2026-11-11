@@ -26,9 +26,9 @@ namespace script_reference {
 namespace {
 
 struct Section {
-    str_t title;            // plain text of the heading (zero terminated)
-    str_t slug;             // GitHub style anchor of the heading (zero terminated)
-    str_t proc;             // procedure name from <!-- proc name= --> (zero terminated), empty if not a procedure
+    md_str_t title;            // plain text of the heading (zero terminated)
+    md_str_t slug;             // GitHub style anchor of the heading (zero terminated)
+    md_str_t proc;             // procedure name from <!-- proc name= --> (zero terminated), empty if not a procedure
     uint32_t beg, end;      // byte range in the document, from the heading to the next one
     int level;              // heading level, 1..6
     int page;
@@ -36,7 +36,7 @@ struct Section {
 };
 
 struct Page {
-    str_t title;            // zero terminated
+    md_str_t title;            // zero terminated
     uint32_t beg, end;      // byte range in the document
     int first_section;      // the sections of a page are consecutive
     int num_sections;
@@ -47,7 +47,7 @@ enum AnchorKind { AnchorKind_Slug, AnchorKind_Proc, AnchorKind_Alias };
 // Every name that leads to a section. There are a few hundred, and they are only looked up when the user navigates,
 // so a linear scan in priority order (slugs, then procedure names, then aliases) is all that is needed.
 struct Anchor {
-    str_t name;
+    md_str_t name;
     int section;
     AnchorKind kind;
 };
@@ -79,7 +79,7 @@ struct State {
     bool vial = false;              // VIAL's reference (vial_reference.md): its functions are rows of tables
     md_allocator_i* arena = nullptr;
 
-    str_t    doc = {};
+    md_str_t    doc = {};
     Page*    pages = nullptr;       // md_array
     Section* sections = nullptr;    // md_array
     Anchor*  anchors = nullptr;     // md_array
@@ -129,11 +129,11 @@ State* gp = &states[0];
 bool is_space(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 bool is_alnum(char c) { return is_alpha(c) || is_digit(c); }
 
-// Case-insensitive str_find_str
-bool find_ignore_case(size_t* loc, str_t hay, str_t needle) {
+// Case-insensitive md_str_find_str
+bool find_ignore_case(size_t* loc, md_str_t hay, md_str_t needle) {
     if (needle.len == 0 || needle.len > hay.len) return false;
     for (size_t i = 0; i + needle.len <= hay.len; ++i) {
-        if (str_eq_ignore_case({hay.ptr + i, needle.len}, needle)) {
+        if (md_str_eq_ignore_case({hay.ptr + i, needle.len}, needle)) {
             if (loc) *loc = i;
             return true;
         }
@@ -141,12 +141,12 @@ bool find_ignore_case(size_t* loc, str_t hay, str_t needle) {
     return false;
 }
 
-bool begins_with_ignore_case(str_t str, str_t prefix) {
-    return str.len >= prefix.len && str_eq_ignore_case(str_substr(str, 0, prefix.len), prefix);
+bool begins_with_ignore_case(md_str_t str, md_str_t prefix) {
+    return str.len >= prefix.len && md_str_eq_ignore_case(md_str_substr(str, 0, prefix.len), prefix);
 }
 
 // Turns the source of a heading into the text a reader sees (no backticks, emphasis markers or link targets).
-str_t plain_heading(str_t s, md_allocator_i* alloc) {
+md_str_t plain_heading(md_str_t s, md_allocator_i* alloc) {
     char* out = (char*)md_alloc(alloc, s.len + 1);
     size_t n = 0;
     for (size_t i = 0; i < s.len; ++i) {
@@ -156,7 +156,7 @@ str_t plain_heading(str_t s, md_allocator_i* alloc) {
         if (c == ']') {
             // Skip the target of a link: "[text](target)"
             size_t close;
-            if (i + 1 < s.len && s.ptr[i + 1] == '(' && str_find_char(&close, str_substr(s, i), ')')) i += close;
+            if (i + 1 < s.len && s.ptr[i + 1] == '(' && md_str_find_char(&close, md_str_substr(s, i), ')')) i += close;
             continue;
         }
         out[n++] = c;
@@ -167,7 +167,7 @@ str_t plain_heading(str_t s, md_allocator_i* alloc) {
 
 // GitHub style anchor: lower case, spaces become '-', punctuation is dropped. 'suffix' > 0 appends "-suffix", which is
 // how repeated headings are told apart.
-str_t make_slug(str_t plain, int suffix, md_allocator_i* alloc) {
+md_str_t make_slug(md_str_t plain, int suffix, md_allocator_i* alloc) {
     char* out = (char*)md_alloc(alloc, plain.len + 16);
     size_t n = 0;
     for (size_t i = 0; i < plain.len; ++i) {
@@ -182,13 +182,13 @@ str_t make_slug(str_t plain, int suffix, md_allocator_i* alloc) {
 }
 
 // Value of "key=value" in the text of a <!-- proc ... --> comment.
-str_t meta_value(str_t line, str_t key) {
+md_str_t meta_value(md_str_t line, md_str_t key) {
     for (size_t p = 0; p + key.len < line.len; ++p) {
-        if ((p == 0 || is_space(line.ptr[p - 1])) && str_eq(str_substr(line, p, key.len), key) && line.ptr[p + key.len] == '=') {
+        if ((p == 0 || is_space(line.ptr[p - 1])) && md_str_eq(md_str_substr(line, p, key.len), key) && line.ptr[p + key.len] == '=') {
             const size_t b = p + key.len + 1;
             size_t e = b;
             while (e < line.len && !is_space(line.ptr[e])) ++e;
-            return str_substr(line, b, e - b);
+            return md_str_substr(line, b, e - b);
         }
     }
     return {};
@@ -199,7 +199,7 @@ struct Fence {
     char ch = 0;
     size_t len = 0;
 
-    void update(str_t line) {
+    void update(md_str_t line) {
         size_t i = 0;
         while (i < line.len && i < 4 && line.ptr[i] == ' ') ++i;
         if (i >= 4 || i >= line.len) return;
@@ -211,7 +211,7 @@ struct Fence {
         if (ch == 0) {
             ch = c;
             len = n;
-        } else if (c == ch && n >= len && str_empty(str_trim(str_substr(line, i + n)))) {
+        } else if (c == ch && n >= len && md_str_empty(md_str_trim(md_str_substr(line, i + n)))) {
             ch = 0;
             len = 0;
         }
@@ -223,31 +223,31 @@ struct Fence {
 // Outline parsing
 ////////////////////////////////////////////////////////////////////////////////
 
-void load(str_t doc) {
+void load(md_str_t doc) {
     State& s = *gp;
-    ASSERT(!s.loaded);
+    MD_ASSERT(!s.loaded);
     s.loaded = true;
-    s.arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    s.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     md_allocator_i* arena = s.arena;
     s.doc = doc;
 
     // Aliases in document order. They are appended to the anchors after all slugs and procedure names, which is the
     // priority order for lookups.
     Anchor* aliases = nullptr;
-    str_t*  base_slugs = nullptr;  // slug of every heading before a "-n" suffix, for numbering repeats
+    md_str_t*  base_slugs = nullptr;  // slug of every heading before a "-n" suffix, for numbering repeats
 
     Page overview = {};
-    overview.title = STR_LIT("Overview");
+    overview.title = MD_STR_LIT("Overview");
     md_array_push(s.pages, overview, arena);
 
     Fence fence;
     bool seen_heading = false;
 
-    str_t rest = doc;
-    str_t line;
+    md_str_t rest = doc;
+    md_str_t line;
     while (true) {
         const uint32_t line_beg = (uint32_t)(rest.ptr - doc.ptr);
-        if (!str_extract_line(&line, &rest)) break;
+        if (!md_str_extract_line(&line, &rest)) break;
 
         const bool was_inside = fence.inside();
         fence.update(line);
@@ -261,18 +261,18 @@ void load(str_t doc) {
         const bool is_heading = i < 4 && 1 <= level && level <= 6 && (i + level == line.len || line.ptr[i + level] == ' ');
 
         if (is_heading) {
-            str_t raw = str_trim(str_substr(line, i + level));
+            md_str_t raw = md_str_trim(md_str_substr(line, i + level));
             while (raw.len > 0 && raw.ptr[raw.len - 1] == '#') --raw.len;
-            raw = str_trim(raw);
+            raw = md_str_trim(raw);
 
             Section sec = {};
             sec.title = plain_heading(raw, arena);
             sec.level = level;
 
-            str_t base = make_slug(sec.title, 0, arena);
+            md_str_t base = make_slug(sec.title, 0, arena);
             int repeats = 0;
             for (size_t j = 0; j < md_array_size(base_slugs); ++j) {
-                if (str_eq(base_slugs[j], base)) ++repeats;
+                if (md_str_eq(base_slugs[j], base)) ++repeats;
             }
             md_array_push(base_slugs, base, arena);
             sec.slug = repeats ? make_slug(sec.title, repeats, arena) : base;
@@ -308,19 +308,19 @@ void load(str_t doc) {
         if (s.vial && line.len > 1 && line.ptr[0] == '|') {
             size_t e = 1;
             while (e < line.len && !(line.ptr[e] == '|' && line.ptr[e - 1] != '\\')) ++e;
-            const str_t cell = str_substr(line, 1, e - 1);
+            const md_str_t cell = md_str_substr(line, 1, e - 1);
             for (size_t b = 0; b < cell.len; ++b) {
                 if (cell.ptr[b] != '`') continue;
                 size_t q = b + 1;
                 while (q < cell.len && cell.ptr[q] != '`') ++q;
-                const str_t span = str_substr(cell, b + 1, q - b - 1);
+                const md_str_t span = md_str_substr(cell, b + 1, q - b - 1);
                 size_t k = 0;
                 while (k < span.len && (is_alnum(span.ptr[k]) || span.ptr[k] == '_')) ++k;
                 const bool call = k > 0 && k < span.len && span.ptr[k] == '(';
                 if (k > 0 && !is_digit(span.ptr[0]) && (call || k == span.len)) {
-                    const str_t name = str_substr(span, 0, k);
+                    const md_str_t name = md_str_substr(span, 0, k);
                     bool dup = false;
-                    for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) dup = str_eq(aliases[j].name, name);
+                    for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) dup = md_str_eq(aliases[j].name, name);
                     if (!dup) md_array_push(aliases, (Anchor{name, cur, AnchorKind_Proc}), arena);
                 }
                 b = q;
@@ -329,33 +329,33 @@ void load(str_t doc) {
         }
 
         // <!-- proc name=x aliases=a,b category=c -->
-        if (str_begins_with(line, STR_LIT("<!-- proc"))) {
-            const str_t name = meta_value(line, STR_LIT("name"));
-            if (!str_empty(name)) sec.proc = str_copy(name, arena);
-            str_t list = meta_value(line, STR_LIT("aliases"));
-            while (!str_empty(list)) {
+        if (md_str_begins_with(line, MD_STR_LIT("<!-- proc"))) {
+            const md_str_t name = meta_value(line, MD_STR_LIT("name"));
+            if (!md_str_empty(name)) sec.proc = md_str_copy(name, arena);
+            md_str_t list = meta_value(line, MD_STR_LIT("aliases"));
+            while (!md_str_empty(list)) {
                 size_t comma = list.len;
-                str_find_char(&comma, list, ',');
-                const str_t alias = str_trim(str_substr(list, 0, comma));
-                if (!str_empty(alias)) md_array_push(aliases, (Anchor{alias, cur, AnchorKind_Alias}), arena);
-                list = str_substr(list, MIN(comma + 1, list.len));
+                md_str_find_char(&comma, list, ',');
+                const md_str_t alias = md_str_trim(md_str_substr(list, 0, comma));
+                if (!md_str_empty(alias)) md_array_push(aliases, (Anchor{alias, cur, AnchorKind_Alias}), arena);
+                list = md_str_substr(list, MD_MIN(comma + 1, list.len));
             }
         }
         // <a id="x"></a>
-        if (str_begins_with(line, STR_LIT("<a id")) || str_begins_with(line, STR_LIT("<a name"))) {
-            str_t rem = line;
+        if (md_str_begins_with(line, MD_STR_LIT("<a id")) || md_str_begins_with(line, MD_STR_LIT("<a name"))) {
+            md_str_t rem = line;
             size_t p;
-            while (str_find_str(&p, rem, STR_LIT("id=\""))) {
-                rem = str_substr(rem, p + 4);
+            while (md_str_find_str(&p, rem, MD_STR_LIT("id=\""))) {
+                rem = md_str_substr(rem, p + 4);
                 size_t q;
-                if (!str_find_char(&q, rem, '"')) break;
-                const str_t id = str_substr(rem, 0, q);
-                bool dup = str_empty(id);
+                if (!md_str_find_char(&q, rem, '"')) break;
+                const md_str_t id = md_str_substr(rem, 0, q);
+                bool dup = md_str_empty(id);
                 for (size_t j = 0; j < md_array_size(aliases) && !dup; ++j) {
-                    dup = aliases[j].section == cur && str_eq(aliases[j].name, id);
+                    dup = aliases[j].section == cur && md_str_eq(aliases[j].name, id);
                 }
                 if (!dup) md_array_push(aliases, (Anchor{id, cur, AnchorKind_Alias}), arena);
-                rem = str_substr(rem, q);
+                rem = md_str_substr(rem, q);
             }
         }
     }
@@ -368,7 +368,7 @@ void load(str_t doc) {
     }
     size_t a = 0;
     for (int i = 0; i < num_sections; ++i) {
-        if (!str_empty(s.sections[i].proc)) md_array_push(s.anchors, (Anchor{s.sections[i].proc, i, AnchorKind_Proc}), arena);
+        if (!md_str_empty(s.sections[i].proc)) md_array_push(s.anchors, (Anchor{s.sections[i].proc, i, AnchorKind_Proc}), arena);
         for (; a < md_array_size(aliases) && aliases[a].section == i; ++a) md_array_push(s.anchors, aliases[a], arena);
     }
 
@@ -388,12 +388,12 @@ void ensure_loaded() {
     }
 }
 
-int find_anchor(str_t name) {
+int find_anchor(md_str_t name) {
     for (size_t i = 0; i < md_array_size(gp->anchors); ++i) {
-        if (str_eq(gp->anchors[i].name, name)) return gp->anchors[i].section;
+        if (md_str_eq(gp->anchors[i].name, name)) return gp->anchors[i].section;
     }
     for (size_t i = 0; i < md_array_size(gp->anchors); ++i) {
-        if (str_eq_ignore_case(gp->anchors[i].name, name)) return gp->anchors[i].section;
+        if (md_str_eq_ignore_case(gp->anchors[i].name, name)) return gp->anchors[i].section;
     }
     return -1;
 }
@@ -430,15 +430,15 @@ void history_step(int dir) {
     navigate(gp->history[p], false);
 }
 
-void set_query(str_t q) {
-    str_copy_to_char_buf(gp->query, sizeof(gp->query), q);
+void set_query(md_str_t q) {
+    md_str_copy_to_char_buf(gp->query, sizeof(gp->query), q);
     gp->query_dirty = true;
 }
 
 void follow_link(const char* url, const char* url_end) {
-    const str_t u = {url, (size_t)(url_end - url)};
+    const md_str_t u = {url, (size_t)(url_end - url)};
     if (u.len > 0 && u.ptr[0] == '#') {
-        const str_t name = str_substr(u, 1);
+        const md_str_t name = md_str_substr(u, 1);
         const int idx = find_anchor(name);
         if (idx >= 0) {
             gp->query[0] = '\0';
@@ -453,19 +453,19 @@ void follow_link(const char* url, const char* url_end) {
 
 void update_search_results() {
     State& s = *gp;
-    const str_t q = str_trim(str_from_cstr(s.query));
-    if (!s.query_dirty && str_eq_cstr(q, s.query_applied)) return;
+    const md_str_t q = md_str_trim(md_str_from_cstr(s.query));
+    if (!s.query_dirty && md_str_eq_cstr(q, s.query_applied)) return;
     s.query_dirty = false;
-    str_copy_to_char_buf(s.query_applied, sizeof(s.query_applied), q);
+    md_str_copy_to_char_buf(s.query_applied, sizeof(s.query_applied), q);
     md_array_shrink(s.hits, 0);
-    if (str_empty(q)) return;
+    if (md_str_empty(q)) return;
 
     const int num_sections = (int)md_array_size(s.sections);
-    auto consider = [&q](int* score, str_t name, int exact, int prefix, int contains) {
-        if (str_empty(name)) return;
-        if (str_eq_ignore_case(name, q))            *score = MAX(*score, exact);
-        else if (begins_with_ignore_case(name, q))  *score = MAX(*score, prefix);
-        else if (find_ignore_case(nullptr, name, q)) *score = MAX(*score, contains);
+    auto consider = [&q](int* score, md_str_t name, int exact, int prefix, int contains) {
+        if (md_str_empty(name)) return;
+        if (md_str_eq_ignore_case(name, q))            *score = MD_MAX(*score, exact);
+        else if (begins_with_ignore_case(name, q))  *score = MD_MAX(*score, prefix);
+        else if (find_ignore_case(nullptr, name, q)) *score = MD_MAX(*score, contains);
     };
 
     for (int i = 0; i < num_sections; ++i) s.scores[i] = 0;
@@ -480,12 +480,12 @@ void update_search_results() {
         consider(&score, sec.title, 900, 700, 600);
         if (score == 0) {
             // Mentioned in the text: the more often, the better (up to a point)
-            str_t body = str_substr(s.doc, sec.beg, sec.end - sec.beg);
+            md_str_t body = md_str_substr(s.doc, sec.beg, sec.end - sec.beg);
             int count = 0;
             size_t p;
             while (count < 20 && find_ignore_case(&p, body, q)) {
                 ++count;
-                body = str_substr(body, p + q.len);
+                body = md_str_substr(body, p + q.len);
             }
             if (count) score = 100 + count;
         }
@@ -495,7 +495,7 @@ void update_search_results() {
     std::sort(s.hits, s.hits + md_array_size(s.hits), [](const Hit& a, const Hit& b) {
         return a.score != b.score ? a.score > b.score : a.section < b.section;
     });
-    md_array_shrink(s.hits, MIN((int)md_array_size(s.hits), MAX_HITS));
+    md_array_shrink(s.hits, MD_MIN((int)md_array_size(s.hits), MAX_HITS));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -527,29 +527,29 @@ Palette make_palette() {
 bool is_ident_start(char c) { return is_alpha(c) || c == '_'; }
 bool is_ident(char c) { return is_alnum(c) || c == '_'; }
 
-bool is_one_of(str_t word, const char* const* list, size_t count) {
+bool is_one_of(md_str_t word, const char* const* list, size_t count) {
     for (size_t i = 0; i < count; ++i) {
-        if (str_eq_cstr(word, list[i])) return true;
+        if (md_str_eq_cstr(word, list[i])) return true;
     }
     return false;
 }
 
-bool is_keyword(str_t w) {
+bool is_keyword(md_str_t w) {
     static const char* const kw[] = {"in", "out", "and", "or", "not", "xor", "true", "false"};
     static const char* const vial_kw[] = {"and", "or", "not", "in", "is", "if", "else", "elif", "for", "def", "return", "True", "False",
                                           "None", "assert", "pass"};
-    return gp->vial ? is_one_of(w, vial_kw, ARRAY_SIZE(vial_kw)) : is_one_of(w, kw, ARRAY_SIZE(kw));
+    return gp->vial ? is_one_of(w, vial_kw, MD_COUNTOF(vial_kw)) : is_one_of(w, kw, MD_COUNTOF(kw));
 }
 
-bool is_type_name(str_t w) {
+bool is_type_name(md_str_t w) {
     static const char* const types[] = {"int", "float", "bool", "string", "irange", "frange", "atomset", "bondset", "position",
                                         "distribution", "volume", "vec2", "vec3", "vec4", "mat3", "mat4", "any"};
-    return is_one_of(w, types, ARRAY_SIZE(types));
+    return is_one_of(w, types, MD_COUNTOF(types));
 }
 
 // Draws one line of code with simple colouring.
 // 'script' selects mdscript rules ('#' comments, named arguments); otherwise the line is a signature.
-void draw_code_line(ImDrawList* dl, ImVec2 pos, str_t line, bool script, const Palette& pal) {
+void draw_code_line(ImDrawList* dl, ImVec2 pos, md_str_t line, bool script, const Palette& pal) {
     const char* s = line.ptr;
     const size_t n = line.len;
     float x = pos.x;
@@ -582,7 +582,7 @@ void draw_code_line(ImDrawList* dl, ImVec2 pos, str_t line, bool script, const P
         } else if (is_ident_start(c)) {
             size_t j = i + 1;
             while (j < n && is_ident(s[j])) ++j;
-            const str_t w = {s + i, j - i};
+            const md_str_t w = {s + i, j - i};
             size_t k = j;
             while (k < n && s[k] == ' ') ++k;
             ImU32 col = pal.text;
@@ -599,7 +599,7 @@ void draw_code_line(ImDrawList* dl, ImVec2 pos, str_t line, bool script, const P
             i = j;
         } else {
             if (c == '(' || c == '[') ++depth;
-            if (c == ')' || c == ']') depth = MAX(0, depth - 1);
+            if (c == ')' || c == ']') depth = MD_MAX(0, depth - 1);
             size_t j = i + 1;
             if (!script && c == '-' && j < n && s[j] == '>') { after_arrow = true; ++j; }
             emit(i, j, script ? pal.text : pal.punct);
@@ -621,21 +621,21 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     const float lh = ImGui::GetTextLineHeight();
     const float pad = fs * 0.5f;
     const float header_h = fs + style.FramePadding.y * 2.0f + 4.0f;
-    const str_t lang = {lang_beg, (size_t)(lang_end - lang_beg)};
-    const str_t code = {code_beg, (size_t)(code_end - code_beg)};
+    const md_str_t lang = {lang_beg, (size_t)(lang_end - lang_beg)};
+    const md_str_t code = {code_beg, (size_t)(code_end - code_beg)};
     // Examples: mdscript's, and VIAL's, which are Python
-    const bool script = str_eq(lang, STR_LIT("mdscript")) || str_eq(lang, STR_LIT("python"));
+    const bool script = md_str_eq(lang, MD_STR_LIT("mdscript")) || md_str_eq(lang, MD_STR_LIT("python"));
 
     // Measure
     int num_lines = 0;
     float max_w = 0.0f;
     {
-        str_t rest = code, line;
-        while (str_extract_line(&line, &rest)) {
-            max_w = MAX(max_w, ImGui::CalcTextSize(line.ptr, line.ptr + line.len).x);
+        md_str_t rest = code, line;
+        while (md_str_extract_line(&line, &rest)) {
+            max_w = MD_MAX(max_w, ImGui::CalcTextSize(line.ptr, line.ptr + line.len).x);
             ++num_lines;
         }
-        num_lines = MAX(num_lines, 1);
+        num_lines = MD_MAX(num_lines, 1);
     }
 
     const float avail = ImGui::GetContentRegionAvail().x;
@@ -656,7 +656,7 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     // Header: language on the left, buttons on the right
     ImGui::Dummy(ImVec2(avail, header_h));
     dl->AddText(ImVec2(p.x + pad, p.y + (header_h - fs) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
-                str_empty(lang) ? "code" : lang_beg, str_empty(lang) ? nullptr : lang_end);
+                md_str_empty(lang) ? "code" : lang_beg, md_str_empty(lang) ? nullptr : lang_end);
 
     const int id = m_code_index;
     const bool feedback = (gp->feedback_id == id) && ImGui::GetTime() < gp->feedback_until;
@@ -695,8 +695,8 @@ void Renderer::render_code_block(const char* lang_beg, const char* lang_end, con
     if (ImGui::BeginChild("##code", ImVec2(avail, body_h), ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_HorizontalScrollbar)) {
         ImDrawList* cdl = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
-        str_t rest = code, line;
-        for (int l = 0; str_extract_line(&line, &rest); ++l) {
+        md_str_t rest = code, line;
+        for (int l = 0; md_str_extract_line(&line, &rest); ++l) {
             draw_code_line(cdl, ImVec2(origin.x, origin.y + (float)l * lh), line, script, pal);
         }
         ImGui::Dummy(ImVec2(max_w, (float)num_lines * lh));
@@ -741,7 +741,7 @@ void draw_toolbar() {
         ImGui::SetKeyboardFocusHere();
         s.focus_search = false;
     }
-    ImGui::SetNextItemWidth(MAX(fs * 8.0f, ImGui::GetContentRegionAvail().x));
+    ImGui::SetNextItemWidth(MD_MAX(fs * 8.0f, ImGui::GetContentRegionAvail().x));
     const bool enter = ImGui::InputTextWithHint("##search", "Search the reference (procedure, keyword...)", s.query, sizeof(s.query),
                                                 ImGuiInputTextFlags_EscapeClearsAll | ImGuiInputTextFlags_EnterReturnsTrue);
     if (enter) {
@@ -772,8 +772,8 @@ void draw_sidebar() {
             const Section& sec = s.sections[si];
             const Page& page = s.pages[sec.page];
             ImGui::PushID(si);
-            if (ImGui::Selectable(str_empty(sec.proc) ? sec.title.ptr : sec.proc.ptr, si == s.current)) navigate(si);
-            if (!str_eq(page.title, sec.title)) {
+            if (ImGui::Selectable(md_str_empty(sec.proc) ? sec.title.ptr : sec.proc.ptr, si == s.current)) navigate(si);
+            if (!md_str_eq(page.title, sec.title)) {
                 ImGui::SameLine();
                 ImGui::TextColored(dim, "%s", page.title.ptr);
             }
@@ -789,7 +789,7 @@ void draw_sidebar() {
         const char* label = pi == 0 ? "Overview" : page.title.ptr;
         ImGui::PushID(pi);
         ImVec4 page_col = ImGui::GetStyleColorVec4(open ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-        if (!open) page_col.w = MIN(1.0f, page_col.w * 1.6f);
+        if (!open) page_col.w = MD_MIN(1.0f, page_col.w * 1.6f);
         ImGui::PushStyleColor(ImGuiCol_Text, page_col);
         const bool clicked = ImGui::Selectable(label, open && s.current == head);
         ImGui::PopStyleColor();
@@ -803,7 +803,7 @@ void draw_sidebar() {
                 const Section& sec = s.sections[si];
                 if (sec.level < 3) continue;
                 ImGui::PushID(si);
-                const bool is_proc = !str_empty(sec.proc);
+                const bool is_proc = !md_str_empty(sec.proc);
                 if (!is_proc) ImGui::PushStyleColor(ImGuiCol_Text, dim);
                 if (ImGui::Selectable(sec.title.ptr, si == s.current)) navigate(si);
                 if (!is_proc) ImGui::PopStyleColor();
@@ -865,7 +865,7 @@ void draw() {
 
     const float total_w = ImGui::GetContentRegionAvail().x;
     const float splitter_w = 6.0f;
-    s.nav_width = CLAMP(s.nav_width, fs * 8.0f, MAX(fs * 8.0f, total_w * 0.6f));
+    s.nav_width = MD_CLAMP(s.nav_width, fs * 8.0f, MD_MAX(fs * 8.0f, total_w * 0.6f));
 
     if (ImGui::BeginChild("##ref_nav", ImVec2(s.nav_width, 0.0f), ImGuiChildFlags_Borders)) {
         draw_sidebar();
@@ -901,9 +901,9 @@ void set_language(script::Language lang) {
     gp = want;
 }
 
-bool show(str_t topic) {
+bool show(md_str_t topic) {
     ensure_loaded();
-    if (str_empty(topic)) return false;
+    if (md_str_empty(topic)) return false;
     const int idx = find_anchor(topic);
     if (idx < 0) return false;
     gp->query[0] = '\0';
@@ -911,7 +911,7 @@ bool show(str_t topic) {
     return true;
 }
 
-void search(str_t query) {
+void search(md_str_t query) {
     ensure_loaded();
     set_query(query);
     gp->focus_search = false;

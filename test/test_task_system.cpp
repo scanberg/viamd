@@ -89,7 +89,7 @@ UTEST(viamd_task_system, a_job_completes) {
     std::atomic<int> ran(0);
     task_system::Job job;
     EXPECT_TRUE(job.status() == task_system::Status::Idle);
-    job.start(STR_LIT("done"), [&]() { ran = 1; });
+    job.start(MD_STR_LIT("done"), [&]() { ran = 1; });
     job.wait();
 
     EXPECT_EQ(1, ran.load());
@@ -135,7 +135,7 @@ UTEST(viamd_task_system, cancel_reaches_the_body_and_its_parallel_for) {
     std::atomic<uint32_t> pieces(0);
 
     task_system::Job job;
-    job.start(STR_LIT("cancel me"), [&]() {
+    job.start(MD_STR_LIT("cancel me"), [&]() {
         started = true;
         while (!task_system::cancelled()) md_thread_sleep(1);
         saw_cancel = task_system::cancel_flag() != nullptr && task_system::cancelled();
@@ -252,7 +252,7 @@ UTEST(viamd_task_system, start_for_reports_progress) {
     const uint32_t N = 1000;
     std::atomic<uint32_t> sum(0);
     task_system::Job job;
-    job.start_for(STR_LIT("range"), N, 16, [&](uint32_t beg, uint32_t end) { sum += end - beg; });
+    job.start_for(MD_STR_LIT("range"), N, 16, [&](uint32_t beg, uint32_t end) { sum += end - beg; });
     job.wait();
     EXPECT_EQ(N, sum.load());
     EXPECT_NEAR(1.0f, job.progress(), 1.0e-6f);
@@ -264,7 +264,7 @@ UTEST(viamd_task_system, a_labelled_job_is_listed_while_it_runs) {
     std::atomic<bool> release(false);
     std::atomic<bool> started(false);
     task_system::Job job;
-    job.start(STR_LIT("Listed"), [&]() {
+    job.start(MD_STR_LIT("Listed"), [&]() {
         started = true;
         while (!release) md_thread_sleep(1);
     });

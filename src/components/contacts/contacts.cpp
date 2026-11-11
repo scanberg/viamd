@@ -164,19 +164,19 @@ struct Contacts : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-                viamd::write_section_header(state, STR_LIT("Contacts"));
-                viamd::write_int(state, STR_LIT("GroupBy"), (int)group_by);
-                viamd::write_flt(state, STR_LIT("Cutoff"), cutoff);
+                viamd::write_section_header(state, MD_STR_LIT("Contacts"));
+                viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
+                viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("Contacts"))) {
-                    str_t ident, arg;
+                if (md_str_eq(viamd::section_header(state), MD_STR_LIT("Contacts"))) {
+                    md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (str_eq(ident, STR_LIT("GroupBy"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("GroupBy"))) {
                             viamd::extract_enum(group_by, arg, GroupBy_Count);
-                        } else if (str_eq(ident, STR_LIT("Cutoff"))) {
+                        } else if (md_str_eq(ident, MD_STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
                         }
                     }
@@ -234,7 +234,7 @@ struct Contacts : viamd::EventHandler {
         }
         pending.groups.resize(off.size() - 1);
 
-        task.start(STR_LIT("Contacts"), [this]() {
+        task.start(MD_STR_LIT("Contacts"), [this]() {
             const md_system_t& sys = app_state->mold.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;
@@ -267,7 +267,7 @@ struct Contacts : viamd::EventHandler {
             desc.radius = std::max(res.cutoff + 2.0 * max_radius, res.energy_cutoff);
             desc.particle_label = label.data();
             md_contact_pairs_t pairs = {};
-            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
             std::vector<uint64_t> keys;
             if (md_contact_pairs_init(&pairs, &desc, &sys, arena)) {
                 StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
@@ -308,7 +308,7 @@ struct Contacts : viamd::EventHandler {
                                   "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
                                   "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
-            cutoff = CLAMP(cutoff, -10.0f, 100.0f);
+            cutoff = MD_CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
 

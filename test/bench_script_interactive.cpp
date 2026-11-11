@@ -59,21 +59,21 @@ struct Bench {
 };
 
 bool load(Bench* b, const char* top, const char* traj) {
-    b->alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(64));
+    b->alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(64));
     b->sys = {.alloc = b->alloc};
     b->state = {.alloc = b->alloc};
-    const str_t t = str_from_cstr(top);
+    const md_str_t t = md_str_from_cstr(top);
     bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t, NULL)
                                       : md_pdb_system_init_from_file(&b->sys, &b->state, t, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
     ok = ok && md_util_system_infer(&b->sys, &b->state, MD_UTIL_INFER_ALL, NULL);
     if (!ok) return false;
-    const str_t r = str_from_cstr(traj ? traj : top);
+    const md_str_t r = md_str_from_cstr(traj ? traj : top);
     bool run = false;
-    if (!traj) run = md_pdb_system_publish_run(&b->sys, r, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-    else if (ends_with(traj, ".xtc")) run = md_xtc_system_publish_run(&b->sys, r, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-    else if (ends_with(traj, ".trr")) run = md_trr_system_publish_run(&b->sys, r, STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+    if (!traj) run = md_pdb_system_publish_run(&b->sys, r, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+    else if (ends_with(traj, ".xtc")) run = md_xtc_system_publish_run(&b->sys, r, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+    else if (ends_with(traj, ".trr")) run = md_trr_system_publish_run(&b->sys, r, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
     if (run) {
-        const md_attribute_t* tm = md_attributes_find(&b->sys.attributes, STR_LIT("run/time"));
+        const md_attribute_t* tm = md_attributes_find(&b->sys.attributes, MD_STR_LIT("run/time"));
         b->num_frames = tm ? (size_t)tm->format.shape[0] : 0;
     }
     return true;
@@ -128,15 +128,15 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     Times t;
     const char* src = lang == script::Language::V1 ? c.v1 : c.v2;
     const char* const* filters = lang == script::Language::V1 ? c.filters_v1 : c.filters_v2;
-    const str_t s = str_from_cstr(src);
+    const md_str_t s = md_str_from_cstr(src);
     script::CompileDesc cd;
     cd.sys = &b.sys;
-    cd.run = STR_LIT("run");
+    cd.run = MD_STR_LIT("run");
 
     // Compile: once per edit
     std::vector<double> times;
     script::Program* p = nullptr;
-    md_allocator_i* palloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* palloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     for (int r = 0; r < reps; ++r) {
         if (p) script::program_free(p);
         const auto t0 = clock_type::now();
@@ -153,13 +153,13 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     script::EvalDesc ed;
     ed.num_frames = b.num_frames;
     ed.sys = &b.sys;
-    ed.run = STR_LIT("run");
+    ed.run = MD_STR_LIT("run");
     // no executor: the frames on this thread
     script::Eval* e = script::eval_create(nullptr, p, ed, palloc);
     if (e && b.num_frames) {
         std::vector<uint32_t> frames(b.num_frames);
         for (size_t i = 0; i < frames.size(); ++i) frames[i] = (uint32_t)i;
-        script::eval_frames(e, p, &b.sys, STR_LIT("run"), frames.data(), frames.size());
+        script::eval_frames(e, p, &b.sys, MD_STR_LIT("run"), frames.data(), frames.size());
     }
 
     // Hover: every mark drawn and its value written, as moving the mouse over it does
@@ -168,12 +168,12 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     ctx.sys = &b.sys;
     ctx.state = &b.state;
     ctx.eval = e;
-    ctx.run = STR_LIT("run");
+    ctx.run = MD_STR_LIT("run");
     const size_t nm = script::num_marks(p);
     const script::Mark* marks = script::marks(p);
     t.marks = nm;
     std::vector<double> per_mark(nm, 0.0);
-    md_allocator_i* dalloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* dalloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     for (size_t m = 0; m < nm; ++m) {
         std::vector<double> mt;
         for (int r = 0; r < reps; ++r) {
@@ -204,7 +204,7 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     for (int i = 0; src[i]; ++i) if (src[i] == '\n') cursors.push_back(i);
     if (const char* paren = strchr(src, '(')) cursors.push_back((int)(paren - src) + 1);
     t.cursors = cursors.size();
-    md_allocator_i* calloc_ = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* calloc_ = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     double sum = 0;
     for (int cur : cursors) {
         std::vector<double> ct;
@@ -224,15 +224,15 @@ Times measure(script::Language lang, const Case& c, const Bench& b, int reps) {
     fc.sys = &b.sys;
     fc.state = &b.state;
     fc.prog = p;
-    fc.run = STR_LIT("run");
-    md_allocator_i* falloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    fc.run = MD_STR_LIT("run");
+    md_allocator_i* falloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     sum = 0;
     for (int i = 0; i < 4 && filters[i]; ++i) {
         std::vector<double> ft;
         for (int r = 0; r < reps; ++r) {
             md_bitset_t out = md_bitset_empty_set();
             const auto t0 = clock_type::now();
-            const script::FilterResult fr = script::filter(lang, &out, str_from_cstr(filters[i]), fc, falloc);
+            const script::FilterResult fr = script::filter(lang, &out, md_str_from_cstr(filters[i]), fc, falloc);
             ft.push_back(ms_since(t0));
             if (!fr.success) printf("%s: %s: filter '%s' fails: %s\n", SCRIPT_BENCH_VERSION, c.name, filters[i], fr.error);
             md_arena_allocator_reset(falloc);

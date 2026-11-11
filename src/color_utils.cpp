@@ -10,7 +10,7 @@
 
 static void set_colors(uint32_t* colors, size_t count, uint32_t color) {
     if (color == 0xFFFFFFFFU) {
-        MEMSET(colors, 0xFF, sizeof(uint32_t) * count);
+        md_memset(colors, 0xFF, sizeof(uint32_t) * count);
     } else {
         for (size_t i = 0; i < count; ++i) {
             colors[i] = color;
@@ -65,7 +65,7 @@ static inline vec3_t sample_colormap(const vec3_t* colormap, size_t colormap_siz
 
 static inline uint32_t u32_to_color_sequential(uint32_t u32, uint32_t num_colors) {
     float t = (float)(u32 % num_colors) / (float)num_colors;
-    vec3_t rgb = sample_colormap(wheel_colors, ARRAY_SIZE(wheel_colors), t);
+    vec3_t rgb = sample_colormap(wheel_colors, MD_COUNTOF(wheel_colors), t);
     return convert_color({ rgb.x, rgb.y, rgb.z, 1.0f });
 }
 
@@ -76,7 +76,7 @@ static inline uint32_t u32_to_color_qualitative(uint32_t u32) {
     // fractional bits left and every value maps to t = 0 (the same color).
     const uint32_t h = u32 * 0x9E3779B9u;
     const float t = (float)(h >> 8) * (1.0f / 16777216.0f);
-    vec3_t rgb = sample_colormap(wheel_colors, ARRAY_SIZE(wheel_colors), t);
+    vec3_t rgb = sample_colormap(wheel_colors, MD_COUNTOF(wheel_colors), t);
     return convert_color({ rgb.x, rgb.y, rgb.z, 1.0f });
 }
 
@@ -111,7 +111,7 @@ void color_atoms_idx(uint32_t* colors, size_t count, const md_system_t&) {
 void color_atoms_res_name(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t i = 0; i < sys.residue.count; i++) {
-        str_t str = sys.residue.name[i];
+        md_str_t str = sys.residue.name[i];
         const uint32_t u32 = md_hash32(str.ptr, str.len, 0);
         const uint32_t color = u32_to_color(u32);
         md_urange_t range = md_system_residue_atom_range(&sys, i);
@@ -126,7 +126,7 @@ void color_atoms_res_type(uint32_t* colors, size_t count, const md_system_t& sys
         if (type_idx < 0) continue;
         const uint32_t color = md_residue_type_color(&sys.residue.type, (size_t)type_idx) | 0xFF000000U;
         md_urange_t range = md_system_residue_atom_range(&sys, i);
-        range.end = MIN(range.end, (uint32_t)count);
+        range.end = MD_MIN(range.end, (uint32_t)count);
         if (range.beg < range.end) set_colors(colors + range.beg, range.end - range.beg, color);
     }
 }
@@ -160,12 +160,12 @@ static void set_chain_colors(uint32_t* colors, size_t count, const md_system_t& 
 void color_atoms_chain_id(uint32_t* colors, size_t count, const md_system_t& sys) {
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t c = 0; c < md_system_chain_count(&sys); ++c) {
-        const str_t id = md_system_chain_id(&sys, c);
+        const md_str_t id = md_system_chain_id(&sys, c);
         uint32_t u32 = 0;
         for (size_t j = 0; j < id.len; ++j) {
             u32 += (uint8_t)id.ptr[j];
         }
-        set_chain_colors(colors, count, sys, c, u32_to_color(str_empty(id) ? (uint32_t)c : u32));
+        set_chain_colors(colors, count, sys, c, u32_to_color(md_str_empty(id) ? (uint32_t)c : u32));
     }
 }
 
@@ -180,7 +180,7 @@ void color_atoms_part_idx(uint32_t* colors, size_t count, const md_system_t& sys
     set_colors(colors, count, 0xFFFFFFFFU);
     for (size_t p = 0; p < md_system_part_count(&sys); ++p) {
         md_urange_t range = md_system_part_atom_range(&sys, p);
-        range.end = MIN(range.end, (uint32_t)count);
+        range.end = MD_MIN(range.end, (uint32_t)count);
         if (range.beg < range.end) set_colors(colors + range.beg, range.end - range.beg, u32_to_color((uint32_t)p));
     }
 }
@@ -198,7 +198,7 @@ void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_sy
             uint32_t range_ext = range_end - range_beg;
 
             md_temp_scope_t temp_scope = md_temp_begin();
-            defer { md_temp_end(temp_scope); };
+            MD_DEFER { md_temp_end(temp_scope); };
 
             uint32_t* seg_colors = md_temp_alloc_array(temp_scope, uint32_t, range_ext);
             for (size_t j = 0; j < range_ext; ++j) {
@@ -281,8 +281,8 @@ void scale_saturation(uint32_t* colors, size_t count, float scale) {
 }
 
 void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint_strength, float saturation) {
-    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
-    const float s = CLAMP(saturation, 0.0f, 1.0f);
+    const float t = MD_CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = MD_CLAMP(saturation, 0.0f, 1.0f);
 
     vec4_t tint_rgba = convert_color(tint_color);
     vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_rgba));
@@ -309,8 +309,8 @@ void tint_colors(uint32_t* colors, size_t count, uint32_t tint_color, float tint
 }
 
 void tint_colors(vec4_t* colors, size_t count, vec4_t tint_color, float tint_strength, float saturation) {
-    const float t = CLAMP(tint_strength, 0.0f, 1.0f);
-    const float s = CLAMP(saturation, 0.0f, 1.0f);
+    const float t = MD_CLAMP(tint_strength, 0.0f, 1.0f);
+    const float s = MD_CLAMP(saturation, 0.0f, 1.0f);
     vec3_t tint_lab = linear_srgb_to_oklab(vec3_from_vec4(tint_color));
     const float L_coeff = 0.1f * t;
     const float ab_coeff = 1.0f * t;
@@ -331,9 +331,9 @@ void tint_colors(vec4_t* colors, size_t count, vec4_t tint_color, float tint_str
 // ## Optimized categorical colors
 
 vec3_t oklch_to_srgb_mapped(float L, float C, float h) {
-    L = CLAMP(L, 0.0f, 1.0f);
-    C = MAX(C, 0.0f);
-    const float ang = h * 2.0f * (float)PI;
+    L = MD_CLAMP(L, 0.0f, 1.0f);
+    C = MD_MAX(C, 0.0f);
+    const float ang = h * 2.0f * (float)MD_PI;
     const float ca = cosf(ang);
     const float sa = sinf(ang);
     const auto linear = [&](float c) { return oklab_to_linear_srgb(vec3_t{L, c * ca, c * sa}); };
@@ -412,9 +412,9 @@ struct Rng {
     uint64_t next() { s ^= s >> 12; s ^= s << 25; s ^= s >> 27; return s * 0x2545F4914F6CDD1Dull; }
     float uniform() { return (float)(next() >> 40) * (1.0f / 16777216.0f); }
     float normal() {
-        const float u1 = MAX(uniform(), 1.0e-7f);
+        const float u1 = MD_MAX(uniform(), 1.0e-7f);
         const float u2 = uniform();
-        return sqrtf(-2.0f * logf(u1)) * cosf(2.0f * (float)PI * u2);
+        return sqrtf(-2.0f * logf(u1)) * cosf(2.0f * (float)MD_PI * u2);
     }
 };
 
@@ -424,15 +424,15 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     ColorOptimizeResult result = {};
     if (!items || count == 0) return result;
 
-    const float Lmin  = CLAMP(MIN(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
-    const float Lmax  = CLAMP(MAX(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
-    const float Cmin  = MAX(0.0f, MIN(desc.chroma_min, desc.chroma_max));
-    const float Cmax  = MAX(desc.chroma_min, desc.chroma_max);
-    const float drift_max = MAX(desc.max_drift, 0.0f);
+    const float Lmin  = MD_CLAMP(MD_MIN(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Lmax  = MD_CLAMP(MD_MAX(desc.lightness_min, desc.lightness_max), 0.0f, 1.0f);
+    const float Cmin  = MD_MAX(0.0f, MD_MIN(desc.chroma_min, desc.chroma_max));
+    const float Cmax  = MD_MAX(desc.chroma_min, desc.chroma_max);
+    const float drift_max = MD_MAX(desc.max_drift, 0.0f);
     const float snap  = 0.01f;  // A pulled color which moved less than this (not a visible change) keeps its color
     const float tau   = 0.01f;  // The softness of the smallest distance which is pushed up
-    const float wc    = MAX(desc.cvd_weight, 0.0f);
-    const double floor_term = exp(-(double)MAX(desc.enough_distance, 0.0f) / (double)tau);
+    const float wc    = MD_MAX(desc.cvd_weight, 0.0f);
+    const double floor_term = exp(-(double)MD_MAX(desc.enough_distance, 0.0f) / (double)tau);
 
     // The colors which move, each of one item or of the pulled items of one color, which are meant alike. Fixed items
     // of one color are one too: they are not kept apart from each other.
@@ -461,8 +461,8 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
             un.fixed = it.fixed;
             units.push_back(un);
         }
-        units[u].weight += MAX(it.weight, 0.0f);
-        units[u].pull = it.fixed ? 0.0f : MAX(units[u].pull, it.pull);
+        units[u].weight += MD_MAX(it.weight, 0.0f);
+        units[u].pull = it.fixed ? 0.0f : MD_MAX(units[u].pull, it.pull);
         unit_of[i] = u;
     }
     const size_t n = units.size();
@@ -476,9 +476,9 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     if (desc.calm_dominant && wsum > 0.0) {
         for (size_t i = 0; i < n; ++i) {
             const float share = (float)(units[i].weight / wsum);
-            const float dominance = MIN(1.0f, 2.0f * share);   // From none to full as the share goes to a half
+            const float dominance = MD_MIN(1.0f, 2.0f * share);   // From none to full as the share goes to a half
             lo_L[i] = Lmin + (Lmax - Lmin) * 0.8f * dominance;
-            hi_C[i] = MAX(Cmin, Cmax * (1.0f - 0.6f * dominance));
+            hi_C[i] = MD_MAX(Cmin, Cmax * (1.0f - 0.6f * dominance));
         }
     }
 
@@ -488,15 +488,15 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
         const vec3_t lab = c[i].lab;
         c[i].L = lab.x;
         c[i].C = sqrtf(lab.y * lab.y + lab.z * lab.z);
-        c[i].h = atan2f(lab.z, lab.y) / (2.0f * (float)PI);
+        c[i].h = atan2f(lab.z, lab.y) / (2.0f * (float)MD_PI);
         c[i].h -= floorf(c[i].h);
         c0[i] = c[i];
         if (units[i].fixed) continue;
         moving.push_back(i);
         if (units[i].pull > 0.0f) continue;     // Starts where it is
 
-        const float L = CLAMP(c[i].L, lo_L[i], Lmax);
-        const float C = CLAMP(c[i].C, Cmin, hi_C[i]);
+        const float L = MD_CLAMP(c[i].L, lo_L[i], Lmax);
+        const float C = MD_CLAMP(c[i].C, Cmin, hi_C[i]);
         float h = c[i].h;
         // Free colors which start out alike (types of one hashed color, or which have none) are spread over the hues first
         for (size_t j = 0; j < i; ++j) {
@@ -520,7 +520,7 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
         const float d = (distance(a.lab, b.lab) + wc * distance(a.cvd, b.cvd)) / (1.0f + wc);
         return exp(-(double)d / (double)tau);
     };
-    const auto crowding = [&](double t) { return MAX(t - floor_term, 0.0); };
+    const auto crowding = [&](double t) { return MD_MAX(t - floor_term, 0.0); };
 
     if (!moving.empty() && n > 1) {
         std::vector<double> term(n * n, 0.0);
@@ -540,30 +540,30 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
 
         Rng rng(desc.seed);
         std::vector<double> trial(n, 0.0);
-        const uint64_t total = MIN((uint64_t)desc.moves_per_item * moving.size(), (uint64_t)120000);
+        const uint64_t total = MD_MIN((uint64_t)desc.moves_per_item * moving.size(), (uint64_t)120000);
         for (uint64_t m = 0; m < total; ++m) {
             const size_t k = moving[rng.next() % moving.size()];
             const float a = 1.0f - 0.85f * (float)m / (float)total;    // Steps shrink as it settles
             const bool pulled = units[k].pull > 0.0f;
 
-            // Drawn before they are used: CLAMP evaluates its arguments more than once
+            // Drawn before they are used: MD_CLAMP evaluates its arguments more than once
             const float nL = rng.normal(), nC = rng.normal(), nh = rng.normal();
             OptColor cand = c[k];
             if (pulled) {
                 // Near where it started, of any lightness and chroma
-                const float L = CLAMP(c[k].L + nL * 0.02f * a, 0.0f, 1.0f);
-                const float C = MAX(c[k].C + nC * 0.015f * a, 0.0f);
+                const float L = MD_CLAMP(c[k].L + nL * 0.02f * a, 0.0f, 1.0f);
+                const float C = MD_MAX(c[k].C + nC * 0.015f * a, 0.0f);
                 set_lch(cand, L, C, c[k].h + nh * 0.03f * a);
                 if (distance(cand.lab, c0[k].lab) > drift_max) continue;
             } else {
                 const float L0 = c[k].L + nL * 0.04f * a;
                 const float C0 = c[k].C + nC * 0.025f * a;
-                const float L = CLAMP(L0, lo_L[k], Lmax);
-                const float C = CLAMP(C0, Cmin, hi_C[k]);
+                const float L = MD_CLAMP(L0, lo_L[k], Lmax);
+                const float C = MD_CLAMP(C0, Cmin, hi_C[k]);
                 set_lch(cand, L, C, c[k].h + nh * 0.06f * a);
             }
             // The chroma asked for beyond the gamut is not kept: what is shown is all there is
-            cand.C = MIN(cand.C, sqrtf(cand.lab.y * cand.lab.y + cand.lab.z * cand.lab.z) + 1.0e-4f);
+            cand.C = MD_MIN(cand.C, sqrtf(cand.lab.y * cand.lab.y + cand.lab.z * cand.lab.z) + 1.0e-4f);
 
             double before = 0.0, after = 0.0, crowd_before = 0.0, crowd_after = 0.0;
             for (size_t j = 0; j < n; ++j) {
@@ -576,7 +576,7 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
             }
             bool accept = after <= before;
             if (pulled) {
-                const double rest = MAX(S - crowd_before, 0.0);
+                const double rest = MD_MAX(S - crowd_before, 0.0);
                 const double cost = (double)units[k].pull * (distance(cand.lab, c0[k].lab) - distance(c[k].lab, c0[k].lab));
                 accept = floor_term + rest + crowd_after <= (floor_term + rest + crowd_before) * exp(-cost / (double)tau);
             }
@@ -611,7 +611,7 @@ ColorOptimizeResult optimize_colors(ColorOptimizeItem* items, size_t count, cons
     for (size_t i = 0; i < n; ++i) {
         for (size_t j = i + 1; j < n; ++j) {
             if (units[i].fixed && units[j].fixed) continue;
-            min_d = MIN(min_d, distance(c[i].lab, c[j].lab));
+            min_d = MD_MIN(min_d, distance(c[i].lab, c[j].lab));
         }
     }
     result.min_distance = min_d < 1.0e9f ? min_d : 0.0f;

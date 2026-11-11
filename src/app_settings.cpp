@@ -49,54 +49,54 @@ static size_t s_hook_count = 0;
 static bool s_initialized = false;
 static bool s_hooks_ran   = false;
 
-static Entry* find_entry(str_t key) {
+static Entry* find_entry(md_str_t key) {
     for (size_t i = 0; i < s_entry_count; ++i) {
-        if (str_eq_cstr(key, s_entries[i].key)) {
+        if (md_str_eq_cstr(key, s_entries[i].key)) {
             return &s_entries[i];
         }
     }
     return nullptr;
 }
 
-static void add_entry(str_t key, EntryType type, void* ptr, size_t cap) {
-    ASSERT(ptr);
-    ASSERT(!s_initialized && "app_settings::bind must be called before initialize");
+static void add_entry(md_str_t key, EntryType type, void* ptr, size_t cap) {
+    MD_ASSERT(ptr);
+    MD_ASSERT(!s_initialized && "app_settings::bind must be called before initialize");
 
     if (key.len == 0 || key.len > MAX_KEY_LEN) {
-        MD_LOG_ERROR("app_settings: invalid key '" STR_FMT "', not bound", STR_ARG(key));
+        MD_LOG_ERROR("app_settings: invalid key '" MD_STR_FMT "', not bound", MD_STR_ARG(key));
         return;
     }
     if (find_entry(key)) {
-        MD_LOG_ERROR("app_settings: key '" STR_FMT "' is already bound, ignoring rebind", STR_ARG(key));
+        MD_LOG_ERROR("app_settings: key '" MD_STR_FMT "' is already bound, ignoring rebind", MD_STR_ARG(key));
         return;
     }
     if (s_entry_count == MAX_ENTRIES) {
-        MD_LOG_ERROR("app_settings: out of entry slots, '" STR_FMT "' will not be persisted", STR_ARG(key));
+        MD_LOG_ERROR("app_settings: out of entry slots, '" MD_STR_FMT "' will not be persisted", MD_STR_ARG(key));
         return;
     }
 
     Entry& entry = s_entries[s_entry_count++];
-    str_copy_to_char_buf(entry.key, sizeof(entry.key), key);
+    md_str_copy_to_char_buf(entry.key, sizeof(entry.key), key);
     entry.type = type;
     entry.ptr  = ptr;
     entry.cap  = cap;
 }
 
-void bind(str_t key, bool*  value) { add_entry(key, EntryType_Bool,  value, 0); }
-void bind(str_t key, int*   value) { add_entry(key, EntryType_Int,   value, 0); }
-void bind(str_t key, float* value) { add_entry(key, EntryType_Float, value, 0); }
-void bind(str_t key, float* values, size_t count) {
-    ASSERT(count > 0 && count <= 16);
+void bind(md_str_t key, bool*  value) { add_entry(key, EntryType_Bool,  value, 0); }
+void bind(md_str_t key, int*   value) { add_entry(key, EntryType_Int,   value, 0); }
+void bind(md_str_t key, float* value) { add_entry(key, EntryType_Float, value, 0); }
+void bind(md_str_t key, float* values, size_t count) {
+    MD_ASSERT(count > 0 && count <= 16);
     add_entry(key, EntryType_FloatVec, values, count);
 }
-void bind(str_t key, char*  buf, size_t cap) {
-    ASSERT(cap > 0);
+void bind(md_str_t key, char*  buf, size_t cap) {
+    MD_ASSERT(cap > 0);
     add_entry(key, EntryType_Str, buf, cap);
 }
 
 void on_apply(void (*fn)(void* user_data), void* user_data) {
-    ASSERT(fn);
-    ASSERT(!s_initialized && "app_settings::on_apply must be called before initialize");
+    MD_ASSERT(fn);
+    MD_ASSERT(!s_initialized && "app_settings::on_apply must be called before initialize");
     if (s_hook_count == MAX_HOOKS) {
         MD_LOG_ERROR("app_settings: out of apply hook slots, hook will not run");
         return;
@@ -116,21 +116,21 @@ static void* read_open(ImGuiContext*, ImGuiSettingsHandler*, const char* name) {
 }
 
 static void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* line) {
-    const str_t str = str_trim(str_from_cstr(line));
+    const md_str_t str = md_str_trim(md_str_from_cstr(line));
 
     size_t loc;
-    if (!str_find_char(&loc, str, '=')) {
+    if (!md_str_find_char(&loc, str, '=')) {
         return;
     }
 
-    const str_t key = str_trim(str_substr(str, 0, loc));
-    const str_t val = str_trim(str_substr(str, loc + 1));
+    const md_str_t key = md_str_trim(md_str_substr(str, 0, loc));
+    const md_str_t val = md_str_trim(md_str_substr(str, loc + 1));
 
     Entry* entry = find_entry(key);
     if (!entry) {
         // A setting written by another version, or one whose binding was removed.
         // Not an error: it is simply dropped on the next write.
-        MD_LOG_DEBUG("app_settings: ignoring unknown setting '" STR_FMT "'", STR_ARG(key));
+        MD_LOG_DEBUG("app_settings: ignoring unknown setting '" MD_STR_FMT "'", MD_STR_ARG(key));
         return;
     }
 
@@ -143,15 +143,15 @@ static void read_line(ImGuiContext*, ImGuiSettingsHandler*, void*, const char* l
     case EntryType_FloatVec: ok = viamd::extract_flt_vec((float*)entry->ptr, entry->cap, val); break;
     case EntryType_Str:
         // Taken verbatim: an ini line cannot hold a newline, so there is nothing to unescape.
-        str_copy_to_char_buf((char*)entry->ptr, entry->cap, val);
+        md_str_copy_to_char_buf((char*)entry->ptr, entry->cap, val);
         ok = true;
         break;
     default:
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 
     if (!ok) {
-        MD_LOG_ERROR("app_settings: could not parse value '" STR_FMT "' for setting '" STR_FMT "', keeping default", STR_ARG(val), STR_ARG(key));
+        MD_LOG_ERROR("app_settings: could not parse value '" MD_STR_FMT "' for setting '" MD_STR_FMT "', keeping default", MD_STR_ARG(val), MD_STR_ARG(key));
     }
 }
 
@@ -189,7 +189,7 @@ static void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
         }
         case EntryType_Str:   out_buf->appendf("%s=%s\n", entry.key, (const char*)entry.ptr);          break;
         default:
-            ASSERT(false);
+            MD_ASSERT(false);
         }
     }
 
@@ -197,10 +197,10 @@ static void write_all(ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuf
 }
 
 void initialize() {
-    ASSERT(ImGui::GetCurrentContext() && "app_settings::initialize requires an ImGui context");
-    ASSERT(!s_initialized && "app_settings::initialize must be called once");
+    MD_ASSERT(ImGui::GetCurrentContext() && "app_settings::initialize requires an ImGui context");
+    MD_ASSERT(!s_initialized && "app_settings::initialize must be called once");
     // Past the first frame the .ini has already been read and the bindings would never be filled in.
-    ASSERT(!ImGui::GetCurrentContext()->SettingsLoaded && "app_settings::initialize must run before the first frame");
+    MD_ASSERT(!ImGui::GetCurrentContext()->SettingsLoaded && "app_settings::initialize must run before the first frame");
 
     ImGuiSettingsHandler handler;
     handler.TypeName   = "VIAMD";

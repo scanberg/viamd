@@ -193,22 +193,22 @@ struct Pucker : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-                viamd::write_section_header(state, STR_LIT("RingPucker"));
-                viamd::write_int(state, STR_LIT("Kind"), kind);
-                viamd::write_int(state, STR_LIT("Size"), size);
-                viamd::write_bool(state, STR_LIT("OnlySelected"), only_selected);
+                viamd::write_section_header(state, MD_STR_LIT("RingPucker"));
+                viamd::write_int(state, MD_STR_LIT("Kind"), kind);
+                viamd::write_int(state, MD_STR_LIT("Size"), size);
+                viamd::write_bool(state, MD_STR_LIT("OnlySelected"), only_selected);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("RingPucker"))) {
-                    str_t ident, arg;
+                if (md_str_eq(viamd::section_header(state), MD_STR_LIT("RingPucker"))) {
+                    md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (str_eq(ident, STR_LIT("Kind"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("Kind"))) {
                             viamd::extract_enum(kind, arg, Kind_Count);
-                        } else if (str_eq(ident, STR_LIT("Size"))) {
+                        } else if (md_str_eq(ident, MD_STR_LIT("Size"))) {
                             viamd::extract_enum(size, arg, Size_Count);
-                        } else if (str_eq(ident, STR_LIT("OnlySelected"))) {
+                        } else if (md_str_eq(ident, MD_STR_LIT("OnlySelected"))) {
                             viamd::extract_bool(only_selected, arg);
                         }
                     }
@@ -222,8 +222,8 @@ struct Pucker : viamd::EventHandler {
     }
 
     void init_tables() {
-        md_pucker_canonical(canon5, ARRAY_SIZE(canon5), 5);
-        md_pucker_canonical(canon6, ARRAY_SIZE(canon6), 6);
+        md_pucker_canonical(canon5, MD_COUNTOF(canon5), 5);
+        md_pucker_canonical(canon6, MD_COUNTOF(canon6), 6);
         // The region of each kind on the (phi, theta) map: the kind nearest the centre of each cell, as the names are
         // given (md_pucker_conformer)
         regions6.resize(REGION_PHI * REGION_THETA);
@@ -305,11 +305,11 @@ struct Pucker : viamd::EventHandler {
         const md_system_t& sys = app_state->mold.sys;
         buf[0] = '\0';
         if (row.res_idx < 0) return;
-        const str_t name = md_system_residue_name(&sys, row.res_idx);
+        const md_str_t name = md_system_residue_name(&sys, row.res_idx);
         const int seq = md_system_residue_seq_id(&sys, row.res_idx);
         // The chain id the data gives, none for a residue in no chain
         const md_chain_idx_t c = md_system_chain_find_by_atom_idx(&sys, row.r.atoms[0]);
-        const str_t chain = c >= 0 ? md_system_chain_id(&sys, (size_t)c) : str_t{};
+        const md_str_t chain = c >= 0 ? md_system_chain_id(&sys, (size_t)c) : md_str_t{};
         if (chain.len) snprintf(buf, cap, "%.*s %.*s %d", (int)chain.len, chain.ptr, (int)name.len, name.ptr, seq);
         else           snprintf(buf, cap, "%.*s %d", (int)name.len, name.ptr, seq);
     }
@@ -319,7 +319,7 @@ struct Pucker : viamd::EventHandler {
         size_t len = 0;
         buf[0] = '\0';
         for (int k = 0; k < row.r.size && len < cap; ++k) {
-            const str_t s = md_atom_name(&sys.atom, row.r.atoms[k]);
+            const md_str_t s = md_atom_name(&sys.atom, row.r.atoms[k]);
             len += (size_t)snprintf(buf + len, cap - len, "%s%.*s", k ? " " : "", (int)s.len, s.ptr);
         }
     }
@@ -569,8 +569,8 @@ struct Pucker : viamd::EventHandler {
             ImPlot::SetupAxesLimits(0, 360, -8, 188, ImPlotCond_Always);
             static const double xt[] = { 0, 60, 120, 180, 240, 300, 360 };
             static const double yt[] = { 0, 45, 90, 135, 180 };
-            ImPlot::SetupAxisTicks(ImAxis_X1, xt, ARRAY_SIZE(xt));
-            ImPlot::SetupAxisTicks(ImAxis_Y1, yt, ARRAY_SIZE(yt));
+            ImPlot::SetupAxisTicks(ImAxis_X1, xt, MD_COUNTOF(xt));
+            ImPlot::SetupAxisTicks(ImAxis_Y1, yt, MD_COUNTOF(yt));
             ImPlot::SetupFinish();
 
             ImDrawList* dl = ImPlot::GetPlotDrawList();

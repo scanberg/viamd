@@ -15,8 +15,8 @@ namespace viamd {
 //
 // Returns an empty string when the executable path cannot be determined or does not fit, which the
 // caller has to treat as "the resource is not there" rather than as a path.
-static inline str_t resource_path(md_str_writer_t* sb, str_t relative) {
-    ASSERT(sb);
+static inline md_str_t resource_path(md_str_writer_t* sb, md_str_t relative) {
+    MD_ASSERT(sb);
 
     char exe[2048];
     const size_t len = md_path_write_exe(exe, sizeof(exe));
@@ -26,8 +26,8 @@ static inline str_t resource_path(md_str_writer_t* sb, str_t relative) {
         return {};
     }
 
-    str_t dir = {};
-    if (!extract_folder_path(&dir, {exe, len})) {
+    md_str_t dir = {};
+    if (!md_extract_folder_path(&dir, {exe, len})) {
         return {};
     }
 

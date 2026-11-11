@@ -29,7 +29,7 @@ static uint32_t count_points(const CartoonGlyphs& g, CartoonGlyphKind kind, Cart
 
 static bool point_has_atom_named(const CartoonGlyphs& g, const md_system_t& sys, uint32_t p, const char* name) {
     for (uint32_t j = g.point_offset[p]; j < g.point_offset[p + 1]; ++j) {
-        if (str_eq_cstr(md_atom_name(&sys.atom, g.point_atom[j]), name)) return true;
+        if (md_str_eq_cstr(md_atom_name(&sys.atom, g.point_atom[j]), name)) return true;
     }
     return false;
 }
@@ -42,10 +42,10 @@ static bool point_has_element(const CartoonGlyphs& g, const md_system_t& sys, ui
 }
 
 UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(64, (int)sys.lipid.count);
 
@@ -99,10 +99,10 @@ UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
 }
 
 UTEST(cartoon_glyphs, martini_phospholipids_split_and_sterols_do_not) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/martini/martini3_membrane.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/martini/martini3_membrane.tpr")));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
 
     CartoonGlyphs g = {};
@@ -155,10 +155,10 @@ UTEST(cartoon_glyphs, martini_cholesterol_of_dummies_drawn_as_of_beads) {
         "    2CHOL    C1   19   7.081  18.381  13.768\n"
         "    2CHOL    C2   20   6.921  18.432  14.041\n"
         "  20.00000  30.00000  30.00000\n";
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, str_from_cstr(gro), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(gro), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ(2u, (uint32_t)sys.lipid.count);
 
@@ -184,10 +184,10 @@ UTEST(cartoon_glyphs, martini_cholesterol_of_dummies_drawn_as_of_beads) {
 }
 
 UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
     ASSERT_GT(bb.segment.count, (size_t)100);
@@ -197,8 +197,8 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     uint32_t nucleotides = 0;
     for (size_t s = 0; s < bb.segment.count; ++s) {
         if (bb.segment.atoms[s].c4 < 0) continue;
-        const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
-        const bool purine = str_eq_cstr(name, "DA") || str_eq_cstr(name, "DG");
+        const md_str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
+        const bool purine = md_str_eq_cstr(name, "DA") || md_str_eq_cstr(name, "DG");
         expected_slabs += purine ? 4 : 3;
         nucleotides += 1;
     }
@@ -272,22 +272,22 @@ static md_array(uint64_t) slab_keys(const CartoonGlyphs& g, md_allocator_i* allo
 // from the bonds alone (md_util_system_infer) and the rings of each nucleotide from its C1'. The same slabs as of the
 // same atoms read with their residues, and the same band, though no point stands for a residue.
 UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
-    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
-    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
+    ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
     ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL, NULL));
 
     char* text = (char*)md_alloc(alloc, 64 * (ref.atom.count + 1));
     size_t len = (size_t)snprintf(text, 64, "%zu\nxyz\n", ref.atom.count);
     for (size_t i = 0; i < ref.atom.count; ++i) {
-        const str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&ref.atom, i));
+        const md_str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&ref.atom, i));
         const vec3_t p = md_state_coord(&ref_st, i);
         len += (size_t)snprintf(text + len, 64, "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, p.x, p.y, p.z);
     }
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, str_t{ text, len }, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, md_str_t{ text, len }, MD_XYZ_OPTION_NONE));
     ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
     ASSERT_EQ((size_t)0, sys.residue.count);
     ASSERT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
@@ -335,21 +335,21 @@ static vec3_t point_position(const CartoonGlyphs& g, const md_system_state_t& st
 // them: their edges as long as the bonds of a ring, flat, the glycosidic N a corner of them.
 UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
     static const char* names[] = { "martini2_dna", "martini2_rna", "martini3_rna" };
-    for (size_t n = 0; n < ARRAY_SIZE(names); ++n) {
-        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+    for (size_t n = 0; n < MD_COUNTOF(names); ++n) {
+        md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         md_system_t sys = { .alloc = alloc };
         md_system_state_t st = { .alloc = alloc };
         char path[256];
         snprintf(path, sizeof(path), VIAMD_TEST_DATA_DIR "/martini/%s.gro", names[n]);
-        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, str_from_cstr(path), NULL));
+        ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
         ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
         const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
         ASSERT_EQ((size_t)2, bb.range.count);
 
         uint32_t expected_slabs = 0;
         for (size_t s = 0; s < bb.segment.count; ++s) {
-            const str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
-            const bool purine = str_find_char(NULL, name, 'A') || str_find_char(NULL, name, 'G');
+            const md_str_t name = md_system_residue_name(&sys, bb.segment.res_idx[s]);
+            const bool purine = md_str_find_char(NULL, name, 'A') || md_str_find_char(NULL, name, 'G');
             expected_slabs += purine ? 3 : 2;
         }
 
@@ -384,7 +384,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
                 // From the band to the glycosidic N, the corner of a ring
                 EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBackbone, g.point_kind[g.slab_point[beg]]);
                 EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.slab_point[beg + 1]]);
-                longest_stick = MAX(longest_stick, vec3_distance(point_position(g, st, g.slab_point[beg]), point_position(g, st, g.slab_point[beg + 1])));
+                longest_stick = MD_MAX(longest_stick, vec3_distance(point_position(g, st, g.slab_point[beg]), point_position(g, st, g.slab_point[beg + 1])));
                 sticks += 1;
                 continue;
             }
@@ -397,11 +397,11 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
             }
             for (uint32_t k = 0; k < m; ++k) {
                 const float d = vec3_distance(c[k], c[(k + 1) % m]);
-                shortest_edge = MIN(shortest_edge, d);
-                longest_edge = MAX(longest_edge, d);
+                shortest_edge = MD_MIN(shortest_edge, d);
+                longest_edge = MD_MAX(longest_edge, d);
             }
             const vec3_t normal = vec3_normalize(vec3_cross(vec3_sub(c[0], mid), vec3_sub(c[1], mid)));
-            for (uint32_t k = 0; k < m; ++k) worst_plane = MAX(worst_plane, fabsf(vec3_dot(vec3_sub(c[k], mid), normal)));
+            for (uint32_t k = 0; k < m; ++k) worst_plane = MD_MAX(worst_plane, fabsf(vec3_dot(vec3_sub(c[k], mid), normal)));
         }
         EXPECT_EQ((uint32_t)bb.segment.count, sticks);
         // The bonds of the rings of the ideal bases are 1.31 to 1.45 long; the purines of Martini 2 flex a little

@@ -195,10 +195,10 @@ UTEST(timeline_periods, workspace_round_trip) {
     r.text = md_str_writer_to_str(&w.sw);
 
     TimelinePeriods out = {};
-    str_t section;
+    md_str_t section;
     int sections = 0;
     while (viamd::next_section_header(section, r)) {
-        ASSERT_TRUE(str_eq(section, STR_LIT("TimelinePeriod")));
+        ASSERT_TRUE(md_str_eq(section, MD_STR_LIT("TimelinePeriod")));
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
         sections += 1;
     }
@@ -250,7 +250,7 @@ UTEST(timeline_periods, ids_survive_a_save_and_a_load) {
 
     viamd::deserialization_state_t r = {};
     r.text = md_str_writer_to_str(&w.sw);
-    str_t section;
+    md_str_t section;
     while (viamd::next_section_header(section, r)) {
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
     }

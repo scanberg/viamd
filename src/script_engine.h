@@ -58,7 +58,7 @@ struct Program;     // a compilation, always made, also of broken text; read-onl
 
 // A stored selection the script may name
 struct NamedSet {
-    str_t       name;
+    md_str_t       name;
     md_bitset_t atoms;
 };
 
@@ -66,13 +66,13 @@ struct CompileDesc {
     const md_system_t* sys = nullptr;
     const NamedSet*    sets = nullptr;
     size_t             num_sets = 0;
-    str_t              run = {};        // v2: the run it is evaluated over, which attr() reads and frames are counted in
+    md_str_t              run = {};        // v2: the run it is evaluated over, which attr() reads and frames are counted in
 };
 
 // What compiling said about a range of the source. context: atoms the message is about, or NULL.
 struct Diagnostic {
     Range              range;
-    str_t              text;
+    md_str_t              text;
     const md_bitset_t* context = nullptr;
 };
 
@@ -82,7 +82,7 @@ struct Diagnostic {
 struct Mark {
     Range     range;
     int       depth = 0;
-    str_t     text;
+    md_str_t     text;
     Ref       ref;
     md_unit_t unit = {};
     uint32_t  unit_at = 0, unit_len = 0;
@@ -93,10 +93,10 @@ struct Mark {
 
 // A mark's text with its unit, and its value where it is a number, in the display units (display_units.h). The text
 // as it is when it has no unit, or the display unit is the one it has.
-str_t mark_text(char* buf, size_t cap, const Mark& mark);
+md_str_t mark_text(char* buf, size_t cap, const Mark& mark);
 
 // Empty src is not compiled: the program has the sets' names alone, no errors, and is not valid
-Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc);
+Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_allocator_i* alloc);
 void     program_free(Program* prog);
 
 // Who is using a program off the thread that owns it: a task that reads it retains it before it starts and releases it
@@ -123,7 +123,7 @@ void write_diagnostics(md_writer_i* w, const Program* prog);
 
 // Every name the program binds, for picking one that is not taken
 size_t       num_identifiers(const Program* prog);
-const str_t* identifiers(const Program* prog);
+const md_str_t* identifiers(const Program* prog);
 
 // ### OUTPUTS ###
 // The values a program publishes, by name, in the order it binds them
@@ -138,15 +138,15 @@ enum OutputFlags : uint32_t {
 };
 
 size_t       num_outputs(const Program* prog);
-const str_t* output_names(const Program* prog);
-uint32_t     output_flags(const Program* prog, str_t name);         // OUTPUT_*; 0 for none of that name
-Range        output_range(const Program* prog, str_t name);         // where it is named; empty for none
-uint64_t     output_fingerprint(const Program* prog, str_t name);   // what it is computed from; 0 for none
-Ref          output_ref(const Program* prog, str_t name);           // empty for none
+const md_str_t* output_names(const Program* prog);
+uint32_t     output_flags(const Program* prog, md_str_t name);         // OUTPUT_*; 0 for none of that name
+Range        output_range(const Program* prog, md_str_t name);         // where it is named; empty for none
+uint64_t     output_fingerprint(const Program* prog, md_str_t name);   // what it is computed from; 0 for none
+Ref          output_ref(const Program* prog, md_str_t name);           // empty for none
 
 // Whether ref was made by this compilation of prog, and so resolves in it
 bool  ref_valid(const Program* prog, Ref ref);
-str_t ref_name(const Program* prog, Ref ref);       // the name of what ref refers to, empty if none
+md_str_t ref_name(const Program* prog, Ref ref);       // the name of what ref refers to, empty if none
 int   ref_dim(const Program* prog, Ref ref);        // its outer extent, -1 when not known, 0 if it does not resolve
 
 // ### EVALUATE ###
@@ -160,7 +160,7 @@ struct EvalDesc {
     // v2: the system and run it evaluates over, and what it spreads the frames over (md_executor.h; viamd passes its
     // task pool, task_system::executor). NULL: the calling thread. It must outlive the evaluation.
     const md_system_t*   sys = nullptr;
-    str_t                run = {};
+    md_str_t                run = {};
     const md_executor_t* executor = nullptr;
 };
 
@@ -170,15 +170,15 @@ void  eval_free(Eval* eval);
 
 uint64_t eval_fingerprint(const Eval* eval);        // the fingerprint of the program it was made from
 size_t   eval_num_outputs(const Eval* eval);
-uint64_t eval_output_fingerprint(const Eval* eval, str_t name);
+uint64_t eval_output_fingerprint(const Eval* eval, md_str_t name);
 size_t   eval_num_frames(const Eval* eval);
 
 // The frames an output holds, and the frames that remain to be evaluated; copies allocated with alloc
-md_bitset_t eval_output_frames(const Eval* eval, str_t name, md_allocator_i* alloc);
+md_bitset_t eval_output_frames(const Eval* eval, md_str_t name, md_allocator_i* alloc);
 md_bitset_t eval_pending_frames(Eval* eval, md_allocator_i* alloc);
 
 // Evaluates frames of the run. Safe from several threads at once on one evaluation, also with overlapping frames.
-bool eval_frames(Eval* eval, const Program* prog, const md_system_t* sys, str_t run, const uint32_t* frames, size_t num_frames);
+bool eval_frames(Eval* eval, const Program* prog, const md_system_t* sys, md_str_t run, const uint32_t* frames, size_t num_frames);
 
 // Whether one call of eval_frames evaluates every pending frame, whichever frames it is given, spreading them over the
 // threads of EvalDesc itself (v2): call it once, from one task. Otherwise (v1) the pending frames are split among calls.
@@ -219,7 +219,7 @@ enum class Status : uint32_t {
 
 struct Plan {
     Status   status = Status::New;
-    str_t    from;              // Held: what it is taken over from, named otherwise when it was renamed
+    md_str_t    from;              // Held: what it is taken over from, named otherwise when it was renamed
     uint32_t num_frames = 0;    // the frames it would hold
     uint32_t num_pending = 0;   // the frames it would have evaluated, for itself and its aggregates
 };
@@ -239,10 +239,10 @@ struct AggregateInfo {
     size_t   num_values = 0;    // bins, or voxels
 };
 
-bool aggregate_request(Eval* eval, uint64_t key, str_t name, const md_bitset_t* frames);
-void aggregate_release(Eval* eval, uint64_t key, str_t name);
-bool aggregate_info(AggregateInfo* out, const Eval* eval, uint64_t key, str_t name);
-bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* eval, uint64_t key, str_t name);
+bool aggregate_request(Eval* eval, uint64_t key, md_str_t name, const md_bitset_t* frames);
+void aggregate_release(Eval* eval, uint64_t key, md_str_t name);
+bool aggregate_info(AggregateInfo* out, const Eval* eval, uint64_t key, md_str_t name);
+bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* eval, uint64_t key, md_str_t name);
 
 // ### DRAWING ###
 // What a part of a program looks like at a frame: viamd's own arrays, allocated with the drawing's allocator.
@@ -256,7 +256,7 @@ struct Vertex {
 
 struct Text {
     vec3_t    pos;
-    str_t     str;      // always set, drawable as it stands
+    md_str_t     str;      // always set, drawable as it stands
     double    value;    // when unit is not none: the quantity, to format in units of the viewer's choosing
     md_unit_t unit;
 };
@@ -291,7 +291,7 @@ struct DrawCtx {
     const md_system_state_t* state = nullptr;
     // v2: an evaluation of prog, for values over the trajectory, and the run, whose frame state->frame is
     const Eval*              eval = nullptr;
-    str_t                    run = {};
+    md_str_t                    run = {};
     // v2: value_text() prints numbers times this, the factor into the display unit of the value's unit
     double                   value_scale = 1.0;
 };
@@ -302,7 +302,7 @@ void drawing_clear(Drawing* d);
 // What ref refers to, resolved against ctx.prog; subidx picks one element of an array, -1 all. False if it does not resolve.
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags);
 // What an expression written in the program's language draws
-bool draw_text(Drawing* out, str_t expr, const DrawCtx& ctx, uint32_t flags);
+bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 // The value of what ref refers to in a few lines, at ctx.state; returns its length, 0 if nothing
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
 
@@ -318,30 +318,30 @@ enum class CompletionKind : uint32_t {
 };
 
 struct Completion {
-    str_t          label;   // what to show, and to match what has been typed against
-    str_t          text;    // what replaces the range
+    md_str_t          label;   // what to show, and to match what has been typed against
+    md_str_t          text;    // what replaces the range
     CompletionKind kind = CompletionKind::Keyword;
     bool           fits = false;    // has the type expected at the cursor
 };
 
 struct Completions {
     Range       range;      // the bytes a completion replaces
-    str_t       prefix;     // what has been typed of it
+    md_str_t       prefix;     // what has been typed of it
     size_t      count = 0;
     Completion* items = nullptr;
 };
 
 size_t       num_keywords(Language lang);
-const str_t* keywords(Language lang);
-size_t       builtin_names(Language lang, str_t* out, size_t cap);    // how many there are; writes up to cap
+const md_str_t* keywords(Language lang);
+size_t       builtin_names(Language lang, md_str_t* out, size_t cap);    // how many there are; writes up to cap
 
 // What can be written at the byte offset cursor of src; everything from alloc, a temporary arena
-Completions complete(Language lang, str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc);
+Completions complete(Language lang, md_str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc);
 
 // The path attr() reads attr by, as completion offers it; empty if attr() cannot read it
-str_t attr_path(Language lang, const md_attributes_t* table, const md_attribute_t* attr);
+md_str_t attr_path(Language lang, const md_attributes_t* table, const md_attribute_t* attr);
 
-bool name_valid(Language lang, str_t name);
+bool name_valid(Language lang, md_str_t name);
 
 // ### FILTERS ###
 // An expression in the workspace's language that picks atoms, evaluated within a context
@@ -351,7 +351,7 @@ struct FilterCtx {
     const md_system_state_t* state = nullptr;   // NULL for the system's reference state
     const Program*           prog = nullptr;    // a program whose names it may use; may be NULL
     const md_bitset_t*       atoms = nullptr;   // the atoms it is evaluated within; NULL for the whole system
-    str_t                    run = {};          // v2: the run attr() reads
+    md_str_t                    run = {};          // v2: the run attr() reads
 };
 
 struct FilterResult {
@@ -361,9 +361,9 @@ struct FilterResult {
     char  error[256] = {};      // why it failed; empty on success
 };
 
-FilterResult filter(Language lang, md_bitset_t* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-Completions  filter_complete(Language lang, str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+Completions  filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 
 }  // namespace script

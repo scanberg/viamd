@@ -43,8 +43,8 @@ struct Cube {
 };
 
 // False, with a reason in err, when text is not a cube with at least one voxel
-bool cube_parse(Cube* out, str_t text, md_allocator_i* alloc, char* err = nullptr, size_t err_cap = 0);
-bool cube_read(Cube* out, str_t path, md_allocator_i* alloc, char* err = nullptr, size_t err_cap = 0);
+bool cube_parse(Cube* out, md_str_t text, md_allocator_i* alloc, char* err = nullptr, size_t err_cap = 0);
+bool cube_read(Cube* out, md_str_t path, md_allocator_i* alloc, char* err = nullptr, size_t err_cap = 0);
 void cube_free(Cube* cube);
 
 // The other's frame onto this one: x_this = R x_other + t

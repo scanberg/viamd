@@ -36,14 +36,14 @@ const TextEditor::Language* language(script::Language script_lang) {
         lang.stringEscape = '\\';
 
         // Keywords and built-in names come from the script, so the colouring follows the language
-        const str_t* keywords = script::keywords(script_lang);
+        const md_str_t* keywords = script::keywords(script_lang);
         for (size_t i = 0; i < script::num_keywords(script_lang); ++i) {
             lang.keywords.emplace(keywords[i].ptr, keywords[i].len);
         }
         const size_t num_identifiers = script::builtin_names(script_lang, nullptr, 0);
-        std::vector<str_t> identifiers(num_identifiers);
+        std::vector<md_str_t> identifiers(num_identifiers);
         script::builtin_names(script_lang, identifiers.data(), identifiers.size());
-        for (str_t id : identifiers) {
+        for (md_str_t id : identifiers) {
             lang.identifiers.emplace(id.ptr, id.len);
         }
 
@@ -118,7 +118,7 @@ std::string word_at_mouse(const TextEditor& editor, ImVec2 mouse_pos) {
     return is_identifier(word) ? word : std::string();
 }
 
-void append_line(TextEditor& editor, str_t line) {
+void append_line(TextEditor& editor, md_str_t line) {
     const TextEditor::DocPos end(editor.GetLineCount() - 1, SIZE_MAX);  // clamped to the end of the last line
     std::string text;
     if (!editor.IsEmpty()) text += '\n';
@@ -126,7 +126,7 @@ void append_line(TextEditor& editor, str_t line) {
     editor.ReplaceSectionText(end, end, text);
 }
 
-void insert_lines_at_cursor(TextEditor& editor, str_t code) {
+void insert_lines_at_cursor(TextEditor& editor, md_str_t code) {
     std::string text;
     if (editor.GetCurrentCursorPosition().index > 0) text += '\n';
     text.append(code.ptr, code.len);
@@ -149,16 +149,16 @@ bool has_focus_after_render() {
 ////////////////////////////////////////////////////////////////////////////////
 
 bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attributes_t* attributes, const md_attribute_t* attr) {
-    ASSERT(buf && cap > 0);
+    MD_ASSERT(buf && cap > 0);
     buf[0] = '\0';
-    const str_t path = script::attr_path(lang, attributes, attr);
-    if (str_empty(path)) return false;
+    const md_str_t path = script::attr_path(lang, attributes, attr);
+    if (md_str_empty(path)) return false;
     // Nothing in it that the script's lexer ends (or gives up on) a string at
     for (size_t i = 0; i < path.len; ++i) {
         const char c = path.ptr[i];
         if (c == '"' || c == ';' || c == '\n' || c == '\r') return false;
     }
-    const int len = snprintf(buf, cap, "attr(\"" STR_FMT "\")", STR_ARG(path));
+    const int len = snprintf(buf, cap, "attr(\"" MD_STR_FMT "\")", MD_STR_ARG(path));
     if (len < 0 || (size_t)len >= cap) {
         buf[0] = '\0';
         return false;
@@ -166,8 +166,8 @@ bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attr
     return true;
 }
 
-bool accept_drop(TextEditor& editor, const char* payload_type, str_t text) {
-    if (editor.IsReadOnlyEnabled() || str_empty(text)) return false;
+bool accept_drop(TextEditor& editor, const char* payload_type, md_str_t text) {
+    if (editor.IsReadOnlyEnabled() || md_str_empty(text)) return false;
 
     const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(payload_type, ImGuiDragDropFlags_AcceptBeforeDelivery);
     if (!payload) return false;
@@ -378,7 +378,7 @@ static const ImU32 SQUIGGLE_COLOR_WARNING = IM_COL32(255, 210,   0, 255);
 static const ImU32 SQUIGGLE_COLOR_HOVERED = IM_COL32(255, 255, 255, 255);
 
 void markers_clear(Markers* m) {
-    ASSERT(m);
+    MD_ASSERT(m);
     if (md_array_size(m->list) > 0) m->dirty = true;
     if (m->arena) md_arena_allocator_reset(m->arena);
     m->list = nullptr;
@@ -387,12 +387,12 @@ void markers_clear(Markers* m) {
     m->hovered = -1;
 }
 
-void markers_set_source(Markers* m, str_t source) {
-    ASSERT(m);
+void markers_set_source(Markers* m, md_str_t source) {
+    MD_ASSERT(m);
     markers_clear(m);
-    if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+    if (!m->arena) m->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
     // Kept: markers are also added after the compilation, as the evaluation finds what fails
-    m->source = str_copy(source, m->arena);
+    m->source = md_str_copy(source, m->arena);
     md_array_push(m->line_offsets, 0u, m->arena);
     for (size_t i = 0; i < source.len; ++i) {
         if (source.ptr[i] == '\n') md_array_push(m->line_offsets, (uint32_t)(i + 1), m->arena);
@@ -403,7 +403,7 @@ void markers_set_source(Markers* m, str_t source) {
 static TextEditor::DocPos doc_pos(const Markers* m, int offset) {
     const uint32_t* lines = m->line_offsets;
     const size_t num_lines = md_array_size(lines);
-    const uint32_t off = (uint32_t)CLAMP(offset, 0, (int)m->source.len);
+    const uint32_t off = (uint32_t)MD_CLAMP(offset, 0, (int)m->source.len);
     // Last line that starts at or before the offset
     size_t lo = 0, hi = num_lines;
     while (hi - lo > 1) {
@@ -426,21 +426,21 @@ void markers_truncate(Markers* m, size_t count) {
     m->dirty = true;
 }
 
-void markers_set_text(Markers* m, size_t index, str_t text) {
+void markers_set_text(Markers* m, size_t index, md_str_t text) {
     if (!m || !m->arena || index >= md_array_size(m->list)) return;
-    m->list[index].text = str_copy(text, m->arena);
+    m->list[index].text = md_str_copy(text, m->arena);
 }
 
-void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str_t text,
+void markers_add(Markers* m, MarkerType type, int prio, script::Range range, md_str_t text,
                  const md_bitset_t* atoms, script::Ref vis_ref) {
-    ASSERT(m);
-    ASSERT(m->arena && "markers_set_source() must be called before markers are added");
+    MD_ASSERT(m);
+    MD_ASSERT(m->arena && "markers_set_source() must be called before markers are added");
     Marker marker = {};
     marker.type = type;
     marker.prio = prio;
     marker.beg  = doc_pos(m, range.beg);
     marker.end  = doc_pos(m, range.end);
-    marker.text = str_copy(text, m->arena);
+    marker.text = md_str_copy(text, m->arena);
     if (atoms) {
         md_bitset_t* copy = (md_bitset_t*)md_alloc(m->arena, sizeof(md_bitset_t));
         *copy = md_bitset_copy(*atoms, m->arena);
@@ -452,8 +452,8 @@ void markers_add(Markers* m, MarkerType type, int prio, script::Range range, str
 }
 
 const Marker* markers_update(Markers* m, TextEditor* editor, bool editor_hovered) {
-    ASSERT(m);
-    ASSERT(editor);
+    MD_ASSERT(m);
+    MD_ASSERT(editor);
     const int num_markers = (int)md_array_size(m->list);
 
     m->hovered = -1;
@@ -491,7 +491,7 @@ const Marker* markers_update(Markers* m, TextEditor* editor, bool editor_hovered
 }
 
 const Marker* markers_hovered(const Markers* m) {
-    ASSERT(m);
+    MD_ASSERT(m);
     return m->hovered != -1 ? &m->list[m->hovered] : nullptr;
 }
 

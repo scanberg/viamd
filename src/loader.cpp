@@ -18,6 +18,7 @@
 
 #include <md_molden.h>
 #include <md_itp.h>
+#include <md_ndx.h>
 #include <md_edr.h>
 #include <md_xvg.h>
 #include <md_csv.h>
@@ -38,74 +39,76 @@
 
 namespace loader {
 
-static const str_t loader_name[LoaderType_COUNT] = {
-        STR_INIT("Undefined"),
-        STR_INIT("Standard Protein Data Bank (pdb)"),
-        STR_INIT("Gromacs Structure (gro)"),
-        STR_INIT("xyz (xyz)"),
-        STR_INIT("xyz (xmol)"),
-        STR_INIT("xyz (arc)"),
-        STR_INIT("PDBx/mmCIF (cif)"),
-        STR_INIT("LAMMPS (data)"),
-        STR_INIT("LAMMPS Trajectory (lammpstrj)"),
-        STR_INIT("Gromacs Compressed Trajectory (xtc)"),
-        STR_INIT("Gromacs Lossless Trajectory (trr)"),
-        STR_INIT("DCD Trajectory (dcd)"),
+static const md_str_t loader_name[LoaderType_COUNT] = {
+        MD_STR_INIT("Undefined"),
+        MD_STR_INIT("Standard Protein Data Bank (pdb)"),
+        MD_STR_INIT("Gromacs Structure (gro)"),
+        MD_STR_INIT("xyz (xyz)"),
+        MD_STR_INIT("xyz (xmol)"),
+        MD_STR_INIT("xyz (arc)"),
+        MD_STR_INIT("PDBx/mmCIF (cif)"),
+        MD_STR_INIT("LAMMPS (data)"),
+        MD_STR_INIT("LAMMPS Trajectory (lammpstrj)"),
+        MD_STR_INIT("Gromacs Compressed Trajectory (xtc)"),
+        MD_STR_INIT("Gromacs Lossless Trajectory (trr)"),
+        MD_STR_INIT("DCD Trajectory (dcd)"),
 #if MD_HDF5
-        STR_LIT("VeloxChem (h5)"),
+        MD_STR_LIT("VeloxChem (h5)"),
 #endif
-        STR_LIT("Molden (molden)"),
+        MD_STR_LIT("Molden (molden)"),
 #if MD_HDF5
-        STR_LIT("TREXIO (trexio)"),
-        STR_INIT("H5MD (h5md)"),
+        MD_STR_LIT("TREXIO (trexio)"),
+        MD_STR_INIT("H5MD (h5md)"),
 #endif
-        STR_LIT("Gromacs Topology (itp/top)"),
-        STR_INIT("Gromacs Run Input (tpr)"),
-        STR_INIT("Gromacs Energy (edr)"),
-        STR_INIT("xmgrace columns (xvg)"),
-        STR_INIT("Comma separated values (csv)"),
-        STR_INIT("ASE Trajectory (traj)"),
-        STR_INIT("Amber Topology (prmtop/parm7)"),
-        STR_INIT("Amber Restart (rst7/inpcrd/ncrst)"),
-        STR_INIT("Amber NetCDF Trajectory (nc)"),
-        STR_INIT("Amber Energies (mdout/mden)"),
-        STR_INIT("CHARMM/NAMD Topology (psf)"),
-        STR_INIT("NAMD Binary Coordinates (coor)"),
+        MD_STR_LIT("Gromacs Topology (itp/top)"),
+        MD_STR_INIT("Gromacs Run Input (tpr)"),
+        MD_STR_INIT("Gromacs Index Groups (ndx)"),
+        MD_STR_INIT("Gromacs Energy (edr)"),
+        MD_STR_INIT("xmgrace columns (xvg)"),
+        MD_STR_INIT("Comma separated values (csv)"),
+        MD_STR_INIT("ASE Trajectory (traj)"),
+        MD_STR_INIT("Amber Topology (prmtop/parm7)"),
+        MD_STR_INIT("Amber Restart (rst7/inpcrd/ncrst)"),
+        MD_STR_INIT("Amber NetCDF Trajectory (nc)"),
+        MD_STR_INIT("Amber Energies (mdout/mden)"),
+        MD_STR_INIT("CHARMM/NAMD Topology (psf)"),
+        MD_STR_INIT("NAMD Binary Coordinates (coor)"),
 };
 
-static const str_t loader_ext[LoaderType_COUNT] = {
-        STR_INIT(""),
-        STR_INIT("pdb"),
-        STR_INIT("gro"),
-        STR_INIT("xyz"),
-        STR_INIT("xmol"),
-        STR_INIT("arc"),
-        STR_INIT("cif"),
-        STR_INIT("data"),
-        STR_INIT("lammpstrj"),
-        STR_INIT("xtc"),
-        STR_INIT("trr"),
-        STR_INIT("dcd"),
+static const md_str_t loader_ext[LoaderType_COUNT] = {
+        MD_STR_INIT(""),
+        MD_STR_INIT("pdb"),
+        MD_STR_INIT("gro"),
+        MD_STR_INIT("xyz"),
+        MD_STR_INIT("xmol"),
+        MD_STR_INIT("arc"),
+        MD_STR_INIT("cif"),
+        MD_STR_INIT("data"),
+        MD_STR_INIT("lammpstrj"),
+        MD_STR_INIT("xtc"),
+        MD_STR_INIT("trr"),
+        MD_STR_INIT("dcd"),
 #if MD_HDF5
-        STR_LIT("h5"),
+        MD_STR_LIT("h5"),
 #endif
-        STR_LIT("molden"),
+        MD_STR_LIT("molden"),
 #if MD_HDF5
-        STR_LIT("trexio"),
-        STR_INIT("h5md"),
+        MD_STR_LIT("trexio"),
+        MD_STR_INIT("h5md"),
 #endif
-        STR_LIT("itp"),
-        STR_INIT("tpr"),
-        STR_INIT("edr"),
-        STR_INIT("xvg"),
-        STR_INIT("csv"),
-        STR_INIT("traj"),
-        STR_INIT("prmtop"),
-        STR_INIT("rst7"),
-        STR_INIT("nc"),
-        STR_INIT("mdout"),
-        STR_INIT("psf"),
-        STR_INIT("coor"),
+        MD_STR_LIT("itp"),
+        MD_STR_INIT("tpr"),
+        MD_STR_INIT("ndx"),
+        MD_STR_INIT("edr"),
+        MD_STR_INIT("xvg"),
+        MD_STR_INIT("csv"),
+        MD_STR_INIT("traj"),
+        MD_STR_INIT("prmtop"),
+        MD_STR_INIT("rst7"),
+        MD_STR_INIT("nc"),
+        MD_STR_INIT("mdout"),
+        MD_STR_INIT("psf"),
+        MD_STR_INIT("coor"),
 };
 
 static const LoaderFlags loader_flags[LoaderType_COUNT] = {
@@ -134,6 +137,7 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 #endif
         LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS topology
         LoaderFlag_System | LoaderFlag_MM | LoaderFlag_Topology,    // GROMACS run input
+        LoaderFlag_Supplemental | LoaderFlag_MM,                    // GROMACS index groups
         LoaderFlag_Supplemental | LoaderFlag_Temporal | LoaderFlag_MM, // GROMACS energy
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // XVG
         LoaderFlag_Supplemental | LoaderFlag_Temporal,                 // CSV
@@ -150,8 +154,8 @@ static const LoaderFlags loader_flags[LoaderType_COUNT] = {
 // Where the extension does not tell, or is shared by several formats: Amber names its files without one (prmtop, inpcrd,
 // mdout, mden), .top is a GROMACS topology or an Amber one, .out and .log are anything, .coor is binary or a PDB file
 // and .nc is NetCDF of any convention. The contents decide.
-static LoaderType type_from_content(str_t filepath, str_t ext, LoaderType from_ext) {
-    if (str_empty(filepath)) return LoaderType_Undefined;
+static LoaderType type_from_content(md_str_t filepath, md_str_t ext, LoaderType from_ext) {
+    if (md_str_empty(filepath)) return LoaderType_Undefined;
     switch (from_ext) {
     case LoaderType_ITP:
         return md_amber_prmtop_file_is_topology(filepath) ? LoaderType_AMBER_PRMTOP : LoaderType_ITP;
@@ -170,12 +174,12 @@ static LoaderType type_from_content(str_t filepath, str_t ext, LoaderType from_e
     default:
         return from_ext;
     }
-    if (!str_empty(ext) && !str_eq_ignore_case(ext, STR_LIT("out")) && !str_eq_ignore_case(ext, STR_LIT("log")) &&
-        !str_eq_ignore_case(ext, STR_LIT("txt")) && !str_eq_ignore_case(ext, STR_LIT("dat"))) {
+    if (!md_str_empty(ext) && !md_str_eq_ignore_case(ext, MD_STR_LIT("out")) && !md_str_eq_ignore_case(ext, MD_STR_LIT("log")) &&
+        !md_str_eq_ignore_case(ext, MD_STR_LIT("txt")) && !md_str_eq_ignore_case(ext, MD_STR_LIT("dat"))) {
         return LoaderType_Undefined;
     }
     if (md_amber_energy_file_is_mdout(filepath) || md_amber_energy_file_is_mden(filepath)) return LoaderType_AMBER_ENERGY;
-    if (!str_empty(ext)) return LoaderType_Undefined;
+    if (!md_str_empty(ext)) return LoaderType_Undefined;
     if (md_amber_prmtop_file_is_topology(filepath)) return LoaderType_AMBER_PRMTOP;
     switch (md_amber_netcdf_file_kind(filepath)) {
     case MD_AMBER_NETCDF_TRAJECTORY: return LoaderType_AMBER_NETCDF;
@@ -187,14 +191,14 @@ static LoaderType type_from_content(str_t filepath, str_t ext, LoaderType from_e
     return LoaderType_Undefined;
 }
 
-void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
-    ASSERT(state);
+void init(LoaderState* state, md_str_t filepath, const md_system_t* sys) {
+    MD_ASSERT(state);
 	*state = { 0 };
 
-    str_t ext = {0};
-    extract_ext(&ext, filepath);
+    md_str_t ext = {0};
+    md_extract_ext(&ext, filepath);
     {
-        state->type = type_from_content(filepath, ext, str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext));
+        state->type = type_from_content(filepath, ext, md_str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext));
         if (state->type != LoaderType_Undefined) {
             state->flags = loader_flags[state->type];
 
@@ -204,7 +208,7 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
                 if (format) {
                     state->arg = md_lammps_atom_format_strings()[format];
                 } else {
-                    MD_LOG_INFO("Could not determine LAMMPS atom format for file '" STR_FMT "'", STR_ARG(filepath));
+                    MD_LOG_INFO("Could not determine LAMMPS atom format for file '" MD_STR_FMT "'", MD_STR_ARG(filepath));
                     state->flags |= LoaderFlag_RequiresDialogue;
                 }
             }
@@ -236,13 +240,13 @@ void init(LoaderState* state, str_t filepath, const md_system_t* sys) {
         return;
     }
 
-    MD_LOG_INFO("Could not determine loader type from file extension '" STR_FMT "'", STR_ARG(ext));
+    MD_LOG_INFO("Could not determine loader type from file extension '" MD_STR_FMT "'", MD_STR_ARG(ext));
     state->flags |= LoaderFlag_RequiresDialogue;
 }
 
-bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, const LoaderState& state) {
-    ASSERT(out_sys);
-    ASSERT(out_state);
+bool load(md_system_t* out_sys, md_system_state_t* out_state, md_str_t filepath, const LoaderState& state) {
+    MD_ASSERT(out_sys);
+    MD_ASSERT(out_state);
 
     switch (state.type) {
         case LoaderType_PDB: {
@@ -268,7 +272,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
             return md_xyz_system_init_from_file(out_sys, out_state, filepath, options);
         }
         case LoaderType_CIF:
-            return md_mmcif_system_init_from_file(out_sys, out_state, filepath);
+            return md_mmcif_system_init_from_file(out_sys, out_state, filepath, task_system::executor());
         case LoaderType_LAMMPSDATA: {
             const char* format = state.arg;
             return md_lammps_system_init_from_file(out_sys, out_state, filepath, format);
@@ -279,18 +283,18 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
                                                                    : md_psf_system_init_from_file(out_sys, out_state, filepath);
             if (!ok) return false;
             if (!state.coordinates || !state.coordinates[0]) {
-                MD_LOG_ERROR("'" STR_FMT "' is a topology without coordinates; load a restart, a structure file or a trajectory of its atoms with it", STR_ARG(filepath));
+                MD_LOG_ERROR("'" MD_STR_FMT "' is a topology without coordinates; load a restart, a structure file or a trajectory of its atoms with it", MD_STR_ARG(filepath));
                 return false;
             }
             // The topology's own box stands where the coordinates bring none
             const md_unitcell_t topology_cell = out_state->unitcell;
-            if (!load_coordinates(out_state, out_sys, str_from_cstr(state.coordinates))) return false;
+            if (!load_coordinates(out_state, out_sys, md_str_from_cstr(state.coordinates))) return false;
             if (!md_system_state_has_unitcell(out_state)) out_state->unitcell = topology_cell;
             return true;
         }
         case LoaderType_AMBER_RESTART:
         case LoaderType_NAMD_COOR:
-            MD_LOG_ERROR("'" STR_FMT "' holds coordinates only; they are loaded for a topology of their atoms (prmtop, psf)", STR_ARG(filepath));
+            MD_LOG_ERROR("'" MD_STR_FMT "' holds coordinates only; they are loaded for a topology of their atoms (prmtop, psf)", MD_STR_ARG(filepath));
             return false;
         case LoaderType_LAMMPSTRJ:
         case LoaderType_XTC:
@@ -298,7 +302,7 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
         case LoaderType_DCD:
         case LoaderType_AMBER_NETCDF:
             // A trajectory is not loaded into the system: it is published as a run (publish_run).
-            MD_LOG_ERROR("'" STR_FMT "' is a trajectory; it is opened with publish_run, not loaded", STR_ARG(filepath));
+            MD_LOG_ERROR("'" MD_STR_FMT "' is a trajectory; it is opened with publish_run, not loaded", MD_STR_ARG(filepath));
             return false;
 #if MD_HDF5
         case LoaderType_VLX_H5:
@@ -317,8 +321,8 @@ bool load(md_system_t* out_sys, md_system_state_t* out_state, str_t filepath, co
     }
 }
 
-bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& state, str_t run) {
-    ASSERT(out_sys);
+bool load_supplemental(md_system_t* out_sys, md_str_t filepath, const LoaderState& state, md_str_t run) {
+    MD_ASSERT(out_sys);
 
     switch (state.type) {
 #if MD_HDF5
@@ -327,6 +331,11 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
 #endif
         case LoaderType_ITP:
             return md_itp_system_supplement_from_file(out_sys, filepath);
+        case LoaderType_NDX:
+            if (!md_ndx_system_supplement_from_file(out_sys, filepath)) return false;
+            // An energy file loaded before it says which of its groups were the energy and T-coupling groups
+            md_edr_system_infer_group_roles_of_run(out_sys, run);
+            return true;
         case LoaderType_EDR:
             return md_edr_system_supplement_from_file(out_sys, filepath, run);
         case LoaderType_XVG:
@@ -344,14 +353,14 @@ bool load_supplemental(md_system_t* out_sys, str_t filepath, const LoaderState& 
     }
 }
 
-str_t type_name(LoaderType type) {
+md_str_t type_name(LoaderType type) {
     if (type < LoaderType_COUNT) {
         return loader_name[type];
     }
     return loader_name[LoaderType_Undefined];
 }
 
-str_t type_ext(LoaderType type) {
+md_str_t type_ext(LoaderType type) {
     if (type < LoaderType_COUNT) {
         return loader_ext[type];
     }
@@ -365,10 +374,10 @@ LoaderFlags type_flags(LoaderType type) {
     return loader_flags[LoaderType_Undefined];
 }
 
-bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags) {
-    str_t ext = {0};
-    extract_ext(&ext, filepath);
-    switch (type_from_content(filepath, ext, str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext))) {
+bool publish_run(md_system_t* sys, md_str_t filepath, md_str_t run, uint32_t flags) {
+    md_str_t ext = {0};
+    md_extract_ext(&ext, filepath);
+    switch (type_from_content(filepath, ext, md_str_empty(ext) ? LoaderType_Undefined : type_from_ext(ext))) {
     case LoaderType_AMBER_NETCDF: return md_amber_netcdf_system_publish_run(sys, filepath, run, flags);
     case LoaderType_XTC:       return md_xtc_system_publish_run(sys, filepath, run, flags);
     case LoaderType_TRR:       return md_trr_system_publish_run(sys, filepath, run, flags);
@@ -386,10 +395,10 @@ bool publish_run(md_system_t* sys, str_t filepath, str_t run, uint32_t flags) {
     }
 }
 
-LoaderType type_from_ext(str_t ext) {
+LoaderType type_from_ext(md_str_t ext) {
     // One loader, two extensions: a .top is an .itp with a [ molecules ] section (or an Amber topology, which
     // init tells from the contents)
-    if (str_eq_ignore_case(ext, STR_LIT("top"))) {
+    if (md_str_eq_ignore_case(ext, MD_STR_LIT("top"))) {
         return LoaderType_ITP;
     }
     static const struct { const char* ext; LoaderType type; } aliases[] = {
@@ -399,18 +408,18 @@ LoaderType type_from_ext(str_t ext) {
         { "ncdf", LoaderType_AMBER_NETCDF }, { "netcdf", LoaderType_AMBER_NETCDF },
         { "mden", LoaderType_AMBER_ENERGY },
     };
-    for (size_t i = 0; i < ARRAY_SIZE(aliases); ++i) {
-        if (str_eq_cstr_ignore_case(ext, aliases[i].ext)) return aliases[i].type;
+    for (size_t i = 0; i < MD_COUNTOF(aliases); ++i) {
+        if (md_str_eq_cstr_ignore_case(ext, aliases[i].ext)) return aliases[i].type;
     }
     for (size_t i = 1; i < LoaderType_COUNT; ++i) {
-        if (str_eq_ignore_case(ext, loader_ext[i])) {
+        if (md_str_eq_ignore_case(ext, loader_ext[i])) {
             return (LoaderType)i;
         }
     }
     return LoaderType_Undefined;
 }
 
-size_t atom_count(str_t filepath, const LoaderState& state) {
+size_t atom_count(md_str_t filepath, const LoaderState& state) {
     switch (state.type) {
     case LoaderType_AMBER_PRMTOP:  return md_amber_prmtop_file_atom_count(filepath);
     case LoaderType_PSF:           return md_psf_file_atom_count(filepath);
@@ -427,9 +436,9 @@ size_t atom_count(str_t filepath, const LoaderState& state) {
     }
 }
 
-bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t filepath) {
-    ASSERT(out_state && out_state->alloc);
-    ASSERT(sys);
+bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, md_str_t filepath) {
+    MD_ASSERT(out_state && out_state->alloc);
+    MD_ASSERT(sys);
     const size_t N = sys->atom.count;
     LoaderState cs;
     init(&cs, filepath, nullptr);
@@ -450,14 +459,14 @@ bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t file
 
     if ((cs.flags & LoaderFlag_System) && !(cs.flags & LoaderFlag_NeedsCoordinates)) {
         // A structure file of the same atoms: its coordinates. The atoms are the topology's, which names them.
-        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(4));
+        md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
         md_system_t tmp_sys = {};
         tmp_sys.alloc = arena;
         md_system_state_t tmp_state = {};
         tmp_state.alloc = arena;
         bool ok = load(&tmp_sys, &tmp_state, filepath, cs) && md_system_state_has_coords(&tmp_state);
         if (ok && tmp_state.num_atoms != N) {
-            MD_LOG_ERROR("'" STR_FMT "' holds %zu atoms, the topology %zu", STR_ARG(filepath), tmp_state.num_atoms, N);
+            MD_LOG_ERROR("'" MD_STR_FMT "' holds %zu atoms, the topology %zu", MD_STR_ARG(filepath), tmp_state.num_atoms, N);
             ok = false;
         }
         ok = ok && md_system_state_copy(out_state, &tmp_state);
@@ -468,10 +477,10 @@ bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t file
 
     if (cs.flags & LoaderFlag_Trajectory) {
         // The first frame of a trajectory, read through a run of its own that goes again after
-        const str_t run = STR_LIT("run/__coordinates");
+        const md_str_t run = MD_STR_LIT("run/__coordinates");
         if (!publish_run(sys, filepath, run, 0)) return false;
-        const bool has_cell = md_attributes_find(&sys->attributes, STR_LIT("run/__coordinates/unitcell")) != nullptr;
-        const str_t paths[] = { STR_LIT("atom/position"), STR_LIT("unitcell") };
+        const bool has_cell = md_attributes_find(&sys->attributes, MD_STR_LIT("run/__coordinates/unitcell")) != nullptr;
+        const md_str_t paths[] = { MD_STR_LIT("atom/position"), MD_STR_LIT("unitcell") };
         bool ok = md_system_state_init(out_state, N);
         md_system_extract_t* ex = ok ? md_system_extract_begin(sys, run, paths, has_cell ? 2 : 1, out_state->alloc) : nullptr;
         ok = ex && md_system_extract_frame(ex, 0, out_state);
@@ -480,7 +489,7 @@ bool load_coordinates(md_system_state_t* out_state, md_system_t* sys, str_t file
         return ok;
     }
 
-    MD_LOG_ERROR("'" STR_FMT "' holds no coordinates that are known here", STR_ARG(filepath));
+    MD_LOG_ERROR("'" MD_STR_FMT "' holds no coordinates that are known here", MD_STR_ARG(filepath));
     return false;
 }
 
