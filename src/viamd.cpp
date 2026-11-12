@@ -1761,20 +1761,6 @@ void init_system_data(ApplicationState* data) {
         data->view.camera = default_view;
         
 
-#if EXPERIMENTAL_GFX_API
-        const md_system_t& mol = data->mold.sys;
-        md_float3_t aabb_min, aabb_max;
-        md_util_compute_aabb_soa(&aabb_min, &aabb_max, mol.atom.x, mol.atom.y, mol.atom.z, mol.atom.radius, mol.atom.count);
-
-        data->mold.gfx_structure = md_gfx_structure_create(mol.atom.count, mol.covalent.count, mol.backbone.count, mol.backbone.range_count, mol.residue.count, mol.instance.count);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.x, mol.atom.y, mol.atom.z, 0);
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, mol.atom.count, mol.atom.radius, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
-        if (mol.instance.count > 0) {
-            md_gfx_structure_set_instance_atom_ranges(data->mold.gfx_structure, 0, mol.instance.count, (md_gfx_range_t*)mol.instance.atom_range, 0);
-            md_gfx_structure_set_instance_transforms(data->mold.gfx_structure, 0, mol.instance.count, mol.instance.transform, 0);
-        }
-#endif
     }
     // The components are told once the system is inferred, when it is inferred in the background: what they derive from
     // it (the particle and residue types of the dataset window and its overrides, the pucker rows) is of the inferred one

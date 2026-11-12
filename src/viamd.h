@@ -1130,9 +1130,6 @@ struct Representation {
     // it shows any of them (a cartoon of proteins alone draws none)
     md_gl_rep_t glyph_rep = {};
     bool glyphs_shown = false;
-#if EXPERIMENTAL_GFX_API
-    md_gfx_handle_t gfx_rep = {};
-#endif
 
     bool enabled = true;            // its own switch: it is shown when every group around it is too (representation_shown)
 	bool needs_update = true;
@@ -1480,9 +1477,6 @@ struct ApplicationState {
         // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
         // and derived from its atoms on the GPU (see cartoon_glyphs.h)
         CartoonGlyphs       cartoon_glyphs = {};
-#if EXPERIMENTAL_GFX_API
-        md_gfx_handle_t     gfx_structure = {};
-#endif
         md_system_t         sys = {};
         SystemInference     inference;
 
