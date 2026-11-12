@@ -145,8 +145,8 @@ struct CavityData {
     uint64_t placement_hash = 0;
 
     // GPU
-    GLuint buf[8] = {};             // tess_a, tess_b, tess_c, spheres, cells, items, nbr_range, nbr_items
-    GLuint tex[8] = {};
+    GLuint buf[9] = {};             // tess_a, tess_b, tess_c, spheres, cells, items, nbr_range, nbr_items, glyph
+    GLuint tex[9] = {};
     GLuint colormap_tex = 0;
     int    colormap = -1;
     uint64_t version = 0;
@@ -741,7 +741,7 @@ static void upload_buffer(CavityData* d, int i, GLenum format, const void* data,
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
-enum { BUF_TESS_A, BUF_TESS_B, BUF_TESS_C, BUF_SPHERES, BUF_CELLS, BUF_ITEMS, BUF_NBR_RANGE, BUF_NBR_ITEMS };
+enum { BUF_TESS_A, BUF_TESS_B, BUF_TESS_C, BUF_SPHERES, BUF_CELLS, BUF_ITEMS, BUF_NBR_RANGE, BUF_NBR_ITEMS, BUF_GLYPH, BUF_COUNT };
 
 static void upload_kernel(CavityData* d) {
     const uint32_t n = d->num_tess;
@@ -768,6 +768,19 @@ static void upload_kernel(CavityData* d) {
     }
     upload_buffer(d, BUF_NBR_RANGE, GL_RG32UI, nr.data(), nr.size() * sizeof(uint32_t));
     upload_buffer(d, BUF_NBR_ITEMS, GL_R32UI, d->nbr.data(), d->nbr.size() * sizeof(uint32_t));
+
+    // Of the glyphs: the radius where the Gaussian is at half its peak, exp(-zeta r^2) = 1/2, which with zeta a = pi
+    // ln 2 is sqrt(a / pi); the decay length; the share of a whole point; whether it is on the surface
+    std::vector<float> gl(4 * n);
+    for (uint32_t j = 0; j < n; ++j) {
+        const double R = d->sph[4 * d->atom[j] + 3];
+        const double full = d->full_share * 4.0 * M_PI * R * R;
+        gl[4 * j + 0] = d->zeta[j] > 0 ? (float)sqrt(log(2.0) / d->zeta[j]) : (float)sqrt(d->area[j] / M_PI);
+        gl[4 * j + 1] = (float)d->lambda[j];
+        gl[4 * j + 2] = full > 0 ? (float)(d->area[j] / full) : 0.0f;
+        gl[4 * j + 3] = d->shown[j] ? 1.0f : 0.0f;
+    }
+    upload_buffer(d, BUF_GLYPH, GL_RGBA32F, gl.data(), gl.size() * sizeof(float));
 }
 
 static void upload_field(CavityData* d) {
@@ -789,7 +802,7 @@ static void upload_field(CavityData* d) {
 }
 
 static void free_gpu(CavityData* d) {
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < BUF_COUNT; ++i) {
         if (d->tex[i]) glDeleteTextures(1, &d->tex[i]);
         if (d->buf[i]) glDeleteBuffers(1, &d->buf[i]);
         d->tex[i] = d->buf[i] = 0;
@@ -974,6 +987,15 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
     h = md_hash64(&cav.weight_outline, sizeof(cav.weight_outline), h);
     h = md_hash64(&cav.weight_level, sizeof(cav.weight_level), h);
     h = md_hash64(&cav.scale, sizeof(cav.scale), h);
+    h = md_hash64(&cav.surface, sizeof(cav.surface), h);
+    h = md_hash64(&cav.glyphs, sizeof(cav.glyphs), h);
+    h = md_hash64(&cav.glyph_shape, sizeof(cav.glyph_shape), h);
+    h = md_hash64(&cav.glyph_set, sizeof(cav.glyph_set), h);
+    h = md_hash64(&cav.glyph_length, sizeof(cav.glyph_length), h);
+    h = md_hash64(&cav.glyph_color, sizeof(cav.glyph_color), h);
+    h = md_hash64(&cav.glyph_length_scale, sizeof(cav.glyph_length_scale), h);
+    h = md_hash64(&cav.glyph_radius_halfmax, sizeof(cav.glyph_radius_halfmax), h);
+    h = md_hash64(&cav.glyph_radius, sizeof(cav.glyph_radius), h);
     if (cav.data) h = md_hash64(&cav.data->version, sizeof(cav.data->version), h);
     return h;
 }
@@ -998,6 +1020,7 @@ void main() {
 
 static struct {
     GLuint geometry = 0;
+    GLuint glyph = 0;
     GLuint resolve = 0;
     GLuint marks = 0;
     GLuint vao = 0;
@@ -1025,27 +1048,32 @@ static GLuint make_program(const char* label, const unsigned char* frag, size_t 
     return prog;
 }
 
+static GLuint make_program_vf(const char* label, const unsigned char* vert, size_t vert_size, const unsigned char* frag, size_t frag_size) {
+    GLuint vs = gl::compile_shader_from_source({(const char*)vert, vert_size}, GL_VERTEX_SHADER);
+    GLuint fs = gl::compile_shader_from_source({(const char*)frag, frag_size}, GL_FRAGMENT_SHADER);
+    GLuint prog = 0;
+    if (vs && fs) {
+        prog = glCreateProgram();
+        const GLuint shaders[] = {vs, fs};
+        if (!gl::attach_link_detach(prog, shaders, 2)) {
+            MD_LOG_ERROR("Cavity: the %s program did not link", label);
+            glDeleteProgram(prog);
+            prog = 0;
+        }
+    }
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return prog;
+}
+
 static bool ensure_programs() {
     if (gl_state.failed) return false;
-    if (!gl_state.geometry) {
-        GLuint vs = gl::compile_shader_from_source({(const char*)cavity_geometry_vert, cavity_geometry_vert_size}, GL_VERTEX_SHADER);
-        GLuint fs = gl::compile_shader_from_source({(const char*)cavity_geometry_frag, cavity_geometry_frag_size}, GL_FRAGMENT_SHADER);
-        if (vs && fs) {
-            gl_state.geometry = glCreateProgram();
-            const GLuint shaders[] = {vs, fs};
-            if (!gl::attach_link_detach(gl_state.geometry, shaders, 2)) {
-                MD_LOG_ERROR("Cavity: the geometry program did not link");
-                glDeleteProgram(gl_state.geometry);
-                gl_state.geometry = 0;
-            }
-        }
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
-    }
+    if (!gl_state.geometry) gl_state.geometry = make_program_vf("geometry", cavity_geometry_vert, cavity_geometry_vert_size, cavity_geometry_frag, cavity_geometry_frag_size);
+    if (!gl_state.glyph)    gl_state.glyph    = make_program_vf("glyph", cavity_glyph_vert, cavity_glyph_vert_size, cavity_glyph_frag, cavity_glyph_frag_size);
     if (!gl_state.resolve) gl_state.resolve = make_program("resolve", cavity_resolve_frag, cavity_resolve_frag_size);
     if (!gl_state.marks)   gl_state.marks   = make_program("marks", cavity_marks_frag, cavity_marks_frag_size);
     if (!gl_state.vao)     glGenVertexArrays(1, &gl_state.vao);
-    if (!gl_state.geometry || !gl_state.resolve || !gl_state.marks) {
+    if (!gl_state.geometry || !gl_state.glyph || !gl_state.resolve || !gl_state.marks) {
         gl_state.failed = true;
         return false;
     }
@@ -1076,7 +1104,7 @@ static void unbind_buffers() {
 
 void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const ViewParam& view, uint32_t sphere_base, uint32_t tessera_base) {
     const CavityData* d = cav.data;
-    if (!d || d->num_tess == 0 || d->field != (int)cav.field || !ensure_programs()) return;
+    if (!cav.surface || !d || d->num_tess == 0 || d->field != (int)cav.field || !ensure_programs()) return;
 
     // The picking target as it is, read while the G-buffer's is written
     if (!gl_state.pick_copy || gl_state.pick_w != (int)gbuf.width || gl_state.pick_h != (int)gbuf.height) {
@@ -1157,6 +1185,8 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glEnable(GL_CULL_FACE);
 }
 
+static void draw_glyph_marks(const CavityRepresentation& cav, const CavityData& d, uint32_t tessera, const GBuffer& gbuf, const ViewParam& view);
+
 void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const GBuffer& gbuf, const ViewParam& view) {
     const CavityData* d = cav.data;
     if (!d || tessera >= d->num_tess || d->field != (int)cav.field || !ensure_programs()) return;
@@ -1177,6 +1207,11 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     glViewport(0, 0, gbuf.out_width, gbuf.out_height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
+    if (cav.glyphs) draw_glyph_marks(cav, *d, tessera, gbuf, view);
+    if (!cav.surface) {
+        glEnable(GL_CULL_FACE);
+        return;
+    }
 
     const GLuint prog = gl_state.marks;
     glUseProgram(prog);
@@ -1228,7 +1263,7 @@ static void jitter_uv(float out[2], const md_f32x4x4_t& P) {
 
 void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view, uint32_t sphere_base) {
     const CavityData* d = cav.data;
-    if (!d || d->num_spheres == 0 || !ensure_programs()) return;
+    if (!cav.surface || !d || d->num_spheres == 0 || !ensure_programs()) return;
 
     const GLuint prog = gl_state.geometry;
     glUseProgram(prog);
@@ -1263,6 +1298,102 @@ void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view
     glUseProgram(0);
 }
 
+static const float GLYPH_MIN_PX = 1.5f;     // pixels: the radius a glyph is never thinner than, to be seen and hovered
+
+// The program of the glyphs with its buffers and uniforms, for the G-buffer (proj, jittered) or the marks (unjittered)
+static void glyph_program(const CavityRepresentation& cav, const CavityData& d, const ViewParam& view, const md_f32x4x4_t& proj, bool marks) {
+    const GLuint prog = gl_state.glyph;
+    glUseProgram(prog);
+    const GLuint texs[3] = {d.tex[BUF_TESS_A], d.tex[BUF_TESS_B], d.tex[BUF_GLYPH]};
+    const char* names[3] = {"u_tess_a", "u_tess_b", "u_glyph"};
+    for (int i = 0; i < 3; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_BUFFER, texs[i]);
+        glUniform1i(glGetUniformLocation(prog, names[i]), i);
+    }
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, colormap_texture((CavityData*)&d, cav.scale.colormap));
+    glUniform1i(glGetUniformLocation(prog, "u_colormap"), 3);
+    // The depth of the marks on a unit of its own even when unused: two types of sampler on one unit fail the draw
+    glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 8);
+
+    const md_f32x4x4_t to_file = world_to_file(d);
+    const md_f32x4x4_t file_to_view = view.matrix.curr.view * md_f32x4x4_inverse(to_file);
+    const md_f32x4x4_t curr_view_to_prev_clip = view.matrix.prev.proj * view.matrix.prev.view * view.matrix.inv.view;
+    float jit[4];
+    jitter_uv(jit + 0, view.matrix.curr.proj);
+    jitter_uv(jit + 2, view.matrix.prev.proj);
+    const bool ortho = proj.elem[2][3] == 0.0f;
+    GLint vp[4];
+    glGetIntegerv(GL_VIEWPORT, vp);
+    const float p11 = proj.elem[1][1];
+
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_cavity_to_view"), 1, GL_FALSE, &file_to_view.elem[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_clip"), 1, GL_FALSE, &proj.elem[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip"), 1, GL_FALSE, &curr_view_to_prev_clip.elem[0][0]);
+    glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, jit);
+    glUniform1i(glGetUniformLocation(prog, "u_ortho"), ortho ? 1 : 0);
+    glUniform1i(glGetUniformLocation(prog, "u_only"), -1);
+    glUniform1i(glGetUniformLocation(prog, "u_set"), (int)cav.glyph_set);
+    glUniform1i(glGetUniformLocation(prog, "u_length_mode"), (int)cav.glyph_length);
+    glUniform1f(glGetUniformLocation(prog, "u_length_scale"), cav.glyph_length_scale);
+    glUniform1i(glGetUniformLocation(prog, "u_radius_halfmax"), cav.glyph_radius_halfmax ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_radius"), cav.glyph_radius);
+    glUniform2f(glGetUniformLocation(prog, "u_range"), cav.scale.range_beg, cav.scale.range_end);
+    glUniform1f(glGetUniformLocation(prog, "u_min_px"), GLYPH_MIN_PX);
+    glUniform1f(glGetUniformLocation(prog, "u_pixel"), 2.0f / (p11 * (float)MD_MAX(vp[3], 1)));
+    glUniform1i(glGetUniformLocation(prog, "u_capsule"), cav.glyph_shape == CavityGlyphShape::Capsule ? 1 : 0);
+    glUniform1i(glGetUniformLocation(prog, "u_color_mode"), (int)cav.glyph_color);
+    glUniform1i(glGetUniformLocation(prog, "u_unlit"), cav.unlit ? 1 : 0);
+    glUniform1i(glGetUniformLocation(prog, "u_marks"), marks ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_proj_11"), p11);
+}
+
+static void glyph_unbind() {
+    for (int i = 0; i < 3; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_BUFFER, 0);
+    }
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glUseProgram(0);
+}
+
+void cavity_draw_glyphs(const CavityRepresentation& cav, const ViewParam& view, uint32_t tessera_base) {
+    const CavityData* d = cav.data;
+    if (!cav.glyphs || !d || d->num_tess == 0 || d->field != (int)cav.field || !ensure_programs()) return;
+    glyph_program(cav, *d, view, view.matrix.curr.proj, false);
+    glUniform1ui(glGetUniformLocation(gl_state.glyph, "u_tessera_base"), tessera_base);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(gl_state.vao);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)d->num_tess);
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+    glyph_unbind();
+}
+
+// The glyph of a tessera into the marks bound, as cavity_draw_marks marks its patch
+static void draw_glyph_marks(const CavityRepresentation& cav, const CavityData& d, uint32_t tessera, const GBuffer& gbuf, const ViewParam& view) {
+    glyph_program(cav, d, view, view.matrix.curr.proj_no_jitter, true);
+    const GLuint prog = gl_state.glyph;
+    glUniform1i(glGetUniformLocation(prog, "u_only"), (int)tessera);
+    glActiveTexture(GL_TEXTURE8);
+    glBindTexture(GL_TEXTURE_2D, gbuf.tex.depth);
+    glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 8);
+    const md_f32x4x4_t clip_to_view = md_f32x4x4_inverse(view.matrix.curr.proj);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
+    glUniform2f(glGetUniformLocation(prog, "u_inv_size"), 1.0f / gbuf.out_width, 1.0f / gbuf.out_height);
+    glBindVertexArray(gl_state.vao);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE8);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glyph_unbind();
+}
+
 bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& cav, uint32_t tessera, const float* world_pos) {
     const CavityData* d = cav.data;
     if (!d || tessera >= d->num_tess) return false;
@@ -1293,7 +1424,8 @@ bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& ca
         const float* s = &d->sph[4 * on];
         float n[3] = {x[0] - s[0], x[1] - s[1], x[2] - s[2]};
         const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-        if (len > 0) {
+        // On the surface, not on a glyph standing off it (within what the depth buffer resolves)
+        if (len > 0 && best < 0.08f) {
             for (int k = 0; k < 3; ++k) { n[k] /= len; x[k] = s[k] + s[3] * n[k]; }
             const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
             info->has_field_here = eval_field(&info->field_here, *d, x, n, kernel, cav.fit_areas);

@@ -8143,8 +8143,10 @@ static void draw_representations_opaque(ApplicationState* state) {
             const Representation& rep = state->representation.reps[i];
             if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
             const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id) : nullptr;
-            if (!range) continue;
+            const PickingRange* tess  = space ? picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id) : nullptr;
+            if (!range || !tess) continue;
             cavity_draw_geometry(rep.cavity, state->view.param, range->beg);
+            cavity_draw_glyphs(rep.cavity, state->view.param, tess->beg);
         }
 #if EXPERIMENTAL_GFX_API
     }

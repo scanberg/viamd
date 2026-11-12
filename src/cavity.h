@@ -92,6 +92,35 @@ inline const char* cavity_coloring_str[(int)CavityColoring::Count] = {
     "Kernel",
 };
 
+// THE GLYPHS: one per tessera, standing on its point along its normal, picking as the tessera. By default a cylinder
+// whose base is the circle where the tessera's Gaussian is at half its peak, of radius sqrt(a_j / pi) (zeta_j a_j = pi
+// ln 2: the disc has the area of the tessera), and whose height is its decay length lambda_j at true scale: its volume
+// a_j lambda_j is then the energy of the wall at the tessera over the pressure, P a_j lambda_j. Never thinner than a
+// pixel or two, so that the smallest tesserae can be seen and hovered.
+enum class CavityGlyphShape : int { Cylinder, Capsule, Count };
+enum class CavityGlyphSet : int {
+    All,                // every tessera
+    OffSurface,         // those left off the surface (min_area)
+    Count
+};
+enum class CavityGlyphLength : int {
+    DecayLength,        // lambda_j, Å, times the scale
+    Field,              // the field of the representation (the nearest value), over its colour range, to the scale Å
+    Constant,           // the scale, Å
+    Count
+};
+enum class CavityGlyphColor : int {
+    Field,              // the value of the tessera through the colour scale of the representation
+    Weight,             // the share of a whole point of the grid the switching left it, 0..1, through the colour map
+    Uniform,            // grey
+    Count
+};
+
+inline const char* cavity_glyph_shape_str[(int)CavityGlyphShape::Count] = {"Cylinder", "Capsule"};
+inline const char* cavity_glyph_set_str[(int)CavityGlyphSet::Count] = {"All tesserae", "Off the surface"};
+inline const char* cavity_glyph_length_str[(int)CavityGlyphLength::Count] = {"Decay length", "Field", "Constant"};
+inline const char* cavity_glyph_color_str[(int)CavityGlyphColor::Count] = {"Field", "Weight", "Uniform"};
+
 struct CavityRepresentation {
     CavityField    field    = CavityField::WallEnergy;
     CavityColoring coloring = CavityColoring::Kernel;
@@ -112,6 +141,16 @@ struct CavityRepresentation {
     bool  fit_areas = true;     // Split the surface by a power diagram whose patches have the areas of the tesserae
                                 // (relative to the surface drawn, by the measure above), not by the nearest tessera alone
     ColorScale scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
+
+    bool  surface = true;       // the surface; off for the glyphs alone
+    bool  glyphs = false;
+    CavityGlyphShape  glyph_shape  = CavityGlyphShape::Cylinder;
+    CavityGlyphSet    glyph_set    = CavityGlyphSet::All;
+    CavityGlyphLength glyph_length = CavityGlyphLength::DecayLength;
+    CavityGlyphColor  glyph_color  = CavityGlyphColor::Field;
+    float glyph_length_scale = 1.0f;    // times lambda_j, or Å
+    bool  glyph_radius_halfmax = true;  // the Gaussian's circle at half its peak, else glyph_radius
+    float glyph_radius = 0.08f;         // Å
 
     CavityData* data = nullptr; // owned, made by cavity_update
 };
@@ -144,6 +183,10 @@ uint32_t cavity_tessera_count(const CavityRepresentation& cav);
 // their spheres (sphere_base + the QM atom of each)
 void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view, uint32_t sphere_base);
 
+// The glyphs of the tesserae into the G-buffer bound for drawing (the opaque pass), picking as the tesserae
+// (tessera_base + the index of each). Nothing when cav.glyphs is off.
+void cavity_draw_glyphs(const CavityRepresentation& cav, const ViewParam& view, uint32_t tessera_base);
+
 // Whether the cavity can be weighted by GOSTSHYP's switching (the file's discretization is 'swig'), and is
 bool cavity_has_switching(const CavityRepresentation& cav);
 bool cavity_switched(const CavityRepresentation& cav);
@@ -156,7 +199,7 @@ bool cavity_switched(const CavityRepresentation& cav);
 void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const ViewParam& view, uint32_t sphere_base, uint32_t tessera_base);
 
 // The patch of a tessera into the marks of the highlight (the marks target bound, gbuffer_marks_begin): there where it
-// is, in view where nothing is in front of it
+// is, in view where nothing is in front of it. And its glyph, when they are shown.
 void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const GBuffer& gbuf, const ViewParam& view);
 
 // What a tessera is, for the tooltip

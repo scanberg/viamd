@@ -329,6 +329,8 @@ set(SHADER_FILES
     src/shaders/cavity/cavity_marks.frag
     src/shaders/cavity/cavity_geometry.vert
     src/shaders/cavity/cavity_geometry.frag
+    src/shaders/cavity/cavity_glyph.vert
+    src/shaders/cavity/cavity_glyph.frag
 )
 
 # Bake shaders into a single header file
