@@ -3,7 +3,7 @@
 #include <script_suggestions.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_pdb.h>
 #include <md_gro.h>
 #include <md_mmcif.h>
@@ -36,12 +36,12 @@ bool load(Loaded* l, const char* file) {
     md_system_state_t st = { .alloc = l->alloc };
     const md_str_t p = md_str_from_cstr(path);
     bool ok = false;
-    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL);
+    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p) && md_system_infer(&l->sys, &st, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
     if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, MD_XYZ_OPTION_NONE);
     else                           ok = md_pdb_system_init_from_file(&l->sys, &st, p, MD_PDB_OPTION_NONE, NULL);
-    return ok && md_util_system_infer(&l->sys, &st, MD_UTIL_INFER_ALL, NULL);
+    return ok && md_system_infer(&l->sys, &st, MD_SYSTEM_INFER_ALL, NULL);
 }
 
 void unload(Loaded* l) {
@@ -352,7 +352,7 @@ UTEST(script_suggestions, glycans) {
     l.sys = { .alloc = l.alloc };
     md_system_state_t st = { .alloc = l.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&l.sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(2u, (unsigned)md_system_molecule_count(&l.sys));
     ASSERT_EQ(4u, (unsigned)md_system_part_count(&l.sys));
 
@@ -574,7 +574,8 @@ UTEST(script_suggestions, measurement_within_a_residue) {
     EXPECT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resid(5) in chain(\"A\");"));
     // The same angle in every residue of the name, which the hint counts
     ASSERT_TRUE(contains(s, "m1 = angle(name(\"N\"), name(\"CA\"), name(\"C\")) in resname(\"HIS\");"));
-    for (size_t i = 0; i < md_array_size(s); ++i) {
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+
         const bool every = md_str_contains_str(s[i].text, MD_STR_LIT("resname("));
         EXPECT_TRUE(every == md_str_eq_cstr(s[i].hint, "One value for each of the 51 HIS"));
     }
@@ -778,7 +779,7 @@ UTEST(script_suggestions, vial_measurement_by_position) {
     l.sys = {.alloc = l.alloc};
     md_system_state_t st = {.alloc = l.alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, md_str_from_cstr(file), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    md_util_system_infer(&l.sys, &st, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&l.sys, &st, MD_SYSTEM_INFER_ALL, NULL);
     const int32_t atoms[3] = {1, 0, 2};
     md_array(ScriptSuggestion) s = script_suggest_measurement(V2, MD_STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
     print(s);
@@ -805,7 +806,8 @@ UTEST(script_suggestions, vial_measurement) {
     // Within one residue, written once, with its particles stacked by name
     EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
     EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));
-    for (size_t i = 0; i < md_array_size(s); ++i) {
+    for (size_t i = 0; i < md_array_size(s); ++i) {
+
         const bool every = md_str_contains_str(s[i].text, MD_STR_LIT("residue("));
         EXPECT_TRUE(every == md_str_begins_with(s[i].hint, MD_STR_LIT("One value for each of the 51 HIS")));
     }

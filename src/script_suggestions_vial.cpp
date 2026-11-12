@@ -10,7 +10,7 @@
 #include "script_suggestions.h"
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_element.h>
 #include <md_smiles.h>
 #include <md_match.h>
 #include <script_engine.h>

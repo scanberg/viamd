@@ -3,7 +3,8 @@
 #include <cartoon_glyphs.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_element.h>
+#include <md_infer.h>
 #include <md_util_geom.h>
 #include <md_pdb.h>
 #include <md_tpr.h>
@@ -48,7 +49,7 @@ UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(64, (int)sys.lipid.count);
 
     CartoonGlyphs g = {};
@@ -105,7 +106,7 @@ UTEST(cartoon_glyphs, martini_phospholipids_split_and_sterols_do_not) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/martini/martini3_membrane.tpr")));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL & ~MD_UTIL_INFER_BOND_BIT, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
 
     CartoonGlyphs g = {};
     cartoon_glyphs_init(&g, sys, md_gl_mol_t{}, alloc);
@@ -161,7 +162,7 @@ UTEST(cartoon_glyphs, martini_cholesterol_of_dummies_drawn_as_of_beads) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_str(&sys, &st, md_str_from_cstr(gro), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(2u, (uint32_t)sys.lipid.count);
 
     CartoonGlyphs g = {};
@@ -190,7 +191,7 @@ UTEST(cartoon_glyphs, nucleic_acids_are_a_band_with_sugar_and_base_slabs) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
     ASSERT_GT(bb.segment.count, (size_t)100);
 
@@ -271,14 +272,14 @@ static md_array(uint64_t) slab_keys(const CartoonGlyphs& g, md_allocator_i* allo
 }
 
 // A nucleic acid from an XYZ file, the element and the position of each atom: without residues, its backbones are found
-// from the bonds alone (md_util_system_infer) and the rings of each nucleotide from its C1'. The same slabs as of the
+// from the bonds alone (md_system_infer) and the rings of each nucleotide from its C1'. The same slabs as of the
 // same atoms read with their residues, and the same band, though no point stands for a residue.
 UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
     md_system_t ref = { .alloc = alloc };
     md_system_state_t ref_st = { .alloc = alloc };
     ASSERT_TRUE(md_gro_system_init_from_file(&ref, &ref_st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/nucl-dna.gro"), NULL));
-    ASSERT_TRUE(md_util_system_infer(&ref, &ref_st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&ref, &ref_st, MD_SYSTEM_INFER_ALL, NULL));
 
     char* text = (char*)md_alloc(alloc, 64 * (ref.atom.count + 1));
     size_t len = (size_t)snprintf(text, 64, "%zu\nxyz\n", ref.atom.count);
@@ -290,7 +291,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, md_str_t{ text, len }, MD_XYZ_OPTION_NONE));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ((size_t)0, sys.residue.count);
     ASSERT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
 
@@ -344,7 +345,7 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
         char path[256];
         snprintf(path, sizeof(path), VIAMD_TEST_DATA_DIR "/martini/%s.gro", names[n]);
         ASSERT_TRUE(md_gro_system_init_from_file(&sys, &st, md_str_from_cstr(path), NULL));
-        ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+        ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
         const md_nucleic_backbone_data_t& bb = sys.nucleic_backbone;
         ASSERT_EQ((size_t)2, bb.range.count);
 

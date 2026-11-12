@@ -9,7 +9,10 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_element.h>
+#include <core/md_spatial_acc.h>
+#include <core/md_coord_stream.h>
 #include <md_util_geom.h>
 #include <md_gl.h>
 #include <md_gfx.h>
@@ -89,6 +92,48 @@
 #define VIS_FLAGS (script::DRAW_ATOMS | script::DRAW_GEOMETRY | script::DRAW_TEXT)
 
 // Global data for application
+// Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
+static void mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* state, double radius, const md_bitset_t* viable_mask) {
+    MD_ASSERT(mask);
+    MD_ASSERT(state);
+    if (radius <= 0.0) return;
+    md_temp_scope_t temp = md_temp_begin_avoid(mask->alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    size_t num_indices = md_bitmask_count(mask);
+    if (num_indices > 0) {
+        int32_t* indices = (int32_t*)md_temp_alloc(temp, num_indices * sizeof(int32_t));
+        num_indices = md_bitset_iter_extract_indices(indices, num_indices, md_bitmask_iter(mask));
+
+        int32_t* viable_indices = 0;
+        size_t viable_count = state->num_atoms;
+        if (viable_mask) {
+            md_bitset_t temp_mask = md_bitset_andnot(*viable_mask, md_bitmask_view(mask), temp_arena);
+            const size_t count = md_bitset_count(temp_mask);
+            viable_indices = (int32_t*)md_temp_alloc(temp, count * sizeof(int32_t));
+            viable_count = md_bitset_iter_extract_indices(viable_indices, count, md_bitset_iter(temp_mask));
+        }
+        if (viable_count > 0) {
+            md_spatial_acc_t acc = {};
+            acc.alloc = temp_arena;
+            md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), viable_indices, viable_count);
+            md_spatial_acc_desc_t desc = {};
+            desc.coords = &stream;
+            desc.cutoff = radius;
+            desc.unitcell = &state->unitcell;
+            desc.flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
+            md_spatial_acc_init(&acc, &desc);
+
+            md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_f32x3_t), indices, num_indices);
+            auto set_bits = [](const uint32_t*, const uint32_t* j_idx, const float*, size_t num_pairs, void* user) {
+                md_bitmask_set_indices((md_bitmask_t*)user, j_idx, num_pairs);
+            };
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, set_bits, mask, MD_SPATIAL_ACC_FLAG_NONE);
+        }
+    }
+    md_temp_end(temp);
+}
+
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
 
@@ -3042,7 +3087,7 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_ring_data_free(&mol->ring, data->mold.sys.alloc);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT, NULL);
+    md_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT, NULL);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
@@ -3548,10 +3593,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
 
             switch (data->selection.grow.mode) {
             case SelectionGrowthMode::CovalentBond:
-                md_util_mask_grow_by_bonds(grow, &data->mold.sys, (int)data->selection.grow.extent, &viable);
+                md_bond_mask_grow(grow, &data->mold.sys.bond, data->mold.sys.atom.count, (size_t)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                md_util_mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
+                mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
                 break;
             }
             default:

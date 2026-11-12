@@ -16,7 +16,7 @@
 #include <core/md_log.h>
 #include <core/md_vec_math.h>
 #include <md_system.h>
-#include <md_util.h>
+#include <md_element.h>
 #include <md_nonbonded.h>
 
 #include <imgui.h>

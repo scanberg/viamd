@@ -3,7 +3,7 @@
 #include <color_utils.h>
 
 #include <md_system.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_pdb.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_vec_math.h>
@@ -134,7 +134,7 @@ UTEST(viamd_color, res_type) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
-    ASSERT_TRUE(md_util_system_infer(&sys, &st, MD_UTIL_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(3, (int)sys.residue.count);
 
     uint32_t colors[9] = {};

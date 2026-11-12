@@ -13,7 +13,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_vec_math.h>
 #include <core/md_os.h>
-#include <md_system.h>
 
 #include <md_attributes.h>
 

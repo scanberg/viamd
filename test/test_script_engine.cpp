@@ -5,7 +5,7 @@
 
 #include <md_system.h>
 #include <md_run.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_pdb.h>
 #include <md_attributes.h>
 #include <core/md_arena_allocator.h>
@@ -40,7 +40,7 @@ const Peptide* peptide() {
         p.state = { .alloc = p.alloc };
         const md_str_t path = MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
         if (md_pdb_system_init_from_file(&p.sys, &p.state, path, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL) &&
-            md_util_system_infer(&p.sys, &p.state, MD_UTIL_INFER_ALL, NULL) &&
+            md_system_infer(&p.sys, &p.state, MD_SYSTEM_INFER_ALL, NULL) &&
             md_pdb_system_publish_run(&p.sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
             const md_attribute_t* t = md_attributes_find(&p.sys.attributes, MD_STR_LIT("run/time"));
             p.num_frames = t ? (size_t)t->format.shape[0] : 0;

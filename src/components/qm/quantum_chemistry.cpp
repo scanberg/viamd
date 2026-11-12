@@ -15,7 +15,8 @@
 
 #include <md_gto.h>
 #include <md_gto_iso.h>
-#include <md_util.h>
+#include <md_system.h>
+#include <md_element.h>
 #include <md_topo.h>
 #include <md_vector_graphics.h>
 #include <md_flow.h>

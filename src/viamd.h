@@ -14,7 +14,7 @@
 #include <core/md_grid.h>
 #include <script_engine.h>
 #include <md_gl.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <md_chem.h>
 #include <md_edr.h>
 
@@ -1314,15 +1314,15 @@ inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 inline constexpr uint32_t GPU_PLANE_DIM = 2048;
 
 // What is derived from the core a loader gives (the bonds, what the residues are, the structures, the chemistry:
-// md_util_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
+// md_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
 // then the system is shown as loaded: its atoms, as spheres where a representation needs what is not there yet. One
 // system at a time: a load cancels the inference of the system before it.
 struct SystemInference {
     task_system::Job    job;
-    md_util_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred in arena
+    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred in arena
     md_allocator_i*     arena = nullptr;
     md_array(md_allocator_i*) kept = nullptr;   // The arenas of what was published: arrays of the system now
-    md_infer_flags_t    flags = MD_UTIL_INFER_NONE;
+    md_infer_flags_t    flags = MD_SYSTEM_INFER_NONE;
     std::atomic<bool>   done{false};            // The work is inferred: not cancelled half way
     bool                pending = false;        // The system shows its core: inference is under way, or to be started again
     bool                restart = false;        // Cancelled (the pool was interrupted) or of a topology since changed

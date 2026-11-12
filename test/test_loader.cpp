@@ -197,7 +197,7 @@ UTEST(viamd_loader, a_veloxchem_h5_stays_veloxchem) {
 /* ---- A topology without coordinates, and coordinates without atoms ------------------------------ */
 
 #include <core/md_file.h>
-#include <md_util.h>
+#include <md_infer.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -333,7 +333,7 @@ UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
     loader::LoaderState ps = {};
     loader::init(&ps, MD_STR_LIT("viamd_test_water.pdb"));
     ASSERT_TRUE(loader::load(&pdb, &pdb_state, MD_STR_LIT("viamd_test_water.pdb"), ps));
-    md_util_system_infer(&pdb, &pdb_state, MD_UTIL_INFER_ALL, NULL);
+    md_system_infer(&pdb, &pdb_state, MD_SYSTEM_INFER_ALL, NULL);
     ASSERT_TRUE(loader::load_supplemental(&pdb, MD_STR_LIT("viamd_test_water.prmtop"), ls, MD_STR_LIT("")));
     EXPECT_EQ(6u, pdb.bond.count);
     EXPECT_TRUE(md_attributes_find(&pdb.attributes, MD_STR_LIT("atom/charge")) != nullptr);

@@ -37,7 +37,6 @@
 #include <core/md_bitset.h>
 #include <core/md_hash.h>
 #include <md_system.h>
-#include <md_util.h>
 
 #include <viamd_event.h>
 #include <viamd.h>

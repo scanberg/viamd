@@ -14,7 +14,6 @@
 #include <task_system.h>
 #include <md_lammps.h>
 #include <md_dcd.h>
-#include <md_util.h>
 #include <md_system.h>
 #include <md_run.h>
 

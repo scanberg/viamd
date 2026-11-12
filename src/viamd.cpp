@@ -1,5 +1,6 @@
 ﻿
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_element.h>
 #include <md_util_geom.h>
 #include <md_run.h>
 #include <md_dssp.h>
@@ -153,6 +154,19 @@ void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
 //
 // The font carries Latin-1, Greek and U+2010-2027 (application.cpp): the middle dot, the en dash, Å, °, ², φ and ψ
 // print; an arrow, the minus sign U+2212 and the prime U+2032 do not, so '-', '/' and "'" stand in for them.
+
+// The coordinates of the atoms of mask with their masses (w), packed in the order of the atoms
+static void extract_xyzw_from_mask(md_f32x4_t* out_xyzw, const md_bitset_t* mask, const md_system_t* sys, const md_system_state_t* state) {
+    MD_ASSERT(out_xyzw);
+    MD_ASSERT(mask);
+    MD_ASSERT(sys);
+    md_bitset_iter_t it = md_bitset_iter(*mask);
+    size_t count = 0;
+    while (md_bitset_iter_next(&it)) {
+        const size_t i = it.idx;
+        out_xyzw[count++] = md_f32x4_from_f32x3(md_state_coord(state, i), md_atom_mass(&sys->atom, i));
+    }
+}
 
 static md_str_t tooltip_vprintf(md_allocator_i* alloc, const char* format, va_list args) {
     va_list args_len;
@@ -1874,7 +1888,7 @@ LoadResult load_data_from_file(ApplicationState* state, md_str_t filepath, const
 
 // ### INFERENCE IN THE BACKGROUND ###
 //
-// The work (md_util_system_infer_prepare) shares the core of the system, which nothing writes until it is published or
+// The work (md_system_infer_prepare) shares the core of the system, which nothing writes until it is published or
 // discarded, and has of its own what inference writes and the coordinates shown when it was made, which become the
 // system's reference state. It is inferred on a worker with its loops on the pool. Published, its arrays become the
 // system's (its arena is kept with the system, freed with it); the system keeps its core, its attribute table and its
@@ -1902,7 +1916,7 @@ void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
     }
 
     inf.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    if (!md_util_system_infer_prepare(&inf.work, &sys, &app->mold.state, inf.arena)) {
+    if (!md_system_infer_prepare(&inf.work, &sys, &app->mold.state, inf.arena)) {
         VIAMD_LOG_ERROR("Could not prepare the inference of the structure of the system");
         inference_discard_work(inf);
         inf.pending = false;
@@ -1917,7 +1931,7 @@ void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
     SystemInference* p = &inf;
     inf.job.start(MD_STR_LIT("Inferring structure"),
         [p]() {
-            md_util_system_infer_run(&p->work, p->flags, task_system::executor());
+            md_system_infer_run(&p->work, p->flags, task_system::executor());
             // Bond inference leaves its scratch committed in this thread's arenas (it rewinds them, which keeps the
             // pages): given back, as this was large and is done
             md_temp_trim();
@@ -1971,7 +1985,7 @@ static bool inference_publish(ApplicationState* app) {
     md_system_t& sys = app->mold.sys;
 
     // A version of its own: what was derived from the core is stale
-    if (!md_util_system_infer_publish(&sys, &inf.work)) return false;
+    if (!md_system_infer_publish(&sys, &inf.work)) return false;
 
     md_array_push(inf.kept, inf.arena, app->allocator.persistent);
     inf.arena = nullptr;
@@ -2032,7 +2046,7 @@ void system_inference_finish(ApplicationState* app) {
         // Inferred on the system itself, here and now
         inf.job.cancel_and_wait();
         inference_discard_work(inf);
-        md_util_system_infer(&app->mold.sys, &app->mold.state, inf.flags, task_system::executor());
+        md_system_infer(&app->mold.sys, &app->mold.state, inf.flags, task_system::executor());
         inf.pending = false;
         inf.restart = false;
         system_inferred_refresh(app);
@@ -2140,18 +2154,18 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
             // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
-            md_infer_flags_t flags = MD_UTIL_INFER_ALL;
+            md_infer_flags_t flags = MD_SYSTEM_INFER_ALL;
             if ((load_state.flags & LoaderFlag_Topology) && state->mold.sys.bond.count > 0) {
                 // The file's bonds are the force field's; inferring would replace them with a guess.
                 // Structures and rings are still derived, from those bonds. A topology format that
                 // carried no bonds at all (an H5MD file without connectivity) has none to protect, and
                 // gets them inferred like any other structure.
-                flags &= ~MD_UTIL_INFER_BOND_BIT;
-                flags |= MD_UTIL_INFER_MOLECULE_BIT;
+                flags &= ~MD_SYSTEM_INFER_BOND_BIT;
+                flags |= MD_SYSTEM_INFER_MOLECULE_BIT;
             }
             // The colours of the particle types now, which the core is shown with; the rest in the background, put in
             // place when it is done (system_inference_start)
-            md_util_system_infer(&state->mold.sys, &state->mold.state, MD_UTIL_INFER_COLOR_BIT, nullptr);
+            md_system_infer(&state->mold.sys, &state->mold.state, MD_SYSTEM_INFER_COLOR_BIT, nullptr);
             state->mold.inference.pending = true;
             init_system_data(state);
 
@@ -2161,7 +2175,7 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
                 open_run(state, path_to_file, load_state);
             }
             // After the run is opened, which interrupts what runs on the pool
-            system_inference_start(state, flags & ~MD_UTIL_INFER_COLOR_BIT);
+            system_inference_start(state, flags & ~MD_SYSTEM_INFER_COLOR_BIT);
         } else if (role == FileRole_Trajectory) {
             if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
@@ -6657,7 +6671,7 @@ bool recenter_calculate_transform(md_f32x4x4_t* translation, md_f32x4x4_t* rotat
         // Extract xyzw subset of target
         md_f32x4_t* target_xyzw = md_temp_alloc_array(temp, md_f32x4_t, count);
 
-		md_util_system_extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
+		extract_xyzw_from_mask(target_xyzw, &target_mask, &app->mold.sys, &app->mold.state);
 
         // Calculate target
         md_f32x3_t target = {0};
@@ -6830,8 +6844,8 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
 
     system_bonds_edit_begin(app);
     // The bonds inferred anew (those given stay) and what follows from them, from the same coordinates, which
-    // md_util_system_infer records as the reference
-    md_util_system_infer(&sys, &state, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT | MD_UTIL_INFER_CHEMISTRY_BIT | MD_UTIL_INFER_LIPID_BIT | MD_UTIL_INFER_FRAGMENT_BIT, task_system::executor());
+    // md_system_infer records as the reference
+    md_system_infer(&sys, &state, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_CHEMISTRY_BIT | MD_SYSTEM_INFER_LIPID_BIT | MD_SYSTEM_INFER_FRAGMENT_BIT, task_system::executor());
     system_bonds_changed(app, false);
     return true;
 }
@@ -7913,7 +7927,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 if (popcount > 0) {
                     md_f32x4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                     if (dst_xyzw) {
-                        md_util_system_extract_xyzw_from_mask(dst_xyzw, &bf, &state->mold.sys, &state->mold.state);
+                        extract_xyzw_from_mask(dst_xyzw, &bf, &state->mold.sys, &state->mold.state);
                     }
                 }
             }

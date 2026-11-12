@@ -1,8 +1,8 @@
 #include "script_suggestions.h"
 
 #include <md_system.h>
+#include <md_element.h>
 #include <script_engine.h>
-#include <md_util.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
