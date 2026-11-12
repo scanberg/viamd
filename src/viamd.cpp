@@ -1978,6 +1978,24 @@ static void system_inferred_refresh(ApplicationState* app) {
     app->script.time_since_last_change = 1.0e9;
 }
 
+// The default representations, decided from what is now known of the system, in place of the placeholder shown while it
+// was inferred, unless it was changed or others were made meanwhile. However inference ended: published, or done again
+// on the main thread (system_inference_finish, as when a supplement or a run comes along before it is done).
+static void inference_defaults(ApplicationState* app) {
+    SystemInference& inf = app->mold.inference;
+    if (!inf.defaults_pending) return;
+    inf.defaults_pending = false;
+    const size_t num_reps = md_array_size(app->representation.reps);
+    const Representation* rep = num_reps == 1 ? &app->representation.reps[0] : nullptr;
+    const bool untouched = rep && strcmp(rep->name, inf.placeholder_name) == 0 && rep->type == RepresentationType::SpaceFill &&
+        rep->color_mapping == ColorMapping::Type && rep->enabled && rep->filter.text[0] == '\0' && rep->scale.x == 1.0f;
+    if (untouched) {
+        remove_all_representations(app);
+        create_default_representations(app);
+        recompute_atom_visibility_mask(app);
+    }
+}
+
 // The work published: the main thread, nothing else running which reads the system. False when the topology changed
 // since the work was made of it, and then nothing is done.
 static bool inference_publish(ApplicationState* app) {
@@ -1997,20 +2015,7 @@ static bool inference_publish(ApplicationState* app) {
     // The run's backbones, which there were none of before
     if (app->mold.run[0]) trajectory_backbone_start(app);
 
-    // The default representations, decided from what is now known of the system, in place of the placeholder unless
-    // it was changed or others were made meanwhile
-    if (inf.defaults_pending) {
-        inf.defaults_pending = false;
-        const size_t num_reps = md_array_size(app->representation.reps);
-        const Representation* rep = num_reps == 1 ? &app->representation.reps[0] : nullptr;
-        const bool untouched = rep && strcmp(rep->name, inf.placeholder_name) == 0 && rep->type == RepresentationType::SpaceFill &&
-            rep->color_mapping == ColorMapping::Type && rep->enabled && rep->filter.text[0] == '\0' && rep->scale.x == 1.0f;
-        if (untouched) {
-            remove_all_representations(app);
-            create_default_representations(app);
-            recompute_atom_visibility_mask(app);
-        }
-    }
+    inference_defaults(app);
     md_temp_trim();
     VIAMD_LOG_INFO("The structure of the system is inferred: %zu bonds, %zu molecules", sys.bond.count, md_system_molecule_count(&sys));
     return true;
@@ -2050,7 +2055,7 @@ void system_inference_finish(ApplicationState* app) {
         inf.pending = false;
         inf.restart = false;
         system_inferred_refresh(app);
-        inf.defaults_pending = false;
+        inference_defaults(app);
     }
 }
 
