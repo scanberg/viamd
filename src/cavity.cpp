@@ -54,7 +54,7 @@ static const double AU_PRESSURE_GPA = 29421.02648438959;
 static const float QUAD_SPACING = 0.06f;
 static const float SIGMA_FLOOR  = 0.12f;
 static const float KERNEL_CUT   = 3.0f;     // in sigmas: the same cut in the normalization and in the shader
-static const float HATCH_PERIOD = 7.0f;     // pixels: of the hatching by the weight missing (cavity_resolve.frag)
+static const float SCREEN_PERIOD = 6.0f;    // pixels: of the halftone of the weight missing (cavity_resolve.frag)
 static const float POWER_REACH  = 2.0f;     // Å: a tessera further than this from a point is never its patch by power, in
                                             // the fit as in the shader
 
@@ -108,6 +108,13 @@ struct CavityData {
     std::vector<uint32_t> nbr_off;  // [spheres + 1]
     std::vector<uint32_t> nbr;
     bool  switched = false;         // whether the surface below is weighted by the switching (QuadPoint::w)
+
+    // The tesserae on the surface: those whose area is at least min_area of a full point (QuadPoint aside, a point of the
+    // Lebedev grid that the switching left whole), measured on its own sphere. The rest are left out of everything
+    // below: of the patches, the kernels and the grid the shader reads. They stay in the data.
+    float min_area = -1.0f;
+    double full_share = 0;          // the largest a_j / 4 pi R^2: a whole point of the largest orbit of the grid
+    std::vector<uint8_t> shown;
 
     // The weights of the power diagram the surface is split by, |x - c_j|^2 - w_j (Å^2): fitted so that each patch
     // has the area of its tessera, relative to the surface drawn (fit_weights). Made once per cavity.
@@ -330,7 +337,7 @@ static void build_coarse(CellGrid* g, const CavityData& d, float cell) {
     std::vector<int> cell_of(d.num_tess);
     for (uint32_t j = 0; j < d.num_tess; ++j) {
         int c[3];
-        cell_of[j] = g->cell_of(&d.pos[3 * j], c);
+        cell_of[j] = d.shown[j] ? g->cell_of(&d.pos[3 * j], c) : -1;
         if (cell_of[j] >= 0) count[cell_of[j] + 1]++;
     }
     for (size_t i = 0; i < cells; ++i) count[i + 1] += count[i];
@@ -505,7 +512,7 @@ static void build_kernel(CavityData* d, float scale) {
     uint32_t num_unreached = 0;
     for (uint32_t j = 0; j < n; ++j) {
         if (d->norm[j] < 1e-9) d->norm[j] = 0.0;
-        num_unreached += d->norm[j] <= 0.0;
+        num_unreached += d->norm[j] <= 0.0 && d->shown[j];
     }
     if (num_unreached) {
         // Buried: the switching kept it, but no point of the exposed surface is within its reach. It colours nothing.
@@ -897,6 +904,26 @@ bool cavity_update(CavityRepresentation* cav, const md_system_t& sys, const md_s
         d->weight.clear();
         d->kernel_scale = -1.0f;
     }
+    const float min_area = MD_CLAMP(cav->min_area, 0.0f, 0.5f);
+    if (min_area != d->min_area) {
+        d->min_area = min_area;
+        if (d->full_share <= 0) {
+            for (uint32_t j = 0; j < d->num_tess; ++j) {
+                const double R = d->sph[4 * d->atom[j] + 3];
+                if (R > 0) d->full_share = fmax(d->full_share, d->area[j] / (4.0 * M_PI * R * R));
+            }
+        }
+        d->shown.assign(d->num_tess, 1);
+        uint32_t hidden = 0;
+        for (uint32_t j = 0; j < d->num_tess; ++j) {
+            const double R = d->sph[4 * d->atom[j] + 3];
+            const double full = d->full_share * 4.0 * M_PI * R * R;
+            if (d->area[j] < min_area * full) { d->shown[j] = 0; hidden++; }
+        }
+        MD_LOG_DEBUG("Cavity: %u of %u tesserae below %.3g of a whole point, left off the surface", hidden, d->num_tess, min_area);
+        d->weight.clear();
+        d->kernel_scale = -1.0f;
+    }
     const float scale = MD_CLAMP(cav->kernel_scale, 0.25f, 4.0f);
     if (scale != d->kernel_scale) {
         build_kernel(d, scale);
@@ -942,6 +969,7 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
     h = md_hash64(&cav.conserve, sizeof(cav.conserve), h);
     h = md_hash64(&cav.fit_areas, sizeof(cav.fit_areas), h);
     h = md_hash64(&cav.switched, sizeof(cav.switched), h);
+    h = md_hash64(&cav.min_area, sizeof(cav.min_area), h);
     h = md_hash64(&cav.edges, sizeof(cav.edges), h);
     h = md_hash64(&cav.scale, sizeof(cav.scale), h);
     if (cav.data) h = md_hash64(&cav.data->version, sizeof(cav.data->version), h);
@@ -1107,7 +1135,7 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glUniform1f(glGetUniformLocation(prog, "u_gamma"), d->sw_gamma);
     glUniform1f(glGetUniformLocation(prog, "u_alpha"), d->sw_alpha);
     glUniform1f(glGetUniformLocation(prog, "u_r_ext"), d->sw_r_ext);
-    glUniform1f(glGetUniformLocation(prog, "u_hatch_period"), HATCH_PERIOD);
+    glUniform1f(glGetUniformLocation(prog, "u_screen_period"), SCREEN_PERIOD);
 
     glBindVertexArray(gl_state.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1293,7 +1321,7 @@ bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav) {
     out->wall_energy = (float)E;
     out->max_kernel_error = d->kernel_error;
 
-    double buried_area = 0, unreached = 0;
+    double buried_area = 0, unreached = 0, hidden_area = 0, hidden_energy = 0;
     for (uint32_t j = 0; j < d->num_tess; ++j) {
         const float* p = &d->pos[3 * j];
         for (uint32_t k = 0; k < d->num_spheres; ++k) {
@@ -1305,8 +1333,17 @@ bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav) {
                 break;
             }
         }
-        if (d->norm.size() == d->num_tess && d->norm[j] <= 0) unreached += GPA_A3_KJMOL * d->pressure * d->area[j] * d->lambda[j];
+        const double e = GPA_A3_KJMOL * d->pressure * d->area[j] * d->lambda[j];
+        if (d->shown.size() == d->num_tess && !d->shown[j]) {
+            out->num_hidden += 1;
+            hidden_area += d->area[j];
+            hidden_energy += e;
+        } else if (d->norm.size() == d->num_tess && d->norm[j] <= 0) {
+            unreached += e;
+        }
     }
+    out->hidden_area = A > 0 ? (float)(hidden_area / A) : 0.0f;
+    out->hidden_energy = E > 0 ? (float)(hidden_energy / E) : 0.0f;
     out->buried_area = A > 0 ? (float)(buried_area / A) : 0.0f;
     out->unreached_energy = E > 0 ? (float)(unreached / E) : 0.0f;
     return true;

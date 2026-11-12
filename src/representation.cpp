@@ -2117,6 +2117,8 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         viamd::extract_bool(rep->cavity.edges, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavitySwitched"))) {
         viamd::extract_bool(rep->cavity.switched, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityMinArea"))) {
+        viamd::extract_flt(rep->cavity.min_area, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityFitAreas"))) {
         viamd::extract_bool(rep->cavity.fit_areas, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityColormap"))) {
@@ -2429,6 +2431,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
         viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
         viamd::write_bool(state, MD_STR_LIT("CavitySwitched"), c.switched);
+        viamd::write_flt(state,  MD_STR_LIT("CavityMinArea"), c.min_area);
         viamd::write_bool(state, MD_STR_LIT("CavityFitAreas"), c.fit_areas);
         viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
         viamd::write_flt_vec(state, MD_STR_LIT("CavityRange"), range, 2);
@@ -3931,10 +3934,27 @@ static bool draw_representation_cavity(Representation& rep) {
             prop::row("switching weight", "Measure the surface as GOSTSHYP does. VeloxChem weights each point by a smoothstep\n"
                                           "across a band about every neighbouring sphere (evaluated on the spheres grown by r_ext),\n"
                                           "so the area of a tessera is its Lebedev share of its sphere times that weight.\n"
-                                          "The patches and kernels are sized by the weighted area, and the surface is hatched\n"
-                                          "where the weight is below 1/2, the more the lower: the bands along the seams.\n"
+                                          "The patches and kernels are sized by the weighted area. Where the weight is below 1/2,\n"
+                                          "the bands along the seams, the surface is outlined and screened by light dots whose\n"
+                                          "area is the weight missing: the paler, the less the surface counts.\n"
                                           "Off: by area alone, as if the union of the spheres were the cavity.");
             update_rep |= ImGui::Checkbox("##cavity_switched", &cav.switched);
+        }
+        prop::row("smallest area", "Leave the tesserae smaller than this share of a whole point of the Lebedev grid off the surface:\n"
+                                   "the switching shrinks the points along the seams down to nothing, and their patches are too\n"
+                                   "small to see or hover. Their neighbours take their place. They stay in the data (the GOSTSHYP\n"
+                                   "window), and their share of the area and the energy is in Data below.\n"
+                                   "Applied when the slider is let go: the patches are fitted again.");
+        {
+            // Applied on release: a change fits the power diagram again, which takes a moment
+            const ImGuiID id = ImGui::GetID("##cavity_min_area");
+            float* pct = ImGui::GetStateStorage()->GetFloatRef(id, 100.0f * cav.min_area);
+            if (ImGui::GetActiveID() != id) *pct = 100.0f * cav.min_area;
+            ImGui::SliderFloat("##cavity_min_area", pct, 0.0f, 20.0f, "%.1f %%", ImGuiSliderFlags_AlwaysClamp);
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                cav.min_area = *pct / 100.0f;
+                update_rep = true;
+            }
         }
         prop::row("area weighted", "Split the surface between the tesserae so that each patch has the area of its tessera, relative\n"
                                    "to the surface drawn (a power diagram, |x - c|^2 - w, with fitted weights). Off: each point to\n"
@@ -3976,6 +3996,10 @@ static bool draw_representation_cavity(Representation& rep) {
                                    "with small areas, so the cavity of the calculation is a smoothed union of the spheres.\n"
                                    "Their share of the area of the tesserae.");
         ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
+        if (sum.num_hidden > 0) {
+            prop::row("off the surface", "Tesserae below the smallest area, left off the surface: their share of the area and of the wall energy");
+            ImGui::Text("%u (%.2f%% of the area, %.2f%% of the energy)", sum.num_hidden, 100.0f * sum.hidden_area, 100.0f * sum.hidden_energy);
+        }
         if (sum.unreached_energy > 0) {
             prop::row("not on surface", "The share of the wall energy on tesserae too deep inside other spheres for their kernels to\n"
                                         "reach the surface drawn: it is not in what the kernel spreads");

@@ -4,15 +4,15 @@
 // on it, the tessera nearest to it, and the field there through the colour map. Writes the colour (its alpha 1/255
 // when unlit, which the composition reads as such and the coverage as geometry) and the picking index of the tessera.
 //
-// Of a switched cavity, the surface is hatched by the weight GOSTSHYP gives its area there, the switching of VeloxChem's
+// Of a switched cavity, the surface shows the weight GOSTSHYP gives its area there, the switching of VeloxChem's
 // 'swig': the points of each sphere i are weighted by
 //   F_i(x) = prod_j f((|x' - X_j| - (r_j - alpha gamma r_j)) / (gamma r_j)),   f(t) = 10t^3 - 15t^4 + 6t^5 on [0, 1]
 // with x' the point on the sphere grown by r_ext, r_j = R_j + r_ext, gamma = sqrt(14 / N_lebedev) and
 // alpha = 1/2 + 1/gamma - sqrt(1/gamma^2 - 1/28), and the area of a tessera is its Lebedev share times F. F is below 1
-// over most of the spheres (the bands are about a van der Waals radius wide), so the hatching marks where it is below
-// 1/2, as strong as 1 - 2F: the bands along the seams, darkest at the seams, which a cut at F = 1/2 would remove. In
-// screen space, diagonal lines: lines on the surface (planes through the spheres) would be circles, read as contours of
-// the field.
+// over most of the spheres (the bands are about a van der Waals radius wide), so what is marked is where it is below
+// 1/2, the bands along the seams that a cut at F = 1/2 would remove: outlined by a light line at F = 1/2, and screened
+// by light dots whose area is the weight missing there, 1 - 2F, so that the surface washes out as it counts less.
+// In screen space, a halftone on a grid at 45 degrees: on the surface its dots would stretch with the slope.
 
 uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
 uniform samplerBuffer  u_tess_a;        // xyz: the centre of the tessera (the frame of the file), w: the kernel's sigma
@@ -44,7 +44,7 @@ uniform int   u_switched;
 uniform float u_gamma;
 uniform float u_alpha;
 uniform float u_r_ext;
-uniform float u_hatch_period;          // pixels
+uniform float u_screen_period;         // pixels, of the halftone
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking;
@@ -109,6 +109,9 @@ void main() {
     x = s.xyz + n * s.w;
 
     float weight = (u_switched != 0) ? switching(int(sphere), n) : 1.0;
+    // How much the weight changes over a pixel, for the line at 1/2: here, before anything else can discard a pixel of
+    // the quad. Across the border of two spheres it is not a change of the weight: no line there.
+    float weight_fw = fwidth(weight);
 
     ivec3 c = ivec3(floor((x - u_grid_min) * u_inv_cell));
     if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, u_grid_dim))) discard;
@@ -163,14 +166,21 @@ void main() {
         color *= mix(1.0, 0.35, edge);
     }
 
-    float missing = clamp(1.0 - 2.0 * weight, 0.0, 1.0);
-    if (missing > 0.0) {
-        // Diagonal lines, a third of the period wide, smoothed over a pixel
-        float u    = (gl_FragCoord.x + gl_FragCoord.y) * 0.70710678 / u_hatch_period;
-        float fw   = 0.70710678 * 1.41421356 / u_hatch_period;    // what a pixel spans of u along the diagonal
-        float f    = abs(fract(u) - 0.5);                         // 1/2 in the middle of a line, 0 between them
-        float line = smoothstep(1.0 / 3.0 - 0.5 * fw, 1.0 / 3.0 + 0.5 * fw, f);
-        color = mix(color, vec3(0.08), 0.65 * missing * line);
+    if (u_switched != 0) {
+        // Dots on a grid at 45 degrees, their area the weight missing below 1/2, smoothed over a pixel
+        float missing = clamp(1.0 - 2.0 * weight, 0.0, 1.0);
+        if (missing > 0.0) {
+            vec2  g  = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678) * gl_FragCoord.xy / u_screen_period;
+            float d  = length(fract(g) - 0.5) * u_screen_period;            // pixels from the centre of its dot
+            float r  = sqrt(missing / 3.14159265) * u_screen_period;        // pi r^2 = missing * period^2
+            float dot_cover = 1.0 - smoothstep(r - 0.5, r + 0.5, d);
+            color = mix(color, vec3(0.97), 0.8 * dot_cover);
+        }
+        // The line where it is 1/2, a pixel and a half wide
+        if (weight_fw > 0.0 && weight_fw < 0.25) {
+            float px = abs(weight - 0.5) / weight_fw;
+            color = mix(color, vec3(1.0), 0.85 * (1.0 - smoothstep(0.5, 1.0, px)));
+        }
     }
 
     out_color = vec4(color, u_unlit != 0 ? 1.0 / 255.0 : 1.0);

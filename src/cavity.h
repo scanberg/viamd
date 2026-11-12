@@ -27,8 +27,8 @@ struct CavityData;
 // VeloxChem's 'swig' weights the points of each sphere by a smoothstep across a band about each neighbouring sphere's
 // surface (cavity_resolve.frag), so that the area of a tessera is its Lebedev share of its sphere times that switching
 // F, and F is the density of GOSTSHYP's area over the spheres. Where the cavity is switched, the union is measured by
-// it: the patches and the kernels below are sized and normalized by F dA, and the shader hatches the surface where F
-// is below 1/2, as strong as 1 - 2F (cavity_resolve.frag). On 5helicene.h5 the union is 361.2 Å^2 and weighs 256.2; the tesserae sum to 312.5,
+// it: the patches and the kernels below are sized and normalized by F dA, and the shader outlines where F is below
+// 1/2 and screens it by light dots of area 1 - 2F (cavity_resolve.frag). On 5helicene.h5 the union is 361.2 Å^2 and weighs 256.2; the tesserae sum to 312.5,
 // the rest of their weight (56 Å^2) inside other spheres, where no surface drawn can show it. A full screen pass after
 // the opaque geometry (cavity_resolve) then
 // looks at every pixel of the G-buffer that a sphere of the cavity won, intersects the view ray with that sphere again
@@ -101,8 +101,11 @@ struct CavityRepresentation {
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches
-    bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and hatch it where the
+    bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and mark where the
                                 // weight is below 1/2 (when the file's discretization is 'swig'); else by area alone
+    float min_area = 0.01f;     // Leave tesserae smaller than this share of a whole point of the grid (on a sphere of the
+                                // same radius) off the surface: their patches are too small to see or hover, and the
+                                // decay lengths of their needle-thin Gaussians are not comparable. They stay in the data
     bool  fit_areas = true;     // Split the surface by a power diagram whose patches have the areas of the tesserae
                                 // (relative to the surface drawn, by the measure above), not by the nearest tessera alone
     ColorScale scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
@@ -183,5 +186,8 @@ struct CavitySummary {
     uint32_t num_buried = 0;    // tesserae inside the sphere of another atom: the switching keeps them where spheres overlap
     float buried_area = 0;      // their share of sum a_j
     float unreached_energy = 0; // the share of the wall energy on tesserae no point of the exposed surface is within reach of
+    uint32_t num_hidden = 0;    // tesserae left off the surface, below min_area
+    float hidden_area = 0;      // their share of sum a_j
+    float hidden_energy = 0;    // their share of the wall energy
 };
 bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav);
