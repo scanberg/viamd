@@ -770,14 +770,24 @@ static void upload_kernel(CavityData* d) {
     upload_buffer(d, BUF_NBR_ITEMS, GL_R32UI, d->nbr.data(), d->nbr.size() * sizeof(uint32_t));
 
     // Of the glyphs: the radius where the Gaussian is at half its peak, exp(-zeta r^2) = 1/2, which with zeta a = pi
-    // ln 2 is sqrt(a / pi); the decay length; the share of a whole point; whether it is on the surface
+    // ln 2 is sqrt(a / pi); the decay length; its weight; whether it is on the surface. The weight is the switching at
+    // its point where the cavity is switched: the file's areas are the Lebedev weights times it, a_j = w_j 4 pi R^2 F_j
+    // (on 5helicene.h5 to 4e-13), so this is F alone, without the Lebedev weight. Else the share of a whole point.
     std::vector<float> gl(4 * n);
     for (uint32_t j = 0; j < n; ++j) {
         const double R = d->sph[4 * d->atom[j] + 3];
         const double full = d->full_share * 4.0 * M_PI * R * R;
         gl[4 * j + 0] = d->zeta[j] > 0 ? (float)sqrt(log(2.0) / d->zeta[j]) : (float)sqrt(d->area[j] / M_PI);
         gl[4 * j + 1] = (float)d->lambda[j];
-        gl[4 * j + 2] = full > 0 ? (float)(d->area[j] / full) : 0.0f;
+        if (d->has_switching) {
+            const float* s = &d->sph[4 * d->atom[j]];
+            float n[3] = {d->pos[3 * j] - s[0], d->pos[3 * j + 1] - s[1], d->pos[3 * j + 2] - s[2]};
+            const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            for (float& v : n) v /= len > 0 ? len : 1.0f;
+            gl[4 * j + 2] = switching(*d, d->atom[j], n);
+        } else {
+            gl[4 * j + 2] = full > 0 ? (float)(d->area[j] / full) : 0.0f;
+        }
         gl[4 * j + 3] = d->shown[j] ? 1.0f : 0.0f;
     }
     upload_buffer(d, BUF_GLYPH, GL_RGBA32F, gl.data(), gl.size() * sizeof(float));

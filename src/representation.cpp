@@ -4047,7 +4047,7 @@ static bool draw_representation_cavity(Representation& rep) {
             update_rep |= ImGui::SliderFloat("##cavity_glyph_length_scale", &cav.glyph_length_scale, 0.1f, 5.0f,
                                              cav.glyph_length == CavityGlyphLength::DecayLength ? "%.2f x" : "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             prop::row("color", "Field: the tessera's own value through the colour scale above.\n"
-                               "Weight: the share of a whole point of the grid the switching left it, 0 to 1, through the colour map.\n"
+                               "Weight: the switching at the tessera, 0 to 1, through the colour map (its area is its Lebedev share times it).\n"
                                "Uniform: grey.");
             v = (int)cav.glyph_color;
             if (ImGui::Combo("##cavity_glyph_color", &v, cavity_glyph_color_str, (int)CavityGlyphColor::Count)) { cav.glyph_color = (CavityGlyphColor)v; update_rep = true; }

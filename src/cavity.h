@@ -95,7 +95,9 @@ inline const char* cavity_coloring_str[(int)CavityColoring::Count] = {
 // THE GLYPHS: one per tessera, standing on its point along its normal, picking as the tessera. By default a cylinder
 // whose base is the circle where the tessera's Gaussian is at half its peak, of radius sqrt(a_j / pi) (zeta_j a_j = pi
 // ln 2: the disc has the area of the tessera), and whose height is its decay length lambda_j at true scale: its volume
-// a_j lambda_j is then the energy of the wall at the tessera over the pressure, P a_j lambda_j. Never thinner than a
+// a_j lambda_j is then the energy of the wall at the tessera over the pressure, P a_j lambda_j. The areas in the file
+// are the switched ones, a_j = w_j 4 pi R^2 F_j, and so are the widths of the Gaussians: the disc is the Gaussian as
+// GOSTSHYP used it. Never thinner than a
 // pixel or two, so that the smallest tesserae can be seen and hovered.
 enum class CavityGlyphShape : int { Cylinder, Capsule, Count };
 enum class CavityGlyphSet : int {
@@ -111,7 +113,8 @@ enum class CavityGlyphLength : int {
 };
 enum class CavityGlyphColor : int {
     Field,              // the value of the tessera through the colour scale of the representation
-    Weight,             // the share of a whole point of the grid the switching left it, 0..1, through the colour map
+    Weight,             // the switching at its point, F_j (its area over its Lebedev share of the sphere), 0..1,
+                        // through the colour map; where the cavity is not of 'swig', the share of a whole point
     Uniform,            // grey
     Count
 };
