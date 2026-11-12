@@ -13,13 +13,13 @@
 #include <core/md_vec_math.h>
 #include <md_util_geom.h>
 
-static inline md_f32x3_t transform_point(const md_f32x4x4_t& m, md_f32x3_t p) {
-    const md_f32x4_t r = md_f32x4x4_mul_f32x4(m, md_f32x4_set(p.x, p.y, p.z, 1.0f));
-    return md_f32x3_set(r.x, r.y, r.z);
+static inline md_float3_t transform_point(const md_float4x4_t& m, md_float3_t p) {
+    const md_float4_t r = md_float4x4_mul_float4(m, md_float4_set(p.x, p.y, p.z, 1.0f));
+    return md_float3_set(r.x, r.y, r.z);
 }
 
 
-bool es_volume_box(md_f32x4x4_t* box_to_world, const ElectronicStructureRepresentation& es) {
+bool es_volume_box(md_float4x4_t* box_to_world, const ElectronicStructureRepresentation& es) {
     if (!es.has_box) return false;
     *box_to_world = es.box_to_world;
     return true;
@@ -27,50 +27,50 @@ bool es_volume_box(md_f32x4x4_t* box_to_world, const ElectronicStructureRepresen
 
 // The rectangle around where the plane cuts the box, with its first side along 'right' (as near as the plane allows);
 // where the plane misses the box, a square about the box's middle, as wide as the box's widest side
-static void slice_fit_box(ElectronicStructurePlane* p, const md_f32x4x4_t& box, md_f32x3_t right) {
-    md_f32x3_t u, v;
+static void slice_fit_box(ElectronicStructurePlane* p, const md_float4x4_t& box, md_float3_t right) {
+    md_float3_t u, v;
     plane_frame(&u, &v, p->plane, right);
-    md_f32x3_t poly[6];
+    md_float3_t poly[6];
     const int n = plane_box_polygon(poly, p->plane, box);
     float r[4] = {FLT_MAX, -FLT_MAX, FLT_MAX, -FLT_MAX};
     if (n >= 3) {
         for (int k = 0; k < n; ++k) {
-            const float s = md_f32x3_dot(poly[k], u), t = md_f32x3_dot(poly[k], v);
+            const float s = md_float3_dot(poly[k], u), t = md_float3_dot(poly[k], v);
             r[0] = MD_MIN(r[0], s); r[1] = MD_MAX(r[1], s);
             r[2] = MD_MIN(r[2], t); r[3] = MD_MAX(r[3], t);
         }
     } else {
-        const md_f32x3_t c = plane_project(p->plane, transform_point(box, md_f32x3_set(0.5f, 0.5f, 0.5f)));
+        const md_float3_t c = plane_project(p->plane, transform_point(box, md_float3_set(0.5f, 0.5f, 0.5f)));
         float side = 0.0f;
-        for (int k = 0; k < 3; ++k) side = MD_MAX(side, md_f32x3_length(md_f32x3_set(box.elem[k][0], box.elem[k][1], box.elem[k][2])));
-        r[0] = md_f32x3_dot(c, u) - 0.5f * side; r[1] = r[0] + side;
-        r[2] = md_f32x3_dot(c, v) - 0.5f * side; r[3] = r[2] + side;
+        for (int k = 0; k < 3; ++k) side = MD_MAX(side, md_float3_length(md_float3_set(box.elem[k][0], box.elem[k][1], box.elem[k][2])));
+        r[0] = md_float3_dot(c, u) - 0.5f * side; r[1] = r[0] + side;
+        r[2] = md_float3_dot(c, v) - 0.5f * side; r[3] = r[2] + side;
     }
     // the plane's point nearest the origin, and from it along u and v to the rectangle's middle
-    const md_f32x3_t on = md_f32x3_mul1(p->plane.normal, -p->plane.d);
-    p->center = md_f32x3_add(on, md_f32x3_add(md_f32x3_mul1(u, 0.5f * (r[0] + r[1])), md_f32x3_mul1(v, 0.5f * (r[2] + r[3]))));
+    const md_float3_t on = md_float3_mul1(p->plane.normal, -p->plane.d);
+    p->center = md_float3_add(on, md_float3_add(md_float3_mul1(u, 0.5f * (r[0] + r[1])), md_float3_mul1(v, 0.5f * (r[2] + r[3]))));
     p->axis = u;
-    p->extent = md_f32x2_set(MD_MAX(0.5f * (r[1] - r[0]), 0.1f), MD_MAX(0.5f * (r[3] - r[2]), 0.1f));
+    p->extent = md_float2_set(MD_MAX(0.5f * (r[1] - r[0]), 0.1f), MD_MAX(0.5f * (r[3] - r[2]), 0.1f));
 }
 
 void es_slices_conform(ElectronicStructureRepresentation* es) {
-    md_f32x4x4_t box;
+    md_float4x4_t box;
     const bool have_box = es_volume_box(&box, *es);
     for (int i = 0; i < es->slices.count && i < ES_MAX_PLANES; ++i) {
         ElectronicStructurePlane& p = es->slices.items[i];
         if (!(p.extent.x > 0.0f && p.extent.y > 0.0f)) {
             // by the box's first axis, not the view: as it was before slices had rectangles of their own
-            if (have_box) slice_fit_box(&p, box, md_f32x3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]));
+            if (have_box) slice_fit_box(&p, box, md_float3_set(box.elem[0][0], box.elem[0][1], box.elem[0][2]));
             continue;
         }
         // only what is off by more than rounding: a slice already on its plane is left exactly as it is (what the
         // scene's hash and its image's key are of)
         const float dist = plane_distance(p.plane, p.center);
-        if (fabsf(dist) > 1.0e-5f) p.center = md_f32x3_sub(p.center, md_f32x3_mul1(p.plane.normal, dist));
-        const float along = md_f32x3_dot(p.axis, p.plane.normal);
-        const float len = md_f32x3_length(p.axis);
+        if (fabsf(dist) > 1.0e-5f) p.center = md_float3_sub(p.center, md_float3_mul1(p.plane.normal, dist));
+        const float along = md_float3_dot(p.axis, p.plane.normal);
+        const float len = md_float3_length(p.axis);
         if (fabsf(along) > 1.0e-5f || fabsf(len - 1.0f) > 1.0e-5f) {
-            md_f32x3_t u, v;
+            md_float3_t u, v;
             plane_frame(&u, &v, p.plane, p.axis);
             p.axis = u;
         }
@@ -81,24 +81,24 @@ bool es_slice_frame(EsSliceFrame* f, const ElectronicStructurePlane& p) {
     if (!(p.extent.x > 0.0f && p.extent.y > 0.0f)) return false;
     // Which way the normal points is of no matter to the image (a slice's is turned to the camera as it is seen): one
     // of the two, so that turning it does not make the image again
-    md_f32x3_t n = p.plane.normal;
-    if (md_f32x3_dot(n, md_f32x3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) n = md_f32x3_mul1(n, -1.0f);
+    md_float3_t n = p.plane.normal;
+    if (md_float3_dot(n, md_float3_set(0.5773f, 0.6172f, 0.5345f)) < 0.0f) n = md_float3_mul1(n, -1.0f);
     f->n = n;
     f->u = p.axis;
-    f->v = md_f32x3_cross(n, p.axis);
+    f->v = md_float3_cross(n, p.axis);
     f->c = p.center;
     f->hu = p.extent.x;
     f->hv = p.extent.y;
     return true;
 }
 
-md_f32x4x4_t es_slice_rect_from_world(const EsSliceFrame& f) {
-    // md_f32x4x4_t's elem[column][row]
-    md_f32x4x4_t m = {};
-    const md_f32x3_t ax[3] = {md_f32x3_mul1(f.u, 0.5f / f.hu), md_f32x3_mul1(f.v, 0.5f / f.hv), f.n};
+md_float4x4_t es_slice_rect_from_world(const EsSliceFrame& f) {
+    // md_float4x4_t's elem[column][row]
+    md_float4x4_t m = {};
+    const md_float3_t ax[3] = {md_float3_mul1(f.u, 0.5f / f.hu), md_float3_mul1(f.v, 0.5f / f.hv), f.n};
     for (int r = 0; r < 3; ++r) {
         for (int k = 0; k < 3; ++k) m.elem[k][r] = ax[r].elem[k];
-        m.elem[3][r] = -md_f32x3_dot(ax[r], f.c) + (r < 2 ? 0.5f : 0.0f);
+        m.elem[3][r] = -md_float3_dot(ax[r], f.c) + (r < 2 ? 0.5f : 0.0f);
     }
     m.elem[3][3] = 1.0f;
     return m;
@@ -111,17 +111,17 @@ void es_slice_image_grid(md_grid_t* grid, const EsSliceFrame& f, float spacing) 
     const float su = 2.0f * f.hu / (float)w, sv = 2.0f * f.hv / (float)h, sn = MD_MIN(su, sv);
     // Pixel centres on the plane: the one layer's centre (the kernels sample at voxel centres) a half spacing along n
     // from the corner
-    const md_f32x3_t corner = md_f32x3_sub(md_f32x3_sub(md_f32x3_sub(f.c, md_f32x3_mul1(f.u, f.hu)), md_f32x3_mul1(f.v, f.hv)), md_f32x3_mul1(f.n, 0.5f * sn));
+    const md_float3_t corner = md_float3_sub(md_float3_sub(md_float3_sub(f.c, md_float3_mul1(f.u, f.hu)), md_float3_mul1(f.v, f.hv)), md_float3_mul1(f.n, 0.5f * sn));
     const float to_bohr = (float)(1.0 / BOHR_TO_ANGSTROM);
     *grid = md_grid_t{};
-    grid->orientation = md_f32x3x3_t{};
+    grid->orientation = md_float3x3_t{};
     for (int k = 0; k < 3; ++k) {
         grid->orientation.elem[0][k] = f.u.elem[k];
         grid->orientation.elem[1][k] = f.v.elem[k];
         grid->orientation.elem[2][k] = f.n.elem[k];
     }
-    grid->origin  = md_f32x3_mul1(corner, to_bohr);
-    grid->spacing = md_f32x3_set(su * to_bohr, sv * to_bohr, sn * to_bohr);
+    grid->origin  = md_float3_mul1(corner, to_bohr);
+    grid->spacing = md_float3_set(su * to_bohr, sv * to_bohr, sn * to_bohr);
     grid->dim[0] = w;
     grid->dim[1] = h;
     grid->dim[2] = 1;
@@ -130,19 +130,19 @@ void es_slice_image_grid(md_grid_t* grid, const EsSliceFrame& f, float spacing) 
 static bool faces_camera(const ApplicationState* state, const Plane& p);
 
 int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es, uint32_t rep_id) {
-    md_f32x4x4_t box;
+    md_float4x4_t box;
     ElectronicStructurePlaneSet& set = electronic_structure_planes(*es);
     if (set.count >= ES_MAX_PLANES || !es_volume_box(&box, *es)) return -1;
-    const md_f32x3_t centre = transform_point(box, md_f32x3_set(0.5f, 0.5f, 0.5f));
-    const md_f32x3_t forward = md_quat_mul_f32x3(state->view.camera.orientation, md_f32x3_set(0, 0, -1));
-    const md_f32x3_t right = md_quat_mul_f32x3(state->view.camera.orientation, md_f32x3_set(1, 0, 0));
+    const md_float3_t centre = transform_point(box, md_float3_set(0.5f, 0.5f, 0.5f));
+    const md_float3_t forward = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(0, 0, -1));
+    const md_float3_t right = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(1, 0, 0));
     const bool slice = es->display == ElectronicStructureDisplay::Planes;
     const int i = set.count++;
     // a cut facing away from the camera keeps the half behind it; a slice faces the camera, its rectangle around where
     // it cuts the box, square to the view
     ElectronicStructurePlane& p = set.items[i];
     p = ElectronicStructurePlane{};
-    p.plane = plane_from_point_normal(centre, slice ? md_f32x3_mul1(forward, -1.0f) : forward);
+    p.plane = plane_from_point_normal(centre, slice ? md_float3_mul1(forward, -1.0f) : forward);
     if (slice) {
         if (!faces_camera(state, p.plane)) plane_flip(&p.plane);
         slice_fit_box(&p, box, right);
@@ -152,7 +152,7 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
     return i;
 }
 
-Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info, md_f32x3_t* out_centre) {
+Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info, md_float3_t* out_centre) {
     const md_system_state_t& st = state->mold.state;
     const size_t count = md_bitmask_count(&state->selection.selection_mask);
     if (count == 0 || !st.xyz) {
@@ -160,7 +160,7 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
         return plane;
     }
     md_temp_scope_t temp = md_temp_begin();
-    md_f32x3_t* pts = (md_f32x3_t*)md_temp_alloc(temp, sizeof(md_f32x3_t) * count);
+    md_float3_t* pts = (md_float3_t*)md_temp_alloc(temp, sizeof(md_float3_t) * count);
     size_t n = 0;
     md_bitset_iter_t it = md_bitmask_iter(&state->selection.selection_mask);
     while (md_bitset_iter_next(&it) && n < count) {
@@ -168,32 +168,32 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
     }
     if (n > 1 && md_unitcell_flags(&st.unitcell) != 0) {
         // across the boundary: each the image nearest to the first
-        for (size_t i = 1; i < n; ++i) pts[i] = md_f32x3_sub(pts[i], pts[0]);
+        for (size_t i = 1; i < n; ++i) pts[i] = md_float3_sub(pts[i], pts[0]);
         md_util_min_image((float*)(pts + 1), 0, n - 1, &st.unitcell);
-        for (size_t i = 1; i < n; ++i) pts[i] = md_f32x3_add(pts[i], pts[0]);
+        for (size_t i = 1; i < n; ++i) pts[i] = md_float3_add(pts[i], pts[0]);
     }
     const Plane fitted = plane_fit(plane, pts, n, info);
     if (out_centre && n > 0) {
-        md_f32x3_t c = md_f32x3_zero();
-        for (size_t i = 0; i < n; ++i) c = md_f32x3_add(c, pts[i]);
-        *out_centre = md_f32x3_mul1(c, 1.0f / (float)n);
+        md_float3_t c = md_float3_zero();
+        for (size_t i = 0; i < n; ++i) c = md_float3_add(c, pts[i]);
+        *out_centre = md_float3_mul1(c, 1.0f / (float)n);
     }
     md_temp_end(temp);
     return fitted;
 }
 
-md_f32x4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane) {
+md_float4_t es_volume_plane(const ElectronicStructureRepresentation& es, const Plane& plane) {
     // n . (A p + t) + d = (A^T n) . p + (n . t + d), with p in the texture's unit cube
-    const md_f32x4x4_t& m = es.box_to_world;
-    const md_f32x3_t n = plane.normal;
-    const md_f32x3_t c0 = md_f32x3_set(m.elem[0][0], m.elem[0][1], m.elem[0][2]);
-    const md_f32x3_t c1 = md_f32x3_set(m.elem[1][0], m.elem[1][1], m.elem[1][2]);
-    const md_f32x3_t c2 = md_f32x3_set(m.elem[2][0], m.elem[2][1], m.elem[2][2]);
-    const md_f32x3_t t  = md_f32x3_set(m.elem[3][0], m.elem[3][1], m.elem[3][2]);
-    return md_f32x4_set(md_f32x3_dot(c0, n), md_f32x3_dot(c1, n), md_f32x3_dot(c2, n), md_f32x3_dot(n, t) + plane.d);
+    const md_float4x4_t& m = es.box_to_world;
+    const md_float3_t n = plane.normal;
+    const md_float3_t c0 = md_float3_set(m.elem[0][0], m.elem[0][1], m.elem[0][2]);
+    const md_float3_t c1 = md_float3_set(m.elem[1][0], m.elem[1][1], m.elem[1][2]);
+    const md_float3_t c2 = md_float3_set(m.elem[2][0], m.elem[2][1], m.elem[2][2]);
+    const md_float3_t t  = md_float3_set(m.elem[3][0], m.elem[3][1], m.elem[3][2]);
+    return md_float4_set(md_float3_dot(c0, n), md_float3_dot(c1, n), md_float3_dot(c2, n), md_float3_dot(n, t) + plane.d);
 }
 
-int es_volume_clip_planes(md_f32x4_t* out, const ElectronicStructureRepresentation& es) {
+int es_volume_clip_planes(md_float4_t* out, const ElectronicStructureRepresentation& es) {
     int k = 0;
     for (int i = 0; i < es.cuts.count && i < ES_MAX_PLANES; ++i) {
         if (es.cuts.items[i].enabled) out[k++] = es_volume_plane(es, es.cuts.items[i].plane);
@@ -201,7 +201,7 @@ int es_volume_clip_planes(md_f32x4_t* out, const ElectronicStructureRepresentati
     return k;
 }
 
-int es_volume_slices(md_f32x4_t* out_plane, float* out_opacity, md_f32x4x4_t* out_rect_from_model, const ElectronicStructureRepresentation& es) {
+int es_volume_slices(md_float4_t* out_plane, float* out_opacity, md_float4x4_t* out_rect_from_model, const ElectronicStructureRepresentation& es) {
     const int count = MD_MIN(es.slices.count, ES_MAX_PLANES);
     for (int i = 0; i < count; ++i) {
         const ElectronicStructurePlane& p = es.slices.items[i];
@@ -213,7 +213,7 @@ int es_volume_slices(md_f32x4_t* out_plane, float* out_opacity, md_f32x4x4_t* ou
         } else {
             // no rectangle yet: nowhere
             out_opacity[i] = 0.0f;
-            out_rect_from_model[i] = md_f32x4x4_t{};
+            out_rect_from_model[i] = md_float4x4_t{};
             out_rect_from_model[i].elem[3][0] = -1.0f;
             out_rect_from_model[i].elem[3][1] = -1.0f;
             out_rect_from_model[i].elem[3][3] = 1.0f;
@@ -263,21 +263,21 @@ static struct {
     GizmoPart part = GizmoPart_None;    // of the drag under way, None when there is none
     uint32_t  rep_id = 0;
     int       plane = -1;
-    md_f32x3_t    anchor = {};              // on the plane, held while the drag lasts
+    md_float3_t    anchor = {};              // on the plane, held while the drag lasts
     ImVec2    last_mouse = {};
     // a slide: the anchor, the normal and the plane's d when it began; where along the normal from that anchor the
     // mouse took it (NaN: by the mouse's vertical movement, the normal pointing at the viewer), and that movement
-    md_f32x3_t    slide_a0 = {};
-    md_f32x3_t    slide_n = {};
+    md_float3_t    slide_a0 = {};
+    md_float3_t    slide_n = {};
     float     slide_d0 = 0.0f;
     float     slide_t = 0.0f;
     float     slide_off = 0.0f;
     // a slice's plane and rectangle when it began (u0 and v0 as its handles were: v0 = n x u0 of the normal then), and
     // where on that plane the mouse took it: what a move, a resize and a turn about the normal go from
     Plane     plane0 = {};
-    md_f32x3_t    c0 = {}, u0 = {}, v0 = {};
+    md_float3_t    c0 = {}, u0 = {}, v0 = {};
     float     hu0 = 0.0f, hv0 = 0.0f;
-    md_f32x3_t    grab = {};
+    md_float3_t    grab = {};
     int       su = 0, sv = 0;           // the sides resized: -1, +1 the one along -u, +u (-v, +v); 0 neither
     float     twist0 = 0.0f;            // the angle about the centre, from u0 to v0, the mouse took it at
 } gizmo_drag;
@@ -290,7 +290,7 @@ bool es_planes_dragging(uint32_t rep_id, int plane) {
 static struct {
     uint32_t rep_id = 0;
     int      plane = -1;
-    md_f32x3_t   point = {};
+    md_float3_t   point = {};
 } gizmo_anchor;
 
 void es_planes_remove(ApplicationState* state, Representation* rep, int i) {
@@ -328,8 +328,8 @@ void es_planes_remove(ApplicationState* state, Representation* rep, int i) {
     }
 }
 
-static inline bool project(ImVec2* out, const md_f32x4x4_t& world_to_clip, md_f32x3_t p, md_f32x2_t canvas_min, md_f32x2_t canvas_size) {
-    const md_f32x4_t c = md_f32x4x4_mul_f32x4(world_to_clip, md_f32x4_set(p.x, p.y, p.z, 1.0f));
+static inline bool project(ImVec2* out, const md_float4x4_t& world_to_clip, md_float3_t p, md_float2_t canvas_min, md_float2_t canvas_size) {
+    const md_float4_t c = md_float4x4_mul_float4(world_to_clip, md_float4_set(p.x, p.y, p.z, 1.0f));
     if (c.w <= 1.0e-6f) return false;
     const float x = c.x / c.w, y = c.y / c.w;
     out->x = canvas_min.x + (x * 0.5f + 0.5f) * canvas_size.x;
@@ -354,13 +354,13 @@ static inline float point_distance(ImVec2 a, ImVec2 b) {
 // by the direction it looks along, as every point sees the plane alike. In the space the planes are in (the view
 // matrix's world).
 static bool faces_camera(const ApplicationState* state, const Plane& p) {
-    const md_f32x4x4_t inv = md_f32x4x4_inverse(state->view.param.matrix.curr.view);
+    const md_float4x4_t inv = md_float4x4_inverse(state->view.param.matrix.curr.view);
     if (state->view.mode == CameraMode::Orthographic) {
-        const md_f32x4_t back = md_f32x4x4_mul_f32x4(inv, md_f32x4_set(0, 0, 1, 0));
-        return md_f32x3_dot(p.normal, md_f32x3_set(back.x, back.y, back.z)) >= 0.0f;
+        const md_float4_t back = md_float4x4_mul_float4(inv, md_float4_set(0, 0, 1, 0));
+        return md_float3_dot(p.normal, md_float3_set(back.x, back.y, back.z)) >= 0.0f;
     }
-    const md_f32x4_t eye = md_f32x4x4_mul_f32x4(inv, md_f32x4_set(0, 0, 0, 1));
-    return plane_distance(p, md_f32x3_set(eye.x, eye.y, eye.z)) >= 0.0f;
+    const md_float4_t eye = md_float4x4_mul_float4(inv, md_float4_set(0, 0, 0, 1));
+    return plane_distance(p, md_float3_set(eye.x, eye.y, eye.z)) >= 0.0f;
 }
 
 // The outlines es_planes_gizmo found this frame, as segments in normalized device coordinates (z for the depth test),
@@ -368,17 +368,17 @@ static bool faces_camera(const ApplicationState* state, const Plane& p) {
 // drawn otherwise), and the picked slice's: the others' edges are drawn with the slices (the volume rendering), behind
 // what of them is in front.
 struct OutlineSegment {
-    md_f32x3_t a, b;
+    md_float3_t a, b;
     ImU32  col, halo;
     float  width;      // points
 };
 static OutlineSegment outline_segs[256];
 static int            outline_count = 0;
 
-static inline bool project_ndc(md_f32x3_t* out, const md_f32x4x4_t& world_to_clip, md_f32x3_t p) {
-    const md_f32x4_t c = md_f32x4x4_mul_f32x4(world_to_clip, md_f32x4_set(p.x, p.y, p.z, 1.0f));
+static inline bool project_ndc(md_float3_t* out, const md_float4x4_t& world_to_clip, md_float3_t p) {
+    const md_float4_t c = md_float4x4_mul_float4(world_to_clip, md_float4_set(p.x, p.y, p.z, 1.0f));
     if (c.w <= 1.0e-6f) return false;
-    *out = md_f32x3_set(c.x / c.w, c.y / c.w, c.z / c.w);
+    *out = md_float3_set(c.x / c.w, c.y / c.w, c.z / c.w);
     return true;
 }
 
@@ -397,79 +397,79 @@ static Representation* gizmo_target(ApplicationState* state, uint32_t rep_id, in
 }
 
 // The mouse's ray in world space
-static void mouse_ray(md_f32x3_t* origin, md_f32x3_t* dir, const md_f32x4x4_t& world_to_clip, ImVec2 mouse, md_f32x2_t canvas_min, md_f32x2_t canvas_size) {
-    const md_f32x4x4_t inv = md_f32x4x4_inverse(world_to_clip);
+static void mouse_ray(md_float3_t* origin, md_float3_t* dir, const md_float4x4_t& world_to_clip, ImVec2 mouse, md_float2_t canvas_min, md_float2_t canvas_size) {
+    const md_float4x4_t inv = md_float4x4_inverse(world_to_clip);
     const float x = (mouse.x - canvas_min.x) / canvas_size.x * 2.0f - 1.0f;
     const float y = 1.0f - (mouse.y - canvas_min.y) / canvas_size.y * 2.0f;
-    md_f32x4_t a = md_f32x4x4_mul_f32x4(inv, md_f32x4_set(x, y, -1.0f, 1.0f));
-    md_f32x4_t b = md_f32x4x4_mul_f32x4(inv, md_f32x4_set(x, y,  1.0f, 1.0f));
-    const md_f32x3_t pa = md_f32x3_set(a.x / a.w, a.y / a.w, a.z / a.w);
-    const md_f32x3_t pb = md_f32x3_set(b.x / b.w, b.y / b.w, b.z / b.w);
+    md_float4_t a = md_float4x4_mul_float4(inv, md_float4_set(x, y, -1.0f, 1.0f));
+    md_float4_t b = md_float4x4_mul_float4(inv, md_float4_set(x, y,  1.0f, 1.0f));
+    const md_float3_t pa = md_float3_set(a.x / a.w, a.y / a.w, a.z / a.w);
+    const md_float3_t pb = md_float3_set(b.x / b.w, b.y / b.w, b.z / b.w);
     *origin = pa;
-    *dir = md_f32x3_normalize(md_f32x3_sub(pb, pa));
+    *dir = md_float3_normalize(md_float3_sub(pb, pa));
 }
 
 // Along the line c + t n (n unit), where the ray o + s r passes closest: false when the two are (nearly) parallel
-static bool line_ray_closest(float* t, md_f32x3_t c, md_f32x3_t n, md_f32x3_t o, md_f32x3_t r) {
-    const md_f32x3_t w = md_f32x3_sub(c, o);
-    const float b = md_f32x3_dot(n, r);
+static bool line_ray_closest(float* t, md_float3_t c, md_float3_t n, md_float3_t o, md_float3_t r) {
+    const md_float3_t w = md_float3_sub(c, o);
+    const float b = md_float3_dot(n, r);
     const float den = 1.0f - b * b;
     if (den < 1.0e-3f) return false;
-    *t = (b * md_f32x3_dot(r, w) - md_f32x3_dot(n, w)) / den;
+    *t = (b * md_float3_dot(r, w) - md_float3_dot(n, w)) / den;
     return true;
 }
 
 // Where the ray o + s r (r unit) meets the plane ahead of o: false where it meets it at a grazing angle (within about
 // 3 degrees: where it does, the point runs away as the mouse moves a pixel) or behind
-static bool ray_plane(md_f32x3_t* out, const Plane& p, md_f32x3_t o, md_f32x3_t r) {
-    const float b = md_f32x3_dot(p.normal, r);
+static bool ray_plane(md_float3_t* out, const Plane& p, md_float3_t o, md_float3_t r) {
+    const float b = md_float3_dot(p.normal, r);
     if (fabsf(b) < 0.05f) return false;
     const float s = -plane_distance(p, o) / b;
     if (s < 0.0f) return false;
-    *out = md_f32x3_add(o, md_f32x3_mul1(r, s));
+    *out = md_float3_add(o, md_float3_mul1(r, s));
     return true;
 }
 
 // v turned about the unit axis by angle (Rodrigues)
-static md_f32x3_t rotate_about(md_f32x3_t v, md_f32x3_t axis, float angle) {
+static md_float3_t rotate_about(md_float3_t v, md_float3_t axis, float angle) {
     const float c = cosf(angle), s = sinf(angle);
-    return md_f32x3_add(md_f32x3_add(md_f32x3_mul1(v, c), md_f32x3_mul1(md_f32x3_cross(axis, v), s)), md_f32x3_mul1(axis, md_f32x3_dot(axis, v) * (1.0f - c)));
+    return md_float3_add(md_float3_add(md_float3_mul1(v, c), md_float3_mul1(md_float3_cross(axis, v), s)), md_float3_mul1(axis, md_float3_dot(axis, v) * (1.0f - c)));
 }
 
 // The nearest axis to n within 10 degrees, or n
-static md_f32x3_t snap_to_axis(md_f32x3_t n) {
+static md_float3_t snap_to_axis(md_float3_t n) {
     int k = 0;
     for (int i = 1; i < 3; ++i) if (fabsf(n.elem[i]) > fabsf(n.elem[k])) k = i;
     if (fabsf(n.elem[k]) < cosf(10.0f * 3.14159265f / 180.0f)) return n;
-    md_f32x3_t a = md_f32x3_zero();
+    md_float3_t a = md_float3_zero();
     a.elem[k] = n.elem[k] < 0.0f ? -1.0f : 1.0f;
     return a;
 }
 
 // A slice's rectangle's corners, in order around it: (-u -v), (+u -v), (+u +v), (-u +v)
-static void slice_corners(md_f32x3_t out[4], const ElectronicStructurePlane& p) {
-    const md_f32x3_t u = md_f32x3_mul1(p.axis, p.extent.x);
-    const md_f32x3_t v = md_f32x3_mul1(md_f32x3_cross(p.plane.normal, p.axis), p.extent.y);
-    out[0] = md_f32x3_sub(md_f32x3_sub(p.center, u), v);
-    out[1] = md_f32x3_sub(md_f32x3_add(p.center, u), v);
-    out[2] = md_f32x3_add(md_f32x3_add(p.center, u), v);
-    out[3] = md_f32x3_add(md_f32x3_sub(p.center, u), v);
+static void slice_corners(md_float3_t out[4], const ElectronicStructurePlane& p) {
+    const md_float3_t u = md_float3_mul1(p.axis, p.extent.x);
+    const md_float3_t v = md_float3_mul1(md_float3_cross(p.plane.normal, p.axis), p.extent.y);
+    out[0] = md_float3_sub(md_float3_sub(p.center, u), v);
+    out[1] = md_float3_sub(md_float3_add(p.center, u), v);
+    out[2] = md_float3_add(md_float3_add(p.center, u), v);
+    out[3] = md_float3_add(md_float3_sub(p.center, u), v);
 }
 
 static inline bool slice_has_rect(const ElectronicStructurePlane& p) { return p.extent.x > 0.0f && p.extent.y > 0.0f; }
 
 // The handles of a slice's rectangle: its 4 corners, the middles of its 4 sides, and the knob that turns it
 struct SliceHandle {
-    md_f32x3_t world;
+    md_float3_t world;
     int    su, sv;
 };
 
-bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t canvas_size) {
+bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_t canvas_size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImGuiIO& io = ImGui::GetIO();
-    const md_f32x4x4_t& view = state->view.param.matrix.curr.view;
-    const md_f32x4x4_t& proj = state->view.param.matrix.curr.proj_no_jitter;
-    const md_f32x4x4_t world_to_clip = proj * view;
+    const md_float4x4_t& view = state->view.param.matrix.curr.view;
+    const md_float4x4_t& proj = state->view.param.matrix.curr.proj_no_jitter;
+    const md_float4x4_t world_to_clip = proj * view;
     const ImVec2 mouse = ImGui::GetMousePos();
     const bool canvas_hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     // Something else has the mouse (the view being turned, a slider being dragged): what started first keeps it, so the
@@ -503,21 +503,21 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
     uint32_t hover_rep = 0;
     int hover_plane = -1;
     float hover_dist = 6.0f;
-    md_f32x3_t centre = md_f32x3_zero();
+    md_float3_t centre = md_float3_zero();
     bool centre_valid = false;
     for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
         const Representation& rep = state->representation.reps[r];
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         const ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (es.display == ElectronicStructureDisplay::Isosurface) continue;
-        md_f32x4x4_t box;
+        md_float4x4_t box;
         if (!es_volume_box(&box, es)) continue;
         const bool slices = es.display == ElectronicStructureDisplay::Planes;
         const ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
         for (int i = 0; i < set.count; ++i) {
             const bool selected = target == &rep && sel.plane == i;
             // a slice's rectangle, a cut's polygon where it cuts the box
-            md_f32x3_t poly[6];
+            md_float3_t poly[6];
             int n = 0;
             if (slices) {
                 if (!slice_has_rect(set.items[i])) continue;
@@ -531,13 +531,13 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                 if (slices) {
                     centre = set.items[i].center;
                 } else {
-                    for (int k = 0; k < n; ++k) centre = md_f32x3_add(centre, poly[k]);
-                    centre = md_f32x3_mul1(centre, 1.0f / (float)n);
+                    for (int k = 0; k < n; ++k) centre = md_float3_add(centre, poly[k]);
+                    centre = md_float3_mul1(centre, 1.0f / (float)n);
                 }
                 centre_valid = true;
             }
             ImVec2 sp[6];
-            md_f32x3_t ndc[6];
+            md_float3_t ndc[6];
             bool all = true;
             for (int k = 0; k < n; ++k) all &= project(&sp[k], world_to_clip, poly[k], canvas_min, canvas_size) && project_ndc(&ndc[k], world_to_clip, poly[k]);
             if (!all) continue;
@@ -575,31 +575,31 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
         // A slice's normal is of no matter which way it points: it is turned to the camera, so that the arrow is
         // seen and taken hold of (not while it is dragged, which reads it)
         if (slice && !ours && !faces_camera(state, plane)) plane_flip(&plane);
-        md_f32x3_t anchor = slice ? item.center : ours ? gizmo_drag.anchor : plane_project(plane, centre);
+        md_float3_t anchor = slice ? item.center : ours ? gizmo_drag.anchor : plane_project(plane, centre);
         if (!slice && !ours && gizmo_anchor.rep_id == sel.rep_id && gizmo_anchor.plane == sel.plane) {
-            md_f32x4x4_t box;
+            md_float4x4_t box;
             if (es_volume_box(&box, target->electronic_structure)) {
-                const md_f32x3_t p = plane_project(plane, gizmo_anchor.point);
-                const md_f32x4_t u = md_f32x4x4_mul_f32x4(md_f32x4x4_inverse(box), md_f32x4_set(p.x, p.y, p.z, 1.0f));
+                const md_float3_t p = plane_project(plane, gizmo_anchor.point);
+                const md_float4_t u = md_float4x4_mul_float4(md_float4x4_inverse(box), md_float4_set(p.x, p.y, p.z, 1.0f));
                 if (u.x >= 0.0f && u.x <= 1.0f && u.y >= 0.0f && u.y <= 1.0f && u.z >= 0.0f && u.z <= 1.0f) anchor = p;
             }
         }
-        const md_f32x3_t n = plane.normal;
+        const md_float3_t n = plane.normal;
 
         // its size on screen, and the normal's length in the world that makes the arrow as long as the ring's radius
         const float ring_radius = 64.0f;
-        const md_f32x3_t right = md_quat_mul_f32x3(state->view.camera.orientation, md_f32x3_set(1, 0, 0));
+        const md_float3_t right = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(1, 0, 0));
         ImVec2 sc, sr;
         const bool visible = project(&sc, world_to_clip, anchor, canvas_min, canvas_size) &&
-                             project(&sr, world_to_clip, md_f32x3_add(anchor, right), canvas_min, canvas_size);
+                             project(&sr, world_to_clip, md_float3_add(anchor, right), canvas_min, canvas_size);
         const float px_per_unit = visible ? point_distance(sr, sc) : 0.0f;
         if (visible && px_per_unit > 0.0f) {
             const float arrow_len = ring_radius / px_per_unit;
             ImVec2 tip;
-            project(&tip, world_to_clip, md_f32x3_add(anchor, md_f32x3_mul1(n, arrow_len)), canvas_min, canvas_size);
+            project(&tip, world_to_clip, md_float3_add(anchor, md_float3_mul1(n, arrow_len)), canvas_min, canvas_size);
             const float arrow_px = point_distance(tip, sc);
             const bool facing = faces_camera(state, plane);
-            md_f32x3_t mo, mr;
+            md_float3_t mo, mr;
             mouse_ray(&mo, &mr, world_to_clip, mouse, canvas_min, canvas_size);
 
             // A slice's handles, where its plane is not seen edge on (along the ray to its middle)
@@ -608,15 +608,15 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
             int num_handles = 0;
             bool in_plane = false;
             if (slice && slice_has_rect(item)) {
-                md_f32x3_t co, cr;
+                md_float3_t co, cr;
                 mouse_ray(&co, &cr, world_to_clip, sc, canvas_min, canvas_size);
-                in_plane = fabsf(md_f32x3_dot(n, cr)) > 0.15f;
-                const md_f32x3_t u = md_f32x3_mul1(item.axis, item.extent.x);
-                const md_f32x3_t v = md_f32x3_mul1(md_f32x3_cross(n, item.axis), item.extent.y);
+                in_plane = fabsf(md_float3_dot(n, cr)) > 0.15f;
+                const md_float3_t u = md_float3_mul1(item.axis, item.extent.x);
+                const md_float3_t v = md_float3_mul1(md_float3_cross(n, item.axis), item.extent.y);
                 static const int sides[8][2] = {{-1,-1},{1,-1},{1,1},{-1,1},{1,0},{-1,0},{0,1},{0,-1}};
                 bool all = in_plane;
                 for (int k = 0; k < 8 && all; ++k) {
-                    handles[k].world = md_f32x3_add(item.center, md_f32x3_add(md_f32x3_mul1(u, (float)sides[k][0]), md_f32x3_mul1(v, (float)sides[k][1])));
+                    handles[k].world = md_float3_add(item.center, md_float3_add(md_float3_mul1(u, (float)sides[k][0]), md_float3_mul1(v, (float)sides[k][1])));
                     handles[k].su = sides[k][0];
                     handles[k].sv = sides[k][1];
                     all &= project(&hs[k], world_to_clip, handles[k].world, canvas_min, canvas_size);
@@ -730,7 +730,7 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                 gizmo_drag.plane0 = plane;
                 gizmo_drag.c0 = item.center;
                 gizmo_drag.u0 = item.axis;
-                gizmo_drag.v0 = md_f32x3_cross(n, item.axis);
+                gizmo_drag.v0 = md_float3_cross(n, item.axis);
                 gizmo_drag.hu0 = item.extent.x;
                 gizmo_drag.hv0 = item.extent.y;
                 gizmo_drag.su = hover_su;
@@ -738,8 +738,8 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                 // where on the plane it was taken: the handle itself where the mouse's ray misses the plane (it does
                 // not: the handles are not there then)
                 if (!ray_plane(&gizmo_drag.grab, plane, mo, mr)) gizmo_drag.grab = anchor;
-                const md_f32x3_t g = md_f32x3_sub(gizmo_drag.grab, item.center);
-                gizmo_drag.twist0 = atan2f(md_f32x3_dot(g, gizmo_drag.v0), md_f32x3_dot(g, gizmo_drag.u0));
+                const md_float3_t g = md_float3_sub(gizmo_drag.grab, item.center);
+                gizmo_drag.twist0 = atan2f(md_float3_dot(g, gizmo_drag.v0), md_float3_dot(g, gizmo_drag.u0));
             }
             // a drag going on
             bool moved = false;
@@ -754,12 +754,12 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                 } else if (gizmo_drag.part == GizmoPart_Rotate) {
                     const ImVec2 dm = ImVec2(mouse.x - gizmo_drag.last_mouse.x, mouse.y - gizmo_drag.last_mouse.y);
                     const float len = sqrtf(dm.x * dm.x + dm.y * dm.y);
-                    const md_f32x3_t pivot = slice ? item.center : gizmo_drag.anchor;
+                    const md_float3_t pivot = slice ? item.center : gizmo_drag.anchor;
                     if (len > 0.0f) {
                         // the front of a ball under the mouse moves with it: about (dy, dx, 0) in the view, by len / radius
-                        const md_f32x3_t axis = md_f32x3_normalize(md_quat_mul_f32x3(state->view.camera.orientation, md_f32x3_set(dm.y, dm.x, 0.0f)));
+                        const md_float3_t axis = md_float3_normalize(md_quat_mul_float3(state->view.camera.orientation, md_float3_set(dm.y, dm.x, 0.0f)));
                         const float angle = len / ring_radius;
-                        plane = plane_from_point_normal(pivot, md_f32x3_normalize(rotate_about(plane.normal, axis, angle)));
+                        plane = plane_from_point_normal(pivot, md_float3_normalize(rotate_about(plane.normal, axis, angle)));
                         // the rectangle turned with it
                         if (slice) item.axis = rotate_about(item.axis, axis, angle);
                     }
@@ -767,7 +767,7 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                     moved = true;
                 } else if (gizmo_drag.part == GizmoPart_Slide) {
                     // along the normal it was taken with, from where it was taken
-                    const md_f32x3_t sn = gizmo_drag.slide_n;
+                    const md_float3_t sn = gizmo_drag.slide_n;
                     float t = 0.0f;
                     if (gizmo_drag.slide_t == gizmo_drag.slide_t && line_ray_closest(&t, gizmo_drag.slide_a0, sn, mo, mr)) {
                         t -= gizmo_drag.slide_t;
@@ -776,23 +776,23 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                         gizmo_drag.slide_off += (gizmo_drag.last_mouse.y - mouse.y) / px_per_unit;
                         t = gizmo_drag.slide_off;
                     }
-                    gizmo_drag.anchor = md_f32x3_add(gizmo_drag.slide_a0, md_f32x3_mul1(sn, t));
+                    gizmo_drag.anchor = md_float3_add(gizmo_drag.slide_a0, md_float3_mul1(sn, t));
                     plane.normal = sn;
                     plane.d = gizmo_drag.slide_d0 - t;
-                    if (slice) item.center = md_f32x3_add(gizmo_drag.c0, md_f32x3_mul1(sn, t));
+                    if (slice) item.center = md_float3_add(gizmo_drag.c0, md_float3_mul1(sn, t));
                     moved = true;
                 } else {
                     // along the plane as it was taken: where the mouse's ray meets it, from where it was taken
-                    md_f32x3_t p;
+                    md_float3_t p;
                     if (ray_plane(&p, gizmo_drag.plane0, mo, mr)) {
-                        const md_f32x3_t d = md_f32x3_sub(p, gizmo_drag.grab);
-                        const md_f32x3_t u0 = gizmo_drag.u0, v0 = gizmo_drag.v0;
+                        const md_float3_t d = md_float3_sub(p, gizmo_drag.grab);
+                        const md_float3_t u0 = gizmo_drag.u0, v0 = gizmo_drag.v0;
                         if (gizmo_drag.part == GizmoPart_Move) {
-                            item.center = md_f32x3_add(gizmo_drag.c0, d);
+                            item.center = md_float3_add(gizmo_drag.c0, d);
                         } else if (gizmo_drag.part == GizmoPart_Resize) {
                             // each side taken follows the mouse, the opposite one staying (with shift, both moving)
                             const float min_half = 0.05f;
-                            const float ds = md_f32x3_dot(d, u0), dt = md_f32x3_dot(d, v0);
+                            const float ds = md_float3_dot(d, u0), dt = md_float3_dot(d, v0);
                             float hu = gizmo_drag.hu0, hv = gizmo_drag.hv0, ou = 0.0f, ov = 0.0f;
                             if (gizmo_drag.su != 0) {
                                 const float grow = (float)gizmo_drag.su * ds;
@@ -804,16 +804,16 @@ bool es_planes_gizmo(ApplicationState* state, md_f32x2_t canvas_min, md_f32x2_t 
                                 hv = MD_MAX(min_half, io.KeyShift ? gizmo_drag.hv0 + grow : gizmo_drag.hv0 + 0.5f * grow);
                                 ov = io.KeyShift ? 0.0f : (float)gizmo_drag.sv * (hv - gizmo_drag.hv0);
                             }
-                            item.extent = md_f32x2_set(hu, hv);
-                            item.center = md_f32x3_add(gizmo_drag.c0, md_f32x3_add(md_f32x3_mul1(u0, ou), md_f32x3_mul1(v0, ov)));
+                            item.extent = md_float2_set(hu, hv);
+                            item.center = md_float3_add(gizmo_drag.c0, md_float3_add(md_float3_mul1(u0, ou), md_float3_mul1(v0, ov)));
                         } else if (gizmo_drag.part == GizmoPart_Twist) {
-                            const md_f32x3_t g = md_f32x3_sub(p, gizmo_drag.c0);
-                            float a = atan2f(md_f32x3_dot(g, v0), md_f32x3_dot(g, u0)) - gizmo_drag.twist0;
+                            const md_float3_t g = md_float3_sub(p, gizmo_drag.c0);
+                            float a = atan2f(md_float3_dot(g, v0), md_float3_dot(g, u0)) - gizmo_drag.twist0;
                             if (io.KeyShift) {
                                 const float step = 15.0f * 3.14159265f / 180.0f;
                                 a = roundf(a / step) * step;
                             }
-                            item.axis = md_f32x3_normalize(rotate_about(u0, gizmo_drag.plane0.normal, a));
+                            item.axis = md_float3_normalize(rotate_about(u0, gizmo_drag.plane0.normal, a));
                         }
                         moved = true;
                     }
@@ -947,22 +947,22 @@ void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_heig
     // two quads (halo, line) of 6 vertices per segment; the halos first
     static OutlineVertex verts[MD_COUNTOF(outline_segs) * 12];
     int nv = 0;
-    const md_f32x2_t half = md_f32x2_set(0.5f * (float)fb_width, 0.5f * (float)fb_height);
+    const md_float2_t half = md_float2_set(0.5f * (float)fb_width, 0.5f * (float)fb_height);
     for (int pass = 0; pass < 2; ++pass) {
         for (int i = 0; i < outline_count; ++i) {
             const OutlineSegment& s = outline_segs[i];
             // in pixels: along it and across it, half the width out each way, and as far past each end (square caps
             // that close the corners)
-            const md_f32x2_t a = md_f32x2_set(s.a.x * half.x, s.a.y * half.y), b = md_f32x2_set(s.b.x * half.x, s.b.y * half.y);
-            md_f32x2_t d = md_f32x2_sub(b, a);
-            const float len = md_f32x2_length(d);
+            const md_float2_t a = md_float2_set(s.a.x * half.x, s.a.y * half.y), b = md_float2_set(s.b.x * half.x, s.b.y * half.y);
+            md_float2_t d = md_float2_sub(b, a);
+            const float len = md_float2_length(d);
             if (!(len > 1.0e-3f)) continue;
-            d = md_f32x2_mul1(d, 1.0f / len);
+            d = md_float2_mul1(d, 1.0f / len);
             const float w = 0.5f * (pass == 0 ? s.width + 2.0f : s.width) * px_per_point;
             const float we = w + 1.0f;     // a pixel more, feathered (outline_fs)
-            const md_f32x2_t o = md_f32x2_set(-d.y * we, d.x * we), e = md_f32x2_mul1(d, w);
-            const md_f32x2_t pa = md_f32x2_sub(a, e), pb = md_f32x2_add(b, e);
-            const md_f32x2_t q[4] = { md_f32x2_add(pa, o), md_f32x2_sub(pa, o), md_f32x2_sub(pb, o), md_f32x2_add(pb, o) };
+            const md_float2_t o = md_float2_set(-d.y * we, d.x * we), e = md_float2_mul1(d, w);
+            const md_float2_t pa = md_float2_sub(a, e), pb = md_float2_add(b, e);
+            const md_float2_t q[4] = { md_float2_add(pa, o), md_float2_sub(pa, o), md_float2_sub(pb, o), md_float2_add(pb, o) };
             const float z[4] = { s.a.z, s.a.z, s.b.z, s.b.z };
             const float across[4] = { we, -we, -we, we };
             const uint32_t col = pass == 0 ? s.halo : s.col;

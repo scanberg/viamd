@@ -85,18 +85,18 @@ void density_map_mass_table(float table[DENSITY_MAP_TABLE], float* out_max, cons
 }
 
 // A running box of half-width r along each row: wrapped around a periodic grid, or with nothing outside a bounded one
-static void blur_rows(md_f32x4_t* out, const md_f32x4_t* in, int dim, int r, bool periodic) {
+static void blur_rows(md_float4_t* out, const md_float4_t* in, int dim, int r, bool periodic) {
     const int mask = dim - 1;
     const float scl = 1.0f / (2 * r + 1);
     for (int row = 0; row < dim; ++row) {
-        const md_f32x4_t* src = in + dim * row;
-        md_f32x4_t* dst = out + dim * row;
-        md_f32x4_t acc = md_f32x4_zero();
+        const md_float4_t* src = in + dim * row;
+        md_float4_t* dst = out + dim * row;
+        md_float4_t acc = md_float4_zero();
         if (periodic) {
             for (int x = -r; x <= r; ++x) acc = acc + src[x & mask];
             for (int x = 0; x < dim; ++x) {
                 dst[x] = acc * scl;
-                acc = md_f32x4_max(md_f32x4_zero(), acc - src[(x - r) & mask] + src[(x + r + 1) & mask]);
+                acc = md_float4_max(md_float4_zero(), acc - src[(x - r) & mask] + src[(x + r + 1) & mask]);
             }
         } else {
             for (int x = 0; x <= r && x < dim; ++x) acc = acc + src[x];
@@ -104,13 +104,13 @@ static void blur_rows(md_f32x4_t* out, const md_f32x4_t* in, int dim, int r, boo
                 dst[x] = acc * scl;
                 if (x + r + 1 < dim) acc = acc + src[x + r + 1];
                 if (x - r >= 0)      acc = acc - src[x - r];
-                acc = md_f32x4_max(md_f32x4_zero(), acc);
+                acc = md_float4_max(md_float4_zero(), acc);
             }
         }
     }
 }
 
-static void transpose(md_f32x4_t* dst, const md_f32x4_t* src, int n) {
+static void transpose(md_float4_t* dst, const md_float4_t* src, int n) {
     const int block = 8;
     MD_ASSERT(n % block == 0);
     for (int i = 0; i < n; i += block) {
@@ -139,12 +139,12 @@ static void boxes_for_gauss(int* half_w, int n, float sigma) {
 }
 
 void density_map_blur(float* data, int dim, float sigma, bool periodic) {
-    MD_STATIC_ASSERT(DENSITY_MAP_CHANNELS == 4, "the blur works on md_f32x4_t");
+    MD_STATIC_ASSERT(DENSITY_MAP_CHANNELS == 4, "the blur works on md_float4_t");
     MD_ASSERT(dim > 0 && (dim & (dim - 1)) == 0);
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
-    md_f32x4_t* grid = (md_f32x4_t*)data;
-    md_f32x4_t* tmp = (md_f32x4_t*)md_temp_alloc_aligned(temp, dim * dim * sizeof(md_f32x4_t), 16);
+    md_float4_t* grid = (md_float4_t*)data;
+    md_float4_t* tmp = (md_float4_t*)md_temp_alloc_aligned(temp, dim * dim * sizeof(md_float4_t), 16);
 
     int r[3];
     boxes_for_gauss(r, 3, sigma);

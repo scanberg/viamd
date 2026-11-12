@@ -63,9 +63,9 @@ namespace shapespace {
 // ## Constants
 
 // The corners of the triangle, in the plot's coordinates: an equilateral triangle of side 1
-static const md_f32x2_t tri_lin = { 0.0f, 0.0f };
-static const md_f32x2_t tri_pla = { 1.0f, 0.0f };
-static const md_f32x2_t tri_iso = { 0.5f, 0.86602540378f };
+static const md_float2_t tri_lin = { 0.0f, 0.0f };
+static const md_float2_t tri_pla = { 1.0f, 0.0f };
+static const md_float2_t tri_iso = { 0.5f, 0.86602540378f };
 
 // The plane the densities are over: square, around the triangle, with room for the images of the samples near its
 // edges that keep the density from leaking out of it (density_map.h), some 4 sigma
@@ -90,39 +90,39 @@ static const ImVec4 layer_palette[] = {
     {1.00f, 0.42f, 0.42f, 1.0f},
 };
 
-static inline md_f32x2_t shape_coord(md_f32x3_t w) {
+static inline md_float2_t shape_coord(md_float3_t w) {
     return tri_lin * w.x + tri_pla * w.y + tri_iso * w.z;
 }
 
 // The weights back from the point: they sum to one (md_util_shape_weights), which the corners' barycentric coordinates
 // are, so the point is all there is to keep
-static inline md_f32x3_t shape_weights_of(md_f32x2_t c) {
+static inline md_float3_t shape_weights_of(md_float2_t c) {
     const float iso = c.y / tri_iso.y;
     const float pla = c.x - tri_iso.x * iso;
     return { 1.0f - pla - iso, pla, iso };
 }
 
-static inline bool coord_valid(md_f32x2_t c) {
+static inline bool coord_valid(md_float2_t c) {
     return c.x == c.x && c.y == c.y;    // Not NaN: the frames not evaluated yet are
 }
 
 // The shape weights (linear, planar, isotropic) of the atoms of a structure in a state: the eigenvalues of the gyration
 // tensor about their centre, placed as one where the cell is periodic. masses may be NULL. NaN where there is no shape
 // (fewer than two atoms, or all in one place).
-static md_f32x3_t structure_shape(md_bitset_t atoms, const md_f32x3_t* xyz, const md_unitcell_t* cell, const float* masses, md_temp_scope_t temp) {
+static md_float3_t structure_shape(md_bitset_t atoms, const md_float3_t* xyz, const md_unitcell_t* cell, const float* masses, md_temp_scope_t temp) {
     const size_t count = md_bitset_count(atoms);
     if (count < 2) return { NAN, NAN, NAN };   // No shape: not a point
-    md_f32x4_t* xyzw = (md_f32x4_t*)md_temp_alloc_aligned(temp, sizeof(md_f32x4_t) * count, 16);
+    md_float4_t* xyzw = (md_float4_t*)md_temp_alloc_aligned(temp, sizeof(md_float4_t) * count, 16);
     md_bitset_iter_t it = md_bitset_iter(atoms);
     size_t k = 0;
     while (md_bitset_iter_next(&it) && k < count) {
-        xyzw[k++] = md_f32x4_from_f32x3(xyz[it.idx], masses ? masses[it.idx] : 1.0f);
+        xyzw[k++] = md_float4_from_float3(xyz[it.idx], masses ? masses[it.idx] : 1.0f);
     }
     // Covariance about the mean of the placed points, not the circular mean the placement is seeded from (their offset
     // enters the covariance squared)
-    md_f32x3_t com = md_f32x3_zero();
+    md_float3_t com = md_float3_zero();
     md_util_deperiodize_self(xyzw, k, cell, &com);
-    const md_f32x3x3_t M = md_f32x3x3_covariance_matrix_f32x4(xyzw, 0, k, com);
+    const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, k, com);
     return md_util_shape_weights(&M);
 }
 
@@ -137,7 +137,7 @@ struct Evaluation {
     bool     use_mass = true;
     size_t   num_frames = 0;
     size_t   num_structures = 0;
-    md_f32x2_t*  coords = nullptr;              // [structure * num_frames + frame], in the triangle: NaN for frames not done
+    md_float2_t*  coords = nullptr;              // [structure * num_frames + frame], in the triangle: NaN for frames not done
     std::atomic<uint32_t> frames_done{0};
     task_system::Job task;
 
@@ -221,7 +221,7 @@ struct Layer {
     EvaluationRef eval;             // Of frames: over the run
 
     // Of the frame shown
-    md_array(md_f32x2_t) current_coords = 0;
+    md_array(md_float2_t) current_coords = 0;
     uint64_t current_key = 0;
 
     // The density
@@ -248,7 +248,7 @@ static float scott_bandwidth(const Evaluation& e, uint32_t beg, uint32_t end) {
     const uint32_t step = (uint32_t)MD_MAX((uint64_t)1, total / 100000);
     double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0;
     for (size_t s = 0; s < e.num_structures; ++s) {
-        const md_f32x2_t* c = e.coords + s * e.num_frames;
+        const md_float2_t* c = e.coords + s * e.num_frames;
         for (uint32_t f = beg; f < end; f += step) {
             if (!coord_valid(c[f])) continue;
             n += 1;
@@ -828,7 +828,7 @@ struct Shapespace : viamd::EventHandler {
             const uint32_t f1 = beg + (uint32_t)((uint64_t)n * (chunk + 1) / chunks);
             for (size_t s = 0; s < eval->num_structures; ++s) {
                 if (cancel.load(std::memory_order_relaxed)) return;
-                const md_f32x2_t* c = eval->coords + s * eval->num_frames;
+                const md_float2_t* c = eval->coords + s * eval->num_frames;
                 for (uint32_t f = f0; f < f1; ++f) {
                     if (coord_valid(c[f])) bins.add(0, c[f].x, c[f].y);
                 }
@@ -931,7 +931,7 @@ struct Shapespace : viamd::EventHandler {
         e->num_structures = md_array_size(e->structures);
         e->num_frames = num_frames;
         const size_t n = e->num_structures * num_frames;
-        e->coords = (md_f32x2_t*)md_alloc(e->arena, sizeof(md_f32x2_t) * n);
+        e->coords = (md_float2_t*)md_alloc(e->arena, sizeof(md_float2_t) * n);
         for (size_t i = 0; i < n; ++i) e->coords[i] = { NAN, NAN };
 
         Evaluation* ev = e.get();
@@ -940,7 +940,7 @@ struct Shapespace : viamd::EventHandler {
             const md_system_t& sys = state->mold.sys;
             md_temp_scope_t temp = md_temp_begin();
             MD_DEFER { md_temp_end(temp); };
-            md_f32x3_t* xyz = (md_f32x3_t*)md_temp_alloc(temp, sizeof(md_f32x3_t) * MD_ALIGN_TO(sys.atom.count, 8));
+            md_float3_t* xyz = (md_float3_t*)md_temp_alloc(temp, sizeof(md_float3_t) * MD_ALIGN_TO(sys.atom.count, 8));
             float* masses = nullptr;
             if (ev->use_mass) {
                 masses = (float*)md_temp_alloc(temp, sizeof(float) * MD_ALIGN_TO(sys.atom.count, 8));
@@ -966,7 +966,7 @@ struct Shapespace : viamd::EventHandler {
                 }
                 for (size_t s = 0; s < ev->num_structures; ++s) {
                     md_temp_scope_t inner = md_temp_begin();
-                    const md_f32x3_t w = structure_shape(ev->structures[s], xyz, &frame.unitcell, masses, inner);
+                    const md_float3_t w = structure_shape(ev->structures[s], xyz, &frame.unitcell, masses, inner);
                     md_temp_end(inner);
                     // Degenerate (one atom, or all in one place): no shape, NaN
                     ev->coords[s * ev->num_frames + f] = shape_coord(w);
@@ -1146,7 +1146,7 @@ struct Shapespace : viamd::EventHandler {
             if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
             static const md_str_t styles[LayerStyle_Count] = { MD_STR_LIT("points"), MD_STR_LIT("contours"), MD_STR_LIT("heatmap") };
             viamd::write_str(state, MD_STR_LIT("Style"), styles[l.style]);
-            viamd::write_vec4(state, MD_STR_LIT("Color"), md_f32x4_set(l.color.x, l.color.y, l.color.z, l.color.w));
+            viamd::write_vec4(state, MD_STR_LIT("Color"), md_float4_set(l.color.x, l.color.y, l.color.z, l.color.w));
             viamd::write_flt(state, MD_STR_LIT("Opacity"), l.opacity);
             viamd::write_bool(state, MD_STR_LIT("Fill"), l.fill);
             viamd::write_bool(state, MD_STR_LIT("Lines"), l.lines);
@@ -1251,7 +1251,7 @@ struct Shapespace : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "Style") && viamd::extract_str(s, arg)) {
                 l->style = md_str_eq_cstr(s, "contours") ? LayerStyle_Contours : md_str_eq_cstr(s, "heatmap") ? LayerStyle_Heatmap : LayerStyle_Points;
             } else if (md_str_eq_cstr(ident, "Color")) {
-                md_f32x4_t c;
+                md_float4_t c;
                 if (viamd::extract_vec4(c, arg)) l->color = ImVec4(c.x, c.y, c.z, c.w);
             } else if (md_str_eq_cstr(ident, "Opacity")) {
                 viamd::extract_flt(l->opacity, arg);
@@ -1404,8 +1404,8 @@ struct Shapespace : viamd::EventHandler {
         density_map_plot_view_uv(view_uv, shape_domain);
         // Within the triangle only: the smoothing spreads the density past its edges, where there are no shapes
         const DensityMapDomain& D = shape_domain;
-        auto u = [&](md_f32x2_t p) { return (p.x - D.x_min) / (D.x_max - D.x_min); };
-        auto v = [&](md_f32x2_t p) { return (p.y - D.y_min) / (D.y_max - D.y_min); };
+        auto u = [&](md_float2_t p) { return (p.x - D.x_min) / (D.x_max - D.x_min); };
+        auto v = [&](md_float2_t p) { return (p.y - D.y_min) / (D.y_max - D.y_min); };
         const float clip[6] = { u(tri_lin), v(tri_lin), u(tri_pla), v(tri_pla), u(tri_iso), v(tri_iso) };
         return density_map_composite(&canvas, w, h, view_uv, draws, num_draws, clip);
     }
@@ -1413,7 +1413,7 @@ struct Shapespace : viamd::EventHandler {
     // ### Points
 
     struct PointSource {
-        const md_f32x2_t* coords = nullptr;     // [structure * stride + frame]
+        const md_float2_t* coords = nullptr;     // [structure * stride + frame]
         size_t   stride = 0;
         size_t   num_structures = 0;
         uint32_t frame_beg = 0, frame_end = 0, frame_step = 1;
@@ -1454,9 +1454,9 @@ struct Shapespace : viamd::EventHandler {
     template <typename F>
     static void for_each_point(const PointSource& ps, F&& f) {
         for (size_t s = 0; s < ps.num_structures; ++s) {
-            const md_f32x2_t* c = ps.coords + s * ps.stride;
+            const md_float2_t* c = ps.coords + s * ps.stride;
             for (uint32_t frame = ps.frame_beg; frame < ps.frame_end; frame += ps.frame_step) {
-                const md_f32x2_t p = ps.current ? c[0] : c[frame];
+                const md_float2_t p = ps.current ? c[0] : c[frame];
                 if (coord_valid(p)) f((uint32_t)s, frame, p);
             }
         }
@@ -1486,13 +1486,13 @@ struct Shapespace : viamd::EventHandler {
         uint32_t structure = 0;
         uint32_t frame = 0;
         bool     current = true;
-        md_f32x2_t   coord = {};
+        md_float2_t   coord = {};
     };
 
     void draw_tooltip(const Hover& h, const PointSource& ps) const {
         const Layer& l = layers[h.layer];
         const size_t ns = ps.num_structures;
-        const md_f32x3_t w = shape_weights_of(h.coord);
+        const md_float3_t w = shape_weights_of(h.coord);
         const md_bitset_t atoms = structure_atoms(l, ps, h.structure);
         ImGui::BeginTooltip();
         if (ns > 1) ImGui::Text("Structure %u of %zu  \xc2\xb7  %u atoms", h.structure + 1, ns, (uint32_t)md_bitset_count(atoms));
@@ -1516,7 +1516,7 @@ struct Shapespace : viamd::EventHandler {
         const ImVec2 size = ImPlot::GetPlotSize();
         const double sx = size.x / lim.Size().x;
         const double sy = size.y / lim.Size().y;
-        auto to_pixels = [&](md_f32x2_t c) {
+        auto to_pixels = [&](md_float2_t c) {
             return ImVec2((float)(pos.x + (c.x - lim.X.Min) * sx), (float)(pos.y + (lim.Y.Max - c.y) * sy));
         };
 
@@ -1535,7 +1535,7 @@ struct Shapespace : viamd::EventHandler {
                 if (!has_source[i]) continue;
                 const float r = MD_MAX(8.0f, layers[i].point_size);
                 float best = r * r;
-                for_each_point(sources[i], [&](uint32_t s, uint32_t frame, md_f32x2_t c) {
+                for_each_point(sources[i], [&](uint32_t s, uint32_t frame, md_float2_t c) {
                     const ImVec2 p = to_pixels(c);
                     const float d2 = (p.x - mouse.x) * (p.x - mouse.x) + (p.y - mouse.y) * (p.y - mouse.y);
                     if (d2 < best) {
@@ -1571,7 +1571,7 @@ struct Shapespace : viamd::EventHandler {
                 // A structure once, however many of its points are in
                 md_allocator_i* temp = md_get_heap_allocator();
                 md_bitmask_t taken = md_bitmask_create(0, (uint32_t)sources[i].num_structures, temp);
-                for_each_point(sources[i], [&](uint32_t s, uint32_t, md_f32x2_t c) {
+                for_each_point(sources[i], [&](uint32_t s, uint32_t, md_float2_t c) {
                     if (x0 <= c.x && c.x <= x1 && y0 <= c.y && c.y <= y1 && !md_bitmask_test_bit(&taken, s)) {
                         md_bitmask_set_bit(&taken, s);
                         md_bitmask_or(highlight_mask, structure_atoms(layers[i], sources[i], s));
@@ -1591,7 +1591,7 @@ struct Shapespace : viamd::EventHandler {
             Layer& l = layers[i];
             const PointSource& ps = sources[i];
             const float r = l.point_size * 0.5f;
-            for_each_point(ps, [&](uint32_t s, uint32_t frame, md_f32x2_t c) {
+            for_each_point(ps, [&](uint32_t s, uint32_t frame, md_float2_t c) {
                 ImVec4 col = point_color(l, ps, s, frame);
                 col.w *= l.opacity;
                 const ImU32 u = ImGui::ColorConvertFloat4ToU32(col);
@@ -1601,15 +1601,15 @@ struct Shapespace : viamd::EventHandler {
             });
         }
         // Rings around the points of the frame shown of what is selected and highlighted
-        const md_f32x4_t sel_col = app->selection.color.selection.outline;
-        const md_f32x4_t hl_col = app->selection.color.highlight.outline;
+        const md_float4_t sel_col = app->selection.color.selection.outline;
+        const md_float4_t hl_col = app->selection.color.highlight.outline;
         const bool any_sel = !md_bitmask_empty(selection_mask);
         const bool any_hl = !md_bitmask_empty(highlight_mask);
         for (int i = num_layers - 1; i >= 0 && (any_sel || any_hl); --i) {
             if (!has_source[i] || !sources[i].current) continue;
             const Layer& l = layers[i];
             const float r = MD_MAX(l.point_size * 0.5f + 3.0f, 5.0f);
-            for_each_point(sources[i], [&](uint32_t s, uint32_t, md_f32x2_t c) {
+            for_each_point(sources[i], [&](uint32_t s, uint32_t, md_float2_t c) {
                 const md_bitset_t atoms = structure_atoms(l, sources[i], s);
                 const uint32_t first = md_bitset_first(atoms);
                 if (md_bitset_empty(atoms)) return;
@@ -1649,7 +1649,7 @@ struct Shapespace : viamd::EventHandler {
             if (!box_is_click) {
                 const ImVec2 a = ImPlot::PlotToPixels(box.p0);
                 const ImVec2 b = ImPlot::PlotToPixels(box.p1);
-                const md_f32x4_t c = box.op == SelectionOperator::Or ? sel_col : md_f32x4_t{1.0f, 0.4f, 0.4f, 0.9f};
+                const md_float4_t c = box.op == SelectionOperator::Or ? sel_col : md_float4_t{1.0f, 0.4f, 0.4f, 0.9f};
                 ImPlot::PushPlotClipRect();
                 dl->AddRectFilled(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(ImVec4(c.x, c.y, c.z, 0.12f)));
                 dl->AddRect(ImMin(a, b), ImMax(a, b), ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
@@ -1673,7 +1673,7 @@ struct Shapespace : viamd::EventHandler {
     // The triangle, its grid (lines of equal weight, a quarter apart) and its corners
     void draw_triangle() {
         ImDrawList* dl = ImPlot::GetPlotDrawList();
-        auto px = [](md_f32x2_t p) { return ImPlot::PlotToPixels(ImPlotPoint(p.x, p.y)); };
+        auto px = [](md_float2_t p) { return ImPlot::PlotToPixels(ImPlotPoint(p.x, p.y)); };
         const ImVec2 a = px(tri_lin), b = px(tri_pla), c = px(tri_iso);
         ImPlot::PushPlotClipRect();
         dl->AddTriangleFilled(a, b, c, IM_COL32(255, 255, 255, 14));
@@ -1843,7 +1843,7 @@ struct Shapespace : viamd::EventHandler {
         for (size_t f = 0; f < nf; ++f) {
             md_array_push(values[0], has_time ? time[f] : (float)f, temp);
             for (size_t s = 0; s < ns; ++s) {
-                const md_f32x3_t w = shape_weights_of(eval->coords[s * nf + f]);
+                const md_float3_t w = shape_weights_of(eval->coords[s * nf + f]);
                 md_array_push(values[1 + s * 3 + 0], w.x, temp);
                 md_array_push(values[1 + s * 3 + 1], w.y, temp);
                 md_array_push(values[1 + s * 3 + 2], w.z, temp);

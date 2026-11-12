@@ -48,8 +48,8 @@ struct Mesh {
     uint32_t vbo_value = 0;     // a scalar per vertex and its gradient (mesh_upload_values), 0 until there are any
     uint32_t vertex_count = 0;
     uint32_t index_count  = 0;
-    md_f32x3_t   bounds_min = {0, 0, 0};    // of the vertices, in the mesh's own coordinates
-    md_f32x3_t   bounds_max = {0, 0, 0};
+    md_float3_t   bounds_min = {0, 0, 0};    // of the vertices, in the mesh's own coordinates
+    md_float3_t   bounds_max = {0, 0, 0};
     uint64_t version = 0;   // bumped on every upload
 };
 
@@ -101,15 +101,15 @@ struct Surface {
     const Mesh* mesh = nullptr;
     uint32_t index_offset = 0;
     uint32_t index_count  = 0;
-    md_f32x4x4_t   model = MD_MAT4_IDENT_INIT;      // mesh -> world
-    md_f32x4_t   color = {1, 1, 1, 1};      // alpha: the surface's opacity
+    md_float4x4_t   model = MD_MAT4_IDENT_INIT;      // mesh -> world
+    md_float4_t   color = {1, 1, 1, 1};      // alpha: the surface's opacity
     float    optical_density = 0.0f;    // of what it encloses, as the raycaster's (IsoRenderDesc::iso.optical_densities)
 
     Coloring coloring = Coloring_Uniform;
     uint32_t color_volume   = 0;        // 3D, RGBA
     uint32_t field_volume   = 0;        // 3D, R
     uint32_t field_colormap = 0;        // 2D, N x 1
-    md_f32x4x4_t   world_to_volume = MD_MAT4_IDENT_INIT;    // world -> [0,1]^3 of the colour or field volume
+    md_float4x4_t   world_to_volume = MD_MAT4_IDENT_INIT;    // world -> [0,1]^3 of the colour or field volume
     float    field_range_beg = 0.0f;
     float    field_range_end = 1.0f;
 
@@ -128,9 +128,9 @@ struct RenderDesc {
     } render_target;
 
     struct {
-        md_f32x4x4_t view = {};
-        md_f32x4x4_t proj = {};               // as the opaque scene was drawn, jitter and all
-        md_f32x4x4_t proj_no_jitter = {};     // what the accumulation is keyed on
+        md_float4x4_t view = {};
+        md_float4x4_t proj = {};               // as the opaque scene was drawn, jitter and all
+        md_float4x4_t proj_no_jitter = {};     // what the accumulation is keyed on
     } matrix;
 
     const Surface* surfaces = nullptr;

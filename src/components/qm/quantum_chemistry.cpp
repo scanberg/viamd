@@ -123,7 +123,7 @@ struct CriticalPointStyle {
     const char* signature;  // (rank, signature)
     const char* topology;   // md_topo's name
     const char* topology_plural;
-    md_f32x4_t      color;      // display referred: the overlay goes over the image after the display transform
+    md_float4_t      color;      // display referred: the overlay goes over the image after the display transform
     float       radius;     // Å, at a point size of 1
 };
 
@@ -149,7 +149,7 @@ static inline int critical_point_type_rank(int type) {
 
 // The type's marker as a swatch of the text's height, for a legend or a table cell
 static void critical_point_swatch(int type) {
-    const md_f32x4_t c = critical_point_style(type).color;
+    const md_float4_t c = critical_point_style(type).color;
     const float h = ImGui::GetTextLineHeight();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const ImVec2 center = ImVec2(p.x + 0.5f * h, p.y + 0.5f * h);
@@ -590,7 +590,7 @@ static void panel_meshes_update(PanelMeshes* pm, ApplicationState* state, int co
 }
 
 // Panel i's surfaces: the positive sheet in colors[0], the negative one in colors[1]
-static size_t panel_meshes_surfaces(isomesh::Surface out[2], const PanelMeshes& pm, int i, const md_f32x4_t colors[2]) {
+static size_t panel_meshes_surfaces(isomesh::Surface out[2], const PanelMeshes& pm, int i, const md_float4_t colors[2]) {
     const int k = pm.slot[i];
     if (k < 0 || !pm.meshes.ok) return 0;
     size_t n = 0;
@@ -737,7 +737,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     const size_t num_ao = md_gto_basis_num_ao(&basis);
 
     size_t num_atoms = 0;
-    const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, sys, state);
+    const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, sys, state);
     if (!atom_pos || num_atoms != md_gto_basis_num_atoms(&basis)) {
         MD_LOG_ERROR("Critical points: no positions for the atoms the basis is centred on");
         return nullptr;
@@ -1003,23 +1003,23 @@ static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int3
 // The basis atoms' positions (bohr) of the current frame, copied for a worker that makes fields at them
 struct CtGeometry {
     const md_system_t* sys = nullptr;   // outlives the jobs (a load waits for the pool)
-    md_f32x3_t* xyz = nullptr;              // heap
+    md_float3_t* xyz = nullptr;              // heap
     size_t  count = 0;
 
     bool init(const ApplicationState& state) {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         size_t n = 0;
-        const md_f32x3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
+        const md_float3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
         if (!p || n == 0) return false;
-        xyz = (md_f32x3_t*)md_alloc(md_get_heap_allocator(), sizeof(md_f32x3_t) * n);
-        md_memcpy(xyz, p, sizeof(md_f32x3_t) * n);
+        xyz = (md_float3_t*)md_alloc(md_get_heap_allocator(), sizeof(md_float3_t) * n);
+        md_memcpy(xyz, p, sizeof(md_float3_t) * n);
         count = n;
         sys = &state.mold.sys;
         return true;
     }
     void free() {
-        if (xyz) md_free(md_get_heap_allocator(), xyz, sizeof(md_f32x3_t) * count);
+        if (xyz) md_free(md_get_heap_allocator(), xyz, sizeof(md_float3_t) * count);
         *this = {};
     }
     IsoFieldGeometry iso() const { return { sys, xyz, count }; }
@@ -1357,11 +1357,11 @@ struct QuantumChemistry : viamd::EventHandler {
     AABB aabb = {};
     OABB oabb = {};
 
-    md_f64x3_t center_of_charge = {};
+    md_double3_t center_of_charge = {};
 
     // Up to date packed atom xyz in BOHR ready to be supplied for evaluation
     // The w component is padding for now. 16-bytes are used for better alignment (gpu buffer 1:1)
-    md_f32x4_t* atom_xyzw = nullptr;
+    md_float4_t* atom_xyzw = nullptr;
 
     // This is the default view which is used as a reset view target
     ViewTransform default_view = {};
@@ -1523,20 +1523,20 @@ struct QuantumChemistry : viamd::EventHandler {
             size_t count = 0;
 
             char   label[MAX_NTO_GROUPS][64] = {};
-            md_f32x4_t color[MAX_NTO_GROUPS] = {};
+            md_float4_t color[MAX_NTO_GROUPS] = {};
             int8_t hovered_index = -1;
         } group;
 
         double iso_val = 0.05;
-        md_f32x4_t col_pos = { 0.0f, 0.294f, 0.529f, 0.75f };
-        md_f32x4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
-        md_f32x4_t col_den = { 1.0f, 1.0f,   1.0f,   0.75f };
-        md_f32x4_t col_att = VEC4_ATTACHMENT;
-        md_f32x4_t col_det = VEC4_DETACHMENT;
+        md_float4_t col_pos = { 0.0f, 0.294f, 0.529f, 0.75f };
+        md_float4_t col_neg = { 1.0f, 0.804f, 0.0f,   0.75f };
+        md_float4_t col_den = { 1.0f, 1.0f,   1.0f,   0.75f };
+        md_float4_t col_att = VEC4_ATTACHMENT;
+        md_float4_t col_det = VEC4_DETACHMENT;
 
         struct {
             bool enabled = false;
-            md_f32x4_t colors[3] = {
+            md_float4_t colors[3] = {
                 {0.0f, 1.0f, 1.0f, 1.0f},
                 {1.0f, 0.0f, 1.0f, 1.0f}
             };
@@ -1774,7 +1774,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // View transform, in graph units. Kept here rather than in the layout so that panning and
         // zooming never trigger a relayout.
-        md_f32x2_t pan  = {0, 0};
+        md_float2_t pan  = {0, 0};
         float  zoom = 1.0f;
 
         // Last frame's hit, so the dimming does not flicker while the cursor crosses a seam.
@@ -1824,7 +1824,7 @@ struct QuantumChemistry : viamd::EventHandler {
         bool   pending = false;
         size_t count = 0;
         char   label[MAX_NTO_GROUPS][64] = {};
-        md_f32x4_t color[MAX_NTO_GROUPS] = {};
+        md_float4_t color[MAX_NTO_GROUPS] = {};
         md_bitset_t atoms[MAX_NTO_GROUPS] = {};
         bool   atoms_initialized = false;
     } pending_groups;
@@ -2199,11 +2199,11 @@ struct QuantumChemistry : viamd::EventHandler {
                                 md_bitset_iter_t it = md_bitmask_iter(&critical_points.selection_mask);
                                 while (md_bitset_iter_next(&it)) {
                                     size_t idx = it.idx;
-                                    md_f32x3_t xyz = { critical_points.simp_graph.vertices[idx].x,
+                                    md_float3_t xyz = { critical_points.simp_graph.vertices[idx].x,
                                                    critical_points.simp_graph.vertices[idx].y,
                                                    critical_points.simp_graph.vertices[idx].z };
                                     xyz *= BOHR_TO_ANGSTROM;
-                                    md_f32x2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
+                                    md_float2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
                                     {
@@ -2212,11 +2212,11 @@ struct QuantumChemistry : viamd::EventHandler {
                                 }
                             } else {
                                 for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
-                                    md_f32x3_t xyz = { critical_points.simp_graph.vertices[i].x,
+                                    md_float3_t xyz = { critical_points.simp_graph.vertices[i].x,
                                                    critical_points.simp_graph.vertices[i].y,
                                                    critical_points.simp_graph.vertices[i].z };
                                     xyz *= BOHR_TO_ANGSTROM;
-                                    md_f32x2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
+                                    md_float2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
                                     {
@@ -2324,7 +2324,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_array_size(atom_xyzw) == qm.count) {
                     // Update atom_xyz
 					// Calculate nuclei charge weighted center of charge for later use in orbital centering
-					md_f64x3_t nucl_dipole = {0};
+					md_double3_t nucl_dipole = {0};
 
 					// One entry per QM atom, gathered from wherever that atom sits in the system.
 					// No branch on whether a map exists: without one the QM atoms ARE the system's,
@@ -2407,7 +2407,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (critical_points.enabled) {
                         size_t popcount = bf ? md_bitmask_count(bf) : 0;
                         if (popcount > 0) {
-                            md_f32x4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
+                            md_float4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
                             if (dst_xyzw) {
                                 md_bitset_iter_t it = md_bitmask_iter(bf);
                                 while (md_bitset_iter_next(&it)) {
@@ -2444,21 +2444,21 @@ struct QuantumChemistry : viamd::EventHandler {
         immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
         immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
 
-        const md_f32x4x4_t view = camera_world_to_view_matrix(state.view.camera);
-        const md_f32x3_t right = {view[0][0], view[1][0], view[2][0]};
-        const md_f32x3_t up    = {view[0][1], view[1][1], view[2][1]};
-        const md_f32x3_t back  = {view[0][2], view[1][2], view[2][2]};    // towards the camera
+        const md_float4x4_t view = camera_world_to_view_matrix(state.view.camera);
+        const md_float3_t right = {view[0][0], view[1][0], view[2][0]};
+        const md_float3_t up    = {view[0][1], view[1][1], view[2][1]};
+        const md_float3_t back  = {view[0][2], view[1][2], view[2][2]};    // towards the camera
 
-        const md_f32x3_t bg = state.visuals.background.color;
+        const md_float3_t bg = state.visuals.background.color;
         const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
-        const md_f32x4_t outline_color = dark_bg ? md_f32x4_t{0.92f, 0.92f, 0.92f, 0.90f} : md_f32x4_t{0.10f, 0.10f, 0.10f, 0.90f};
-        const md_f32x4_t bond_path_color = dark_bg ? md_f32x4_t{0.80f, 0.80f, 0.80f, 0.85f} : md_f32x4_t{0.25f, 0.25f, 0.25f, 0.85f};
-        md_f32x4_t rcp_path_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
+        const md_float4_t outline_color = dark_bg ? md_float4_t{0.92f, 0.92f, 0.92f, 0.90f} : md_float4_t{0.10f, 0.10f, 0.10f, 0.90f};
+        const md_float4_t bond_path_color = dark_bg ? md_float4_t{0.80f, 0.80f, 0.80f, 0.85f} : md_float4_t{0.25f, 0.25f, 0.25f, 0.85f};
+        md_float4_t rcp_path_color = critical_point_style(MD_TOPO_JOIN_SADDLE).color;
         rcp_path_color.w = 0.75f;
         const float scale = critical_points.point_scale;
 
         auto pos = [&g](size_t i) {
-            return md_f32x3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
+            return md_float3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
         };
 
         // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
@@ -2471,13 +2471,13 @@ struct QuantumChemistry : viamd::EventHandler {
                 const uint32_t i0 = g.edges[i].from, i1 = g.edges[i].to;
                 if (i0 >= num_cp || i1 >= num_cp) continue;
                 const bool bond = md_topo_vertex_type(&g, i0) == MD_TOPO_SPLIT_SADDLE;
-                const md_f32x3_t p0 = pos(i0), p1 = pos(i1);
-                const md_f32x3_t side = md_f32x3_cross(p1 - p0, back);
-                const float len = md_f32x3_length(side);
+                const md_float3_t p0 = pos(i0), p1 = pos(i1);
+                const md_float3_t side = md_float3_cross(p1 - p0, back);
+                const float len = md_float3_length(side);
                 if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
-                const md_f32x3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
+                const md_float3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
                 const uint32_t col = convert_color(bond ? bond_path_color : rcp_path_color);
-                const md_f32x3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
+                const md_float3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
                 const int tri[6] = {0, 1, 2, 0, 2, 3};
                 for (int k = 0; k < 6; ++k) {
                     v[n].coord = q[tri[k]];
@@ -2495,30 +2495,30 @@ struct QuantumChemistry : viamd::EventHandler {
         float* depth = md_temp_alloc_array(temp, float, num_cp);
         for (size_t i = 0; i < num_cp; ++i) {
             order[i] = (uint32_t)i;
-            depth[i] = md_f32x3_dot(pos(i), back);
+            depth[i] = md_float3_dot(pos(i), back);
         }
         std::sort(order, order + num_cp, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
 
         constexpr int SEG = 16;
-        md_f32x2_t circle[SEG + 1];
+        md_float2_t circle[SEG + 1];
         for (int k = 0; k <= SEG; ++k) {
             const float a = (float)(2.0 * MD_PI * k / SEG);
             circle[k] = {cosf(a), sinf(a)};
         }
 
-        const md_f32x4_t selection_color = state.selection.color.selection.outline;
-        const md_f32x4_t highlight_color = state.selection.color.highlight.outline;
+        const md_float4_t selection_color = state.selection.color.selection.outline;
+        const md_float4_t highlight_color = state.selection.color.highlight.outline;
         const bool any_selected = md_bitmask_count(&critical_points.selection_mask) > 0;
         const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
 
         // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
         immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
         size_t n = 0;
-        auto disc = [&](md_f32x3_t c, float r, md_f32x4_t color, uint32_t picking_idx) {
+        auto disc = [&](md_float3_t c, float r, md_float4_t color, uint32_t picking_idx) {
             const uint32_t col = convert_color(color);
-            const md_f32x3_t u = right * r, w = up * r;
+            const md_float3_t u = right * r, w = up * r;
             for (int k = 0; k < SEG; ++k) {
-                const md_f32x3_t e[3] = {c, c + u * circle[k].x + w * circle[k].y, c + u * circle[k + 1].x + w * circle[k + 1].y};
+                const md_float3_t e[3] = {c, c + u * circle[k].x + w * circle[k].y, c + u * circle[k + 1].x + w * circle[k + 1].y};
                 for (int j = 0; j < 3; ++j) {
                     v[n].coord = e[j];
                     v[n].color = col;
@@ -2534,11 +2534,11 @@ struct QuantumChemistry : viamd::EventHandler {
             const bool selected    = md_bitmask_test_bit(&critical_points.selection_mask, i);
             const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
             const float r = style.radius * scale * (highlighted ? 1.3f : 1.0f);
-            const md_f32x3_t c = pos(i);
+            const md_float3_t c = pos(i);
             if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), highlight_color, i);
             if (selected)    disc(c, r * 1.4f, selection_color, i);
             disc(c, r, outline_color, i);
-            const md_f32x4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
+            const md_float4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
             disc(c, r * 0.78f, fill, i);
         }
         immediate::triangles(scope, v, n);
@@ -2718,17 +2718,17 @@ struct QuantumChemistry : viamd::EventHandler {
         orb.render_hash = 0;
 
 					const md_atomic_number_t* atom_z = qm.atomic_number;
-					md_f64x3_t nucl_dipole = { 0, 0, 0 };
+					md_double3_t nucl_dipole = { 0, 0, 0 };
 
         md_array_resize(atom_xyzw, num_atoms, arena);
-        const md_f64x3_t* atom_vlx = qm.coordinate;
+        const md_double3_t* atom_vlx = qm.coordinate;
         for (size_t i = 0; i < num_atoms; ++i) {
-            md_f64x3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
-            atom_xyzw[i] = md_f32x4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
+            md_double3_t xyz = atom_vlx[i] * ANGSTROM_TO_BOHR;
+            atom_xyzw[i] = md_float4_set((float)xyz.x, (float)xyz.y, (float)xyz.z, 1.0f);
 						nucl_dipole += xyz * atom_z[i];
         }
 
-					const md_f64x3_t ground_state_dipole = dipole_ground_state(state.mold.sys);
+					const md_double3_t ground_state_dipole = dipole_ground_state(state.mold.sys);
 
         const double num_electrons = es_electron_count(state.mold.sys, es_path::alpha_occupation) +
                                      es_electron_count(state.mold.sys, es_path::beta_occupation);
@@ -2747,8 +2747,8 @@ struct QuantumChemistry : viamd::EventHandler {
             //nto.show_window = true;
 
             picking_surface_init(&nto.picking_surface, interaction_surface_nto);
-						md_f32x3_t center = (oabb.min_ext + oabb.max_ext) * 0.5f * BOHR_TO_ANGSTROM;
-						md_f32x3_t half_ext = (oabb.max_ext - oabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
+						md_float3_t center = (oabb.min_ext + oabb.max_ext) * 0.5f * BOHR_TO_ANGSTROM;
+						md_float3_t half_ext = (oabb.max_ext - oabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
             nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
             nto.camera = nto.target;
 
@@ -2756,7 +2756,7 @@ struct QuantumChemistry : viamd::EventHandler {
             md_memset(nto.atom_group_idx, 0, sizeof(uint32_t) * num_atoms);
 
             snprintf(nto.group.label[0], sizeof(nto.group.label[0]), "Unassigned");
-            nto.group.color[0] = md_f32x4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
+            nto.group.color[0] = md_float4_t{ 0.25f, 0.25f, 0.25f, 1.0f };
 
             for (int i = 1; i < (int)MD_COUNTOF(nto.group.color); ++i) {
                 ImVec4 color = ImPlot::GetColormapColor(i - 1, ImPlotColormap_Deep);
@@ -2775,7 +2775,7 @@ struct QuantumChemistry : viamd::EventHandler {
             update_nto_group_colors(state.mold.sys);
 
             // Callculate ballpark scaling factor for dipole vectors
-            md_f32x3_t extent = aabb.max_ext - aabb.min_ext;
+            md_float3_t extent = aabb.max_ext - aabb.min_ext;
             float max_ext = MD_MAX(extent.x, MD_MAX(extent.y, extent.z));
             float max_len = 0;
             {
@@ -2789,7 +2789,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
 #if USE_AABB_GRID
-            init_grid(&nto.grid, md_f32x3x3_ident(), aabb.min_ext, aabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
+            init_grid(&nto.grid, md_float3x3_ident(), aabb.min_ext, aabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #else
             init_grid(&nto.grid, oabb.orientation, oabb.min_ext, oabb.max_ext, DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM);
 #endif
@@ -2988,7 +2988,7 @@ struct QuantumChemistry : viamd::EventHandler {
         return ImVec4(r, g, b, color.w);
     }
 
-    static inline md_f32x2_t vec2_from_imvec2(ImVec2 v) {
+    static inline md_float2_t vec2_from_imvec2(ImVec2 v) {
         return { v.x, v.y };
     }
 
@@ -5298,11 +5298,11 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
-    void set_atom_coordinates(ApplicationState& state, const md_f64x3_t* atom_coords) {
+    void set_atom_coordinates(ApplicationState& state, const md_double3_t* atom_coords) {
         QmAtoms qm = {};
         if (!es_qm_atoms(&qm, state.mold.sys)) return;
 
-        const md_f64x3_t* coords = atom_coords ? atom_coords : qm.coordinate;
+        const md_double3_t* coords = atom_coords ? atom_coords : qm.coordinate;
         if (!coords) return;
 
         // Through the map. These are QM atom coordinates and the destination is the SYSTEM's state,
@@ -5324,7 +5324,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // stored (md_unit_none) rather than converted: the centre of charge arithmetic below is in the
     // same units as the nuclear term it is subtracted from, and a conversion here would be a
     // silent change of what that subtraction means.
-    static md_f64x3_t dipole_ground_state(const md_system_t& sys) {
+    static md_double3_t dipole_ground_state(const md_system_t& sys) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("dipole/ground_state/vector"));
         if (!attr) return {0, 0, 0};
         double v[3] = {0, 0, 0};
@@ -5348,7 +5348,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         double max_len = 0.0;
         for (size_t i = 0; i + 2 < count; i += 3) {
-            max_len = MD_MAX(max_len, md_f64x3_length({v[i], v[i + 1], v[i + 2]}));
+            max_len = MD_MAX(max_len, md_double3_length({v[i], v[i + 1], v[i + 2]}));
         }
         return max_len;
     }
@@ -5440,7 +5440,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
     // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
     // this is not the matrix above with C*3 columns.
-    static const md_f64x3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
+    static const md_double3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
@@ -5448,29 +5448,29 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (out_rows) *out_rows = attr->format.shape[0];
         if (out_cols) *out_cols = attr->format.shape[1];
-        return (const md_f64x3_t*)attr->data;
+        return (const md_double3_t*)attr->data;
     }
 
     // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
     // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
     // the row over the QM atoms, so a row that does not cover them is not one to read.
-    static const md_f64x3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
+    static const md_double3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
         size_t num_rows = 0;
         size_t num_cols = 0;
-        const md_f64x3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
+        const md_double3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
         if (!data || row >= num_rows || num_cols < min_cols) return nullptr;
         return data + row * num_cols;
     }
 
     // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
-    static const md_f64x3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
+    static const md_double3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr || !attr->data) return nullptr;
         if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
         if (attr->format.rank != 1 || attr->format.components != 3) return nullptr;
 
         if (out_count) *out_count = attr->format.shape[0];
-        return (const md_f64x3_t*)attr->data;
+        return (const md_double3_t*)attr->data;
     }
 
     // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
@@ -5588,10 +5588,10 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
 
         size_t num_atoms = 0;
-        const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
+        const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
         uint64_t hash = md_hash64(&cp.rho_min, sizeof(cp.rho_min), qm_version);
         hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
-        if (atom_pos) hash = md_hash64(atom_pos, sizeof(md_f32x3_t) * num_atoms, hash);
+        if (atom_pos) hash = md_hash64(atom_pos, sizeof(md_float3_t) * num_atoms, hash);
 
         // Every threshold is a new search, so none is started while its slider is held.
         if (!cp.rho_min_editing && hash != cp.gto_want) {
@@ -5625,7 +5625,7 @@ struct QuantumChemistry : viamd::EventHandler {
 #if USE_OABB_GRID
         init_grid(&grid, oabb.orientation, oabb.center, oabb.extents, samples_per_unit_length);
 #else
-        init_grid(&grid, md_f32x3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+        init_grid(&grid, md_float3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
 #endif
 
         // Compute a hash of the current state
@@ -5671,7 +5671,7 @@ struct QuantumChemistry : viamd::EventHandler {
             uint32_t tex_id = 0;
             if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
                 size_t num_atom_pos = 0;
-                const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
+                const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
                 if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
                     if (!md_topo_compute_extremum_graph_GPU(&cp.raw_graph, tex_id, &grid, 0.0f)) {
                         MD_LOG_ERROR("Failed to compute extremum graph for electron density");
@@ -6428,8 +6428,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const md_f64x3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
-                    const md_f64x3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
+                    const md_double3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
+                    const md_double3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
                     ImGui::TableSetupColumn("Atom", columns_base_flags, 0.0f);
@@ -7656,13 +7656,13 @@ struct QuantumChemistry : viamd::EventHandler {
                         ImGui::EndTable();
                     }
 
-                    const md_f64x3_t* atom_coord = qm.coordinate;
+                    const md_double3_t* atom_coord = qm.coordinate;
 
                     // Check selected state
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const md_f64x3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
+                        const md_double3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -8106,7 +8106,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
                 md_grid_t grid { 0 };
 #if USE_AABB_GRID
-                init_grid(&grid, md_f32x3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+                init_grid(&grid, md_float3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
 #else
                 init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
 #endif
@@ -8141,12 +8141,12 @@ struct QuantumChemistry : viamd::EventHandler {
 
             const float aspect = orb_win_sz.x / orb_win_sz.y;
 
-            //const md_f32x4x4_t world_to_view = camera_world_to_view_matrix(orb.camera);
-            //const md_f32x4x4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
+            //const md_float4x4_t world_to_view = camera_world_to_view_matrix(orb.camera);
+            //const md_float4x4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
 
-            const md_f32x4x4_t view_to_world = camera_view_to_world_matrix(orb.camera);
-            const md_f32x4x4_t clip_to_view  = camera_clip_to_view_matrix_persp(orb.camera, aspect);
-            const md_f32x4x4_t clip_to_world = md_f32x4x4_mul(view_to_world, clip_to_view);
+            const md_float4x4_t view_to_world = camera_view_to_world_matrix(orb.camera);
+            const md_float4x4_t clip_to_view  = camera_clip_to_view_matrix_persp(orb.camera, aspect);
+            const md_float4x4_t clip_to_world = md_float4x4_mul(view_to_world, clip_to_view);
 
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
@@ -8217,7 +8217,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (hit.depth < 1.0f) {
                             reset_transform.distance = orb.target.distance;
                             reset_transform.orientation = orb.camera.orientation;
-                            reset_transform.position = hit.world_pos + orb.camera.orientation * md_f32x3_set(0, 0, orb.target.distance);
+                            reset_transform.position = hit.world_pos + orb.camera.orientation * md_float3_set(0, 0, orb.target.distance);
                         }
                         orb.target = reset_transform;
                     }
@@ -8290,16 +8290,16 @@ struct QuantumChemistry : viamd::EventHandler {
 
                 md_quat_t out_orientation = orb.target.orientation;
                 if (ImGui::CoordinateSystemWidget(&out_orientation, orb.camera.orientation, size)) {
-                    const md_f32x3_t look_at = camera_get_look_at(orb.target);
+                    const md_float3_t look_at = camera_get_look_at(orb.target);
                     orb.target.orientation = md_quat_normalize(out_orientation);
                     orb.target.position = camera_position_from_look_at(look_at, orb.target.orientation, orb.target.distance);
                 }
             }
 
             const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-            md_f32x4x4_t view_mat = camera_world_to_view_matrix(orb.camera);
-            md_f32x4x4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
-            md_f32x4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
+            md_float4x4_t view_mat = camera_world_to_view_matrix(orb.camera);
+            md_float4x4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
+            md_float4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
 
             // The mesh rendering mode: each panel's orbital as a field, the meshes of all of them extracted together
             const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
@@ -8447,7 +8447,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (mesh_mode) {
                         // The sheet of each sign in the colour of the isovalue of that sign
                         const bool pos_first = orb.iso.values[0] >= 0.0f;
-                        const md_f32x4_t colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
+                        const md_float4_t colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
                         isomesh::Surface surfaces[2];
                         const size_t num_surfaces = panel_meshes_surfaces(surfaces, orb.mesh, i, colors);
                         const isomesh::RenderDesc mesh_desc = {
@@ -8756,7 +8756,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
 
-            md_f32x3_t extent;
+            md_float3_t extent;
             if (export_state.use_obb) {
                 extent = oabb.max_ext - oabb.min_ext;
             } else {
@@ -8819,7 +8819,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (export_state.use_obb) {
                         init_grid(&grid, oabb.orientation, oabb.min_ext, oabb.max_ext, samples_per_unit_length);
                     } else {
-                        init_grid(&grid, md_f32x3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
+                        init_grid(&grid, md_float3x3_ident(), aabb.min_ext, aabb.max_ext, samples_per_unit_length);
                     }
 
                     md_temp_scope_t temp = md_temp_begin();
@@ -8869,14 +8869,14 @@ struct QuantumChemistry : viamd::EventHandler {
                     es_qm_atoms(&qm, state.mold.sys);
 
                     size_t              natoms = qm.count;
-                    const md_f64x3_t* qm_coords  = qm.coordinate;
+                    const md_double3_t* qm_coords  = qm.coordinate;
                     const uint8_t* qm_numbers = qm.atomic_number;
                     float* data = md_temp_alloc_array(temp, float, num_samples);
 
-                    md_f32x3_t origin = grid.origin;
-                    md_f32x3_t step_x = grid.orientation[0] * grid.spacing[0];
-                    md_f32x3_t step_y = grid.orientation[1] * grid.spacing[1];
-                    md_f32x3_t step_z = grid.orientation[2] * grid.spacing[2];
+                    md_float3_t origin = grid.origin;
+                    md_float3_t step_x = grid.orientation[0] * grid.spacing[0];
+                    md_float3_t step_y = grid.orientation[1] * grid.spacing[1];
+                    md_float3_t step_z = grid.orientation[2] * grid.spacing[2];
 
                     // Readbacks are queued, not completed, by the evaluate_* calls above.
                     // Exporting reads the texture directly, so it is one of the few places that
@@ -8953,8 +8953,8 @@ struct QuantumChemistry : viamd::EventHandler {
                             goto done;
                         }
 
-                        md_f32x3_t pos   = origin * BOHR_TO_ANGSTROM;
-                        md_f32x3_t step  = vol.voxel_size * BOHR_TO_ANGSTROM;
+                        md_float3_t pos   = origin * BOHR_TO_ANGSTROM;
+                        md_float3_t step  = vol.voxel_size * BOHR_TO_ANGSTROM;
 
                         md_file_printf(mhd_file, "ObjectType = Image\n");
                         md_file_printf(mhd_file, "NDims = 3\n");
@@ -9072,7 +9072,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     void delete_group(int index) {
-        md_f32x4_t deleted_color = nto.group.color[index];
+        md_float4_t deleted_color = nto.group.color[index];
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
             if (nto.atom_group_idx[i] == (uint32_t)index) {
                 nto.atom_group_idx[i] = 0;
@@ -9101,7 +9101,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     void swap_groups(int a, int b) {
-        md_f32x4_t color = nto.group.color[a];
+        md_float4_t color = nto.group.color[a];
         nto.group.color[a] = nto.group.color[b];
         nto.group.color[b] = color;
 
@@ -9458,13 +9458,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
             const float aspect_ratio = win_sz.x / win_sz.y;
 
-            md_f32x4x4_t view_mat     = camera_world_to_view_matrix(nto.camera);
-            md_f32x4x4_t proj_mat     = camera_view_to_clip_matrix_persp(nto.camera, aspect_ratio);
-            md_f32x4x4_t inv_view_mat = camera_view_to_world_matrix(nto.camera);
-            md_f32x4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(nto.camera, aspect_ratio);
+            md_float4x4_t view_mat     = camera_world_to_view_matrix(nto.camera);
+            md_float4x4_t proj_mat     = camera_view_to_clip_matrix_persp(nto.camera, aspect_ratio);
+            md_float4x4_t inv_view_mat = camera_view_to_world_matrix(nto.camera);
+            md_float4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(nto.camera, aspect_ratio);
 
-            md_f32x4x4_t world_to_clip = proj_mat * view_mat;
-            md_f32x4x4_t clip_to_world = inv_view_mat * inv_proj_mat;
+            md_float4x4_t world_to_clip = proj_mat * view_mat;
+            md_float4x4_t clip_to_world = inv_view_mat * inv_proj_mat;
 
             if (rsp.selected != -1) {
                 const int nto_target_idx[2] = {
@@ -9582,29 +9582,29 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
                     if (nto.dipole.enabled) {
-                        const md_f32x3_t mid = md_f32x3_lerp(aabb.min_ext, aabb.max_ext, 0.5f);
+                        const md_float3_t mid = md_float3_lerp(aabb.min_ext, aabb.max_ext, 0.5f);
 
                         // Out of the dipole groups in the table, not out of a reader. Each is one
                         // vector per excited state, so the selection indexes them directly - and the
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const md_f64x3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
-                        const md_f64x3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
+                        const md_double3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
+                        const md_double3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
-                        const md_f64x3_t magn_raw = has_dipoles ? magnetic_dp[rsp.selected] : md_f64x3_t{0, 0, 0};
-                        const md_f64x3_t elec_raw = has_dipoles ? electric_dp[rsp.selected] : md_f64x3_t{0, 0, 0};
+                        const md_double3_t magn_raw = has_dipoles ? magnetic_dp[rsp.selected] : md_double3_t{0, 0, 0};
+                        const md_double3_t elec_raw = has_dipoles ? electric_dp[rsp.selected] : md_double3_t{0, 0, 0};
 
-                        md_f32x3_t magn_vec = {(float)magn_raw.x, (float)magn_raw.y, (float)magn_raw.z};
-                        md_f32x3_t elec_vec = {(float)elec_raw.x, (float)elec_raw.y, (float)elec_raw.z};
+                        md_float3_t magn_vec = {(float)magn_raw.x, (float)magn_raw.y, (float)magn_raw.z};
+                        md_float3_t elec_vec = {(float)elec_raw.x, (float)elec_raw.y, (float)elec_raw.z};
 
                         magn_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
                         elec_vec *= (float)(nto.dipole.vector_scale * BOHR_TO_ANGSTROM);
 
-                        auto proj_point = [world_to_clip, win_sz, p0](md_f32x3_t point) -> ImVec2 {
-                            const md_f32x4_t p = md_f32x4x4_mul_f32x4(world_to_clip, md_f32x4_from_f32x3(point, 1.0));
+                        auto proj_point = [world_to_clip, win_sz, p0](md_float3_t point) -> ImVec2 {
+                            const md_float4_t p = md_float4x4_mul_float4(world_to_clip, md_float4_from_float3(point, 1.0));
                             const ImVec2 c = {
                                 p0.x + ( p.x / p.w * 0.5f + 0.5f) * win_sz.x,
                                 p0.y + (-p.y / p.w * 0.5f + 0.5f) * win_sz.y,
@@ -9641,19 +9641,19 @@ struct QuantumChemistry : viamd::EventHandler {
                         draw_list->AddText(c_magn, text_color, (const char*)u8"μm");
 
                         if (nto.dipole.show_angle) {
-                            const md_f32x3_t magn_dir = md_f32x3_normalize(magn_vec);
-                            const md_f32x3_t elec_dir = md_f32x3_normalize(elec_vec);
-                            const float angle = acosf(md_f32x3_dot(magn_dir, elec_dir));
+                            const md_float3_t magn_dir = md_float3_normalize(magn_vec);
+                            const md_float3_t elec_dir = md_float3_normalize(elec_vec);
+                            const float angle = acosf(md_float3_dot(magn_dir, elec_dir));
                             const ImU32 angle_color = IM_COL32(0, 0, 0, 128);
                             const float angle_thickness = 1.0f;
                             const float angle_vec_scale = 0.1f;
 
                             const size_t num_seg = 20;
-                            const md_f32x3_t axis = md_f32x3_normalize(md_f32x3_cross(elec_dir, magn_dir));
+                            const md_float3_t axis = md_float3_normalize(md_float3_cross(elec_dir, magn_dir));
 
                             for (size_t seg = 0; seg <= num_seg; ++seg) {
                                 float  t = (float)(seg) / (float)num_seg;
-                                md_f32x3_t v = md_quat_mul_f32x3(md_quat_axis_angle(axis, angle * t), elec_dir);
+                                md_float3_t v = md_quat_mul_float3(md_quat_axis_angle(axis, angle * t), elec_dir);
                                 ImVec2 p = proj_point(mid + v * angle_vec_scale);
                                 draw_list->PathLineTo(p);
                             }
@@ -9702,8 +9702,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
 
                 if (reset_view) {
-					md_f32x3_t center = md_f32x3_lerp(aabb.min_ext, aabb.max_ext, 0.5f) * BOHR_TO_ANGSTROM;
-					md_f32x3_t half_ext = (aabb.max_ext - aabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
+					md_float3_t center = md_float3_lerp(aabb.min_ext, aabb.max_ext, 0.5f) * BOHR_TO_ANGSTROM;
+					md_float3_t half_ext = (aabb.max_ext - aabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
                     nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
                 }
 
@@ -9715,7 +9715,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     md_quat_t out_orientation = nto.target.orientation;
                     if (ImGui::CoordinateSystemWidget(&out_orientation, nto.camera.orientation, size)) {
-                        const md_f32x3_t look_at = camera_get_look_at(nto.target);
+                        const md_float3_t look_at = camera_get_look_at(nto.target);
                         nto.target.orientation = md_quat_normalize(out_orientation);
                         nto.target.position = camera_position_from_look_at(look_at, nto.target.orientation, nto.target.distance);
                     }
@@ -9760,7 +9760,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
                     render_hash = md_hash64(&nto.iso_val, sizeof(nto.iso_val), render_hash);
                     render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
-                    const md_f32x4_t iso_colors[5] = { nto.col_pos, nto.col_neg, nto.col_den, nto.col_att, nto.col_det };
+                    const md_float4_t iso_colors[5] = { nto.col_pos, nto.col_neg, nto.col_den, nto.col_att, nto.col_det };
                     render_hash = md_hash64(iso_colors, sizeof(iso_colors), render_hash);
                     render_hash = md_hash64(&nto.link_attachment_detachment_density, sizeof(nto.link_attachment_detachment_density), render_hash);
                     render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
@@ -9795,7 +9795,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     glViewport(0, 0, gbuf.width, gbuf.height);
                     glScissor(0, 0, gbuf.width, gbuf.height);
 
-                    auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, md_f32x4x4_t& view_mat, md_f32x4x4_t& proj_mat, uint32_t atom_mask = 0) {
+                    auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, md_float4x4_t& view_mat, md_float4x4_t& proj_mat, uint32_t atom_mask = 0) {
                         md_gl_draw_op_t draw_op = {};
                         draw_op.type = MD_GL_REP_BALL_AND_STICK;
                         draw_op.args.ball_and_stick.ball_scale   = 1.0f;
@@ -9910,7 +9910,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         bool iso_written = false;
                         size_t count = is_density ? 1 : 2;
                         float  values[2];
-                        md_f32x4_t colors[2];
+                        md_float4_t colors[2];
                     
                         if (is_density) {
                             if (nto.link_attachment_detachment_density) {
@@ -9931,7 +9931,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
 
                         if (enabled && mesh_mode) {
-                            const md_f32x4_t sheet_colors[2] = {colors[0], colors[0]};
+                            const md_float4_t sheet_colors[2] = {colors[0], colors[0]};
                             isomesh::Surface surfaces[2];
                             const size_t num_surfaces = panel_meshes_surfaces(surfaces, nto.mesh, i, sheet_colors);
                             const isomesh::RenderDesc mesh_desc = {
@@ -10147,7 +10147,7 @@ struct QuantumChemistry : viamd::EventHandler {
         for (size_t i = 0; i < MAX_NTO_GROUPS; ++i) {
             md_bitset_free(&pending_groups.atoms[i], md_get_heap_allocator());
             pending_groups.label[i][0] = '\0';
-            pending_groups.color[i] = md_f32x4_t{0.5f, 0.5f, 0.5f, 1.0f};
+            pending_groups.color[i] = md_float4_t{0.5f, 0.5f, 0.5f, 1.0f};
         }
 
         // 'GroupLabel' opens a group; the color and atom entries that follow belong to it. The
@@ -10321,13 +10321,13 @@ struct QuantumChemistry : viamd::EventHandler {
     // near-black one (carbon) would say nothing about the transition. Role colour is both always
     // visible and the thing the diagram is actually about; the 3D viewport still uses CPK, because
     // there a molecule should look like a molecule.
-    md_f32x4_t flow_atom_color(uint32_t atom_idx, uint32_t column) const {
+    md_float4_t flow_atom_color(uint32_t atom_idx, uint32_t column) const {
         const uint32_t group_idx = (atom_idx < md_array_size(nto.atom_group_idx)) ? nto.atom_group_idx[atom_idx] : 0;
         if (group_idx > 0 && group_idx < nto.group.count) {
             return nto.group.color[group_idx];
         }
-        return (column == 0) ? md_f32x4_t{0.78f, 0.24f, 0.22f, 1.0f}    // donating
-                             : md_f32x4_t{0.13f, 0.56f, 0.35f, 1.0f};   // accepting
+        return (column == 0) ? md_float4_t{0.78f, 0.24f, 0.22f, 1.0f}    // donating
+                             : md_float4_t{0.13f, 0.56f, 0.35f, 1.0f};   // accepting
     }
 
     char* flow_mo_label_storage(uint32_t mo_idx) {
@@ -10509,8 +10509,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // A fragment's colour. Leaves (what a molecule is made of) cycle a palette; the levels above them are
     // a quiet grey-blue, so the colour on screen says which unit, not which tree level.
-    md_f32x4_t flow_fragment_color(uint32_t f) const {
-        if (!frag_tree_is_leaf(&flow.frags, f)) return md_f32x4_t{0.42f, 0.47f, 0.58f, 1.0f};
+    md_float4_t flow_fragment_color(uint32_t f) const {
+        if (!frag_tree_is_leaf(&flow.frags, f)) return md_float4_t{0.42f, 0.47f, 0.58f, 1.0f};
         uint32_t leaf_rank = 0;
         for (uint32_t i = 0; i < f; ++i) leaf_rank += frag_tree_is_leaf(&flow.frags, i) ? 1 : 0;
         return vec_cast(ImPlot::GetColormapColor((int)(leaf_rank % 10), ImPlotColormap_Deep));
@@ -10571,7 +10571,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const double* weight = job->weight[column];
             uint32_t* nodes = atom_node[column];
 
-            auto add_atom = [&](uint32_t a, uint32_t parent, md_f32x4_t color) {
+            auto add_atom = [&](uint32_t a, uint32_t parent, md_float4_t color) {
                 if (weight[a] <= 0.0) return;
                 md_flow_node_t node = {
                     .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
@@ -10610,7 +10610,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 for (uint32_t p = F.parent[f]; p != MD_FRAGMENT_NONE; p = F.parent[p]) {
                     if (frag_node[p] != MD_FLOW_INVALID_INDEX) { parent = frag_node[p]; break; }
                 }
-                const md_f32x4_t color = flow_fragment_color((uint32_t)f);
+                const md_float4_t color = flow_fragment_color((uint32_t)f);
                 md_flow_node_t node = {
                     .column = column, .parent = parent, .level = FLOW_LEVEL_FRAGMENT,
                     .weight = (float)frag_weight[column][f], .color = color,
@@ -10850,7 +10850,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 .parent = MD_FLOW_INVALID_INDEX,
                 .level  = FLOW_LEVEL_MO,
                 .weight = (float)w,
-                .color  = occupied ? md_f32x4_t{0.78f, 0.24f, 0.22f, 1.0f} : md_f32x4_t{0.13f, 0.56f, 0.35f, 1.0f},
+                .color  = occupied ? md_float4_t{0.78f, 0.24f, 0.22f, 1.0f} : md_float4_t{0.13f, 0.56f, 0.35f, 1.0f},
                 .label  = md_str_from_cstr(dst),
                 .key    = flow_node_key(occupied ? 0u : 2u, FLOW_LEVEL_MO, (uint32_t)mo),
             };
@@ -11001,13 +11001,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // Pan and zoom that put the nodes' box, with the room its labels and annotations take, inside a
     // canvas of 'canvas_size' pixels.
-    void flow_fit(md_f32x2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
+    void flow_fit(md_float2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
         *pan = { 0, 0 };
         *zoom = 1.0f;
         if (md_array_size(layout.nodes) == 0) return;
 
-        md_f32x2_t bb_min = { 1.0e30f,  1.0e30f };
-        md_f32x2_t bb_max = {-1.0e30f, -1.0e30f };
+        md_float2_t bb_min = { 1.0e30f,  1.0e30f };
+        md_float2_t bb_max = {-1.0e30f, -1.0e30f };
         for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
             const md_flow_layout_node_t* n = layout.nodes + i;
             bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
@@ -11033,7 +11033,7 @@ struct QuantumChemistry : viamd::EventHandler {
         *zoom = MD_CLAMP(MD_MIN(avail_w / (bb_w * canvas_size.x), avail_h / (bb_h * canvas_size.y)), 0.1f, 12.0f);
 
         // Centred in what the pads leave
-        const md_f32x2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
+        const md_float2_t bb_center = { (bb_min.x + bb_max.x) * 0.5f, (bb_min.y + bb_max.y) * 0.5f };
         const float target_x = 0.5f + (pad_l - pad_r) * 0.5f / canvas_size.x;
         const float target_y = 0.5f + (pad_t - pad_b) * 0.5f / canvas_size.y;
         pan->x = target_x - bb_center.x * *zoom;
@@ -11367,8 +11367,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const float bar_w = MD_CLAMP(slot * 0.6f, 2.0f, 14.0f);
         const float base_y = p0.y + h - 12.0f;
         const float max_h = h - 16.0f;
-        const md_f32x4_t local_col = { 0.55f, 0.60f, 0.70f, 1.0f };
-        const md_f32x4_t ct_col    = { 0.88f, 0.42f, 0.12f, 1.0f };
+        const md_float4_t local_col = { 0.55f, 0.60f, 0.70f, 1.0f };
+        const md_float4_t ct_col    = { 0.88f, 0.42f, 0.12f, 1.0f };
         const ImVec2 mouse = ImGui::GetMousePos();
         int32_t hover = -1;
 
@@ -11381,7 +11381,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const ImVec2 b1 = { cx + bar_w * 0.5f, base_y };
             const QuantumChemistry::Flow::StripEntry& e = flow.strip[s];
             if (e.done && e.ok) {
-                const md_f32x4_t c = md_f32x4_lerp(local_col, ct_col, MD_CLAMP(e.ct, 0.0f, 1.0f));
+                const md_float4_t c = md_float4_lerp(local_col, ct_col, MD_CLAMP(e.ct, 0.0f, 1.0f));
                 dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 1.5f);
             } else {
                 dl->AddRect(b0, b1, IM_COL32(150, 150, 150, 255), 1.5f);
@@ -11833,12 +11833,12 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool orbital = shown && shown->orbital;
 
         const float aspect = sz.x / sz.y;
-        const md_f32x4x4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
-        const md_f32x4x4_t proj_mat     = camera_view_to_clip_matrix_persp(ctv.camera, aspect);
-        const md_f32x4x4_t inv_view_mat = camera_view_to_world_matrix(ctv.camera);
-        const md_f32x4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(ctv.camera, aspect);
-        const md_f32x4x4_t world_to_clip = proj_mat * view_mat;
-        const md_f32x4x4_t clip_to_world = inv_view_mat * inv_proj_mat;
+        const md_float4x4_t view_mat     = camera_world_to_view_matrix(ctv.camera);
+        const md_float4x4_t proj_mat     = camera_view_to_clip_matrix_persp(ctv.camera, aspect);
+        const md_float4x4_t inv_view_mat = camera_view_to_world_matrix(ctv.camera);
+        const md_float4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(ctv.camera, aspect);
+        const md_float4x4_t world_to_clip = proj_mat * view_mat;
+        const md_float4x4_t clip_to_world = inv_view_mat * inv_proj_mat;
 
         const int width  = MD_MAX(1, (int)(sz.x * io.DisplayFramebufferScale.x));
         const int height = MD_MAX(1, (int)(sz.y * io.DisplayFramebufferScale.y));
@@ -11855,10 +11855,10 @@ struct QuantumChemistry : viamd::EventHandler {
             if (!ctv.out_tex[i]) gl::init_texture_2D(&ctv.out_tex[i], width, height, GL_RGBA8);
         }
 
-        md_f32x4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
+        md_float4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
         colors[0].w = colors[1].w = 0.75f;
         // orbitals in the orbital window's lobe colours: the positive sheet, the negative
-        const md_f32x4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
+        const md_float4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
 
         // Camera control in either view; the picking reads the shared buffer, the same in both
         for (int i = 0; i < 2; ++i) {
@@ -12081,7 +12081,7 @@ struct QuantumChemistry : viamd::EventHandler {
             dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
             dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
             const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
-            const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(md_f32x4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
+            const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(md_float4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
             dl->AddText(tp, caption_col, lbl[i]);
             float y = tp.y + ImGui::GetTextLineHeight();
             if (orbital) {
@@ -12441,7 +12441,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // increment form leaves an extra pan term in and the view creeps toward the corner.
             if (canvas_hovered && io.MouseWheel != 0.0f) {
                 const ImVec2 rel = (io.MousePos - canvas_p0) / canvas_sz;
-                const md_f32x2_t p = { (rel.x - flow.pan.x) / flow.zoom, (rel.y - flow.pan.y) / flow.zoom };
+                const md_float2_t p = { (rel.x - flow.pan.x) / flow.zoom, (rel.y - flow.pan.y) / flow.zoom };
                 flow.zoom = MD_CLAMP(flow.zoom * (1.0f + io.MouseWheel * 0.12f), 0.25f, 12.0f);
                 flow.pan.x = rel.x - p.x * flow.zoom;
                 flow.pan.y = rel.y - p.y * flow.zoom;
@@ -12886,7 +12886,7 @@ struct QuantumChemistry : viamd::EventHandler {
         FlowView view = {};
         view.area_min = { 0.0f, 0.0f };
         view.area_max = size;
-        md_f32x2_t pan = {};
+        md_float2_t pan = {};
         flow_fit(&pan, &view.zoom, layout, size, flow_measure_margins_vg(&flow.graph, &flow.cut, &layout, flow.style, &notes));
         view.pan = { pan.x, pan.y };
 

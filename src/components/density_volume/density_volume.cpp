@@ -92,7 +92,7 @@ struct DensityVolume : viamd::EventHandler {
     struct {
         bool enabled = false;
         float values[8] = {};
-        md_f32x4_t colors[8] = {};
+        md_float4_t colors[8] = {};
         size_t count = 0;
     } iso;
 
@@ -104,8 +104,8 @@ struct DensityVolume : viamd::EventHandler {
 
 
     struct {
-        md_f32x3_t min = {0, 0, 0};
-        md_f32x3_t max = {1, 1, 1};
+        md_float3_t min = {0, 0, 0};
+        md_float3_t max = {1, 1, 1};
     } clip_volume;
 
     struct {
@@ -114,7 +114,7 @@ struct DensityVolume : viamd::EventHandler {
         int  colormap_mode = LegendColorMapMode_Split;
     } legend;
 
-    md_f32x3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
+    md_float3_t voxel_spacing = {1.0f, 1.0f, 1.0f};
     float resolution_scale = 2.0f;
     // v2's volumes are absolute densities: shown divided by the bulk density, where the script gives one, they read
     // as how many times bulk, 1 being bulk
@@ -143,8 +143,8 @@ struct DensityVolume : viamd::EventHandler {
         char    err[256] = "";
     } cmp;
 
-    md_f32x4_t clip_volume_color = {1,0,0,1};
-    md_f32x4_t bounding_box_color = {0,0,0,1};
+    md_float4_t clip_volume_color = {1,0,0,1};
+    md_float4_t bounding_box_color = {0,0,0,1};
 
     bool show_bounding_box = true;
     bool show_reference_structures = true;
@@ -176,7 +176,7 @@ struct DensityVolume : viamd::EventHandler {
     // The reference structures as last evaluated: the atoms of each (kept, up to DENSITY_VOLUME_MAX_SHOWN_STRUCTURES),
     // where each is moved to align with the reference, and how many the script gives in all
     md_array(md_bitset_t) structures = nullptr;
-    md_array(md_f32x4x4_t) structure_mats = nullptr;
+    md_array(md_float4x4_t) structure_mats = nullptr;
     size_t   structure_count = 0;
     uint64_t structures_hash = 0;
     uint64_t structures_version = 1;   // Changes with the atoms of the structures
@@ -185,7 +185,7 @@ struct DensityVolume : viamd::EventHandler {
     int workspace_rep_count = -1;
 
     // Base model matrix to position the volume correctly in the world.
-    md_f32x4x4_t model_mat = md_f32x4x4_ident();
+    md_float4x4_t model_mat = md_float4x4_ident();
 
     GBuffer gbuf = {};
     PickingSurface picking_surface = {};
@@ -281,13 +281,13 @@ struct DensityVolume : viamd::EventHandler {
 
     // The atoms of the structures and where each goes. Those of the atoms are kept only when they changed: the
     // transforms change with every frame, the atoms seldom.
-    void set_structures(const md_bitset_t* structs, const md_f32x4x4_t* mats, size_t count) {
+    void set_structures(const md_bitset_t* structs, const md_float4x4_t* mats, size_t count) {
         md_allocator_i* heap = md_get_heap_allocator();
         structure_count = count;
         const size_t kept = MD_MIN(count, DENSITY_VOLUME_MAX_SHOWN_STRUCTURES);
 
         md_array_resize(structure_mats, kept, heap);
-        if (kept) md_memcpy(structure_mats, mats, kept * sizeof(md_f32x4x4_t));
+        if (kept) md_memcpy(structure_mats, mats, kept * sizeof(md_float4x4_t));
 
         uint64_t hash = md_hash64(&kept, sizeof(kept), 0);
         for (size_t i = 0; i < kept; ++i) {
@@ -449,10 +449,10 @@ struct DensityVolume : viamd::EventHandler {
         // The other structures of an ensemble, towards the background
         if (shown > 1 && fade > 0.0f) {
             if (!r.members.id) r.members = md_gl_rep_create(state->mold.gl_mol);
-            const md_f32x3_t bg = state->visuals.background.color;
+            const md_float3_t bg = state->visuals.background.color;
             const float t = MD_CLAMP(fade, 0.0f, 1.0f);
             for (size_t i = 0; i < num_atoms; ++i) {
-                md_f32x4_t c = convert_color(colors[i]);
+                md_float4_t c = convert_color(colors[i]);
                 c.x = c.x + (bg.x - c.x) * t;
                 c.y = c.y + (bg.y - c.y) * t;
                 c.z = c.z + (bg.z - c.z) * t;
@@ -817,23 +817,23 @@ struct DensityVolume : viamd::EventHandler {
                     if (vol_view.placed) {
                         // Where the voxels are, as the script published it: the texture's u runs along the data's
                         // innermost axis, w along its outermost
-                        const md_f32x3_t a0 = md_f32x3_mul1(vol_view.basis[2], (float)vol_dim[2]);
-                        const md_f32x3_t a1 = md_f32x3_mul1(vol_view.basis[1], (float)vol_dim[1]);
-                        const md_f32x3_t a2 = md_f32x3_mul1(vol_view.basis[0], (float)vol_dim[0]);
-                        model_mat = md_f32x4x4_ident();
-                        model_mat.col[0] = md_f32x4_from_f32x3(a0, 0.0f);
-                        model_mat.col[1] = md_f32x4_from_f32x3(a1, 0.0f);
-                        model_mat.col[2] = md_f32x4_from_f32x3(a2, 0.0f);
-                        model_mat.col[3] = md_f32x4_from_f32x3(vol_view.origin, 1.0f);
-                        voxel_spacing = md_f32x3_t{md_f32x3_length(vol_view.basis[2]), md_f32x3_length(vol_view.basis[1]), md_f32x3_length(vol_view.basis[0])};
-                        md_f32x3_t lo = vol_view.origin, hi = vol_view.origin;
+                        const md_float3_t a0 = md_float3_mul1(vol_view.basis[2], (float)vol_dim[2]);
+                        const md_float3_t a1 = md_float3_mul1(vol_view.basis[1], (float)vol_dim[1]);
+                        const md_float3_t a2 = md_float3_mul1(vol_view.basis[0], (float)vol_dim[0]);
+                        model_mat = md_float4x4_ident();
+                        model_mat.col[0] = md_float4_from_float3(a0, 0.0f);
+                        model_mat.col[1] = md_float4_from_float3(a1, 0.0f);
+                        model_mat.col[2] = md_float4_from_float3(a2, 0.0f);
+                        model_mat.col[3] = md_float4_from_float3(vol_view.origin, 1.0f);
+                        voxel_spacing = md_float3_t{md_float3_length(vol_view.basis[2]), md_float3_length(vol_view.basis[1]), md_float3_length(vol_view.basis[0])};
+                        md_float3_t lo = vol_view.origin, hi = vol_view.origin;
                         for (int c = 1; c < 8; ++c) {
-                            md_f32x3_t p = vol_view.origin;
-                            if (c & 1) p = md_f32x3_add(p, a0);
-                            if (c & 2) p = md_f32x3_add(p, a1);
-                            if (c & 4) p = md_f32x3_add(p, a2);
-                            lo = md_f32x3_min(lo, p);
-                            hi = md_f32x3_max(hi, p);
+                            md_float3_t p = vol_view.origin;
+                            if (c & 1) p = md_float3_add(p, a0);
+                            if (c & 2) p = md_float3_add(p, a1);
+                            if (c & 4) p = md_float3_add(p, a2);
+                            lo = md_float3_min(lo, p);
+                            hi = md_float3_max(hi, p);
                         }
                         default_view = compute_optimal_view((lo + hi) * 0.5f, (hi - lo) * 0.5f);
                         if (view_pending) {
@@ -847,10 +847,10 @@ struct DensityVolume : viamd::EventHandler {
                     if (!vol_view.placed && vis.sdf.extent) {
                         // v1: a cube of half extent extent
                         const float s = vis.sdf.extent;
-                        md_f32x3_t min_aabb = md_f32x3_set1(-s);
-                        md_f32x3_t max_aabb = md_f32x3_set1( s);
+                        md_float3_t min_aabb = md_float3_set1(-s);
+                        md_float3_t max_aabb = md_float3_set1( s);
                         model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
-                        voxel_spacing = md_f32x3_t{2*s / vol_dim[0], 2*s / vol_dim[1], 2*s / vol_dim[2]};
+                        voxel_spacing = md_float3_t{2*s / vol_dim[0], 2*s / vol_dim[1], 2*s / vol_dim[2]};
                         default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
                         if (view_pending) {
                             view_pending = false;
@@ -964,7 +964,7 @@ struct DensityVolume : viamd::EventHandler {
         md_system_state_t st0 = {.alloc = temp};
         md_system_state_init(&st0, state->mold.sys.atom.count);
         md_array(int32_t) atoms = nullptr;
-        md_f32x3_t* xyz = nullptr;
+        md_float3_t* xyz = nullptr;
         if (script::valid(state->script.eval_ir) && extract_frame(state, 0, &st0)) {
             script::Drawing vis = {};
             script::drawing_init(&vis, temp);
@@ -977,13 +977,13 @@ struct DensityVolume : viamd::EventHandler {
             };
             if (script::draw_ref(&vis, v.vis_ref, (int)v.member, ctx, script::DRAW_SDF) && md_array_size(vis.sdf.structures) > 0 &&
                 md_array_size(vis.sdf.matrices) > 0) {
-                const md_f32x4x4_t M = vis.sdf.matrices[0];
-                xyz = (md_f32x3_t*)md_alloc(temp, st0.num_atoms * sizeof(md_f32x3_t));
-                md_memcpy(xyz, st0.xyz, st0.num_atoms * sizeof(md_f32x3_t));
+                const md_float4x4_t M = vis.sdf.matrices[0];
+                xyz = (md_float3_t*)md_alloc(temp, st0.num_atoms * sizeof(md_float3_t));
+                md_memcpy(xyz, st0.xyz, st0.num_atoms * sizeof(md_float3_t));
                 md_bitset_iter_t it = md_bitset_iter(vis.sdf.structures[0]);
                 while (md_bitset_iter_next(&it)) {
                     md_array_push(atoms, (int32_t)it.idx, temp);
-                    xyz[it.idx] = md_f32x4x4_mul_f32x3(M, xyz[it.idx], 1.0f);
+                    xyz[it.idx] = md_float4x4_mul_float3(M, xyz[it.idx], 1.0f);
                 }
             }
         }
@@ -1470,14 +1470,14 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             const float aspect_ratio = canvas_sz.x / canvas_sz.y;
-            const md_f32x4x4_t world_to_view = camera_world_to_view_matrix(camera);
-            const md_f32x4x4_t view_to_world = camera_view_to_world_matrix(camera);
+            const md_float4x4_t world_to_view = camera_world_to_view_matrix(camera);
+            const md_float4x4_t view_to_world = camera_view_to_world_matrix(camera);
 
-            const md_f32x4x4_t view_to_clip  = camera_view_to_clip_matrix_persp(camera, aspect_ratio);
-            const md_f32x4x4_t clip_to_view  = camera_clip_to_view_matrix_persp(camera, aspect_ratio);
+            const md_float4x4_t view_to_clip  = camera_view_to_clip_matrix_persp(camera, aspect_ratio);
+            const md_float4x4_t clip_to_view  = camera_clip_to_view_matrix_persp(camera, aspect_ratio);
 
-            const md_f32x4x4_t world_to_clip = view_to_clip * world_to_view;
-            const md_f32x4x4_t clip_to_world = view_to_world * clip_to_view;
+            const md_float4x4_t world_to_clip = view_to_clip * world_to_view;
+            const md_float4x4_t clip_to_world = view_to_world * clip_to_view;
 
             const TrackballControllerParam trackball_param = {
                 .min_distance = 1.0,
@@ -1534,7 +1534,7 @@ struct DensityVolume : viamd::EventHandler {
                 if (hit.depth < 1.0f) {
                     reset_transform.distance = target.distance;
                     reset_transform.orientation = camera.orientation;
-                    reset_transform.position = hit.world_pos + camera.orientation * md_f32x3_set(0, 0, target.distance);
+                    reset_transform.position = hit.world_pos + camera.orientation * md_float3_set(0, 0, target.distance);
                 }
                 target = reset_transform;
             }
@@ -1626,7 +1626,7 @@ struct DensityVolume : viamd::EventHandler {
 
                 md_quat_t out_orientation = target.orientation;
                 if (ImGui::CoordinateSystemWidget(&out_orientation, camera.orientation, size)) {
-                    const md_f32x3_t look_at = camera_get_look_at(target);
+                    const md_float3_t look_at = camera_get_look_at(target);
                     target.orientation = md_quat_normalize(out_orientation);
                     target.position = camera_position_from_look_at(look_at, target.orientation, target.distance);
                 }

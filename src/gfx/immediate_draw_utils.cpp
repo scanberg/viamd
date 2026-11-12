@@ -24,8 +24,8 @@ struct DrawCommand {
 };
 
 struct PassParams {
-    md_f32x4x4_t view = md_f32x4x4_ident();
-    md_f32x4x4_t proj = md_f32x4x4_ident();
+    md_float4x4_t view = md_float4x4_ident();
+    md_float4x4_t proj = md_float4x4_ident();
     uint32_t picking_base_idx = 0;
 };
 
@@ -33,7 +33,7 @@ struct Queue {
     const char* label = nullptr;
 
     md_allocator_i* arena = nullptr;
-    md_array(md_f32x4x4_t) model_matrices = nullptr;
+    md_array(md_float4x4_t) model_matrices = nullptr;
     md_array(DrawCommand) commands = nullptr;
     md_array(Vertex) vertices = nullptr;
     md_array(Index) indices = nullptr;
@@ -152,32 +152,32 @@ static void init_queue_storage(Queue& q, md_allocator_i* arena) {
     q.curr_picking_base_idx = 0;
 }
 
-void encoder_set_model(Queue& ctx, const md_f32x4x4_t& model_matrix);
+void encoder_set_model(Queue& ctx, const md_float4x4_t& model_matrix);
 void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx);
-void encoder_submit(Queue& ctx, const md_f32x4x4_t& view, const md_f32x4x4_t& proj);
-void draw_point(Queue& ctx, md_f32x3_t pos, uint32_t color, uint32_t picking_idx);
-void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult);
-void draw_line(Queue& ctx, md_f32x3_t from, md_f32x3_t to, uint32_t color);
-void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult);
-void draw_triangle(Queue& ctx, md_f32x3_t p0, md_f32x3_t p1, md_f32x3_t p2, uint32_t color, uint32_t picking_idx);
-void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult);
-void draw_plane(Queue& ctx, md_f32x3_t center, md_f32x3_t u, md_f32x3_t v, uint32_t color, uint32_t picking_idx);
-void draw_plane_wireframe(Queue& ctx, md_f32x3_t center, md_f32x3_t vec_u, md_f32x3_t vec_v, uint32_t color, int segments_u, int segments_v);
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color);
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4_t color);
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, uint32_t color);
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, md_f32x4_t color);
-void draw_basis(Queue& ctx, md_f32x4x4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color);
-void draw_basis(Queue& ctx, md_f32x4x4_t basis, const float scale, md_f32x4_t x_color, md_f32x4_t y_color, md_f32x4_t z_color);
-void draw_sphere(Queue& ctx, md_f32x3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices);
-void draw_sphere_wireframe(Queue& ctx, md_f32x3_t center, float radius, uint32_t color, int stacks, int slices);
-void draw_cylinder(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments);
-void draw_cylinder_wireframe(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, int segments);
-void draw_cone(Queue& ctx, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments);
-void draw_cone_wireframe(Queue& ctx, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, int segments);
-void draw_arrow(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments);
-void draw_frustum(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments);
-void draw_box(Queue& ctx, md_f32x3_t mn, md_f32x3_t mx, uint32_t color, uint32_t picking_idx);
+void encoder_submit(Queue& ctx, const md_float4x4_t& view, const md_float4x4_t& proj);
+void draw_point(Queue& ctx, md_float3_t pos, uint32_t color, uint32_t picking_idx);
+void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult);
+void draw_line(Queue& ctx, md_float3_t from, md_float3_t to, uint32_t color);
+void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult);
+void draw_triangle(Queue& ctx, md_float3_t p0, md_float3_t p1, md_float3_t p2, uint32_t color, uint32_t picking_idx);
+void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult);
+void draw_plane(Queue& ctx, md_float3_t center, md_float3_t u, md_float3_t v, uint32_t color, uint32_t picking_idx);
+void draw_plane_wireframe(Queue& ctx, md_float3_t center, md_float3_t vec_u, md_float3_t vec_v, uint32_t color, int segments_u, int segments_v);
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, uint32_t color);
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4_t color);
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, uint32_t color);
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, md_float4_t color);
+void draw_basis(Queue& ctx, md_float4x4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color);
+void draw_basis(Queue& ctx, md_float4x4_t basis, const float scale, md_float4_t x_color, md_float4_t y_color, md_float4_t z_color);
+void draw_sphere(Queue& ctx, md_float3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices);
+void draw_sphere_wireframe(Queue& ctx, md_float3_t center, float radius, uint32_t color, int stacks, int slices);
+void draw_cylinder(Queue& ctx, md_float3_t from, md_float3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments);
+void draw_cylinder_wireframe(Queue& ctx, md_float3_t from, md_float3_t to, float radius, uint32_t color, int segments);
+void draw_cone(Queue& ctx, md_float3_t base, md_float3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments);
+void draw_cone_wireframe(Queue& ctx, md_float3_t base, md_float3_t tip, float radius, uint32_t color, int segments);
+void draw_arrow(Queue& ctx, md_float3_t from, md_float3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments);
+void draw_frustum(Queue& ctx, md_float3_t from, md_float3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments);
+void draw_box(Queue& ctx, md_float3_t mn, md_float3_t mx, uint32_t color, uint32_t picking_idx);
 
 // All queue APIs require an explicit queue; this helper enforces that contract
 // and lazily injects an identity model matrix for first use.
@@ -185,12 +185,12 @@ static Queue& require_queue(Queue* queue) {
     MD_ASSERT(queue);
     if (queue->curr_model_matrix_idx < 0) {
         queue->curr_model_matrix_idx = (int32_t)md_array_size(queue->model_matrices);
-        md_array_push(queue->model_matrices, md_f32x4x4_ident(), queue->arena);
+        md_array_push(queue->model_matrices, md_float4x4_ident(), queue->arena);
     }
     return *queue;
 }
 
-void set_model(Queue* queue, const md_f32x4x4_t& model_mat) {
+void set_model(Queue* queue, const md_float4x4_t& model_mat) {
     Queue& q = require_queue(queue);
     encoder_set_model(q, model_mat);
 }
@@ -200,151 +200,151 @@ void set_picking_base_idx(Queue* queue, uint32_t base_idx) {
     encoder_set_picking_base_idx(q, base_idx);
 }
 
-void point(Queue* queue, md_f32x3_t pos, uint32_t color, uint32_t picking_idx) {
+void point(Queue* queue, md_float3_t pos, uint32_t color, uint32_t picking_idx) {
     Queue& q = require_queue(queue);
     draw_point(q, pos, color, picking_idx);
 }
 
-void line(Queue* queue, md_f32x3_t from, md_f32x3_t to, uint32_t color) {
+void line(Queue* queue, md_float3_t from, md_float3_t to, uint32_t color) {
     Queue& q = require_queue(queue);
     draw_line(q, from, to, color);
 }
 
-void triangle(Queue* queue, md_f32x3_t v0, md_f32x3_t v1, md_f32x3_t v2, uint32_t color, uint32_t picking_idx) {
+void triangle(Queue* queue, md_float3_t v0, md_float3_t v1, md_float3_t v2, uint32_t color, uint32_t picking_idx) {
     Queue& q = require_queue(queue);
     draw_triangle(q, v0, v1, v2, color, picking_idx);
 }
 
-void triangle_wireframe(Queue* queue, md_f32x3_t v0, md_f32x3_t v1, md_f32x3_t v2, uint32_t color) {
+void triangle_wireframe(Queue* queue, md_float3_t v0, md_float3_t v1, md_float3_t v2, uint32_t color) {
     Queue& q = require_queue(queue);
     draw_line(q, v0, v1, color);
     draw_line(q, v1, v2, color);
     draw_line(q, v2, v0, color);
 }
 
-void sphere(Queue* queue, md_f32x3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
+void sphere(Queue* queue, md_float3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
     Queue& q = require_queue(queue);
     draw_sphere(q, center, radius, color, picking_idx, stacks, slices);
 }
 
-void sphere_wireframe(Queue* queue, md_f32x3_t center, float radius, uint32_t color, int stacks, int slices) {
+void sphere_wireframe(Queue* queue, md_float3_t center, float radius, uint32_t color, int stacks, int slices) {
     Queue& q = require_queue(queue);
     draw_sphere_wireframe(q, center, radius, color, stacks, slices);
 }
 
-void cylinder(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void cylinder(Queue* queue, md_float3_t from, md_float3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_cylinder(q, from, to, radius, color, picking_idx, segments);
 }
 
-void cylinder_wireframe(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, int segments) {
+void cylinder_wireframe(Queue* queue, md_float3_t from, md_float3_t to, float radius, uint32_t color, int segments) {
     Queue& q = require_queue(queue);
     draw_cylinder_wireframe(q, from, to, radius, color, segments);
 }
 
-void cone(Queue* queue, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void cone(Queue* queue, md_float3_t base, md_float3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_cone(q, base, tip, radius, color, picking_idx, segments);
 }
 
-void cone_wireframe(Queue* queue, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, int segments) {
+void cone_wireframe(Queue* queue, md_float3_t base, md_float3_t tip, float radius, uint32_t color, int segments) {
     Queue& q = require_queue(queue);
     draw_cone_wireframe(q, base, tip, radius, color, segments);
 }
 
-void arrow(Queue* queue, md_f32x3_t from, md_f32x3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
+void arrow(Queue* queue, md_float3_t from, md_float3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_arrow(q, from, to, shaft_radius, head_radius, head_length, color, picking_idx, segments);
 }
 
-void frustum(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
+void frustum(Queue* queue, md_float3_t from, md_float3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_frustum(q, from, to, radius_from, radius_to, color, picking_idx, segments);
 }
 
-void capsule(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void capsule(Queue* queue, md_float3_t from, md_float3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     Queue& q = require_queue(queue);
     draw_cylinder(q, from, to, radius, color, picking_idx, segments);
     draw_sphere(q, from, radius, color, picking_idx, segments, segments * 2);
     draw_sphere(q, to, radius, color, picking_idx, segments, segments * 2);
 }
 
-void capsule_wireframe(Queue* queue, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, int segments) {
+void capsule_wireframe(Queue* queue, md_float3_t from, md_float3_t to, float radius, uint32_t color, int segments) {
     Queue& q = require_queue(queue);
     draw_cylinder_wireframe(q, from, to, radius, color, segments);
     draw_sphere_wireframe(q, from, radius, color, segments, segments * 2);
     draw_sphere_wireframe(q, to, radius, color, segments, segments * 2);
 }
 
-void box(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color, uint32_t picking_idx) {
+void box(Queue* queue, md_float3_t min_box, md_float3_t max_box, uint32_t color, uint32_t picking_idx) {
     Queue& q = require_queue(queue);
     draw_box(q, min_box, max_box, color, picking_idx);
 }
 
-void points(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void points(Queue* queue, const Vertex verts[], size_t count, md_float4_t color_mult) {
     Queue& q = require_queue(queue);
     draw_points_v(q, verts, count, color_mult);
 }
 
-void lines(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void lines(Queue* queue, const Vertex verts[], size_t count, md_float4_t color_mult) {
     Queue& q = require_queue(queue);
     draw_lines_v(q, verts, count, color_mult);
 }
 
-void triangles(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void triangles(Queue* queue, const Vertex verts[], size_t count, md_float4_t color_mult) {
     Queue& q = require_queue(queue);
     draw_triangles_v(q, verts, count, color_mult);
 }
 
-void triangles_wireframe(Queue* queue, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void triangles_wireframe(Queue* queue, const Vertex verts[], size_t count, md_float4_t color_mult) {
     Queue& q = require_queue(queue);
     if (!verts) return;
     for (size_t i = 0; i + 2 < count; i += 3) {
-        const uint32_t c0 = md_u32_from_f32x4(md_f32x4_mul(md_f32x4_from_u32(verts[i + 0].color), color_mult));
-        const uint32_t c1 = md_u32_from_f32x4(md_f32x4_mul(md_f32x4_from_u32(verts[i + 1].color), color_mult));
-        const uint32_t c2 = md_u32_from_f32x4(md_f32x4_mul(md_f32x4_from_u32(verts[i + 2].color), color_mult));
+        const uint32_t c0 = md_u32_from_float4(md_float4_mul(md_float4_from_u32(verts[i + 0].color), color_mult));
+        const uint32_t c1 = md_u32_from_float4(md_float4_mul(md_float4_from_u32(verts[i + 1].color), color_mult));
+        const uint32_t c2 = md_u32_from_float4(md_float4_mul(md_float4_from_u32(verts[i + 2].color), color_mult));
         draw_line(q, verts[i + 0].coord, verts[i + 1].coord, c0);
         draw_line(q, verts[i + 1].coord, verts[i + 2].coord, c1);
         draw_line(q, verts[i + 2].coord, verts[i + 0].coord, c2);
     }
 }
 
-void plane(Queue* queue, md_f32x3_t center, md_f32x3_t plane_u, md_f32x3_t plane_v, uint32_t color, uint32_t picking_idx) {
+void plane(Queue* queue, md_float3_t center, md_float3_t plane_u, md_float3_t plane_v, uint32_t color, uint32_t picking_idx) {
     Queue& q = require_queue(queue);
     draw_plane(q, center, plane_u, plane_v, color, picking_idx);
 }
 
-void plane_wireframe(Queue* queue, md_f32x3_t center, md_f32x3_t plane_u, md_f32x3_t plane_v, uint32_t color, int segments_u, int segments_v) {
+void plane_wireframe(Queue* queue, md_float3_t center, md_float3_t plane_u, md_float3_t plane_v, uint32_t color, int segments_u, int segments_v) {
     Queue& q = require_queue(queue);
     draw_plane_wireframe(q, center, plane_u, plane_v, color, segments_u, segments_v);
 }
 
-void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color) {
+void box_wireframe(Queue* queue, md_float3_t min_box, md_float3_t max_box, uint32_t color) {
     Queue& q = require_queue(queue);
     draw_box_wireframe(q, min_box, max_box, color);
 }
 
-void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4_t color) {
+void box_wireframe(Queue* queue, md_float3_t min_box, md_float3_t max_box, md_float4_t color) {
     Queue& q = require_queue(queue);
     draw_box_wireframe(q, min_box, max_box, color);
 }
 
-void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, uint32_t color) {
+void box_wireframe(Queue* queue, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, uint32_t color) {
     Queue& q = require_queue(queue);
     draw_box_wireframe(q, min_box, max_box, model_matrix, color);
 }
 
-void box_wireframe(Queue* queue, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, md_f32x4_t color) {
+void box_wireframe(Queue* queue, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, md_float4_t color) {
     Queue& q = require_queue(queue);
     draw_box_wireframe(q, min_box, max_box, model_matrix, color);
 }
 
-void basis(Queue* queue, md_f32x4x4_t basis_mat, float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+void basis(Queue* queue, md_float4x4_t basis_mat, float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
     Queue& q = require_queue(queue);
     draw_basis(q, basis_mat, scale, x_color, y_color, z_color);
 }
 
-void basis(Queue* queue, md_f32x4x4_t basis_mat, float scale, md_f32x4_t x_color, md_f32x4_t y_color, md_f32x4_t z_color) {
+void basis(Queue* queue, md_float4x4_t basis_mat, float scale, md_float4_t x_color, md_float4_t y_color, md_float4_t z_color) {
     Queue& q = require_queue(queue);
     draw_basis(q, basis_mat, scale, x_color, y_color, z_color);
 }
@@ -354,14 +354,14 @@ Scope::Scope(Queue* supplied_queue, const char* label) {
     MD_ASSERT(supplied_queue);
     queue = supplied_queue;
     // Begin scope: push a fresh identity model transform in the queue stream.
-    set_model(queue, md_f32x4x4_ident());
+    set_model(queue, md_float4x4_ident());
     set_picking_base_idx(queue, 0);
 }
 
 Scope::~Scope() {
     if (queue) {
         // End scope: reset back to identity for the following commands.
-        set_model(queue, md_f32x4x4_ident());
+        set_model(queue, md_float4x4_ident());
         set_picking_base_idx(queue, 0);
     }
     queue = nullptr;
@@ -380,7 +380,7 @@ Scope& Scope::operator=(Scope&& other) noexcept {
     return *this;
 }
 
-void set_model(Scope& s, const md_f32x4x4_t& model_mat) { set_model(s.queue, model_mat); }
+void set_model(Scope& s, const md_float4x4_t& model_mat) { set_model(s.queue, model_mat); }
 void set_picking_base_idx(Scope& s, uint32_t base_idx) { set_picking_base_idx(s.queue, base_idx); }
 
 Queue* queue_create(const char* label) {
@@ -497,7 +497,7 @@ void shutdown() {
     if (program_shaded) glDeleteProgram(program_shaded);
 }
 
-void encoder_set_model(Queue& ctx, const md_f32x4x4_t& model_matrix) {
+void encoder_set_model(Queue& ctx, const md_float4x4_t& model_matrix) {
     ctx.curr_model_matrix_idx = (int)md_array_size(ctx.model_matrices);
     md_array_push(ctx.model_matrices, model_matrix, ctx.arena);
 }
@@ -506,7 +506,7 @@ void encoder_set_picking_base_idx(Queue& ctx, uint32_t base_idx) {
     ctx.curr_picking_base_idx = base_idx;
 }
 
-void encoder_submit(Queue& ctx, const md_f32x4x4_t& view, const md_f32x4x4_t& proj) {
+void encoder_submit(Queue& ctx, const md_float4x4_t& view, const md_float4x4_t& proj) {
 	size_t num_commands = md_array_size(ctx.commands);
 	if (num_commands == 0) {
 		return;
@@ -527,7 +527,7 @@ void encoder_submit(Queue& ctx, const md_f32x4x4_t& view, const md_f32x4x4_t& pr
 	glBindTexture(GL_TEXTURE_2D, default_tex);
 
 	const GLenum index_type = sizeof(Index) == 2 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_INT;
-	const md_f32x4x4_t vp_matrix = md_f32x4x4_mul(proj, view);
+	const md_float4x4_t vp_matrix = md_float4x4_mul(proj, view);
 
 	int current_model_matrix_idx = -1;
 
@@ -538,9 +538,9 @@ void encoder_submit(Queue& ctx, const md_f32x4x4_t& view, const md_f32x4x4_t& pr
 
 		if (cmd.model_matrix_idx != current_model_matrix_idx) {
 			current_model_matrix_idx = cmd.model_matrix_idx;
-			const md_f32x4x4_t mv_matrix = md_f32x4x4_mul(view, ctx.model_matrices[cmd.model_matrix_idx]);
-			md_f32x3x3_t normal_matrix = md_f32x3x3_from_f32x4x4(md_f32x4x4_transpose(md_f32x4x4_inverse(mv_matrix)));
-			md_f32x4x4_t mvp_matrix = md_f32x4x4_mul(vp_matrix, ctx.model_matrices[cmd.model_matrix_idx]);
+			const md_float4x4_t mv_matrix = md_float4x4_mul(view, ctx.model_matrices[cmd.model_matrix_idx]);
+			md_float3x3_t normal_matrix = md_float3x3_from_float4x4(md_float4x4_transpose(md_float4x4_inverse(mv_matrix)));
+			md_float4x4_t mvp_matrix = md_float4x4_mul(vp_matrix, ctx.model_matrices[cmd.model_matrix_idx]);
 
 		    glUniformMatrix3fv(uniform_loc_normal_matrix, 1, GL_FALSE, &normal_matrix.elem[0][0]);
 			glUniformMatrix4fv(uniform_loc_mvp_matrix, 1, GL_FALSE, &mvp_matrix.elem[0][0]);
@@ -567,7 +567,7 @@ void encoder_submit(Queue& ctx, const md_f32x4x4_t& view, const md_f32x4x4_t& pr
 }
 
 // PRIMITIVES
-void draw_point(Queue& ctx, md_f32x3_t pos, uint32_t color, uint32_t picking_idx) {
+void draw_point(Queue& ctx, md_float3_t pos, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(ctx.vertices);
 
     Vertex v = {pos, color, {0,0,1}, picking_idx};
@@ -577,7 +577,7 @@ void draw_point(Queue& ctx, md_f32x3_t pos, uint32_t color, uint32_t picking_idx
     append_draw_command(ctx, 1, GL_POINTS);
 }
 
-void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult) {
     const Index idx = (Index)md_array_size(ctx.vertices);
     md_array_resize(ctx.vertices, md_array_size(ctx.vertices) + count, ctx.arena);
     Vertex* v = md_array_end(ctx.vertices) - count;
@@ -585,7 +585,7 @@ void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t co
     MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
-        md_f32x4_t c = convert_color(verts[i].color) * color_mult;
+        md_float4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
         v[i].normal = verts[i].normal;
@@ -599,7 +599,7 @@ void draw_points_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t co
     append_draw_command(ctx, count, GL_POINTS);
 }
 
-void draw_line(Queue& ctx, md_f32x3_t from, md_f32x3_t to, uint32_t color) {
+void draw_line(Queue& ctx, md_float3_t from, md_float3_t to, uint32_t color) {
     const Index idx = (Index)md_array_size(ctx.vertices);
 
     Vertex v[2] = {
@@ -614,7 +614,7 @@ void draw_line(Queue& ctx, md_f32x3_t from, md_f32x3_t to, uint32_t color) {
     append_draw_command(ctx, 2, GL_LINES);
 }
 
-void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult) {
     if ((count & 1) == 1) {
         MD_LOG_DEBUG("Expected even number of vertices as in function %s", __FUNCTION__);
     }
@@ -629,7 +629,7 @@ void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t col
     MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
-        md_f32x4_t c = convert_color(verts[i].color) * color_mult;
+        md_float4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
         v[i].normal = verts[i].normal;
@@ -644,9 +644,9 @@ void draw_lines_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t col
     append_draw_command(ctx, count, GL_LINES);
 }
 
-void draw_triangle(Queue& ctx, md_f32x3_t p0, md_f32x3_t p1, md_f32x3_t p2, uint32_t color, uint32_t picking_idx) {
+void draw_triangle(Queue& ctx, md_float3_t p0, md_float3_t p1, md_float3_t p2, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(ctx.vertices);
-    const md_f32x3_t normal = md_f32x3_normalize(md_f32x3_cross(md_f32x3_sub(p1, p0), md_f32x3_sub(p2, p0)));
+    const md_float3_t normal = md_float3_normalize(md_float3_cross(md_float3_sub(p1, p0), md_float3_sub(p2, p0)));
 
     Vertex v[3] = {
         {p0, color, normal, picking_idx},
@@ -662,7 +662,7 @@ void draw_triangle(Queue& ctx, md_f32x3_t p0, md_f32x3_t p1, md_f32x3_t p2, uint
     append_draw_command(ctx, 3, GL_TRIANGLES);
 }
 
-void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t color_mult) {
+void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_float4_t color_mult) {
     if ((count % 3) != 0) {
         MD_LOG_DEBUG("Expected number of vertices to be divisible by 3 in function %s", __FUNCTION__);
     }
@@ -677,7 +677,7 @@ void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t
     MD_ASSERT(v);
 
     for (size_t i = 0; i < count; ++i) {
-        md_f32x4_t c = convert_color(verts[i].color) * color_mult;
+        md_float4_t c = convert_color(verts[i].color) * color_mult;
         v[i].coord = verts[i].coord;
         v[i].color = convert_color(c);
         v[i].normal = verts[i].normal;
@@ -693,15 +693,15 @@ void draw_triangles_v(Queue& ctx, const Vertex verts[], size_t count, md_f32x4_t
     append_draw_command(ctx, count, GL_TRIANGLES);
 }
 
-void draw_plane(Queue& ctx, md_f32x3_t center, md_f32x3_t u, md_f32x3_t v, uint32_t color, uint32_t picking_idx) {
+void draw_plane(Queue& ctx, md_float3_t center, md_float3_t u, md_float3_t v, uint32_t color, uint32_t picking_idx) {
     const Index idx = (Index)md_array_size(ctx.vertices);
-    const md_f32x3_t normal = md_f32x3_normalize(md_f32x3_cross(u, v));
+    const md_float3_t normal = md_float3_normalize(md_float3_cross(u, v));
 
     Vertex vert[4] = {
-        {md_f32x3_sub(center, md_f32x3_add(u, v)), color, normal, picking_idx},
-        {md_f32x3_sub(center, md_f32x3_sub(u, v)), color, normal, picking_idx},
-        {md_f32x3_add(center, md_f32x3_add(u, v)), color, normal, picking_idx},
-        {md_f32x3_add(center, md_f32x3_sub(u, v)), color, normal, picking_idx},
+        {md_float3_sub(center, md_float3_add(u, v)), color, normal, picking_idx},
+        {md_float3_sub(center, md_float3_sub(u, v)), color, normal, picking_idx},
+        {md_float3_add(center, md_float3_add(u, v)), color, normal, picking_idx},
+        {md_float3_add(center, md_float3_sub(u, v)), color, normal, picking_idx},
     };
     md_array_push_array(ctx.vertices, vert, 4, ctx.arena);
 
@@ -715,27 +715,27 @@ void draw_plane(Queue& ctx, md_f32x3_t center, md_f32x3_t u, md_f32x3_t v, uint3
     append_draw_command(ctx, 6, GL_TRIANGLES);
 }
 
-void draw_plane_wireframe(Queue& ctx, md_f32x3_t center, md_f32x3_t vec_u, md_f32x3_t vec_v, uint32_t color, int segments_u, int segments_v) {
+void draw_plane_wireframe(Queue& ctx, md_float3_t center, md_float3_t vec_u, md_float3_t vec_v, uint32_t color, int segments_u, int segments_v) {
     MD_ASSERT(segments_u > 0);
     MD_ASSERT(segments_v > 0);
 
-    //const md_f32x3_t normal = md_f32x3_normalize(md_f32x3_cross(vec_u, vec_v));
+    //const md_float3_t normal = md_float3_normalize(md_float3_cross(vec_u, vec_v));
 
     for (int i = 0; i <= segments_u; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_u);
-        const md_f32x3_t u = md_f32x3_mul1(vec_u, t);
-        draw_line(ctx, md_f32x3_sub(center, md_f32x3_add(vec_v, u)), md_f32x3_add(center, md_f32x3_add(vec_v, u)), color);
+        const md_float3_t u = md_float3_mul1(vec_u, t);
+        draw_line(ctx, md_float3_sub(center, md_float3_add(vec_v, u)), md_float3_add(center, md_float3_add(vec_v, u)), color);
     }
 
     for (int i = 0; i <= segments_v; i++) {
         const float t = -1.0f + 2.0f * ((float)i / (float)segments_v);
-        const md_f32x3_t v = md_f32x3_mul1(vec_v, t);
-        draw_line(ctx, md_f32x3_sub(center, md_f32x3_add(vec_u, v)), md_f32x3_add(center, md_f32x3_add(vec_u, v)), color);
+        const md_float3_t v = md_float3_mul1(vec_v, t);
+        draw_line(ctx, md_float3_sub(center, md_float3_add(vec_u, v)), md_float3_add(center, md_float3_add(vec_u, v)), color);
     }
 }
 
 /*
-void draw_aabb(md_f32x3_t min_box, md_f32x3_t max_box) {
+void draw_aabb(md_float3_t min_box, md_float3_t max_box) {
     const Index idx = (Index)vertices.count;
     const vec3 normal = {0, 0, 1};
 
@@ -774,91 +774,91 @@ void draw_aabb(md_f32x3_t min_box, md_f32x3_t max_box) {
 }
 */
 
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, uint32_t color) {
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, uint32_t color) {
     // Z = min
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, color);
 
     // Z = max
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 
     // Z min max
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
-    draw_line(ctx, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]}, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]}, color);
+    draw_line(ctx, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]}, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]}, color);
 }
 
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4_t color) {
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4_t color) {
     draw_box_wireframe(ctx, min_box, max_box, convert_color(color));
 }
 
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, uint32_t color) {
-    const md_f32x3x3_t R = md_f32x3x3_from_f32x4x4(model_matrix);
-    const md_f32x3_t trans = md_f32x3_from_f32x4(model_matrix.col[3]);
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, uint32_t color) {
+    const md_float3x3_t R = md_float3x3_from_float4x4(model_matrix);
+    const md_float3_t trans = md_float3_from_float4(model_matrix.col[3]);
     // Z = min
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), color);
                                                                                                                                                                     
     // Z = max                                                                                                                                                      
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
                                                                                                                                                                      
     // Z min to max                                                                                                                                                 
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
-    draw_line(ctx, md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_f32x3_add(trans, md_f32x3x3_mul_f32x3(R, md_f32x3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{min_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], min_box.elem[1], max_box.elem[2]})), color);
+    draw_line(ctx, md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], min_box.elem[2]})), md_float3_add(trans, md_float3x3_mul_float3(R, md_float3_t{max_box.elem[0], max_box.elem[1], max_box.elem[2]})), color);
 }
 
-void draw_box_wireframe(Queue& ctx, md_f32x3_t min_box, md_f32x3_t max_box, md_f32x4x4_t model_matrix, md_f32x4_t color) {
+void draw_box_wireframe(Queue& ctx, md_float3_t min_box, md_float3_t max_box, md_float4x4_t model_matrix, md_float4_t color) {
     draw_box_wireframe(ctx, min_box, max_box, model_matrix, convert_color(color));
 }
 
-void draw_basis(Queue& ctx, md_f32x4x4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
-    const md_f32x3_t o = md_f32x3_from_f32x4(basis.col[3]);
-    const md_f32x3_t x = md_f32x3_add(o, md_f32x3_mul1(md_f32x3_from_f32x4(basis.col[0]), scale));
-    const md_f32x3_t y = md_f32x3_add(o, md_f32x3_mul1(md_f32x3_from_f32x4(basis.col[1]), scale));
-    const md_f32x3_t z = md_f32x3_add(o, md_f32x3_mul1(md_f32x3_from_f32x4(basis.col[2]), scale));
+void draw_basis(Queue& ctx, md_float4x4_t basis, const float scale, uint32_t x_color, uint32_t y_color, uint32_t z_color) {
+    const md_float3_t o = md_float3_from_float4(basis.col[3]);
+    const md_float3_t x = md_float3_add(o, md_float3_mul1(md_float3_from_float4(basis.col[0]), scale));
+    const md_float3_t y = md_float3_add(o, md_float3_mul1(md_float3_from_float4(basis.col[1]), scale));
+    const md_float3_t z = md_float3_add(o, md_float3_mul1(md_float3_from_float4(basis.col[2]), scale));
 
     draw_line(ctx, o, x, x_color);
     draw_line(ctx, o, y, y_color);
     draw_line(ctx, o, z, z_color);
 }
 
-void draw_basis(Queue& ctx, md_f32x4x4_t basis, const float scale, md_f32x4_t x_color, md_f32x4_t y_color, md_f32x4_t z_color) {
+void draw_basis(Queue& ctx, md_float4x4_t basis, const float scale, md_float4_t x_color, md_float4_t y_color, md_float4_t z_color) {
     draw_basis(ctx, basis, scale, convert_color(x_color), convert_color(y_color), convert_color(z_color));
 }
 
 // Build an orthonormal tangent frame given a normalized axis direction.
 // Returns two vectors (out_u, out_v) perpendicular to 'axis' and to each other.
-static void build_tangent_frame(md_f32x3_t axis, md_f32x3_t& out_u, md_f32x3_t& out_v) {
-    md_f32x3_t up = (fabsf(axis.x) < 0.9f) ? md_f32x3_t{1, 0, 0} : md_f32x3_t{0, 1, 0};
-    out_u = md_f32x3_normalize(md_f32x3_cross(up, axis));
-    out_v = md_f32x3_cross(axis, out_u);
+static void build_tangent_frame(md_float3_t axis, md_float3_t& out_u, md_float3_t& out_v) {
+    md_float3_t up = (fabsf(axis.x) < 0.9f) ? md_float3_t{1, 0, 0} : md_float3_t{0, 1, 0};
+    out_u = md_float3_normalize(md_float3_cross(up, axis));
+    out_v = md_float3_cross(axis, out_u);
 }
 
-void draw_sphere(Queue& ctx, md_f32x3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
+void draw_sphere(Queue& ctx, md_float3_t center, float radius, uint32_t color, uint32_t picking_idx, int stacks, int slices) {
     MD_ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
 
     // Emit a quad (two triangles) directly so we can assign smooth per-vertex normals.
     // On a unit sphere the outward normal at a point equals the point's position relative to center.
-    auto emit_quad = [&](md_f32x3_t n00, md_f32x3_t n10, md_f32x3_t n01, md_f32x3_t n11) {
-        md_f32x3_t p00 = md_f32x3_add(center, md_f32x3_mul1(n00, radius));
-        md_f32x3_t p10 = md_f32x3_add(center, md_f32x3_mul1(n10, radius));
-        md_f32x3_t p01 = md_f32x3_add(center, md_f32x3_mul1(n01, radius));
-        md_f32x3_t p11 = md_f32x3_add(center, md_f32x3_mul1(n11, radius));
+    auto emit_quad = [&](md_float3_t n00, md_float3_t n10, md_float3_t n01, md_float3_t n11) {
+        md_float3_t p00 = md_float3_add(center, md_float3_mul1(n00, radius));
+        md_float3_t p10 = md_float3_add(center, md_float3_mul1(n10, radius));
+        md_float3_t p01 = md_float3_add(center, md_float3_mul1(n01, radius));
+        md_float3_t p11 = md_float3_add(center, md_float3_mul1(n11, radius));
         const Index base = (Index)md_array_size(ctx.vertices);
         Vertex v[4] = {
             {p00, color, n00, picking_idx},
@@ -893,17 +893,17 @@ void draw_sphere(Queue& ctx, md_f32x3_t center, float radius, uint32_t color, ui
             const float ct1 = cosf(th1), st1 = sinf(th1);
 
             // Unit-sphere positions == smooth normals
-            md_f32x3_t n00 = {cp0*ct0, cp0*st0, sp0};
-            md_f32x3_t n10 = {cp1*ct0, cp1*st0, sp1};
-            md_f32x3_t n01 = {cp0*ct1, cp0*st1, sp0};
-            md_f32x3_t n11 = {cp1*ct1, cp1*st1, sp1};
+            md_float3_t n00 = {cp0*ct0, cp0*st0, sp0};
+            md_float3_t n10 = {cp1*ct0, cp1*st0, sp1};
+            md_float3_t n01 = {cp0*ct1, cp0*st1, sp0};
+            md_float3_t n11 = {cp1*ct1, cp1*st1, sp1};
 
             emit_quad(n00, n10, n01, n11);
         }
     }
 }
 
-void draw_sphere_wireframe(Queue& ctx, md_f32x3_t center, float radius, uint32_t color, int stacks, int slices) {
+void draw_sphere_wireframe(Queue& ctx, md_float3_t center, float radius, uint32_t color, int stacks, int slices) {
     MD_ASSERT(stacks >= 2 && slices >= 3);
     const float pi  = 3.14159265358979323846f;
     const float tau = 2.0f * pi;
@@ -915,8 +915,8 @@ void draw_sphere_wireframe(Queue& ctx, md_f32x3_t center, float radius, uint32_t
         for (int j = 0; j < slices; ++j) {
             const float th0 = tau * ((float) j      / (float)slices);
             const float th1 = tau * ((float)(j + 1) / (float)slices);
-            md_f32x3_t a = md_f32x3_add(center, md_f32x3_mul1({cp*cosf(th0), cp*sinf(th0), sp}, radius));
-            md_f32x3_t b = md_f32x3_add(center, md_f32x3_mul1({cp*cosf(th1), cp*sinf(th1), sp}, radius));
+            md_float3_t a = md_float3_add(center, md_float3_mul1({cp*cosf(th0), cp*sinf(th0), sp}, radius));
+            md_float3_t b = md_float3_add(center, md_float3_mul1({cp*cosf(th1), cp*sinf(th1), sp}, radius));
             draw_line(ctx, a, b, color);
         }
     }
@@ -928,19 +928,19 @@ void draw_sphere_wireframe(Queue& ctx, md_f32x3_t center, float radius, uint32_t
         for (int i = 0; i < stacks; ++i) {
             const float phi0 = pi * ((float) i      / (float)stacks) - pi * 0.5f;
             const float phi1 = pi * ((float)(i + 1) / (float)stacks) - pi * 0.5f;
-            md_f32x3_t a = md_f32x3_add(center, md_f32x3_mul1({cosf(phi0)*ct, cosf(phi0)*st, sinf(phi0)}, radius));
-            md_f32x3_t b = md_f32x3_add(center, md_f32x3_mul1({cosf(phi1)*ct, cosf(phi1)*st, sinf(phi1)}, radius));
+            md_float3_t a = md_float3_add(center, md_float3_mul1({cosf(phi0)*ct, cosf(phi0)*st, sinf(phi0)}, radius));
+            md_float3_t b = md_float3_add(center, md_float3_mul1({cosf(phi1)*ct, cosf(phi1)*st, sinf(phi1)}, radius));
             draw_line(ctx, a, b, color);
         }
     }
 }
 
-void draw_cylinder(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_cylinder(Queue& ctx, md_float3_t from, md_float3_t to, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
-    md_f32x3_t axis = md_f32x3_normalize(md_f32x3_sub(to, from));
-    md_f32x3_t u, v;
+    md_float3_t axis = md_float3_normalize(md_float3_sub(to, from));
+    md_float3_t u, v;
     build_tangent_frame(axis, u, v);
 
     for (int i = 0; i < segments; ++i) {
@@ -951,13 +951,13 @@ void draw_cylinder(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uin
         const float c1 = cosf(th1), s1 = sinf(th1);
 
         // Smooth outward normals for the side: radial direction only (no axis component)
-        md_f32x3_t sn0 = md_f32x3_add(md_f32x3_mul1(u, c0), md_f32x3_mul1(v, s0));
-        md_f32x3_t sn1 = md_f32x3_add(md_f32x3_mul1(u, c1), md_f32x3_mul1(v, s1));
+        md_float3_t sn0 = md_float3_add(md_float3_mul1(u, c0), md_float3_mul1(v, s0));
+        md_float3_t sn1 = md_float3_add(md_float3_mul1(u, c1), md_float3_mul1(v, s1));
 
-        md_f32x3_t a0 = md_f32x3_add(from, md_f32x3_mul1(sn0, radius));
-        md_f32x3_t a1 = md_f32x3_add(from, md_f32x3_mul1(sn1, radius));
-        md_f32x3_t b0 = md_f32x3_add(to,   md_f32x3_mul1(sn0, radius));
-        md_f32x3_t b1 = md_f32x3_add(to,   md_f32x3_mul1(sn1, radius));
+        md_float3_t a0 = md_float3_add(from, md_float3_mul1(sn0, radius));
+        md_float3_t a1 = md_float3_add(from, md_float3_mul1(sn1, radius));
+        md_float3_t b0 = md_float3_add(to,   md_float3_mul1(sn0, radius));
+        md_float3_t b1 = md_float3_add(to,   md_float3_mul1(sn1, radius));
 
         // Side quad – smooth normals interpolated across the quad
         {
@@ -980,7 +980,7 @@ void draw_cylinder(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uin
 
         // Bottom cap – flat normal pointing away from 'to'
         {
-            md_f32x3_t cap_n = md_f32x3_mul1(axis, -1.f);
+            md_float3_t cap_n = md_float3_mul1(axis, -1.f);
             const Index base = (Index)md_array_size(ctx.vertices);
             Vertex cv[3] = {
                 {from, color, cap_n, picking_idx},
@@ -1011,27 +1011,27 @@ void draw_cylinder(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uin
     }
 }
 
-void draw_cylinder_wireframe(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius, uint32_t color, int segments) {
+void draw_cylinder_wireframe(Queue& ctx, md_float3_t from, md_float3_t to, float radius, uint32_t color, int segments) {
     MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
-    md_f32x3_t axis = md_f32x3_normalize(md_f32x3_sub(to, from));
-    md_f32x3_t u, v;
+    md_float3_t axis = md_float3_normalize(md_float3_sub(to, from));
+    md_float3_t u, v;
     build_tangent_frame(axis, u, v);
 
     for (int i = 0; i < segments; ++i) {
         const float th0 = tau * ((float) i      / (float)segments);
         const float th1 = tau * ((float)(i + 1) / (float)segments);
 
-        md_f32x3_t r0 = md_f32x3_add(md_f32x3_mul1(u, radius * cosf(th0)), md_f32x3_mul1(v, radius * sinf(th0)));
-        md_f32x3_t r1 = md_f32x3_add(md_f32x3_mul1(u, radius * cosf(th1)), md_f32x3_mul1(v, radius * sinf(th1)));
+        md_float3_t r0 = md_float3_add(md_float3_mul1(u, radius * cosf(th0)), md_float3_mul1(v, radius * sinf(th0)));
+        md_float3_t r1 = md_float3_add(md_float3_mul1(u, radius * cosf(th1)), md_float3_mul1(v, radius * sinf(th1)));
 
         // Bottom ring
-        draw_line(ctx, md_f32x3_add(from, r0), md_f32x3_add(from, r1), color);
+        draw_line(ctx, md_float3_add(from, r0), md_float3_add(from, r1), color);
         // Top ring
-        draw_line(ctx, md_f32x3_add(to, r0), md_f32x3_add(to, r1), color);
+        draw_line(ctx, md_float3_add(to, r0), md_float3_add(to, r1), color);
         // Side edge
-        draw_line(ctx, md_f32x3_add(from, r0), md_f32x3_add(to, r0), color);
+        draw_line(ctx, md_float3_add(from, r0), md_float3_add(to, r0), color);
     }
 }
 
@@ -1042,14 +1042,14 @@ void draw_cylinder_wireframe(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float r
 #define LATHE_MAX_SEGMENTS 128
 
 struct Lathe {
-    md_f32x3_t origin;
-    md_f32x3_t axis;
-    md_f32x3_t u, v;
+    md_float3_t origin;
+    md_float3_t axis;
+    md_float3_t u, v;
     int    segments;
     float  cs[LATHE_MAX_SEGMENTS + 1][2];   // cos, sin of each angle; the last repeats the first (the seam)
 };
 
-static Lathe lathe_init(md_f32x3_t origin, md_f32x3_t axis, int segments) {
+static Lathe lathe_init(md_float3_t origin, md_float3_t axis, int segments) {
     Lathe l;
     l.origin   = origin;
     l.axis     = axis;
@@ -1066,8 +1066,8 @@ static Lathe lathe_init(md_f32x3_t origin, md_f32x3_t axis, int segments) {
     return l;
 }
 
-static inline md_f32x3_t lathe_radial(const Lathe& l, int i) {
-    return md_f32x3_add(md_f32x3_mul1(l.u, l.cs[i][0]), md_f32x3_mul1(l.v, l.cs[i][1]));
+static inline md_float3_t lathe_radial(const Lathe& l, int i) {
+    return md_float3_add(md_float3_mul1(l.u, l.cs[i][0]), md_float3_mul1(l.v, l.cs[i][1]));
 }
 
 // The band from ring (h0, r0) to ring (h1, r1), facing outward when it runs from the tail toward the tip on
@@ -1077,8 +1077,8 @@ static inline md_f32x3_t lathe_radial(const Lathe& l, int i) {
 // within a triangle; the band before it should then be short, so that the approximation covers little.
 static void lathe_band(Queue& ctx, const Lathe& l, float h0, float r0, float nr0, float na0, float h1, float r1, float nr1, float na1, uint32_t color, uint32_t picking_idx) {
     const int n = l.segments;
-    const md_f32x3_t c0 = md_f32x3_add(l.origin, md_f32x3_mul1(l.axis, h0));
-    const md_f32x3_t c1 = md_f32x3_add(l.origin, md_f32x3_mul1(l.axis, h1));
+    const md_float3_t c0 = md_float3_add(l.origin, md_float3_mul1(l.axis, h0));
+    const md_float3_t c1 = md_float3_add(l.origin, md_float3_mul1(l.axis, h1));
     const float len0 = sqrtf(nr0 * nr0 + na0 * na0);
     const float len1 = sqrtf(nr1 * nr1 + na1 * na1);
     nr0 /= len0; na0 /= len0;
@@ -1088,13 +1088,13 @@ static void lathe_band(Queue& ctx, const Lathe& l, float h0, float r0, float nr0
         // A fan to the point c1
         const Index base = (Index)md_array_size(ctx.vertices);
         for (int i = 0; i < n; ++i) {
-            const md_f32x3_t ra = lathe_radial(l, i);
-            const md_f32x3_t rb = lathe_radial(l, i + 1);
-            const md_f32x3_t rm = md_f32x3_normalize(md_f32x3_add(ra, rb));
+            const md_float3_t ra = lathe_radial(l, i);
+            const md_float3_t rb = lathe_radial(l, i + 1);
+            const md_float3_t rm = md_float3_normalize(md_float3_add(ra, rb));
             Vertex vs[3] = {
-                {md_f32x3_add(c0, md_f32x3_mul1(ra, r0)), color, md_f32x3_add(md_f32x3_mul1(ra, nr0), md_f32x3_mul1(l.axis, na0)), picking_idx},
-                {md_f32x3_add(c0, md_f32x3_mul1(rb, r0)), color, md_f32x3_add(md_f32x3_mul1(rb, nr0), md_f32x3_mul1(l.axis, na0)), picking_idx},
-                {c1,                              color, md_f32x3_add(md_f32x3_mul1(rm, nr1), md_f32x3_mul1(l.axis, na1)), picking_idx},
+                {md_float3_add(c0, md_float3_mul1(ra, r0)), color, md_float3_add(md_float3_mul1(ra, nr0), md_float3_mul1(l.axis, na0)), picking_idx},
+                {md_float3_add(c0, md_float3_mul1(rb, r0)), color, md_float3_add(md_float3_mul1(rb, nr0), md_float3_mul1(l.axis, na0)), picking_idx},
+                {c1,                              color, md_float3_add(md_float3_mul1(rm, nr1), md_float3_mul1(l.axis, na1)), picking_idx},
             };
             md_array_push_array(ctx.vertices, vs, 3, ctx.arena);
             const Index b = base + (Index)(i * 3);
@@ -1109,10 +1109,10 @@ static void lathe_band(Queue& ctx, const Lathe& l, float h0, float r0, float nr0
     // Two rings of n + 1 vertices each (the seam repeated), then a quad per segment
     const Index base = (Index)md_array_size(ctx.vertices);
     for (int i = 0; i <= n; ++i) {
-        const md_f32x3_t ra = lathe_radial(l, i);
+        const md_float3_t ra = lathe_radial(l, i);
         Vertex vs[2] = {
-            {md_f32x3_add(c0, md_f32x3_mul1(ra, r0)), color, md_f32x3_add(md_f32x3_mul1(ra, nr0), md_f32x3_mul1(l.axis, na0)), picking_idx},
-            {md_f32x3_add(c1, md_f32x3_mul1(ra, r1)), color, md_f32x3_add(md_f32x3_mul1(ra, nr1), md_f32x3_mul1(l.axis, na1)), picking_idx},
+            {md_float3_add(c0, md_float3_mul1(ra, r0)), color, md_float3_add(md_float3_mul1(ra, nr0), md_float3_mul1(l.axis, na0)), picking_idx},
+            {md_float3_add(c1, md_float3_mul1(ra, r1)), color, md_float3_add(md_float3_mul1(ra, nr1), md_float3_mul1(l.axis, na1)), picking_idx},
         };
         md_array_push_array(ctx.vertices, vs, 2, ctx.arena);
     }
@@ -1146,13 +1146,13 @@ static void lathe_cone_side(Queue& ctx, const Lathe& l, float h0, float radius, 
     }
 }
 
-void draw_cone(Queue& ctx, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_cone(Queue& ctx, md_float3_t base, md_float3_t tip, float radius, uint32_t color, uint32_t picking_idx, int segments) {
     MD_ASSERT(segments >= 3);
-    const md_f32x3_t axis_vec = md_f32x3_sub(tip, base);
-    const float height = md_f32x3_length(axis_vec);
+    const md_float3_t axis_vec = md_float3_sub(tip, base);
+    const float height = md_float3_length(axis_vec);
     if (!(height > 0.0f) || !(radius > 0.0f)) return;
 
-    const Lathe l = lathe_init(base, md_f32x3_mul1(axis_vec, 1.0f / height), segments);
+    const Lathe l = lathe_init(base, md_float3_mul1(axis_vec, 1.0f / height), segments);
     // The base disc, facing away from the tip, from its centre out
     lathe_band(ctx, l, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, radius, 0.0f, -1.0f, color, picking_idx);
     lathe_cone_side(ctx, l, 0.0f, radius, height, color, picking_idx);
@@ -1161,17 +1161,17 @@ void draw_cone(Queue& ctx, md_f32x3_t base, md_f32x3_t tip, float radius, uint32
 // One closed surface: the tail's disc, the shaft, the ring under the head between the shaft and the head's
 // rim, and the head. No faces hidden inside one another, so nothing to fight in depth where shaft meets head.
 // The head is given in world units and is shortened to the arrow's length if it does not fit.
-void draw_arrow(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_arrow(Queue& ctx, md_float3_t from, md_float3_t to, float shaft_radius, float head_radius, float head_length, uint32_t color, uint32_t picking_idx, int segments) {
     MD_ASSERT(segments >= 3);
-    const md_f32x3_t axis_vec = md_f32x3_sub(to, from);
-    const float length = md_f32x3_length(axis_vec);
+    const md_float3_t axis_vec = md_float3_sub(to, from);
+    const float length = md_float3_length(axis_vec);
     if (!(length > 0.0f)) return;
 
     head_length  = MD_CLAMP(head_length, 0.0f, length);
     head_radius  = MD_MAX(head_radius, shaft_radius);
     const float shaft_length = length - head_length;
 
-    const Lathe l = lathe_init(from, md_f32x3_mul1(axis_vec, 1.0f / length), segments);
+    const Lathe l = lathe_init(from, md_float3_mul1(axis_vec, 1.0f / length), segments);
     if (shaft_length > 0.0f) {
         lathe_band(ctx, l, 0.0f, 0.0f, 0.0f, -1.0f, 0.0f, shaft_radius, 0.0f, -1.0f, color, picking_idx);
         lathe_band(ctx, l, 0.0f, shaft_radius, 1.0f, 0.0f, shaft_length, shaft_radius, 1.0f, 0.0f, color, picking_idx);
@@ -1188,58 +1188,58 @@ void draw_arrow(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float shaft_radius, 
 
 // The side of a truncated cone, open at both ends: the surface's normal at an angle is the same along the whole
 // slant, (length, radius_from - radius_to) in (radial, axial)
-void draw_frustum(Queue& ctx, md_f32x3_t from, md_f32x3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
+void draw_frustum(Queue& ctx, md_float3_t from, md_float3_t to, float radius_from, float radius_to, uint32_t color, uint32_t picking_idx, int segments) {
     MD_ASSERT(segments >= 3);
-    const md_f32x3_t axis_vec = md_f32x3_sub(to, from);
-    const float length = md_f32x3_length(axis_vec);
+    const md_float3_t axis_vec = md_float3_sub(to, from);
+    const float length = md_float3_length(axis_vec);
     if (!(length > 0.0f)) return;
     radius_from = MD_MAX(radius_from, 0.0f);
     radius_to   = MD_MAX(radius_to,   0.0f);
     if (radius_from == 0.0f && radius_to == 0.0f) return;
 
-    const Lathe l = lathe_init(from, md_f32x3_mul1(axis_vec, 1.0f / length), segments);
+    const Lathe l = lathe_init(from, md_float3_mul1(axis_vec, 1.0f / length), segments);
     const float nr = length;
     const float na = radius_from - radius_to;
     if (radius_from == 0.0f) {
         // A point at the start: the band toward it, reversed, so that the fan is at the point
-        const Lathe r = lathe_init(to, md_f32x3_mul1(axis_vec, -1.0f / length), segments);
+        const Lathe r = lathe_init(to, md_float3_mul1(axis_vec, -1.0f / length), segments);
         lathe_band(ctx, r, 0.0f, radius_to, nr, -na, length, 0.0f, nr, -na, color, picking_idx);
     } else {
         lathe_band(ctx, l, 0.0f, radius_from, nr, na, length, radius_to, nr, na, color, picking_idx);
     }
 }
 
-void draw_cone_wireframe(Queue& ctx, md_f32x3_t base, md_f32x3_t tip, float radius, uint32_t color, int segments) {
+void draw_cone_wireframe(Queue& ctx, md_float3_t base, md_float3_t tip, float radius, uint32_t color, int segments) {
     MD_ASSERT(segments >= 3);
     const float tau = 6.28318530717958647692f;
 
-    md_f32x3_t axis = md_f32x3_normalize(md_f32x3_sub(tip, base));
-    md_f32x3_t u, v;
+    md_float3_t axis = md_float3_normalize(md_float3_sub(tip, base));
+    md_float3_t u, v;
     build_tangent_frame(axis, u, v);
 
     for (int i = 0; i < segments; ++i) {
         const float th0 = tau * ((float) i      / (float)segments);
         const float th1 = tau * ((float)(i + 1) / (float)segments);
 
-        md_f32x3_t r0 = md_f32x3_add(md_f32x3_mul1(u, radius * cosf(th0)), md_f32x3_mul1(v, radius * sinf(th0)));
-        md_f32x3_t r1 = md_f32x3_add(md_f32x3_mul1(u, radius * cosf(th1)), md_f32x3_mul1(v, radius * sinf(th1)));
+        md_float3_t r0 = md_float3_add(md_float3_mul1(u, radius * cosf(th0)), md_float3_mul1(v, radius * sinf(th0)));
+        md_float3_t r1 = md_float3_add(md_float3_mul1(u, radius * cosf(th1)), md_float3_mul1(v, radius * sinf(th1)));
 
         // Base ring
-        draw_line(ctx, md_f32x3_add(base, r0), md_f32x3_add(base, r1), color);
+        draw_line(ctx, md_float3_add(base, r0), md_float3_add(base, r1), color);
         // Lateral edge
-        draw_line(ctx, md_f32x3_add(base, r0), tip, color);
+        draw_line(ctx, md_float3_add(base, r0), tip, color);
     }
 }
 
-void draw_box(Queue& ctx, md_f32x3_t mn, md_f32x3_t mx, uint32_t color, uint32_t picking_idx) {
-    const md_f32x3_t p000 = {mn.x, mn.y, mn.z};
-    const md_f32x3_t p100 = {mx.x, mn.y, mn.z};
-    const md_f32x3_t p010 = {mn.x, mx.y, mn.z};
-    const md_f32x3_t p110 = {mx.x, mx.y, mn.z};
-    const md_f32x3_t p001 = {mn.x, mn.y, mx.z};
-    const md_f32x3_t p101 = {mx.x, mn.y, mx.z};
-    const md_f32x3_t p011 = {mn.x, mx.y, mx.z};
-    const md_f32x3_t p111 = {mx.x, mx.y, mx.z};
+void draw_box(Queue& ctx, md_float3_t mn, md_float3_t mx, uint32_t color, uint32_t picking_idx) {
+    const md_float3_t p000 = {mn.x, mn.y, mn.z};
+    const md_float3_t p100 = {mx.x, mn.y, mn.z};
+    const md_float3_t p010 = {mn.x, mx.y, mn.z};
+    const md_float3_t p110 = {mx.x, mx.y, mn.z};
+    const md_float3_t p001 = {mn.x, mn.y, mx.z};
+    const md_float3_t p101 = {mx.x, mn.y, mx.z};
+    const md_float3_t p011 = {mn.x, mx.y, mx.z};
+    const md_float3_t p111 = {mx.x, mx.y, mx.z};
 
     // -Z face
     draw_triangle(ctx, p000, p110, p100, color, picking_idx);

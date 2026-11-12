@@ -4,10 +4,10 @@
 
 struct ViewParam {
     struct Block {
-        md_f32x4x4_t view;
-        md_f32x4x4_t proj;
-        md_f32x4x4_t norm;
-        md_f32x4x4_t proj_no_jitter;
+        md_float4x4_t view;
+        md_float4x4_t proj;
+        md_float4x4_t norm;
+        md_float4x4_t proj_no_jitter;
     };
 
     struct {
@@ -17,8 +17,8 @@ struct ViewParam {
     } matrix;
 
     struct {
-        md_f32x2_t curr;
-        md_f32x2_t prev;
+        md_float2_t curr;
+        md_float2_t prev;
     } jitter;
 
     struct {
@@ -26,6 +26,6 @@ struct ViewParam {
         float far;
     } clip_planes;
 
-    md_f32x2_t resolution;
+    md_float2_t resolution;
     float fov_y;
 };

@@ -11,30 +11,30 @@
 // points to, n . x + d >= 0; flipping it is negating all four. It has no position or turn within itself: what is laid
 // out on it (points, a gizmo) takes plane_frame's axes, and a gizmo sits where the plane cuts what it is drawn over.
 struct Plane {
-    md_f32x3_t normal = {0, 0, 1};
+    md_float3_t normal = {0, 0, 1};
     float  d = 0.0f;
 };
-static_assert(sizeof(Plane) == sizeof(md_f32x4_t), "a plane is a vec4");
+static_assert(sizeof(Plane) == sizeof(md_float4_t), "a plane is a vec4");
 
-static inline md_f32x4_t plane_vec4(const Plane& p) { return md_f32x4_set(p.normal.x, p.normal.y, p.normal.z, p.d); }
-static inline float  plane_distance(const Plane& p, md_f32x3_t x) { return md_f32x3_dot(p.normal, x) + p.d; }
-static inline md_f32x3_t plane_project(const Plane& p, md_f32x3_t x) { return md_f32x3_sub(x, md_f32x3_mul1(p.normal, plane_distance(p, x))); }
-static inline void   plane_flip(Plane* p) { p->normal = md_f32x3_mul1(p->normal, -1.0f); p->d = -p->d; }
+static inline md_float4_t plane_vec4(const Plane& p) { return md_float4_set(p.normal.x, p.normal.y, p.normal.z, p.d); }
+static inline float  plane_distance(const Plane& p, md_float3_t x) { return md_float3_dot(p.normal, x) + p.d; }
+static inline md_float3_t plane_project(const Plane& p, md_float3_t x) { return md_float3_sub(x, md_float3_mul1(p.normal, plane_distance(p, x))); }
+static inline void   plane_flip(Plane* p) { p->normal = md_float3_mul1(p->normal, -1.0f); p->d = -p->d; }
 // The plane through 'point' facing 'normal' (any length but 0)
-static inline Plane  plane_from_point_normal(md_f32x3_t point, md_f32x3_t normal) {
+static inline Plane  plane_from_point_normal(md_float3_t point, md_float3_t normal) {
     Plane p;
-    p.normal = md_f32x3_normalize(normal);
-    p.d = -md_f32x3_dot(p.normal, point);
+    p.normal = md_float3_normalize(normal);
+    p.d = -md_float3_dot(p.normal, point);
     return p;
 }
 // Axes in the plane, u and v, with u x v = n: u is 'right' made perpendicular to n (world x, or else y, when 'right'
 // is too close to n for that), v = n x u. The turn of the plane about n is not the plane's: it is taken from what the
 // axes are for, such as the camera's right for a gizmo, so that they line up with the screen.
-void plane_frame(md_f32x3_t* u, md_f32x3_t* v, const Plane& p, md_f32x3_t right);
+void plane_frame(md_float3_t* u, md_float3_t* v, const Plane& p, md_float3_t right);
 
 // The polygon a plane cuts out of a box, the unit cube of 'box_to_world' (affine): up to 6 corners in world space,
 // in order around it. Returns how many (0 when it misses the box).
-int plane_box_polygon(md_f32x3_t out[6], const Plane& plane, const md_f32x4x4_t& box_to_world);
+int plane_box_polygon(md_float3_t out[6], const Plane& plane, const md_float4x4_t& box_to_world);
 
 // How plane_fit placed the plane: what the points determined of it
 enum class PlaneFitKind {
@@ -67,4 +67,4 @@ struct PlaneFitInfo {
 //   the one nearest prev's is taken, rather than one that turns with the smallest change in the points;
 // - spread alike in all three: prev's.
 // No points: prev.
-Plane plane_fit(const Plane& prev, const md_f32x3_t* points, size_t count, PlaneFitInfo* info = nullptr);
+Plane plane_fit(const Plane& prev, const md_float3_t* points, size_t count, PlaneFitInfo* info = nullptr);

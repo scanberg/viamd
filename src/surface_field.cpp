@@ -359,11 +359,11 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     md_gto_int_charges_desc_t cd = {};
     cd.basis            = &basis;
     cd.atom_xyz         = desc.basis_atom_xyz[0].elem;
-    cd.atom_xyz_stride  = sizeof(md_f32x3_t);
+    cd.atom_xyz_stride  = sizeof(md_float3_t);
     cd.density_matrix   = D;
     cd.density_scale    = -1.0;
     cd.point_xyz        = desc.basis_atom_xyz[0].elem;
-    cd.point_xyz_stride = sizeof(md_f32x3_t);
+    cd.point_xyz_stride = sizeof(md_float3_t);
     cd.point_charge     = Z;
     cd.num_points       = num_atoms;
     cd.threshold        = ESP_SCREENING_THRESHOLD;
@@ -715,9 +715,9 @@ struct FieldBuild {
     uint64_t           hash = 0;
     SurfaceFieldKind   kind = SurfaceFieldKind::EmbeddingPotential;
     const md_system_t* sys = nullptr;
-    md_f32x3_t*            basis_atom_xyz = nullptr;
+    md_float3_t*            basis_atom_xyz = nullptr;
     size_t             num_basis_atoms = 0;
-    md_f32x3_t*            state_xyz = nullptr;
+    md_float3_t*            state_xyz = nullptr;
     size_t             num_state_atoms = 0;
     // made by the task
     FieldData          data;
@@ -752,16 +752,16 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     b->kind = desc.kind;
     b->sys  = desc.sys;
     if (desc.basis_atom_xyz && desc.num_basis_atoms) {
-        b->basis_atom_xyz = (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * desc.num_basis_atoms);
+        b->basis_atom_xyz = (md_float3_t*)malloc(sizeof(md_float3_t) * desc.num_basis_atoms);
         if (b->basis_atom_xyz) {
-            md_memcpy(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(md_f32x3_t) * desc.num_basis_atoms);
+            md_memcpy(b->basis_atom_xyz, desc.basis_atom_xyz, sizeof(md_float3_t) * desc.num_basis_atoms);
             b->num_basis_atoms = desc.num_basis_atoms;
         }
     }
     if (desc.state && desc.state->xyz && desc.state->num_atoms) {
-        b->state_xyz = (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * desc.state->num_atoms);
+        b->state_xyz = (md_float3_t*)malloc(sizeof(md_float3_t) * desc.state->num_atoms);
         if (b->state_xyz) {
-            md_memcpy(b->state_xyz, desc.state->xyz, sizeof(md_f32x3_t) * desc.state->num_atoms);
+            md_memcpy(b->state_xyz, desc.state->xyz, sizeof(md_float3_t) * desc.state->num_atoms);
             b->num_state_atoms = desc.state->num_atoms;
         }
     }

@@ -25,11 +25,11 @@ struct TrackballControllerInput {
     bool pan_button = false;
     bool dolly_button = false;
     float dolly_delta = 0;
-    md_f32x2_t mouse_coord_prev = {0, 0};
-    md_f32x2_t mouse_coord_curr = {0, 0};
-    md_f32x2_t screen_size = {0, 0};
+    md_float2_t mouse_coord_prev = {0, 0};
+    md_float2_t mouse_coord_curr = {0, 0};
+    md_float2_t screen_size = {0, 0};
     float fov_y = 0.5f;
-    md_f32x2_t ndc_center = {0, 0};     // Where in the view the look-at point is seen (see ViewRegion), which rotation is about
+    md_float2_t ndc_center = {0, 0};     // Where in the view the look-at point is seen (see ViewRegion), which rotation is about
 };
 
 struct TrackballControllerParam {
@@ -87,64 +87,64 @@ enum TrackballFlags_ {
 
 typedef uint32_t TrackballFlags;
 
-void camera_trackball(Camera* camera, md_f32x2_t prev_ndc, md_f32x2_t curr_ndc);
-void camera_move(Camera* camera, md_f32x3_t vec);
-md_f32x3_t camera_get_look_at(const ViewTransform& transform);
-md_f32x3_t camera_position_from_look_at(const md_f32x3_t& look_at, const md_quat_t& orientation, float distance);
+void camera_trackball(Camera* camera, md_float2_t prev_ndc, md_float2_t curr_ndc);
+void camera_move(Camera* camera, md_float3_t vec);
+md_float3_t camera_get_look_at(const ViewTransform& transform);
+md_float3_t camera_position_from_look_at(const md_float3_t& look_at, const md_quat_t& orientation, float distance);
 
-void camera_interpolate_look_at(md_f32x3_t* out_pos, md_quat_t* out_ori, float* out_dist, md_f32x3_t in_pos[2], md_quat_t in_ori[2], float in_dist[2], double t);
+void camera_interpolate_look_at(md_float3_t* out_pos, md_quat_t* out_ori, float* out_dist, md_float3_t in_pos[2], md_quat_t in_ori[2], float in_dist[2], double t);
 
-md_f32x4x4_t camera_world_to_view_matrix(const ViewTransform& transform);
-md_f32x4x4_t camera_view_to_world_matrix(const ViewTransform& transform);
+md_float4x4_t camera_world_to_view_matrix(const ViewTransform& transform);
+md_float4x4_t camera_view_to_world_matrix(const ViewTransform& transform);
 
-md_f32x4x4_t camera_view_to_clip_matrix_persp(const Camera& camera, float aspect_ratio);
-md_f32x4x4_t camera_clip_to_view_matrix_persp(const Camera& camera, float aspect_ratio);
+md_float4x4_t camera_view_to_clip_matrix_persp(const Camera& camera, float aspect_ratio);
+md_float4x4_t camera_clip_to_view_matrix_persp(const Camera& camera, float aspect_ratio);
 
-md_f32x4x4_t camera_view_to_clip_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
-md_f32x4x4_t camera_clip_to_view_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
+md_float4x4_t camera_view_to_clip_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
+md_float4x4_t camera_clip_to_view_matrix_persp(const Camera& camera, int width, int height, float texel_offset_x, float texel_offset_y);
 
-md_f32x4x4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top);
-md_f32x4x4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top);
+md_float4x4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top);
+md_float4x4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top);
 
-md_f32x4x4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
-md_f32x4x4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
+md_float4x4_t camera_view_to_clip_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
+md_float4x4_t camera_clip_to_view_matrix_ortho(float left, float right, float bottom, float top, float near, float far);
 
 // @TODO: Fix the name to something more descriptive. This modifies the position, orientation and distance using a trackball modality
 bool camera_controller_trackball(ViewTransform* transform, const TrackballControllerInput& input, const TrackballControllerParam& param = {}, TrackballFlags flags = -1);
 
 //void camera_controller_fps(Camera* camera, const FpsControllerState& state);
 
-ViewTransform compute_optimal_view(const md_f32x3_t& center, const md_f32x3_t& half_ext, const md_f32x3x3_t& basis = md_f32x3x3_ident(), float distance_scale = 3.0f);
+ViewTransform compute_optimal_view(const md_float3_t& center, const md_float3_t& half_ext, const md_float3x3_t& basis = md_float3x3_ident(), float distance_scale = 3.0f);
 
 // A rectangle of a view, such as the part of it that windows leave uncovered: min and max in the view's
 // normalized device coordinates (x to the right, y up, -1 to 1 across the view), and the view's width over
 // its height. The default is all of a square view.
 //
 // What is framed in a region is seen at its center by shifting the projection there: the projection matrix
-// is premultiplied by md_f32x4x4_translate(center.x, center.y, 0), which moves the picture over in clip space. The
+// is premultiplied by md_float4x4_translate(center.x, center.y, 0), which moves the picture over in clip space. The
 // camera still looks at what it frames, so it rotates about it and zooms towards it.
 struct ViewRegion {
-    md_f32x2_t min = {-1, -1};
-    md_f32x2_t max = { 1,  1};
+    md_float2_t min = {-1, -1};
+    md_float2_t max = { 1,  1};
     float  aspect_ratio = 1.0f;
 };
 
-static inline md_f32x2_t view_region_center(const ViewRegion& region) { return (region.min + region.max) * 0.5f; }
+static inline md_float2_t view_region_center(const ViewRegion& region) { return (region.min + region.max) * 0.5f; }
 
 // A good default view of a set of atoms: the whole system, or a structure within it. x, y, z hold all
 // num_atoms atoms, as drawn (no periodic treatment); the view frames those listed in indices, or all of them
 // when indices is null. cell_A is the unit cell basis (columns a, b, c), or null for none - it is only used
 // to judge whether the world axes mean anything. The atoms are framed to fit in region, when the projection
 // is shifted to its center (see ViewRegion). See the implementation for the choices this makes.
-ViewTransform camera_compute_default_view(const md_f32x3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const md_f32x3x3_t* cell_A, float fov_y, const ViewRegion& region = {});
+ViewTransform camera_compute_default_view(const md_float3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const md_float3x3_t* cell_A, float fov_y, const ViewRegion& region = {});
 
 // The camera distance at which all atoms (those in indices, or all count of them) fit in a view from
 // orientation, looking at look_at: in the largest square in the middle of region, with the projection
 // shifted to its center (see ViewRegion).
-float camera_fit_distance(const md_f32x3_t* xyz, const int32_t* indices, size_t count, md_f32x3_t look_at, md_quat_t orientation, float fov_y, const ViewRegion& region = {});
+float camera_fit_distance(const md_float3_t* xyz, const int32_t* indices, size_t count, md_float3_t look_at, md_quat_t orientation, float fov_y, const ViewRegion& region = {});
 
 // Lazy stupid procedure on top of interpolate_look_at
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor = 0.12f);
 
 // A shift of the projection (see ViewRegion) animated towards target, at the pace of camera_animate
-void camera_animate_shift(md_f32x2_t* current, md_f32x2_t target, double dt, double target_factor = 0.12f);
+void camera_animate_shift(md_float2_t* current, md_float2_t target, double dt, double target_factor = 0.12f);

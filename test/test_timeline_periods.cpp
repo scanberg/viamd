@@ -185,7 +185,7 @@ UTEST(timeline_periods, workspace_round_trip) {
     TimelinePeriod* a = timeline_periods_add(&rs, "Unfolding", 430, 470, false);
     strcpy(a->note, "The helix unwinds here.\nCompare with the second run.");
     TimelinePeriod* b = timeline_periods_add(&rs, "Recent", -60, 0, true);
-    b->color = md_f32x4_set(0.25f, 0.5f, 0.75f, 1.0f);
+    b->color = md_float4_set(0.25f, 0.5f, 0.75f, 1.0f);
     timeline_periods_add(&rs, nullptr, 12, 12, false);
 
     viamd::serialization_state_t w = {};

@@ -49,7 +49,7 @@ struct IsoMeshSlot {
 // Where a field's atoms are: the system whose attributes it is made of, and the positions (bohr) of its basis atoms
 struct IsoFieldGeometry {
     const md_system_t* sys = nullptr;
-    const md_f32x3_t* atom_xyz = nullptr;
+    const md_float3_t* atom_xyz = nullptr;
     size_t num_atoms = 0;
 };
 
@@ -118,7 +118,7 @@ void iso_meshes_shutdown(ApplicationState* state);
 // (at most cap).
 size_t iso_meshes_progress(float* fraction, size_t cap);
 
-md_f32x4x4_t iso_meshes_model_matrix();
+md_float4x4_t iso_meshes_model_matrix();
 
 // Lattice spacing in bohr for a volume resolution: the same three steps of detail as the volumes
 double iso_meshes_cell_size(VolumeResolution resolution);

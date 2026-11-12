@@ -30,10 +30,10 @@ struct FlowDrawStyle {
     // picture has two hues and the ribbons read as one material. Off: each node in its own colour
     // (md_flow_node_t.color), ribbons blending from source to destination.
     bool   color_by_side   = true;
-    md_f32x4_t side_color[3]   = { { 0.847f, 0.353f, 0.188f, 1.0f },     // first column: coral
+    md_float4_t side_color[3]   = { { 0.847f, 0.353f, 0.188f, 1.0f },     // first column: coral
                                { 0.498f, 0.467f, 0.867f, 1.0f },     // middle: the ribbons' violet
                                { 0.114f, 0.620f, 0.459f, 1.0f } };   // last column: teal
-    md_f32x4_t ribbon_color    = { 0.498f, 0.467f, 0.867f, 1.0f };
+    md_float4_t ribbon_color    = { 0.498f, 0.467f, 0.867f, 1.0f };
 
     float ribbon_alpha     = 0.32f;
     // A self flow (MD_FLOW_RIBBON_FLAG_SELF) is not a ribbon: it is the part of a node that stays where
@@ -138,7 +138,7 @@ struct FlowStripes {
     float           min_second = 0.05f;
 };
 
-ImVec2 flow_view_to_screen(const FlowView& view, md_f32x2_t graph_point);
+ImVec2 flow_view_to_screen(const FlowView& view, md_float2_t graph_point);
 
 // The hierarchy as x: moves every row of the outer columns out to the x of its level - its depth in the graph's
 // tree, counted against the deepest row shown on that side - and every band (an open group) to the x of its own,

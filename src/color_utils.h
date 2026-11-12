@@ -8,28 +8,28 @@
 
 // http://lolengine.net/blog/2013/07/27/rgb-to-hsv-in-glsl
 
-inline md_f32x3_t rgb_to_hsv(md_f32x3_t c) {
-    const md_f32x4_t K = {0.0f, -1.0f / 3.0f, 2.0f / 3.0f, -1.0f};
-    const md_f32x4_t p = md_f32x4_lerp({c.z, c.y, K.w, K.z}, {c.y, c.z, K.x, K.y}, md_f32_step(c.z, c.y));
-    const md_f32x4_t q = md_f32x4_lerp({p.x, p.y, p.w, c.x}, {c.x, p.y, p.z, p.x}, md_f32_step(p.x, c.x));
+inline md_float3_t rgb_to_hsv(md_float3_t c) {
+    const md_float4_t K = {0.0f, -1.0f / 3.0f, 2.0f / 3.0f, -1.0f};
+    const md_float4_t p = md_float4_lerp({c.z, c.y, K.w, K.z}, {c.y, c.z, K.x, K.y}, md_f32_step(c.z, c.y));
+    const md_float4_t q = md_float4_lerp({p.x, p.y, p.w, c.x}, {c.x, p.y, p.z, p.x}, md_f32_step(p.x, c.x));
 
     const float d = q.x - MD_MIN(q.w, q.y);
     const float e = 1.0e-10f;
     return {fabsf(q.z + (q.w - q.y) / (6.0f * d + e)), d / (q.x + e), q.x};
 }
 
-inline md_f32x3_t hsv_to_rgb(md_f32x3_t c) {
-    md_f32x4_t K = {1.0f, 2.0f / 3.0f, 1.0f / 3.0f, 3.0f};
-    md_f32x3_t p = md_f32x3_abs(md_f32x3_fract(md_f32x3_t{c.x, c.x, c.x} + md_f32x3_from_f32x4(K)) * 6.0f - md_f32x3_t{K.w, K.w, K.w});
-    return c.z * md_f32x3_lerp(md_f32x3_t{K.x, K.x, K.x}, md_f32x3_clamp_f(p - md_f32x3_t{K.x, K.x, K.x}, 0.0f, 1.0f), c.y);
+inline md_float3_t hsv_to_rgb(md_float3_t c) {
+    md_float4_t K = {1.0f, 2.0f / 3.0f, 1.0f / 3.0f, 3.0f};
+    md_float3_t p = md_float3_abs(md_float3_fract(md_float3_t{c.x, c.x, c.x} + md_float3_from_float4(K)) * 6.0f - md_float3_t{K.w, K.w, K.w});
+    return c.z * md_float3_lerp(md_float3_t{K.x, K.x, K.x}, md_float3_clamp_f(p - md_float3_t{K.x, K.x, K.x}, 0.0f, 1.0f), c.y);
 }
 
-constexpr inline md_f32x3_t hcl_to_rgb(md_f32x3_t HCL) {
+constexpr inline md_float3_t hcl_to_rgb(md_float3_t HCL) {
     constexpr float HCLgamma = 3;
     constexpr float HCLy0 = 100;
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
 
-    md_f32x3_t RGB = md_f32x3_t{};
+    md_float3_t RGB = md_float3_t{};
     if (HCL.z != 0) {
         float H = HCL.x;
         float C = HCL.y;
@@ -63,12 +63,12 @@ constexpr inline md_f32x3_t hcl_to_rgb(md_f32x3_t HCL) {
     return RGB;
 }
 
-inline md_f32x3_t rgb_to_hcl(md_f32x3_t rgb) {
+inline md_float3_t rgb_to_hcl(md_float3_t rgb) {
     constexpr float HCLgamma = 3.f;
     constexpr float HCLy0 = 100.f;
     constexpr float HCLmaxL = 0.530454533953517f;  // == exp(HCLgamma / HCLy0) - 0.5
 
-    md_f32x3_t HCL;
+    md_float3_t HCL;
     float H = 0;
     float U = MD_MIN(rgb.x, MD_MIN(rgb.y, rgb.z));
     float V = MD_MAX(rgb.x, MD_MAX(rgb.y, rgb.z));
@@ -85,23 +85,23 @@ inline md_f32x3_t rgb_to_hcl(md_f32x3_t rgb) {
     return HCL;
 }
 
-inline md_f32x3_t rgb_to_XYZ(md_f32x3_t rgb) {
-    constexpr md_f32x3x3_t RGB_2_XYZ = {
+inline md_float3_t rgb_to_XYZ(md_float3_t rgb) {
+    constexpr md_float3x3_t RGB_2_XYZ = {
         0.4124564f, 0.3575761f, 0.1804375f,
         0.2126729f, 0.7151522f, 0.0721750f,
         0.0193339f, 0.1191920f, 0.9503041f};
     return RGB_2_XYZ * rgb;
 }
 
-inline md_f32x3_t XYZ_to_rgb(md_f32x3_t XYZ) {
-    constexpr md_f32x3x3_t XYZ_2_RGB = {
+inline md_float3_t XYZ_to_rgb(md_float3_t XYZ) {
+    constexpr md_float3x3_t XYZ_2_RGB = {
         3.2404542f, -1.5371385f, -0.4985314f,
        -0.9692660f,  1.8760108f,  0.0415560f,
         0.0556434f, -0.2040259f,  1.0572252f};
     return XYZ_2_RGB * XYZ;
 }
 
-inline md_f32x3_t XYZ_to_Lab(md_f32x3_t XYZ) {
+inline md_float3_t XYZ_to_Lab(md_float3_t XYZ) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d * d * d ? powf(t, 1.0f / 3.0f) : (t / (3.f * d * d) + 4.f / 29.f);
@@ -120,7 +120,7 @@ inline md_f32x3_t XYZ_to_Lab(md_f32x3_t XYZ) {
     return {L, a, b};
 }
 
-inline md_f32x3_t Lab_to_XYZ(md_f32x3_t Lab) {
+inline md_float3_t Lab_to_XYZ(md_float3_t Lab) {
     const auto f = [](float t) {
         const float d = 6.f / 29.f;
         return t > d ? t * t * t : 3.0f * d * d * (t - 4.f / 29.f);
@@ -136,7 +136,7 @@ inline md_f32x3_t Lab_to_XYZ(md_f32x3_t Lab) {
     return {X, Y, Z};
 }
 
-inline md_f32x3_t linear_srgb_to_srgb(md_f32x3_t rgb) {
+inline md_float3_t linear_srgb_to_srgb(md_float3_t rgb) {
     const auto encode = [](float x) {
         x = MD_CLAMP(x, 0.0f, 1.0f);
         return (x <= 0.0031308f) ? (12.92f * x) : (1.055f * powf(x, 1.0f / 2.4f) - 0.055f);
@@ -144,7 +144,7 @@ inline md_f32x3_t linear_srgb_to_srgb(md_f32x3_t rgb) {
     return {encode(rgb.x), encode(rgb.y), encode(rgb.z)};
 }
 
-inline md_f32x3_t srgb_to_linear_srgb(md_f32x3_t rgb) {
+inline md_float3_t srgb_to_linear_srgb(md_float3_t rgb) {
     const auto decode = [](float x) {
         x = MD_CLAMP(x, 0.0f, 1.0f);
         return (x <= 0.04045f) ? (x / 12.92f)
@@ -153,7 +153,7 @@ inline md_f32x3_t srgb_to_linear_srgb(md_f32x3_t rgb) {
     return {decode(rgb.x), decode(rgb.y), decode(rgb.z)};
 }
 
-inline md_f32x3_t oklab_to_linear_srgb(md_f32x3_t lab) {
+inline md_float3_t oklab_to_linear_srgb(md_float3_t lab) {
     // OKLab to LMS cube
     // Reference: Björn Ottosson (OKLab)
     const float L = lab.x;
@@ -176,7 +176,7 @@ inline md_f32x3_t oklab_to_linear_srgb(md_f32x3_t lab) {
     return {r, g, bb};
 }
 
-inline md_f32x3_t linear_srgb_to_oklab(md_f32x3_t rgb) {
+inline md_float3_t linear_srgb_to_oklab(md_float3_t rgb) {
     // linear sRGB to LMS
     const float l = 0.4122214708f * rgb.x + 0.5363325363f * rgb.y + 0.0514459929f * rgb.z;
     const float m = 0.2119034982f * rgb.x + 0.6806995451f * rgb.y + 0.1073969566f * rgb.z;
@@ -195,19 +195,19 @@ inline md_f32x3_t linear_srgb_to_oklab(md_f32x3_t rgb) {
     return {L, a, b};
 }
 
-inline md_f32x3_t oklab_to_srgb(md_f32x3_t lab) {
+inline md_float3_t oklab_to_srgb(md_float3_t lab) {
     // Convert to linear sRGB then apply transfer function
-    md_f32x3_t rgb = oklab_to_linear_srgb(lab);
+    md_float3_t rgb = oklab_to_linear_srgb(lab);
     return linear_srgb_to_srgb(rgb);
 }
 
-inline md_f32x3_t srgb_to_oklab(md_f32x3_t rgb) {
+inline md_float3_t srgb_to_oklab(md_float3_t rgb) {
     return linear_srgb_to_oklab(srgb_to_linear_srgb(rgb));
 }
 
 // oklch = {h, c, l} with h in [0,1), l in [0,1]
 // NOTE: The order of the arguments here are H C L, not L C H
-inline md_f32x3_t oklch_to_srgb(md_f32x3_t oklch) {
+inline md_float3_t oklch_to_srgb(md_float3_t oklch) {
     const float h = oklch.x;
     const float c = oklch.y;
     const float l = oklch.z;
@@ -216,45 +216,45 @@ inline md_f32x3_t oklch_to_srgb(md_f32x3_t oklch) {
     const float a = c * cosf(ang);
     const float b = c * sinf(ang);
 
-    const md_f32x3_t lab = {l, a, b};
+    const md_float3_t lab = {l, a, b};
 
     // Convert to linear sRGB then apply transfer function
-    md_f32x3_t rgb = oklab_to_linear_srgb(lab);
+    md_float3_t rgb = oklab_to_linear_srgb(lab);
     rgb = linear_srgb_to_srgb(rgb);
 
     // Clamp to displayable range (simple gamut handling)
-    return md_f32x3_clamp_f(rgb, 0.0f, 1.0f);
+    return md_float3_clamp_f(rgb, 0.0f, 1.0f);
 }
 
 // The color of the given lightness, chroma and hue (in turns, [0,1)) of OKLCH, brought into the sRGB gamut by lowering
 // its chroma, which keeps its lightness and hue. oklch_to_srgb clamps the channels instead, which shifts the hue of a
 // color out of gamut and brightens it.
-md_f32x3_t oklch_to_srgb_mapped(float L, float C, float h);
+md_float3_t oklch_to_srgb_mapped(float L, float C, float h);
 
-inline md_f32x3_t rgb_to_Lab(md_f32x3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
-inline md_f32x3_t Lab_to_rgb(md_f32x3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
+inline md_float3_t rgb_to_Lab(md_float3_t rgb) { return XYZ_to_Lab(rgb_to_XYZ(rgb)); }
+inline md_float3_t Lab_to_rgb(md_float3_t Lab) { return XYZ_to_rgb(Lab_to_XYZ(Lab)); }
 
-inline md_f32x3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
-inline md_f32x3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
+inline md_float3_t hcl_to_rgb(float h, float c, float l) { return hcl_to_rgb({h, c, l}); }
+inline md_float3_t rgb_to_hcl(float r, float g, float b) { return rgb_to_hcl({r, g, b}); }
 
-inline md_f32x4_t rgba_to_hcla(md_f32x4_t rgba) {
-    return md_f32x4_from_f32x3(rgb_to_hcl(rgba.x, rgba.y, rgba.z), rgba.w);
+inline md_float4_t rgba_to_hcla(md_float4_t rgba) {
+    return md_float4_from_float3(rgb_to_hcl(rgba.x, rgba.y, rgba.z), rgba.w);
 }
 
-inline md_f32x4_t hcla_to_rgba(md_f32x4_t hcla) {
-    return md_f32x4_from_f32x3(hcl_to_rgb(hcla.x, hcla.y, hcla.z), hcla.w);
+inline md_float4_t hcla_to_rgba(md_float4_t hcla) {
+    return md_float4_from_float3(hcl_to_rgb(hcla.x, hcla.y, hcla.z), hcla.w);
 }
 
 constexpr float hue_from_hash(uint32_t hash) {
     return hash / (float)0xFFFFFFFFU;
 }
 
-constexpr inline md_f32x4_t color_from_hash(uint32_t hash, float chroma = 0.8f, float luminance = 1.0f, float alpha = 1.0f) {
-    md_f32x3_t rgb = hcl_to_rgb({ hue_from_hash(hash), chroma, luminance});
+constexpr inline md_float4_t color_from_hash(uint32_t hash, float chroma = 0.8f, float luminance = 1.0f, float alpha = 1.0f) {
+    md_float3_t rgb = hcl_to_rgb({ hue_from_hash(hash), chroma, luminance});
     return { rgb.x, rgb.y, rgb.z, alpha };
 }
 
-constexpr inline md_f32x4_t convert_color(uint32_t rgba) {
+constexpr inline md_float4_t convert_color(uint32_t rgba) {
     const float r = (float)((rgba >>  0) & 0xFF) / 255.f;
     const float g = (float)((rgba >>  8) & 0xFF) / 255.f;
     const float b = (float)((rgba >> 16) & 0xFF) / 255.f;
@@ -262,7 +262,7 @@ constexpr inline md_f32x4_t convert_color(uint32_t rgba) {
     return { r, g, b, a };
 }
 
-constexpr inline uint32_t convert_color(md_f32x4_t in) {
+constexpr inline uint32_t convert_color(md_float4_t in) {
     const uint32_t out = 
         ((uint32_t)(MD_CLAMP(in.x, 0.0f, 1.0f) * 255.0f + 0.5f)) << 0   |
         ((uint32_t)(MD_CLAMP(in.y, 0.0f, 1.0f) * 255.0f + 0.5f)) << 8   |
@@ -296,30 +296,30 @@ void color_atoms_part_idx           (uint32_t* colors, size_t count, const md_sy
 // displayed_secondary_structure (viamd.h); NULL colors everything as unknown
 void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
 
-static inline md_f32x4_t scale_saturation(md_f32x4_t rgba, float scale) {
-    md_f32x3_t lab = linear_srgb_to_oklab(md_f32x3_from_f32x4(rgba));
+static inline md_float4_t scale_saturation(md_float4_t rgba, float scale) {
+    md_float3_t lab = linear_srgb_to_oklab(md_float3_from_float4(rgba));
     lab.y *= scale;
     lab.z *= scale;
-    return md_f32x4_from_f32x3(oklab_to_linear_srgb(lab), rgba.w);
+    return md_float4_from_float3(oklab_to_linear_srgb(lab), rgba.w);
 }
 
 static inline uint32_t scale_saturation(uint32_t rgba_u32, float scale) {
     return convert_color(scale_saturation(convert_color(rgba_u32), scale));
 }
 
-static inline md_f32x4_t tint_color(md_f32x4_t base_rgba, md_f32x4_t tint_rgba, float tint_strength, float saturation) {
+static inline md_float4_t tint_color(md_float4_t base_rgba, md_float4_t tint_rgba, float tint_strength, float saturation) {
     const float t = MD_CLAMP(tint_strength, 0.0f, 1.0f);
     const float s = MD_CLAMP(saturation, 0.0f, 1.0f);
 
-    md_f32x3_t base_lab = linear_srgb_to_oklab(md_f32x3_from_f32x4(base_rgba));
-    md_f32x3_t tint_lab = linear_srgb_to_oklab(md_f32x3_from_f32x4(tint_rgba));
+    md_float3_t base_lab = linear_srgb_to_oklab(md_float3_from_float4(base_rgba));
+    md_float3_t tint_lab = linear_srgb_to_oklab(md_float3_from_float4(tint_rgba));
 
     // Match the same perceptual idea as tint_colors():
     // small lightness pull, stronger chroma pull.
     const float L_coeff  = 0.1f * t;
     const float ab_coeff = 1.0f * t;
 
-    md_f32x3_t out_lab = {
+    md_float3_t out_lab = {
         base_lab.x * (1.0f - L_coeff)  + tint_lab.x * L_coeff,
         base_lab.y * (1.0f - ab_coeff) + tint_lab.y * ab_coeff,
         base_lab.z * (1.0f - ab_coeff) + tint_lab.z * ab_coeff,
@@ -329,7 +329,7 @@ static inline md_f32x4_t tint_color(md_f32x4_t base_rgba, md_f32x4_t tint_rgba, 
     out_lab.y *= s;
     out_lab.z *= s;
 
-    return md_f32x4_from_f32x3(oklab_to_linear_srgb(out_lab), base_rgba.w);
+    return md_float4_from_float3(oklab_to_linear_srgb(out_lab), base_rgba.w);
 }
 
 static inline uint32_t tint_color(uint32_t base_rgba_u32, uint32_t tint_rgba_u32, float tint_strength, float saturation) {

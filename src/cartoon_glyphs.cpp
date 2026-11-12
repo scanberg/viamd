@@ -279,30 +279,30 @@ static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_
 
     // The positions about the anchor, each in its image nearest to it
     const int32_t anchor = L.tail.anchor_beg[t];
-    md_f32x3_t* d = (md_f32x3_t*)md_alloc(temp_alloc, n * sizeof(md_f32x3_t));
-    for (size_t k = 0; k < n; ++k) d[k] = md_f32x3_sub(refs.xyz[ring[k]], refs.xyz[anchor]);
+    md_float3_t* d = (md_float3_t*)md_alloc(temp_alloc, n * sizeof(md_float3_t));
+    for (size_t k = 0; k < n; ++k) d[k] = md_float3_sub(refs.xyz[ring[k]], refs.xyz[anchor]);
     if (md_unitcell_flags(&refs.unitcell)) md_util_min_image((float*)d, 0, n, &refs.unitcell);
-    md_f32x3_t c = md_f32x3_zero();
-    for (size_t k = 0; k < n; ++k) c = md_f32x3_add(c, d[k]);
-    c = md_f32x3_mul1(c, 1.0f / (float)n);
-    md_f32x3x3_t M = {};
+    md_float3_t c = md_float3_zero();
+    for (size_t k = 0; k < n; ++k) c = md_float3_add(c, d[k]);
+    c = md_float3_mul1(c, 1.0f / (float)n);
+    md_float3x3_t M = {};
     for (size_t k = 0; k < n; ++k) {
-        const md_f32x3_t x = md_f32x3_sub(d[k], c);
+        const md_float3_t x = md_float3_sub(d[k], c);
         for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) M.elem[i][j] += x.elem[i] * x.elem[j];
     }
-    const md_f32x3x3_eigen_t eig = md_f32x3x3_eigen(M);
-    md_f32x3_t axis = eig.vectors.col[0];
-    const md_f32x3_t width = eig.vectors.col[1];
+    const md_float3x3_eigen_t eig = md_float3x3_eigen(M);
+    md_float3_t axis = eig.vectors.col[0];
+    const md_float3_t width = eig.vectors.col[1];
     // From the head: the anchor (the origin) at the low end
-    if (md_f32x3_dot(c, axis) < 0.0f) axis = md_f32x3_mul1(axis, -1.0f);
+    if (md_float3_dot(c, axis) < 0.0f) axis = md_float3_mul1(axis, -1.0f);
 
     float* along = (float*)md_alloc(temp_alloc, n * sizeof(float));
     float* across = (float*)md_alloc(temp_alloc, n * sizeof(float));
     float lo = FLT_MAX, hi = -FLT_MAX;
     for (size_t k = 0; k < n; ++k) {
-        const md_f32x3_t x = md_f32x3_sub(d[k], c);
-        along[k] = md_f32x3_dot(x, axis);
-        across[k] = md_f32x3_dot(x, width);
+        const md_float3_t x = md_float3_sub(d[k], c);
+        along[k] = md_float3_dot(x, axis);
+        across[k] = md_float3_dot(x, width);
         lo = MD_MIN(lo, along[k]);
         hi = MD_MAX(hi, along[k]);
     }
@@ -892,7 +892,7 @@ void cartoon_glyphs_update_positions(CartoonGlyphs* g, const md_system_state_t& 
     if (!cartoon_glyphs_valid(*g)) return;
     const md_unitcell_t* cell = md_unitcell_flags(&state.unitcell) ? &state.unitcell : nullptr;
     // The positions on the CPU only place the tubes for their culling, and must be those of every atom
-    const md_f32x3_t* xyz = (state.xyz && state.num_atoms >= g->num_source_atoms) ? state.xyz : nullptr;
+    const md_float3_t* xyz = (state.xyz && state.num_atoms >= g->num_source_atoms) ? state.xyz : nullptr;
     md_gl_mol_compute_derived(g->gl_mol, cell, xyz);
     g->positions_valid = true;
 }

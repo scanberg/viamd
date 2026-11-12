@@ -229,8 +229,8 @@ void gbuffer_clear(GBuffer* gbuffer) {
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
     glStencilMask(0xFF);
-    const md_f32x4_t zero = {0, 0, 0, 0};
-    const md_f32x4_t picking = {1, 1, 1, 1};
+    const md_float4_t zero = {0, 0, 0, 0};
+    const md_float4_t picking = {1, 1, 1, 1};
 
     glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
     glClearBufferfv(GL_COLOR, 0, zero.elem);

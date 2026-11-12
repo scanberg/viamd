@@ -417,8 +417,8 @@ struct SeriesVolumeView {
     // corner of the first voxel, and one step along each axis of the data, outermost first. Without it (v1) a volume is
     // a cube of half extent Drawing::sdf.extent, its data x fastest.
     bool  placed = false;
-    md_f32x3_t origin = {};
-    md_f32x3_t basis[3] = {};
+    md_float3_t origin = {};
+    md_float3_t basis[3] = {};
     // The density of what it maps over the unit cell, in its unit (v2: script/<name>/bulk); NaN when not known
     double bulk = NAN;
 };

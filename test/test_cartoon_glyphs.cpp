@@ -285,7 +285,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     size_t len = (size_t)snprintf(text, 64, "%zu\nxyz\n", ref.atom.count);
     for (size_t i = 0; i < ref.atom.count; ++i) {
         const md_str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&ref.atom, i));
-        const md_f32x3_t p = md_state_coord(&ref_st, i);
+        const md_float3_t p = md_state_coord(&ref_st, i);
         len += (size_t)snprintf(text + len, 64, "%.*s %.4f %.4f %.4f\n", (int)sym.len, sym.ptr, p.x, p.y, p.z);
     }
     md_system_t sys = { .alloc = alloc };
@@ -322,13 +322,13 @@ UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
 }
 
 // Where a point is in a frame: the weighted sum of its atoms, each in its periodic image nearest to its reference
-static md_f32x3_t point_position(const CartoonGlyphs& g, const md_system_state_t& st, uint32_t p) {
-    const md_f32x3_t ref = st.xyz[g.point_ref[p]];
-    md_f32x3_t pos = md_f32x3_zero();
+static md_float3_t point_position(const CartoonGlyphs& g, const md_system_state_t& st, uint32_t p) {
+    const md_float3_t ref = st.xyz[g.point_ref[p]];
+    md_float3_t pos = md_float3_zero();
     for (uint32_t j = g.point_offset[p]; j < g.point_offset[p + 1]; ++j) {
-        md_f32x3_t d = md_f32x3_sub(st.xyz[g.point_atom[j]], ref);
+        md_float3_t d = md_float3_sub(st.xyz[g.point_atom[j]], ref);
         if (md_unitcell_flags(&st.unitcell)) md_util_min_image(d.elem, 0, 1, &st.unitcell);
-        pos = md_f32x3_add(pos, md_f32x3_mul1(md_f32x3_add(ref, d), g.point_weight[j]));
+        pos = md_float3_add(pos, md_float3_mul1(md_float3_add(ref, d), g.point_weight[j]));
     }
     return pos;
 }
@@ -387,24 +387,24 @@ UTEST(cartoon_glyphs, martini_nucleic_acids_have_the_rings_of_ideal_bases) {
                 // From the band to the glycosidic N, the corner of a ring
                 EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBackbone, g.point_kind[g.slab_point[beg]]);
                 EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.slab_point[beg + 1]]);
-                longest_stick = MD_MAX(longest_stick, md_f32x3_distance(point_position(g, st, g.slab_point[beg]), point_position(g, st, g.slab_point[beg + 1])));
+                longest_stick = MD_MAX(longest_stick, md_float3_distance(point_position(g, st, g.slab_point[beg]), point_position(g, st, g.slab_point[beg + 1])));
                 sticks += 1;
                 continue;
             }
-            md_f32x3_t c[6];
-            md_f32x3_t mid = md_f32x3_zero();
+            md_float3_t c[6];
+            md_float3_t mid = md_float3_zero();
             for (uint32_t k = 0; k < m; ++k) {
                 EXPECT_EQ((uint8_t)CartoonGlyph_NucleicBase, g.point_kind[g.slab_point[beg + k]]);
                 c[k] = point_position(g, st, g.slab_point[beg + k]);
-                mid = md_f32x3_add(mid, md_f32x3_mul1(c[k], 1.0f / (float)m));
+                mid = md_float3_add(mid, md_float3_mul1(c[k], 1.0f / (float)m));
             }
             for (uint32_t k = 0; k < m; ++k) {
-                const float d = md_f32x3_distance(c[k], c[(k + 1) % m]);
+                const float d = md_float3_distance(c[k], c[(k + 1) % m]);
                 shortest_edge = MD_MIN(shortest_edge, d);
                 longest_edge = MD_MAX(longest_edge, d);
             }
-            const md_f32x3_t normal = md_f32x3_normalize(md_f32x3_cross(md_f32x3_sub(c[0], mid), md_f32x3_sub(c[1], mid)));
-            for (uint32_t k = 0; k < m; ++k) worst_plane = MD_MAX(worst_plane, fabsf(md_f32x3_dot(md_f32x3_sub(c[k], mid), normal)));
+            const md_float3_t normal = md_float3_normalize(md_float3_cross(md_float3_sub(c[0], mid), md_float3_sub(c[1], mid)));
+            for (uint32_t k = 0; k < m; ++k) worst_plane = MD_MAX(worst_plane, fabsf(md_float3_dot(md_float3_sub(c[k], mid), normal)));
         }
         EXPECT_EQ((uint32_t)bb.segment.count, sticks);
         // The bonds of the rings of the ideal bases are 1.31 to 1.45 long; the purines of Martini 2 flex a little
