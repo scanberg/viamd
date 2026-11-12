@@ -989,6 +989,13 @@ static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationStat
 
     if (hit.domain == PickingDomain_CavitySphere) {
         tooltip_title(req, "cavity" TOOLTIP_SEP "sphere of atom(%u)", hit.local_idx + 1);
+        const float world[3] = {hit.world_pos.x, hit.world_pos.y, hit.world_pos.z};
+        if (cavity_switched(cav)) {
+            const float F = cavity_sphere_switching(cav, hit.local_idx, world);
+            if (F < 0.5f) {
+                tooltip_row(req, MD_STR_LIT("switching"), "%.2f, below 1/2: off GOSTSHYP's surface", F);
+            }
+        }
         return;
     }
     CavityTesseraInfo info = {};

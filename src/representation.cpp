@@ -2115,6 +2115,8 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         viamd::extract_bool(rep->cavity.conserve, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityEdges"))) {
         viamd::extract_bool(rep->cavity.edges, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavitySwitched"))) {
+        viamd::extract_bool(rep->cavity.switched, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityFitAreas"))) {
         viamd::extract_bool(rep->cavity.fit_areas, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityColormap"))) {
@@ -2426,6 +2428,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_bool(state, MD_STR_LIT("CavityUnlit"), c.unlit);
         viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
         viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
+        viamd::write_bool(state, MD_STR_LIT("CavitySwitched"), c.switched);
         viamd::write_bool(state, MD_STR_LIT("CavityFitAreas"), c.fit_areas);
         viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
         viamd::write_flt_vec(state, MD_STR_LIT("CavityRange"), range, 2);
@@ -3924,6 +3927,14 @@ static bool draw_representation_cavity(Representation& rep) {
             prop::row("borders", "The borders between the patches of the tesserae");
             update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
         }
+        if (cavity_has_switching(cav)) {
+            prop::row("switched surface", "GOSTSHYP's own surface: each sphere where the switching of its points is at least 1/2.\n"
+                                          "VeloxChem weights each point by a smoothstep across a band about every neighbouring\n"
+                                          "sphere, evaluated on the spheres grown by r_ext, so the area of a tessera is its Lebedev\n"
+                                          "weight times that switching. Off: the union of the spheres, which is larger than the\n"
+                                          "area of the tesserae accounts for.");
+            update_rep |= ImGui::Checkbox("##cavity_switched", &cav.switched);
+        }
         prop::row("area weighted", "Split the surface between the tesserae so that each patch has the area of its tessera, relative\n"
                                    "to the surface drawn (a power diagram, |x - c|^2 - w, with fitted weights). Off: each point to\n"
                                    "the nearest tessera, which crowds the seams with slivers of the tesserae the switching kept\n"
@@ -3948,13 +3959,13 @@ static bool draw_representation_cavity(Representation& rep) {
         ImGui::Text("%.3g GPa", sum.pressure_gpa);
         prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
         ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
-        prop::row("area", "The sum of the areas of the tesserae, and the area of the exposed surface of the spheres");
+        prop::row("area", "The sum of the areas of the tesserae, and the area of the surface drawn");
         snprintf(buf, sizeof(buf), "%.1f / %.1f Å²", sum.tessera_area, sum.exposed_area);
         ImGui::TextUnformatted(buf);
         prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
         ImGui::Text("%.1f kJ/mol", sum.wall_energy);
         prop::row("inside others", "Tesserae inside the sphere of another atom: the switching keeps them where the spheres overlap,\n"
-                                   "so the cavity of the calculation is a smoothed union of the spheres, not the union drawn.\n"
+                                   "with small areas, so the cavity of the calculation is a smoothed union of the spheres.\n"
                                    "Their share of the area of the tesserae.");
         ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
         if (sum.unreached_energy > 0) {

@@ -3,6 +3,14 @@
 // The cavity's full screen pass over the G-buffer (cavity.h): where a sphere of the cavity was drawn, the exact point
 // on it, the tessera nearest to it, and the field there through the colour map. Writes the colour (its alpha 1/255
 // when unlit, which the composition reads as such and the coverage as geometry) and the picking index of the tessera.
+//
+// Of a switched cavity, the points of the union of the spheres where the switching is below u_tau are not of
+// GOSTSHYP's surface: VeloxChem's 'swig' weights the points of each sphere i by
+//   F_i(x) = prod_j f((|x' - X_j| - (r_j - alpha gamma r_j)) / (gamma r_j)),   f(t) = 10t^3 - 15t^4 + 6t^5 on [0, 1]
+// with x' the point on the sphere grown by r_ext, r_j = R_j + r_ext, gamma = sqrt(14 / N_lebedev) and
+// alpha = 1/2 + 1/gamma - sqrt(1/gamma^2 - 1/28), and the areas of the tesserae are their Lebedev weights times F.
+// F >= 1/2 lies on the union entirely (none of it inside another sphere, on 5helicene.h5), with the area of the
+// tesserae within 2%: the rest, the bands along the seams, is drawn neutral and picks as its sphere.
 
 uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
 uniform samplerBuffer  u_tess_a;        // xyz: the centre of the tessera (the frame of the file), w: the kernel's sigma
@@ -10,6 +18,8 @@ uniform samplerBuffer  u_tess_b;        // xyz: its normal, w: its own value
 uniform samplerBuffer  u_tess_c;        // x: what its kernel spreads per its normalization, y: its area per the same,
                                         // z: its weight in the power diagram (Å^2)
 uniform samplerBuffer  u_spheres;       // xyz: the centre of the sphere, w: its radius
+uniform usamplerBuffer u_nbr_range;     // x: the first of the sphere's neighbours in u_nbr_items, y: how many
+uniform usamplerBuffer u_nbr_items;
 uniform usamplerBuffer u_cells;         // x: the first of the cell's tesserae in u_items, y: how many
 uniform usamplerBuffer u_items;
 uniform sampler2D      u_colormap;
@@ -28,6 +38,11 @@ uniform int   u_unlit;
 uniform int   u_edges;
 uniform float u_power;                  // 1: nearest by power, |x - c_j|^2 - w_j; 0: by distance
 uniform float u_power_reach2;           // a tessera further than this (squared) is never nearest by power
+uniform int   u_switched;
+uniform float u_gamma;
+uniform float u_alpha;
+uniform float u_r_ext;
+uniform float u_tau;
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking;
@@ -45,6 +60,25 @@ vec4 encode_index(uint index) {
         (index & 0x0000FF00U) >> 8U,
         (index & 0x00FF0000U) >> 16U,
         (index & 0xFF000000U) >> 24U) / 255.0;
+}
+
+float smoothstep5(float t) {
+    t = clamp(t, 0.0, 1.0);
+    return t * t * t * (10.0 - 15.0 * t + 6.0 * t * t);
+}
+
+// The switching of the point of sphere i in the direction n
+float switching(int i, vec3 n) {
+    vec4  s  = texelFetch(u_spheres, i);
+    vec3  pe = s.xyz + n * (s.w + u_r_ext);
+    uvec2 r  = texelFetch(u_nbr_range, i).xy;
+    float F  = 1.0;
+    for (uint k = r.x; k < r.x + r.y && F > 0.0; ++k) {
+        vec4  sj = texelFetch(u_spheres, int(texelFetch(u_nbr_items, int(k)).r));
+        float rj = sj.w + u_r_ext;
+        F *= smoothstep5((length(pe - sj.xyz) - (rj - u_alpha * u_gamma * rj)) / (u_gamma * rj));
+    }
+    return F;
 }
 
 void ray(vec2 frag, out vec3 ro, out vec3 rd) {
@@ -71,6 +105,12 @@ void main() {
     vec3  x  = ro + rd * t;
     vec3  n  = normalize(x - s.xyz);
     x = s.xyz + n * s.w;
+
+    if (u_switched != 0 && switching(int(sphere), n) < u_tau) {
+        out_color = vec4(vec3(0.62), 1.0);
+        out_picking = encode_index(idx);
+        return;
+    }
 
     ivec3 c = ivec3(floor((x - u_grid_min) * u_inv_cell));
     if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, u_grid_dim))) discard;

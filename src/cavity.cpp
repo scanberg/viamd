@@ -5,7 +5,6 @@
 #include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 
-#include <md_gl.h>
 #include <md_system.h>
 #include <md_system_state.h>
 #include <md_attributes.h>
@@ -37,6 +36,9 @@ static const md_str_t decay_length = MD_STR_INIT("vlx/scf/gostshyp/tessera/decay
 static const md_str_t atom_index   = MD_STR_INIT("vlx/scf/gostshyp/tessera/atom_index");
 static const md_str_t radius       = MD_STR_INIT("vlx/scf/gostshyp/sphere_radius");
 static const md_str_t pressure     = MD_STR_INIT("vlx/scf/gostshyp/pressure");
+static const md_str_t discretization = MD_STR_INIT("vlx/scf/gostshyp/discretization");
+static const md_str_t num_lebedev  = MD_STR_INIT("vlx/scf/gostshyp/num_lebedev_points");
+static const md_str_t r_ext        = MD_STR_INIT("vlx/scf/gostshyp/r_ext");
 static const md_str_t qm_coord     = MD_STR_INIT("qm/atom/coordinate");
 static const md_str_t qm_map       = MD_STR_INIT("qm/atom/system_index");
 }
@@ -97,6 +99,14 @@ struct CavityData {
     std::vector<float>    sph;      // 4 per: centre, radius
     std::vector<uint32_t> sys_idx;  // the system's atom of each
 
+    // The switching of VeloxChem's 'swig' (cavity_geometry.frag): available when the file says the cavity was made so,
+    // and the spheres around each sphere within reach of its switching
+    bool  has_switching = false;
+    float sw_gamma = 0, sw_alpha = 0, sw_r_ext = 0;
+    std::vector<uint32_t> nbr_off;  // [spheres + 1]
+    std::vector<uint32_t> nbr;
+    bool  switched = false;         // what the surface below is of: the switched cavity, or the union of the spheres
+
     // The weights of the power diagram the surface is split by, |x - c_j|^2 - w_j (Å^2): fitted so that each patch
     // has the area of its tessera, relative to the surface drawn (fit_weights). Made once per cavity.
     std::vector<float> weight;
@@ -125,10 +135,8 @@ struct CavityData {
     uint64_t placement_hash = 0;
 
     // GPU
-    md_gl_mol_t mol = {};
-    md_gl_rep_t rep = {};
-    GLuint buf[6] = {};             // tess_a, tess_b, tess_c, spheres, cells, items
-    GLuint tex[6] = {};
+    GLuint buf[8] = {};             // tess_a, tess_b, tess_c, spheres, cells, items, nbr_range, nbr_items
+    GLuint tex[8] = {};
     GLuint colormap_tex = 0;
     int    colormap = -1;
     uint64_t version = 0;
@@ -149,7 +157,8 @@ bool cavity_available(const md_system_t& sys) {
 
 static uint64_t source_hash(const md_system_t& sys) {
     const md_str_t paths[] = {cavity_path::coordinate, cavity_path::normal, cavity_path::area, cavity_path::amplitude, cavity_path::exponent,
-                              cavity_path::decay_length, cavity_path::atom_index, cavity_path::radius, cavity_path::pressure, cavity_path::qm_coord, cavity_path::qm_map};
+                              cavity_path::decay_length, cavity_path::atom_index, cavity_path::radius, cavity_path::pressure, cavity_path::qm_coord, cavity_path::qm_map,
+                              cavity_path::discretization, cavity_path::num_lebedev, cavity_path::r_ext};
     uint64_t h = 0x9e3779b97f4a7c15ull;
     for (const md_str_t& p : paths) {
         const md_attribute_t* a = find(sys, p);
@@ -227,8 +236,67 @@ static bool read_source(CavityData* d, const md_system_t& sys) {
             return false;
         }
     }
+
+    // The switching, as VeloxChem's tessellation.py makes it for 'swig'. 'iswig' switches with error functions of a
+    // width per point, which is not done here: such a cavity is drawn as the union of its spheres.
+    d->has_switching = false;
+    const md_attribute_t* disc = find(sys, cavity_path::discretization);
+    const md_str_t disc_str = disc && disc->format.type == MD_ATTRIBUTE_TYPE_STR ? md_attribute_str(&sys.attributes, disc, 0) : md_str_t{};
+    double n_leb = 0, rext = 0;
+    if (const md_attribute_t* a = find(sys, cavity_path::num_lebedev)) {
+        if (const double* v = (const double*)md_attribute_view(a, MD_ATTRIBUTE_TYPE_F64, 1, 0)) n_leb = *v;
+    }
+    if (const md_attribute_t* a = find(sys, cavity_path::r_ext)) {
+        if (const double* v = (const double*)md_attribute_view(a, MD_ATTRIBUTE_TYPE_F64, 1, 0)) rext = *v;
+    }
+    if (md_str_eq_cstr_ignore_case(disc_str, "swig") && n_leb > 0) {
+        const double gamma = sqrt(14.0 / n_leb);
+        d->has_switching = true;
+        d->sw_gamma = (float)gamma;
+        d->sw_alpha = (float)(0.5 + 1.0 / gamma - sqrt(1.0 / (gamma * gamma) - 1.0 / 28.0));
+        d->sw_r_ext = (float)rext;
+    }
+    // The spheres within reach of each one's switching: of sphere j it ends (1 + gamma (1 - alpha)) r_j from its centre
+    // (r_j grown by r_ext), and a point of sphere i is r_i + r_ext from its own
+    d->nbr_off.assign(num_atoms + 1, 0);
+    d->nbr.clear();
+    for (uint32_t i = 0; i < num_atoms; ++i) {
+        d->nbr_off[i] = (uint32_t)d->nbr.size();
+        const float Ri = d->sph[4 * i + 3];
+        if (Ri <= 0) continue;
+        for (uint32_t j = 0; j < num_atoms; ++j) {
+            const float Rj = d->sph[4 * j + 3];
+            if (j == i || Rj <= 0) continue;
+            const float rj = Rj + d->sw_r_ext;
+            const float reach = (Ri + d->sw_r_ext) + rj * (1.0f + d->sw_gamma * (1.0f - d->sw_alpha));
+            const float dx = d->sph[4 * i] - d->sph[4 * j], dy = d->sph[4 * i + 1] - d->sph[4 * j + 1], dz = d->sph[4 * i + 2] - d->sph[4 * j + 2];
+            if (dx * dx + dy * dy + dz * dz < reach * reach) d->nbr.push_back(j);
+        }
+    }
+    d->nbr_off[num_atoms] = (uint32_t)d->nbr.size();
     return true;
 }
+
+static inline float smoothstep5(float t) {
+    t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    return t * t * t * (10.0f - 15.0f * t + 6.0f * t * t);
+}
+
+// The switching of the point of sphere i in the direction n (cavity_geometry.frag)
+static float switching(const CavityData& d, uint32_t i, const float n[3]) {
+    const float* s = &d.sph[4 * i];
+    const float pe[3] = {s[0] + n[0] * (s[3] + d.sw_r_ext), s[1] + n[1] * (s[3] + d.sw_r_ext), s[2] + n[2] * (s[3] + d.sw_r_ext)};
+    float F = 1.0f;
+    for (uint32_t k = d.nbr_off[i]; k < d.nbr_off[i + 1] && F > 0.0f; ++k) {
+        const float* sj = &d.sph[4 * d.nbr[k]];
+        const float rj = sj[3] + d.sw_r_ext;
+        const float dx = pe[0] - sj[0], dy = pe[1] - sj[1], dz = pe[2] - sj[2];
+        F *= smoothstep5((sqrtf(dx * dx + dy * dy + dz * dz) - (rj - d.sw_alpha * d.sw_gamma * rj)) / (d.sw_gamma * rj));
+    }
+    return F;
+}
+
+static const float SWITCHING_SURFACE = 0.5f;   // the switching the surface of a switched cavity is drawn at
 
 // ---------------------------------------------------------------------------------------------------------
 // The kernel's normalization and the lists of the cells
@@ -393,11 +461,13 @@ static void build_kernel(CavityData* d, float scale) {
             QuadPoint q;
             q.n[0] = (float)(r * cos(phi)); q.n[1] = (float)(r * sin(phi)); q.n[2] = (float)z;
             for (int k = 0; k < 3; ++k) q.p[k] = c[k] + R * q.n[k];
+            // Of the union of the spheres, and of a switched cavity where the switching is at least 1/2 (cavity_resolve.frag)
             bool buried = false;
             for (uint32_t k : nb) {
                 const float Rk = d->sph[4 * k + 3];
                 if (dist2(q.p, &d->sph[4 * k]) < Rk * Rk) { buried = true; break; }
             }
+            if (!buried && d->switched) buried = switching(*d, i, q.n) < SWITCHING_SURFACE;
             if (buried) continue;
             q.da = (float)(area / m);
             q.d_nn = FLT_MAX;
@@ -653,7 +723,7 @@ static void upload_buffer(CavityData* d, int i, GLenum format, const void* data,
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
-enum { BUF_TESS_A, BUF_TESS_B, BUF_TESS_C, BUF_SPHERES, BUF_CELLS, BUF_ITEMS };
+enum { BUF_TESS_A, BUF_TESS_B, BUF_TESS_C, BUF_SPHERES, BUF_CELLS, BUF_ITEMS, BUF_NBR_RANGE, BUF_NBR_ITEMS };
 
 static void upload_kernel(CavityData* d) {
     const uint32_t n = d->num_tess;
@@ -673,6 +743,13 @@ static void upload_kernel(CavityData* d) {
     }
     upload_buffer(d, BUF_CELLS, GL_RG32UI, range.data(), range.size() * sizeof(uint32_t));
     upload_buffer(d, BUF_ITEMS, GL_R32UI, g.items.data(), g.items.size() * sizeof(uint32_t));
+    std::vector<uint32_t> nr(2 * d->num_spheres);
+    for (uint32_t i = 0; i < d->num_spheres; ++i) {
+        nr[2 * i + 0] = d->nbr_off[i];
+        nr[2 * i + 1] = d->nbr_off[i + 1] - d->nbr_off[i];
+    }
+    upload_buffer(d, BUF_NBR_RANGE, GL_RG32UI, nr.data(), nr.size() * sizeof(uint32_t));
+    upload_buffer(d, BUF_NBR_ITEMS, GL_R32UI, d->nbr.data(), d->nbr.size() * sizeof(uint32_t));
 }
 
 static void upload_field(CavityData* d) {
@@ -694,7 +771,7 @@ static void upload_field(CavityData* d) {
 }
 
 static void free_gpu(CavityData* d) {
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 8; ++i) {
         if (d->tex[i]) glDeleteTextures(1, &d->tex[i]);
         if (d->buf[i]) glDeleteBuffers(1, &d->buf[i]);
         d->tex[i] = d->buf[i] = 0;
@@ -702,10 +779,6 @@ static void free_gpu(CavityData* d) {
     if (d->colormap_tex) glDeleteTextures(1, &d->colormap_tex);
     d->colormap_tex = 0;
     d->colormap = -1;
-    md_gl_rep_destroy(d->rep);
-    md_gl_mol_destroy(d->mol);
-    d->rep = {};
-    d->mol = {};
 }
 
 static GLuint colormap_texture(CavityData* d, int colormap) {
@@ -737,7 +810,7 @@ static void place(CavityData* d, const md_system_state_t& state) {
     if (!state.xyz || state.num_atoms == 0) return;
     uint64_t h = 0;
     for (uint32_t i = 0; i < m; ++i) h = md_hash64(&state.xyz[d->sys_idx[i]], sizeof(md_f32x3_t), h);
-    if (h == d->placement_hash && (d->mol.id != 0)) return;
+    if (h == d->placement_hash) return;
     d->placement_hash = h;
 
     // The rigid motion taking the QM atoms of the file onto where they are now (Kabsch)
@@ -767,21 +840,6 @@ static void place(CavityData* d, const md_system_state_t& state) {
         d->trans[k] = (float)(cw[k] - (R[k] * cf[0] + R[3 + k] * cf[1] + R[6 + k] * cf[2]));
     }
 
-    std::vector<md_f32x3_t> xyz(m);
-    std::vector<float> rad(m);
-    for (uint32_t i = 0; i < m; ++i) {
-        const float* p = &d->sph[4 * i];
-        for (int k = 0; k < 3; ++k) xyz[i].elem[k] = R[k] * p[0] + R[3 + k] * p[1] + R[6 + k] * p[2] + d->trans[k];
-        rad[i] = p[3];
-    }
-    if (!(d->mol.id != 0)) {
-        d->mol = md_gl_mol_create_particles(m);
-        d->rep = md_gl_rep_create(d->mol);
-        std::vector<uint32_t> col(m, 0xFF808080u);
-        md_gl_rep_set_atom_colors(d->rep, 0, m, col.data(), 0);
-    }
-    md_gl_mol_set_atom_position(d->mol, 0, m, xyz.data());
-    md_gl_mol_set_atom_radius(d->mol, 0, m, rad.data(), 0);
     d->version++;
 }
 
@@ -821,6 +879,13 @@ bool cavity_update(CavityRepresentation* cav, const md_system_t& sys, const md_s
     }
     if (d->num_tess == 0) return false;
 
+    // The surface: everything below is made over it, the weights of the patches too
+    const bool switched = cav->switched && d->has_switching;
+    if (switched != d->switched) {
+        d->switched = switched;
+        d->weight.clear();
+        d->kernel_scale = -1.0f;
+    }
     const float scale = MD_CLAMP(cav->kernel_scale, 0.25f, 4.0f);
     if (scale != d->kernel_scale) {
         build_kernel(d, scale);
@@ -865,6 +930,7 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
     h = md_hash64(&cav.unlit, sizeof(cav.unlit), h);
     h = md_hash64(&cav.conserve, sizeof(cav.conserve), h);
     h = md_hash64(&cav.fit_areas, sizeof(cav.fit_areas), h);
+    h = md_hash64(&cav.switched, sizeof(cav.switched), h);
     h = md_hash64(&cav.edges, sizeof(cav.edges), h);
     h = md_hash64(&cav.scale, sizeof(cav.scale), h);
     if (cav.data) h = md_hash64(&cav.data->version, sizeof(cav.data->version), h);
@@ -874,12 +940,8 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
 uint32_t cavity_sphere_count(const CavityRepresentation& cav)  { return cav.data ? cav.data->num_spheres : 0; }
 uint32_t cavity_tessera_count(const CavityRepresentation& cav) { return cav.data ? cav.data->num_tess : 0; }
 
-bool cavity_gl_handles(uint32_t* mol_id, uint32_t* rep_id, const CavityRepresentation& cav) {
-    if (!cav.data || !(cav.data->mol.id != 0)) return false;
-    *mol_id = cav.data->mol.id;
-    *rep_id = cav.data->rep.id;
-    return true;
-}
+bool cavity_switched(const CavityRepresentation& cav) { return cav.data && cav.data->switched; }
+bool cavity_has_switching(const CavityRepresentation& cav) { return cav.data && cav.data->has_switching; }
 
 // ---------------------------------------------------------------------------------------------------------
 // Passes
@@ -894,6 +956,7 @@ void main() {
 )";
 
 static struct {
+    GLuint geometry = 0;
     GLuint resolve = 0;
     GLuint marks = 0;
     GLuint vao = 0;
@@ -923,10 +986,25 @@ static GLuint make_program(const char* label, const unsigned char* frag, size_t 
 
 static bool ensure_programs() {
     if (gl_state.failed) return false;
+    if (!gl_state.geometry) {
+        GLuint vs = gl::compile_shader_from_source({(const char*)cavity_geometry_vert, cavity_geometry_vert_size}, GL_VERTEX_SHADER);
+        GLuint fs = gl::compile_shader_from_source({(const char*)cavity_geometry_frag, cavity_geometry_frag_size}, GL_FRAGMENT_SHADER);
+        if (vs && fs) {
+            gl_state.geometry = glCreateProgram();
+            const GLuint shaders[] = {vs, fs};
+            if (!gl::attach_link_detach(gl_state.geometry, shaders, 2)) {
+                MD_LOG_ERROR("Cavity: the geometry program did not link");
+                glDeleteProgram(gl_state.geometry);
+                gl_state.geometry = 0;
+            }
+        }
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+    }
     if (!gl_state.resolve) gl_state.resolve = make_program("resolve", cavity_resolve_frag, cavity_resolve_frag_size);
     if (!gl_state.marks)   gl_state.marks   = make_program("marks", cavity_marks_frag, cavity_marks_frag_size);
     if (!gl_state.vao)     glGenVertexArrays(1, &gl_state.vao);
-    if (!gl_state.resolve || !gl_state.marks) {
+    if (!gl_state.geometry || !gl_state.resolve || !gl_state.marks) {
         gl_state.failed = true;
         return false;
     }
@@ -935,8 +1013,8 @@ static bool ensure_programs() {
 
 // The textures every pass reads, from unit 0: tess_a, tess_b, tess_c, spheres, cells, items
 static void bind_buffers(GLuint prog, const CavityData& d) {
-    static const char* names[6] = {"u_tess_a", "u_tess_b", "u_tess_c", "u_spheres", "u_cells", "u_items"};
-    for (int i = 0; i < 6; ++i) {
+    static const char* names[8] = {"u_tess_a", "u_tess_b", "u_tess_c", "u_spheres", "u_cells", "u_items", "u_nbr_range", "u_nbr_items"};
+    for (int i = 0; i < 8; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(GL_TEXTURE_BUFFER, d.tex[i]);
         glUniform1i(glGetUniformLocation(prog, names[i]), i);
@@ -948,7 +1026,7 @@ static void bind_buffers(GLuint prog, const CavityData& d) {
 }
 
 static void unbind_buffers() {
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 8; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(GL_TEXTURE_BUFFER, 0);
     }
@@ -992,12 +1070,12 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     const GLuint prog = gl_state.resolve;
     glUseProgram(prog);
     bind_buffers(prog, *d);
-    glActiveTexture(GL_TEXTURE6);
+    glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_2D, gl_state.pick_copy);
-    glUniform1i(glGetUniformLocation(prog, "u_tex_picking"), 6);
-    glActiveTexture(GL_TEXTURE7);
+    glUniform1i(glGetUniformLocation(prog, "u_tex_picking"), 8);
+    glActiveTexture(GL_TEXTURE9);
     glBindTexture(GL_TEXTURE_2D, colormap_texture((CavityData*)d, cav.scale.colormap));
-    glUniform1i(glGetUniformLocation(prog, "u_colormap"), 7);
+    glUniform1i(glGetUniformLocation(prog, "u_colormap"), 9);
 
     // The rays of the pixels in the frame of the file, by the same (jittered) projection the spheres were drawn with
     const md_f32x4x4_t clip_to_world = md_f32x4x4_inverse(view.matrix.curr.proj * view.matrix.curr.view);
@@ -1014,15 +1092,20 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glUniform1i(glGetUniformLocation(prog, "u_edges"), cav.edges && mode == 0 ? 1 : 0);
     glUniform1f(glGetUniformLocation(prog, "u_power"), cav.fit_areas ? 1.0f : 0.0f);
     glUniform1f(glGetUniformLocation(prog, "u_power_reach2"), POWER_REACH * POWER_REACH);
+    glUniform1i(glGetUniformLocation(prog, "u_switched"), d->switched ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_gamma"), d->sw_gamma);
+    glUniform1f(glGetUniformLocation(prog, "u_alpha"), d->sw_alpha);
+    glUniform1f(glGetUniformLocation(prog, "u_r_ext"), d->sw_r_ext);
+    glUniform1f(glGetUniformLocation(prog, "u_tau"), SWITCHING_SURFACE);
 
     glBindVertexArray(gl_state.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
 
     unbind_buffers();
-    glActiveTexture(GL_TEXTURE6);
+    glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE7);
+    glActiveTexture(GL_TEXTURE9);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glUseProgram(0);
@@ -1038,16 +1121,13 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     // The sphere of the tessera first, then those that overlap it: the patch is on them, or within them
     const uint32_t own = d->atom[tessera];
     const float* c = &d->sph[4 * own];
-    float local[4 * 32];
+    int local[32];
     int num_local = 0;
-    memcpy(local, c, 4 * sizeof(float));
-    num_local = 1;
+    local[num_local++] = (int)own;
     for (uint32_t k = 0; k < d->num_spheres && num_local < 32; ++k) {
         const float Rk = d->sph[4 * k + 3];
         if (k == own || Rk <= 0) continue;
-        if (dist2(c, &d->sph[4 * k]) < (c[3] + Rk) * (c[3] + Rk)) {
-            memcpy(&local[4 * num_local++], &d->sph[4 * k], 4 * sizeof(float));
-        }
+        if (dist2(c, &d->sph[4 * k]) < (c[3] + Rk) * (c[3] + Rk)) local[num_local++] = (int)k;
     }
 
     // The marks are of the image shown: unjittered, at its size (gbuffer_marks_begin bound the target and blending)
@@ -1058,9 +1138,14 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     const GLuint prog = gl_state.marks;
     glUseProgram(prog);
     bind_buffers(prog, *d);
-    glActiveTexture(GL_TEXTURE6);
+    glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_2D, gbuf.tex.depth);
-    glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 6);
+    glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 8);
+    glUniform1i(glGetUniformLocation(prog, "u_switched"), d->switched ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_gamma"), d->sw_gamma);
+    glUniform1f(glGetUniformLocation(prog, "u_alpha"), d->sw_alpha);
+    glUniform1f(glGetUniformLocation(prog, "u_r_ext"), d->sw_r_ext);
+    glUniform1f(glGetUniformLocation(prog, "u_tau"), SWITCHING_SURFACE);
 
     const md_f32x4x4_t to_file = world_to_file(*d);
     const md_f32x4x4_t file_to_world = md_f32x4x4_inverse(to_file);
@@ -1074,7 +1159,7 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     glUniform1f(glGetUniformLocation(prog, "u_proj_11"), view.matrix.curr.proj.elem[1][1]);
     glUniform1i(glGetUniformLocation(prog, "u_ortho"), view.matrix.curr.proj.elem[3][3] == 1.0f ? 1 : 0);
     glUniform2f(glGetUniformLocation(prog, "u_inv_size"), 1.0f / gbuf.out_width, 1.0f / gbuf.out_height);
-    glUniform4fv(glGetUniformLocation(prog, "u_local"), num_local, local);
+    glUniform1iv(glGetUniformLocation(prog, "u_local"), num_local, local);
     glUniform1i(glGetUniformLocation(prog, "u_num_local"), num_local);
     glUniform1ui(glGetUniformLocation(prog, "u_tessera"), tessera);
     glUniform1f(glGetUniformLocation(prog, "u_power"), cav.fit_areas ? 1.0f : 0.0f);
@@ -1085,11 +1170,73 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     glBindVertexArray(0);
 
     unbind_buffers();
-    glActiveTexture(GL_TEXTURE6);
+    glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glUseProgram(0);
     glEnable(GL_CULL_FACE);
+}
+
+static void jitter_uv(float out[2], const md_f32x4x4_t& P) {
+    // As md_gl reads it off the projection
+    if (P.elem[2][3] == 0.0f) {
+        out[0] = -P.elem[3][0] * 0.5f;
+        out[1] = -P.elem[3][1] * 0.5f;
+    } else {
+        out[0] = P.elem[2][0] * 0.5f;
+        out[1] = P.elem[2][1] * 0.5f;
+    }
+}
+
+void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view, uint32_t sphere_base) {
+    const CavityData* d = cav.data;
+    if (!d || d->num_spheres == 0 || !ensure_programs()) return;
+
+    const GLuint prog = gl_state.geometry;
+    glUseProgram(prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_BUFFER, d->tex[BUF_SPHERES]);
+    glUniform1i(glGetUniformLocation(prog, "u_spheres"), 0);
+    const md_f32x4x4_t to_file = world_to_file(*d);
+    const md_f32x4x4_t file_to_view = view.matrix.curr.view * md_f32x4x4_inverse(to_file);
+    const md_f32x4x4_t curr_view_to_prev_clip = view.matrix.prev.proj * view.matrix.prev.view * view.matrix.inv.view;
+    float jit[4];
+    jitter_uv(jit + 0, view.matrix.curr.proj);
+    jitter_uv(jit + 2, view.matrix.prev.proj);
+    const bool ortho = view.matrix.curr.proj.elem[2][3] == 0.0f;
+
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_cavity_to_view"), 1, GL_FALSE, &file_to_view.elem[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_clip"), 1, GL_FALSE, &view.matrix.curr.proj.elem[0][0]);
+    glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip"), 1, GL_FALSE, &curr_view_to_prev_clip.elem[0][0]);
+    glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, jit);
+    glUniform1i(glGetUniformLocation(prog, "u_ortho"), ortho ? 1 : 0);
+    glUniform1ui(glGetUniformLocation(prog, "u_sphere_base"), sphere_base);
+
+    // Into the G-buffer bound, as the opaque representations draw: depth tested and written
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDisable(GL_CULL_FACE);
+    glBindVertexArray(gl_state.vao);
+    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)d->num_spheres);
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+
+    glBindTexture(GL_TEXTURE_BUFFER, 0);
+    glUseProgram(0);
+}
+
+float cavity_sphere_switching(const CavityRepresentation& cav, uint32_t sphere, const float world[3]) {
+    const CavityData* d = cav.data;
+    if (!d || !d->switched || sphere >= d->num_spheres) return 1.0f;
+    const md_f32x4x4_t M = world_to_file(*d);
+    float x[3];
+    for (int r = 0; r < 3; ++r) x[r] = M.elem[0][r] * world[0] + M.elem[1][r] * world[1] + M.elem[2][r] * world[2] + M.elem[3][r];
+    const float* c = &d->sph[4 * sphere];
+    float n[3] = {x[0] - c[0], x[1] - c[1], x[2] - c[2]};
+    const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (len <= 0) return 1.0f;
+    for (float& v : n) v /= len;
+    return switching(*d, sphere, n);
 }
 
 bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& cav, uint32_t tessera, const float* world_pos) {
@@ -1136,6 +1283,7 @@ bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav) {
     }
     out->tessera_area = (float)A;
     out->exposed_area = (float)d->exposed_area;
+    out->switched = d->switched;
     out->wall_energy = (float)E;
     out->max_kernel_error = d->kernel_error;
 

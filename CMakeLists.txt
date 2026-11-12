@@ -327,6 +327,8 @@ set(SHADER_FILES
     src/shaders/shadows/screen_space.frag
     src/shaders/cavity/cavity_resolve.frag
     src/shaders/cavity/cavity_marks.frag
+    src/shaders/cavity/cavity_geometry.vert
+    src/shaders/cavity/cavity_geometry.frag
 )
 
 # Bake shaders into a single header file

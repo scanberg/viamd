@@ -8136,22 +8136,15 @@ static void draw_representations_opaque(ApplicationState* state) {
             draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
 
-        // The spheres of the cavities, a molecule of particles each, picking as their spheres: the full screen pass
+        // The surfaces of the cavities, ray cast by a pass of their own, picking as their spheres: the full screen pass
         // after the opaque geometry (resolve_cavities) takes it from there
         const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
             if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
             const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id) : nullptr;
-            uint32_t mol_id = 0, rep_id = 0;
-            if (!range || !cavity_gl_handles(&mol_id, &rep_id, rep.cavity)) continue;
-            md_gl_draw_op_t op = {};
-            op.type = MD_GL_REP_SPACE_FILL;
-            op.args.space_fill.radius_scale = 1.0f;
-            op.rep = md_gl_rep_t{rep_id};
-            args.draw_operations = {.count = 1, .ops = &op};
-            args.picking_offset = md_gl_picking_offset_t{.atom_base = range->beg, .bond_base = range->beg, .backbone_base = range->beg, .ring_base = range->beg, .gap_base = range->beg};
-            md_gl_draw(&args);
+            if (!range) continue;
+            cavity_draw_geometry(rep.cavity, state->view.param, range->beg);
         }
 #if EXPERIMENTAL_GFX_API
     }

@@ -22,8 +22,13 @@ struct CavityData;
 // lambda_j, and its energy per area is P lambda_j.
 //
 // HOW IT IS DRAWN
-// The spheres are drawn as a spacefill of their own (a molecule of particles in md_gl), whose fragments pick as the
-// sphere they are on (PickingDomain_CavitySphere). A full screen pass after the opaque geometry (cavity_resolve) then
+// The spheres are ray cast into the G-buffer by a pass of their own (cavity_draw_geometry), whose fragments pick as the
+// sphere they are on (PickingDomain_CavitySphere): their union. The surface is GOSTSHYP's own where it is switched:
+// VeloxChem's 'swig' weights the points of each sphere by a smoothstep across a band about each neighbouring sphere's
+// surface, so that the areas of the tesserae are their Lebedev weights times that switching. The surface is the union
+// where the switching is at least 1/2 (on 5helicene.h5 306.7 Å^2 against the tesserae's 312.5, the union 361.5); the
+// bands along the seams where it is less are drawn neutral and are of no tessera. They are not left open: F >= 1/2 is
+// not a closed surface, and through the bands one would see into the cavity. A full screen pass after the opaque geometry (cavity_resolve) then
 // looks at every pixel of the G-buffer that a sphere of the cavity won, intersects the view ray with that sphere again
 // for the exact point, finds the tesserae near it in a uniform grid, and writes the colour and what the pixel picks
 // as: the tessera nearest to the point (PickingDomain_Tessera). The surface is split exactly per pixel between the
@@ -36,7 +41,8 @@ struct CavityData;
 //            so that each patch has the area of its tessera (fit_areas), or by distance alone (a Voronoi split, where
 //            the tesserae the switching kept inside other spheres crowd the seams with slivers)
 //   Kernel   the values spread over the surface by a Gaussian kernel per tessera, of the width of its own Gaussian
-//            (sigma_j = 1 / sqrt(2 zeta_j), times kernel_scale), normalized over the exposed surface:
+//            (sigma_j = 1 / sqrt(2 zeta_j), times kernel_scale), normalized over the exposed surface (the surface
+//            drawn: of the union of the spheres, where the switching is at least 1/2 when switched):
 //              K_j(x) = exp(-|x - c_j|^2 / 2 sigma_j^2) where n(x).n_j > 0 and |x - c_j| < 3 sigma_j, else 0
 //              N_j    = integral of K_j over the exposed surface (by quadrature on the spheres)
 //            A quantity that is a total of the tessera (the energy of the wall at it, its amplitude, its area) is
@@ -93,6 +99,8 @@ struct CavityRepresentation {
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches
+    bool  switched = true;      // GOSTSHYP's own surface: each sphere where the switching of its points is at least 1/2,
+                                // not the union of the spheres (when the file's discretization is 'swig')
     bool  fit_areas = true;     // Split the surface by a power diagram whose patches have the areas of the tesserae
                                 // (relative to the surface drawn), not by the nearest tessera alone
     ColorScale scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
@@ -124,9 +132,16 @@ uint64_t cavity_hash(const CavityRepresentation& cav);
 uint32_t cavity_sphere_count(const CavityRepresentation& cav);
 uint32_t cavity_tessera_count(const CavityRepresentation& cav);
 
-// The md_gl molecule and representation of the spheres (md_gl_mol_t, md_gl_rep_t ids), drawn as a spacefill of
-// radius scale 1 with the picking base of the spheres
-bool cavity_gl_handles(uint32_t* mol_id, uint32_t* rep_id, const CavityRepresentation& cav);
+// The spheres into the G-buffer bound for drawing (the opaque pass): ray cast, depth tested (their union), picking as
+// their spheres (sphere_base + the QM atom of each)
+void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view, uint32_t sphere_base);
+
+// Whether the cavity can be drawn as GOSTSHYP's switched surface (the file's discretization is 'swig'), and is
+bool cavity_has_switching(const CavityRepresentation& cav);
+bool cavity_switched(const CavityRepresentation& cav);
+
+// The switching at the point of the sphere of a QM atom in the direction of a point (world space); 1 when not switched
+float cavity_sphere_switching(const CavityRepresentation& cav, uint32_t sphere, const float world[3]);
 
 // The full screen pass over the G-buffer bound for drawing: where a sphere of this cavity was drawn (its picking
 // index in [sphere_base, sphere_base + cavity_sphere_count)), writes the colour and the picking index of the tessera
@@ -158,7 +173,8 @@ struct CavitySummary {
     uint32_t num_tesserae = 0;
     uint32_t num_spheres = 0;
     float tessera_area = 0;     // sum a_j, Å^2
-    float exposed_area = 0;     // of the union of the spheres, Å^2
+    float exposed_area = 0;     // of the surface drawn, Å^2
+    bool  switched = false;     // which: GOSTSHYP's switched surface, or the union of the spheres
     float wall_energy = 0;      // sum_j P a_j lambda_j, kJ/mol
     float max_kernel_error = 0; // largest relative difference of the integral of a conservative field from its sum
     uint32_t num_buried = 0;    // tesserae inside the sphere of another atom: the switching keeps them where spheres overlap
