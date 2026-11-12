@@ -54,6 +54,7 @@ static const double AU_PRESSURE_GPA = 29421.02648438959;
 static const float QUAD_SPACING = 0.06f;
 static const float SIGMA_FLOOR  = 0.12f;
 static const float KERNEL_CUT   = 3.0f;     // in sigmas: the same cut in the normalization and in the shader
+static const float HATCH_PERIOD = 7.0f;     // pixels: of the hatching by the weight missing (cavity_resolve.frag)
 static const float POWER_REACH  = 2.0f;     // Å: a tessera further than this from a point is never its patch by power, in
                                             // the fit as in the shader
 
@@ -77,6 +78,7 @@ struct QuadPoint {
     float p[3];
     float n[3];
     float da;
+    float w;        // GOSTSHYP's weight of the area here: its switching, 1 where the cavity is not switched
     float d_nn;     // to the nearest tessera facing the same way
     uint32_t nn;
     float p_nn;     // the least power, |p - c_j|^2 - w_j, of a tessera facing the same way
@@ -105,7 +107,7 @@ struct CavityData {
     float sw_gamma = 0, sw_alpha = 0, sw_r_ext = 0;
     std::vector<uint32_t> nbr_off;  // [spheres + 1]
     std::vector<uint32_t> nbr;
-    bool  switched = false;         // what the surface below is of: the switched cavity, or the union of the spheres
+    bool  switched = false;         // whether the surface below is weighted by the switching (QuadPoint::w)
 
     // The weights of the power diagram the surface is split by, |x - c_j|^2 - w_j (Å^2): fitted so that each patch
     // has the area of its tessera, relative to the surface drawn (fit_weights). Made once per cavity.
@@ -116,7 +118,8 @@ struct CavityData {
     std::vector<float>  sigma;      // per tessera
     std::vector<double> norm;       // N_j
     std::vector<QuadPoint> quad;
-    double exposed_area = 0.0;
+    double exposed_area = 0.0;      // of the union of the spheres
+    double weighted_area = 0.0;     // the same weighted by the switching: what the tesserae's areas are measured in
     CellGrid lists;                 // per cell: every tessera that matters to a point of the surface in it
 
     // Made for a field, and whether its totals are conserved
@@ -296,7 +299,6 @@ static float switching(const CavityData& d, uint32_t i, const float n[3]) {
     return F;
 }
 
-static const float SWITCHING_SURFACE = 0.5f;   // the switching the surface of a switched cavity is drawn at
 
 // ---------------------------------------------------------------------------------------------------------
 // The kernel's normalization and the lists of the cells
@@ -358,10 +360,12 @@ static void query(const CellGrid& g, const float lo[3], const float hi[3], float
 
 // The weights of the power diagram whose cells, on the exposed surface, have the areas of the tesserae: the dual of a
 // semi-discrete optimal transport problem, concave in the weights, climbed by its gradient - the target area of a
-// tessera less the area of its cell, both by the quadrature. The targets are the areas of the tesserae scaled to the
-// surface drawn: the switching (SWIG) attenuates the areas where spheres overlap rather than clipping them at the
-// union, so sum a_j is not the area of the union, and only the relative areas can be matched. A tessera no point of the
-// surface can reach keeps a weight of 0 and no cell.
+// tessera less the area of its cell, both by the quadrature. Areas are measured as GOSTSHYP measures them, weighted by
+// the switching (QuadPoint::w): a tessera's area is its Lebedev share of its sphere times the switching, so its cell is
+// sized by the same measure, and a cell in a band along a seam, where the weight is low, is wide on the surface. The
+// targets are the areas of the tesserae scaled to the weighted area of the union: the switching keeps part of the area
+// inside other spheres, out of sight, so only the relative areas can be matched. A tessera no point of the surface can
+// reach keeps a weight of 0 and no cell.
 static void fit_weights(CavityData* d, const CellGrid& coarse) {
     const uint32_t n = d->num_tess;
     const float REACH = POWER_REACH;    // Å: the candidates of a point; the cells stay within it
@@ -392,7 +396,7 @@ static void fit_weights(CavityData* d, const CellGrid& coarse) {
 
     double sum_a = 0;
     for (uint32_t j = 0; j < n; ++j) if (reached[j]) sum_a += d->area[j];
-    const double scale = sum_a > 0 ? d->exposed_area / sum_a : 0.0;
+    const double scale = sum_a > 0 ? d->weighted_area / sum_a : 0.0;
     std::vector<double> target(n), cell(n);
     for (uint32_t j = 0; j < n; ++j) target[j] = reached[j] ? d->area[j] * scale : 0.0;
 
@@ -407,11 +411,11 @@ static void fit_weights(CavityData* d, const CellGrid& coarse) {
                 const float v = dist[k] - d->weight[cand[k]];
                 if (v < best) { best = v; bj = cand[k]; }
             }
-            if (bj != UINT32_MAX) cell[bj] += d->quad[i].da;
+            if (bj != UINT32_MAX) cell[bj] += d->quad[i].da * d->quad[i].w;
         }
         double err = 0;
         for (uint32_t j = 0; j < n; ++j) err += fabs(cell[j] - target[j]);
-        mismatch = d->exposed_area > 0 ? err / d->exposed_area : 0.0;
+        mismatch = d->weighted_area > 0 ? err / d->weighted_area : 0.0;
         if (it == 0) MD_LOG_DEBUG("Cavity: the nearest tesserae split %.1f%% of the surface otherwise than their areas", 100.0 * mismatch);
         if (it == ITERATIONS) break;
         for (uint32_t j = 0; j < n; ++j) {
@@ -438,9 +442,11 @@ static void build_kernel(CavityData* d, float scale) {
     CellGrid coarse;
     build_coarse(&coarse, *d, fmaxf(KERNEL_CUT * sigma_max, POWER_REACH));
 
-    // The exposed surface on points: a Fibonacci sphere per atom, the points inside another sphere left out
+    // The exposed surface on points: a Fibonacci sphere per atom, the points inside another sphere left out, each
+    // weighted by the switching where the cavity is switched
     d->quad.clear();
     d->exposed_area = 0;
+    d->weighted_area = 0;
     for (uint32_t i = 0; i < d->num_spheres; ++i) {
         const float* c = &d->sph[4 * i];
         const float R = c[3];
@@ -461,26 +467,27 @@ static void build_kernel(CavityData* d, float scale) {
             QuadPoint q;
             q.n[0] = (float)(r * cos(phi)); q.n[1] = (float)(r * sin(phi)); q.n[2] = (float)z;
             for (int k = 0; k < 3; ++k) q.p[k] = c[k] + R * q.n[k];
-            // Of the union of the spheres, and of a switched cavity where the switching is at least 1/2 (cavity_resolve.frag)
             bool buried = false;
             for (uint32_t k : nb) {
                 const float Rk = d->sph[4 * k + 3];
                 if (dist2(q.p, &d->sph[4 * k]) < Rk * Rk) { buried = true; break; }
             }
-            if (!buried && d->switched) buried = switching(*d, i, q.n) < SWITCHING_SURFACE;
             if (buried) continue;
             q.da = (float)(area / m);
+            q.w = d->switched ? switching(*d, i, q.n) : 1.0f;
             q.d_nn = FLT_MAX;
             q.nn = UINT32_MAX;
             q.p_nn = FLT_MAX;
             d->quad.push_back(q);
             d->exposed_area += q.da;
+            d->weighted_area += (double)q.da * q.w;
         }
     }
 
     if (d->weight.size() != n) fit_weights(d, coarse);
 
-    // N_j, the integral of each kernel over the exposed surface, and the nearest tessera of each point, plain and by power
+    // N_j, the integral of each kernel over the exposed surface by the weighted measure, and the nearest tessera of each
+    // point, plain and by power
     d->norm.assign(n, 0.0);
     for (QuadPoint& q : d->quad) {
         query(coarse, q.p, q.p, coarse.cell, [&](uint32_t j) {
@@ -490,12 +497,16 @@ static void build_kernel(CavityData* d, float scale) {
             if (dd < q.d_nn) { q.d_nn = dd; q.nn = j; }
             if (dd < POWER_REACH * POWER_REACH) q.p_nn = fminf(q.p_nn, dd - d->weight[j]);
             const float s = d->sigma[j];
-            if (dd < KERNEL_CUT * KERNEL_CUT * s * s) d->norm[j] += exp(-0.5 * dd / (s * s)) * q.da;
+            if (dd < KERNEL_CUT * KERNEL_CUT * s * s) d->norm[j] += exp(-0.5 * dd / (s * s)) * q.da * q.w;
         });
         q.d_nn = q.nn != UINT32_MAX ? sqrtf(q.d_nn) : FLT_MAX;
     }
+    // A kernel that only reaches points of no weight (the very seam) spreads nothing either
     uint32_t num_unreached = 0;
-    for (uint32_t j = 0; j < n; ++j) num_unreached += d->norm[j] <= 0.0;
+    for (uint32_t j = 0; j < n; ++j) {
+        if (d->norm[j] < 1e-9) d->norm[j] = 0.0;
+        num_unreached += d->norm[j] <= 0.0;
+    }
     if (num_unreached) {
         // Buried: the switching kept it, but no point of the exposed surface is within its reach. It colours nothing.
         MD_LOG_DEBUG("Cavity: %u of %u tesserae reach no exposed point of the surface", num_unreached, n);
@@ -571,8 +582,8 @@ static void build_kernel(CavityData* d, float scale) {
                 });
             }
     g.offset[cells] = (uint32_t)g.items.size();
-    MD_LOG_DEBUG("Cavity: %zu points on %.1f Å^2 of exposed surface; %d x %d x %d cells of %.2f Å, %zu entries",
-                 d->quad.size(), d->exposed_area, g.dim[0], g.dim[1], g.dim[2], cell, g.items.size());
+    MD_LOG_DEBUG("Cavity: %zu points on %.1f Å^2 of exposed surface (%.1f weighted); %d x %d x %d cells of %.2f Å, %zu entries",
+                 d->quad.size(), d->exposed_area, d->weighted_area, g.dim[0], g.dim[1], g.dim[2], cell, g.items.size());
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -677,7 +688,7 @@ static float kernel_error(const CavityData& d) {
     double integral = 0, total = 0;
     for (const QuadPoint& q : d.quad) {
         float f;
-        if (eval_field(&f, d, q.p, q.n, true, true)) integral += (double)f * q.da;
+        if (eval_field(&f, d, q.p, q.n, true, true)) integral += (double)f * q.da * q.w;
     }
     for (uint32_t j = 0; j < d.num_tess; ++j) {
         double nv, v;
@@ -1096,7 +1107,7 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glUniform1f(glGetUniformLocation(prog, "u_gamma"), d->sw_gamma);
     glUniform1f(glGetUniformLocation(prog, "u_alpha"), d->sw_alpha);
     glUniform1f(glGetUniformLocation(prog, "u_r_ext"), d->sw_r_ext);
-    glUniform1f(glGetUniformLocation(prog, "u_tau"), SWITCHING_SURFACE);
+    glUniform1f(glGetUniformLocation(prog, "u_hatch_period"), HATCH_PERIOD);
 
     glBindVertexArray(gl_state.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1141,11 +1152,6 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     glActiveTexture(GL_TEXTURE8);
     glBindTexture(GL_TEXTURE_2D, gbuf.tex.depth);
     glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 8);
-    glUniform1i(glGetUniformLocation(prog, "u_switched"), d->switched ? 1 : 0);
-    glUniform1f(glGetUniformLocation(prog, "u_gamma"), d->sw_gamma);
-    glUniform1f(glGetUniformLocation(prog, "u_alpha"), d->sw_alpha);
-    glUniform1f(glGetUniformLocation(prog, "u_r_ext"), d->sw_r_ext);
-    glUniform1f(glGetUniformLocation(prog, "u_tau"), SWITCHING_SURFACE);
 
     const md_f32x4x4_t to_file = world_to_file(*d);
     const md_f32x4x4_t file_to_world = md_f32x4x4_inverse(to_file);
@@ -1225,20 +1231,6 @@ void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view
     glUseProgram(0);
 }
 
-float cavity_sphere_switching(const CavityRepresentation& cav, uint32_t sphere, const float world[3]) {
-    const CavityData* d = cav.data;
-    if (!d || !d->switched || sphere >= d->num_spheres) return 1.0f;
-    const md_f32x4x4_t M = world_to_file(*d);
-    float x[3];
-    for (int r = 0; r < 3; ++r) x[r] = M.elem[0][r] * world[0] + M.elem[1][r] * world[1] + M.elem[2][r] * world[2] + M.elem[3][r];
-    const float* c = &d->sph[4 * sphere];
-    float n[3] = {x[0] - c[0], x[1] - c[1], x[2] - c[2]};
-    const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    if (len <= 0) return 1.0f;
-    for (float& v : n) v /= len;
-    return switching(*d, sphere, n);
-}
-
 bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& cav, uint32_t tessera, const float* world_pos) {
     const CavityData* d = cav.data;
     if (!d || tessera >= d->num_tess) return false;
@@ -1257,13 +1249,26 @@ bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& ca
         const md_f32x4x4_t M = world_to_file(*d);
         float x[3];
         for (int r = 0; r < 3; ++r) x[r] = M.elem[0][r] * world_pos[0] + M.elem[1][r] * world_pos[1] + M.elem[2][r] * world_pos[2] + M.elem[3][r];
-        const float* s = &d->sph[4 * d->atom[tessera]];
+        // The sphere it is on: the patch of a tessera may reach onto a neighbouring sphere
+        uint32_t on = d->atom[tessera];
+        float best = FLT_MAX;
+        for (uint32_t i = 0; i < d->num_spheres; ++i) {
+            const float R = d->sph[4 * i + 3];
+            if (R <= 0) continue;
+            const float e = fabsf(sqrtf(dist2(x, &d->sph[4 * i])) - R);
+            if (e < best) { best = e; on = i; }
+        }
+        const float* s = &d->sph[4 * on];
         float n[3] = {x[0] - s[0], x[1] - s[1], x[2] - s[2]};
         const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
         if (len > 0) {
             for (int k = 0; k < 3; ++k) { n[k] /= len; x[k] = s[k] + s[3] * n[k]; }
             const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
             info->has_field_here = eval_field(&info->field_here, *d, x, n, kernel, cav.fit_areas);
+            if (d->switched) {
+                info->switching_here = switching(*d, on, n);
+                info->has_switching_here = true;
+            }
         }
     }
     return true;
@@ -1283,6 +1288,7 @@ bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav) {
     }
     out->tessera_area = (float)A;
     out->exposed_area = (float)d->exposed_area;
+    out->weighted_area = (float)d->weighted_area;
     out->switched = d->switched;
     out->wall_energy = (float)E;
     out->max_kernel_error = d->kernel_error;

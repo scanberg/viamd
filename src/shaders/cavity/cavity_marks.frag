@@ -2,16 +2,13 @@
 
 // The patch of a tessera into the marks of the highlight (cavity.h): unjittered, at the size of the image shown. The
 // view ray against the sphere of the tessera and those overlapping it; a point of the surface (the union of the
-// spheres, of it where the switching is at least u_tau for a switched cavity; see cavity_resolve.frag) whose patch is
-// of this tessera is of the patch. Marked as the marks of md_gl mark the highlight: b where it is in view (nothing of
+// spheres) whose patch is of this tessera is of the patch. Marked as the marks of md_gl mark the highlight: b where it is in view (nothing of
 // the scene in front of it), a where it is at all, and the group 0 (+8 in view) in the second target.
 
 uniform samplerBuffer  u_tess_a;
 uniform samplerBuffer  u_tess_b;
 uniform samplerBuffer  u_tess_c;
 uniform samplerBuffer  u_spheres;
-uniform usamplerBuffer u_nbr_range;
-uniform usamplerBuffer u_nbr_items;
 uniform usamplerBuffer u_cells;
 uniform usamplerBuffer u_items;
 uniform sampler2D      u_tex_depth;     // the G-buffer's (jittered, at its render scale)
@@ -27,35 +24,12 @@ uniform float u_inv_cell;
 uniform ivec3 u_grid_dim;
 uniform int   u_local[32];              // the sphere of the tessera first, then those that overlap it
 uniform int   u_num_local;
-uniform int   u_switched;
-uniform float u_gamma;
-uniform float u_alpha;
-uniform float u_r_ext;
-uniform float u_tau;
 uniform uint  u_tessera;
 uniform float u_power;
 uniform float u_power_reach2;
 
 layout(location = 0) out vec4 out_marks;
 layout(location = 1) out vec4 out_group;
-
-float smoothstep5(float t) {
-    t = clamp(t, 0.0, 1.0);
-    return t * t * t * (10.0 - 15.0 * t + 6.0 * t * t);
-}
-
-float switching(int i, vec3 n) {
-    vec4  s  = texelFetch(u_spheres, i);
-    vec3  pe = s.xyz + n * (s.w + u_r_ext);
-    uvec2 r  = texelFetch(u_nbr_range, i).xy;
-    float F  = 1.0;
-    for (uint k = r.x; k < r.x + r.y && F > 0.0; ++k) {
-        vec4  sj = texelFetch(u_spheres, int(texelFetch(u_nbr_items, int(k)).r));
-        float rj = sj.w + u_r_ext;
-        F *= smoothstep5((length(pe - sj.xyz) - (rj - u_alpha * u_gamma * rj)) / (u_gamma * rj));
-    }
-    return F;
-}
 
 int nearest_tessera(vec3 x, vec3 n) {
     ivec3 c = ivec3(floor((x - u_grid_min) * u_inv_cell));
@@ -101,7 +75,6 @@ void main() {
             vec3 v = x - sk.xyz;
             if (dot(v, v) < sk.w * sk.w * 0.9999) { buried = true; break; }
         }
-        if (!buried && u_switched != 0) buried = switching(u_local[i], n) < u_tau;
         if (buried) continue;
         if (nearest_tessera(x, n) != int(u_tessera)) continue;
         best_t = t;

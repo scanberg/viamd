@@ -3928,11 +3928,12 @@ static bool draw_representation_cavity(Representation& rep) {
             update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
         }
         if (cavity_has_switching(cav)) {
-            prop::row("switched surface", "GOSTSHYP's own surface: each sphere where the switching of its points is at least 1/2.\n"
-                                          "VeloxChem weights each point by a smoothstep across a band about every neighbouring\n"
-                                          "sphere, evaluated on the spheres grown by r_ext, so the area of a tessera is its Lebedev\n"
-                                          "weight times that switching. Off: the union of the spheres, which is larger than the\n"
-                                          "area of the tesserae accounts for.");
+            prop::row("switching weight", "Measure the surface as GOSTSHYP does. VeloxChem weights each point by a smoothstep\n"
+                                          "across a band about every neighbouring sphere (evaluated on the spheres grown by r_ext),\n"
+                                          "so the area of a tessera is its Lebedev share of its sphere times that weight.\n"
+                                          "The patches and kernels are sized by the weighted area, and the surface is hatched\n"
+                                          "where the weight is below 1/2, the more the lower: the bands along the seams.\n"
+                                          "Off: by area alone, as if the union of the spheres were the cavity.");
             update_rep |= ImGui::Checkbox("##cavity_switched", &cav.switched);
         }
         prop::row("area weighted", "Split the surface between the tesserae so that each patch has the area of its tessera, relative\n"
@@ -3959,8 +3960,15 @@ static bool draw_representation_cavity(Representation& rep) {
         ImGui::Text("%.3g GPa", sum.pressure_gpa);
         prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
         ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
-        prop::row("area", "The sum of the areas of the tesserae, and the area of the surface drawn");
-        snprintf(buf, sizeof(buf), "%.1f / %.1f Å²", sum.tessera_area, sum.exposed_area);
+        if (sum.switched) {
+            prop::row("area", "The sum of the areas of the tesserae; the area of the surface drawn (the union of the spheres)\n"
+                              "weighted by the switching, and unweighted. The tesserae weigh more than the surface: the\n"
+                              "switching keeps part of their area inside other spheres, where no surface shows it");
+            snprintf(buf, sizeof(buf), "%.1f / %.1f of %.1f Å²", sum.tessera_area, sum.weighted_area, sum.exposed_area);
+        } else {
+            prop::row("area", "The sum of the areas of the tesserae, and the area of the surface drawn");
+            snprintf(buf, sizeof(buf), "%.1f / %.1f Å²", sum.tessera_area, sum.exposed_area);
+        }
         ImGui::TextUnformatted(buf);
         prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
         ImGui::Text("%.1f kJ/mol", sum.wall_energy);

@@ -4,13 +4,15 @@
 // on it, the tessera nearest to it, and the field there through the colour map. Writes the colour (its alpha 1/255
 // when unlit, which the composition reads as such and the coverage as geometry) and the picking index of the tessera.
 //
-// Of a switched cavity, the points of the union of the spheres where the switching is below u_tau are not of
-// GOSTSHYP's surface: VeloxChem's 'swig' weights the points of each sphere i by
+// Of a switched cavity, the surface is hatched by the weight GOSTSHYP gives its area there, the switching of VeloxChem's
+// 'swig': the points of each sphere i are weighted by
 //   F_i(x) = prod_j f((|x' - X_j| - (r_j - alpha gamma r_j)) / (gamma r_j)),   f(t) = 10t^3 - 15t^4 + 6t^5 on [0, 1]
 // with x' the point on the sphere grown by r_ext, r_j = R_j + r_ext, gamma = sqrt(14 / N_lebedev) and
-// alpha = 1/2 + 1/gamma - sqrt(1/gamma^2 - 1/28), and the areas of the tesserae are their Lebedev weights times F.
-// F >= 1/2 lies on the union entirely (none of it inside another sphere, on 5helicene.h5), with the area of the
-// tesserae within 2%: the rest, the bands along the seams, is drawn neutral and picks as its sphere.
+// alpha = 1/2 + 1/gamma - sqrt(1/gamma^2 - 1/28), and the area of a tessera is its Lebedev share times F. F is below 1
+// over most of the spheres (the bands are about a van der Waals radius wide), so the hatching marks where it is below
+// 1/2, as strong as 1 - 2F: the bands along the seams, darkest at the seams, which a cut at F = 1/2 would remove. In
+// screen space, diagonal lines: lines on the surface (planes through the spheres) would be circles, read as contours of
+// the field.
 
 uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
 uniform samplerBuffer  u_tess_a;        // xyz: the centre of the tessera (the frame of the file), w: the kernel's sigma
@@ -42,7 +44,7 @@ uniform int   u_switched;
 uniform float u_gamma;
 uniform float u_alpha;
 uniform float u_r_ext;
-uniform float u_tau;
+uniform float u_hatch_period;          // pixels
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking;
@@ -106,11 +108,7 @@ void main() {
     vec3  n  = normalize(x - s.xyz);
     x = s.xyz + n * s.w;
 
-    if (u_switched != 0 && switching(int(sphere), n) < u_tau) {
-        out_color = vec4(vec3(0.62), 1.0);
-        out_picking = encode_index(idx);
-        return;
-    }
+    float weight = (u_switched != 0) ? switching(int(sphere), n) : 1.0;
 
     ivec3 c = ivec3(floor((x - u_grid_min) * u_inv_cell));
     if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, u_grid_dim))) discard;
@@ -163,6 +161,16 @@ void main() {
         float pixel = max(length((ro_x + rd_x * t) - (ro + rd * t)), 1e-6);
         float edge = 1.0 - smoothstep(0.5, 1.5, dist / pixel);
         color *= mix(1.0, 0.35, edge);
+    }
+
+    float missing = clamp(1.0 - 2.0 * weight, 0.0, 1.0);
+    if (missing > 0.0) {
+        // Diagonal lines, a third of the period wide, smoothed over a pixel
+        float u    = (gl_FragCoord.x + gl_FragCoord.y) * 0.70710678 / u_hatch_period;
+        float fw   = 0.70710678 * 1.41421356 / u_hatch_period;    // what a pixel spans of u along the diagonal
+        float f    = abs(fract(u) - 0.5);                         // 1/2 in the middle of a line, 0 between them
+        float line = smoothstep(1.0 / 3.0 - 0.5 * fw, 1.0 / 3.0 + 0.5 * fw, f);
+        color = mix(color, vec3(0.08), 0.65 * missing * line);
     }
 
     out_color = vec4(color, u_unlit != 0 ? 1.0 / 255.0 : 1.0);

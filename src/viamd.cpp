@@ -989,13 +989,6 @@ static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationStat
 
     if (hit.domain == PickingDomain_CavitySphere) {
         tooltip_title(req, "cavity" TOOLTIP_SEP "sphere of atom(%u)", hit.local_idx + 1);
-        const float world[3] = {hit.world_pos.x, hit.world_pos.y, hit.world_pos.z};
-        if (cavity_switched(cav)) {
-            const float F = cavity_sphere_switching(cav, hit.local_idx, world);
-            if (F < 0.5f) {
-                tooltip_row(req, MD_STR_LIT("switching"), "%.2f, below 1/2: off GOSTSHYP's surface", F);
-            }
-        }
         return;
     }
     CavityTesseraInfo info = {};
@@ -1013,6 +1006,9 @@ static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationStat
         const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
         tooltip_row(req, MD_STR_LIT("here"), "%.4g %s (%s, %s)", info.field_here, cavity_field_unit_str[(int)cav.field],
                     cavity_field_str[(int)cav.field], kernel ? "kernel" : "nearest");
+    }
+    if (info.has_switching_here) {
+        tooltip_row(req, MD_STR_LIT("weight here"), "%.2f (GOSTSHYP's switching)", info.switching_here);
     }
     tooltip_row(req, MD_STR_LIT("area"), "%.4f Å²", info.area);
     tooltip_row(req, MD_STR_LIT("decay length"), "%.4f Å", info.decay_length);
