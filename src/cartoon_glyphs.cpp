@@ -281,7 +281,7 @@ static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_
     const int32_t anchor = L.tail.anchor_beg[t];
     md_f32x3_t* d = (md_f32x3_t*)md_alloc(temp_alloc, n * sizeof(md_f32x3_t));
     for (size_t k = 0; k < n; ++k) d[k] = md_f32x3_sub(refs.xyz[ring[k]], refs.xyz[anchor]);
-    if (md_unitcell_flags(&refs.unitcell)) md_util_min_image_vec3(d, n, &refs.unitcell);
+    if (md_unitcell_flags(&refs.unitcell)) md_util_min_image((float*)d, 0, n, &refs.unitcell);
     md_f32x3_t c = md_f32x3_zero();
     for (size_t k = 0; k < n; ++k) c = md_f32x3_add(c, d[k]);
     c = md_f32x3_mul1(c, 1.0f / (float)n);

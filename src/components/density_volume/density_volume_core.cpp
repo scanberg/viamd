@@ -229,7 +229,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
             p[i].x -= comp.x; p[i].y -= comp.y; p[i].z -= comp.z;
             q[i].x -= comq.x; q[i].y -= comq.y; q[i].z -= comq.z;
         }
-        out->R = md_util_optimal_rotation_rel_vec4(p, q, n);
+        out->R = md_util_optimal_rotation_rel(p, q, n);
         out->t = md_f32x3_sub(comp, md_f32x3x3_mul_f32x3(out->R, comq));
         double ss = 0;
         for (size_t i = 0; i < n; ++i) {

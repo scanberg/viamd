@@ -169,7 +169,7 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
     if (n > 1 && md_unitcell_flags(&st.unitcell) != 0) {
         // across the boundary: each the image nearest to the first
         for (size_t i = 1; i < n; ++i) pts[i] = md_f32x3_sub(pts[i], pts[0]);
-        md_util_min_image_vec3(pts + 1, n - 1, &st.unitcell);
+        md_util_min_image((float*)(pts + 1), 0, n - 1, &st.unitcell);
         for (size_t i = 1; i < n; ++i) pts[i] = md_f32x3_add(pts[i], pts[0]);
     }
     const Plane fitted = plane_fit(plane, pts, n, info);

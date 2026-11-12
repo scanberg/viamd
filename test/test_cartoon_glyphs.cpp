@@ -327,7 +327,7 @@ static md_f32x3_t point_position(const CartoonGlyphs& g, const md_system_state_t
     md_f32x3_t pos = md_f32x3_zero();
     for (uint32_t j = g.point_offset[p]; j < g.point_offset[p + 1]; ++j) {
         md_f32x3_t d = md_f32x3_sub(st.xyz[g.point_atom[j]], ref);
-        if (md_unitcell_flags(&st.unitcell)) md_util_min_image_vec3(&d, 1, &st.unitcell);
+        if (md_unitcell_flags(&st.unitcell)) md_util_min_image(d.elem, 0, 1, &st.unitcell);
         pos = md_f32x3_add(pos, md_f32x3_mul1(md_f32x3_add(ref, d), g.point_weight[j]));
     }
     return pos;

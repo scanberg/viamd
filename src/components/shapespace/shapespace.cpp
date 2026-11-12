@@ -121,7 +121,7 @@ static md_f32x3_t structure_shape(md_bitset_t atoms, const md_f32x3_t* xyz, cons
     // Covariance about the mean of the placed points, not the circular mean the placement is seeded from (their offset
     // enters the covariance squared)
     md_f32x3_t com = md_f32x3_zero();
-    md_util_deperiodize_self_vec4(xyzw, k, cell, &com);
+    md_util_deperiodize_self(xyzw, k, cell, &com);
     const md_f32x3x3_t M = md_f32x3x3_covariance_matrix_f32x4(xyzw, 0, k, com);
     return md_util_shape_weights(&M);
 }

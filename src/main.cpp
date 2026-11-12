@@ -1626,7 +1626,7 @@ int main(int argc, char** argv) {
             size_t count = md_array_size(fit_request.xyzw);
             if (count > 0) {
                 // Extract OBB from returned pointcloud
-                md_f32x3_t com = md_util_com_compute_vec4(fit_request.xyzw, 0, count, 0);
+                md_f32x3_t com = md_util_com((const float*)fit_request.xyzw, sizeof(md_f32x4_t), (const float*)fit_request.xyzw + 3, sizeof(md_f32x4_t), 0, count, 0);
                 md_f32x3x3_t cov = md_f32x3x3_covariance_matrix_f32x4(fit_request.xyzw, 0, count, com);
                 md_f32x3x3_eigen_t eigen = md_f32x3x3_eigen(cov);
                 md_f32x3x3_t PCA = md_f32x3x3_orthonormalize(md_f32x3x3_extract_rotation(eigen.vectors));
@@ -7098,7 +7098,7 @@ static void update_md_buffers(ApplicationState* data) {
         }
 #if EXPERIMENTAL_GFX_API
         md_f32x3_t aabb_min, aabb_max;
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, nullptr, state.num_atoms);
+        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, nullptr, state.num_atoms);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
 #endif

@@ -671,7 +671,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 
     // Across a periodic boundary the bond is the short way round
     md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
-    md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+    md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
     tooltip_row(req, MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_f32x3_length(d));
 
     md_str_writer_t source = md_str_writer_create(req->alloc);
@@ -791,7 +791,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     if (md_system_chain_break_atoms(atoms, &sys, res_idx)) {
         const md_system_state_t& sys_state = state.mold.state;
         md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
-        md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+        md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
         md_str_writer_t span = md_str_writer_create(req->alloc);
         md_str_writer_fmt(&span, "%.1f " TOOLTIP_ANGSTROM " (", md_f32x3_length(d));
         tooltip_append_atom_name(&span, sys, atoms[0]);
@@ -891,7 +891,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         md_f32x3_t c = {0, 0, 0};
         for (size_t i = 0; i < count; ++i) {
             md_f32x3_t d = md_f32x3_sub(md_state_coord(&sys_state, (size_t)atoms[i]), p0);
-            md_util_min_image_vec3(&d, 1, &sys_state.unitcell);
+            md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
             p[i] = md_f32x3_add(p0, d);
             c = md_f32x3_add(c, p[i]);
         }
@@ -1743,7 +1743,7 @@ void init_system_data(ApplicationState* data) {
 
         md_f32x3_t aabb_min = {};
         md_f32x3_t aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, data->mold.state.xyz, nullptr, nullptr, data->mold.state.num_atoms);
+        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)data->mold.state.xyz, 0, nullptr, data->mold.state.num_atoms);
 
         const md_f32x3_t cell_ext = md_f32x3x3_mul_f32x3(A, md_f32x3_set1(1.0f));
         const float max_cell_ext = md_f32x3_reduce_max(cell_ext);
@@ -6646,10 +6646,10 @@ void recenter_update_target_data(ApplicationState* state) {
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
-            // The circular mean (md_util_com_compute_vec4 with a cell) is not the mean of the placed
+            // The circular mean (md_util_com with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
             md_f32x3_t com = md_f32x3_zero();
-            md_util_deperiodize_self_vec4(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            md_util_deperiodize_self(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
             const md_f32x4_t com4 = md_f32x4_from_f32x3(com, 0);
             for (size_t i = 0; i < count; ++i) {
                 state->operations.initial_frame.rel_xyzw[i] = md_f32x4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
@@ -6718,11 +6718,11 @@ bool recenter_calculate_transform(md_f32x4x4_t* translation, md_f32x4x4_t* rotat
         // the target occupies and is not the mean of the placed points.
         if (app->operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_util_optimal_rotation_pbc_vec4_iter(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, md_f32x3_zero(),
+            md_util_optimal_rotation_pbc(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, md_f32x3_zero(),
                                                    target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
             R = md_f32x3x3_orthonormalize(R);
         } else {
-            md_util_deperiodize_self_vec4(target_xyzw, count, &app->mold.state.unitcell, &target_com);
+            md_util_deperiodize_self(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
 
         // Split at the cell centre. The translation preserves the lattice, so it is valid for coordinates
@@ -6789,7 +6789,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     // box, and for the whole system at once whenever the target's centre lands in another image.
     if (periodic && (pbc || fresh_turn)) {
         task_system::parallel_for((uint32_t)s.num_atoms, 1, [&s](uint32_t range_beg, uint32_t range_end) {
-            md_util_pbc(s.xyz + range_beg, NULL, range_end - range_beg, &s.unitcell);
+            md_util_pbc((float*)(s.xyz + range_beg), 0, NULL, range_end - range_beg, &s.unitcell);
         });
     }
 
@@ -7728,7 +7728,7 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
         md_f32x3_t aabb_min = {}, aabb_max = {};
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, indices, count);
+        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, indices, count);
         const md_f32x3_t center = (aabb_min + aabb_max) * 0.5f;
         transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
         transform->position = center + cell_offset + transform->orientation * md_f32x3_set(0, 0, transform->distance);
