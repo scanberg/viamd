@@ -30,7 +30,7 @@ static bool is_decimal_comma_number(md_str_t arg) {
 			commas += 1;
 		}
 	}
-	return commas == 1 && is_float(md_str_t{buf, arg.len});
+	return commas == 1 && md_parse_is_float(md_str_t{buf, arg.len});
 }
 
 static bool is_comment(md_str_t line) {
@@ -179,8 +179,8 @@ void write_bitset(serialization_state_t& state, md_str_t ident, const md_bitset_
 }
 
 bool extract_bool(bool& val, md_str_t arg) {
-	if (is_int(arg)) {
-		int64_t integer = parse_int(arg);
+	if (md_parse_is_int(arg)) {
+		int64_t integer = md_parse_int(arg);
 		if (integer == 0 || integer == 1) {
 			val = (bool)integer;
 			return true;
@@ -196,8 +196,8 @@ bool extract_bool(bool& val, md_str_t arg) {
 }
 
 bool extract_int(int& val, md_str_t arg) {
-	if (is_int(arg)) {
-		const int64_t i = parse_int(arg);
+	if (md_parse_is_int(arg)) {
+		const int64_t i = md_parse_int(arg);
 		if (INT32_MIN <= i && i <= INT32_MAX) {
 			val = (int)i;
 			return true;
@@ -207,8 +207,8 @@ bool extract_int(int& val, md_str_t arg) {
 }
 
 bool extract_int64(int64_t& val, md_str_t arg) {
-	if (is_int(arg)) {
-		val = parse_int(arg);
+	if (md_parse_is_int(arg)) {
+		val = md_parse_int(arg);
 		return true;
 	}
 	return false;
@@ -222,8 +222,8 @@ bool extract_int_vec(int* elem, size_t len, md_str_t arg) {
 	size_t count = 0;
 	while (md_parse_next_token_delim(&tok, &arg, ',')) {
 		tok = md_str_trim(tok);
-		if (count == len || !is_int(tok)) return false;
-		tmp[count++] = (int)parse_int(tok);
+		if (count == len || !md_parse_is_int(tok)) return false;
+		tmp[count++] = (int)md_parse_int(tok);
 	}
 	if (count != len) return false;
 	md_memcpy(elem, tmp, len * sizeof(int));
@@ -231,8 +231,8 @@ bool extract_int_vec(int* elem, size_t len, md_str_t arg) {
 }
 
 bool extract_dbl (double& val, md_str_t arg) {
-	if (is_float(arg)) {
-		val = parse_float(arg);
+	if (md_parse_is_float(arg)) {
+		val = md_parse_float(arg);
 		return true;
 	}
 	if (is_decimal_comma_number(arg)) log_decimal_comma(arg);
@@ -240,8 +240,8 @@ bool extract_dbl (double& val, md_str_t arg) {
 }
 
 bool extract_flt (float& val, md_str_t arg) {
-	if (is_float(arg)) {
-		val = (float)parse_float(arg);
+	if (md_parse_is_float(arg)) {
+		val = (float)md_parse_float(arg);
 		return true;
 	}
 	if (is_decimal_comma_number(arg)) log_decimal_comma(arg);
@@ -260,9 +260,9 @@ bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
 	size_t extra = 0;
 	while (md_parse_next_token_delim(&tok, &arg, ',')) {
 		tok = md_str_trim(tok);
-		if (!(is_float(tok) || is_int(tok))) return false;
+		if (!(md_parse_is_float(tok) || md_parse_is_int(tok))) return false;
 		if (count < len) {
-			tmp[count++] = (float)parse_float(tok);
+			tmp[count++] = (float)md_parse_float(tok);
 		} else {
 			extra += 1;
 		}
