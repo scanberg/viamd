@@ -149,6 +149,18 @@ void main() {
             }
         }
     }
+    // How far the point is from the border of its patch, the plane between the two nearest tesserae where their powers
+    // are equal ((p2 - p1) / 2 |c2 - c1| from it), and how much that changes over a pixel on the screen: the point's
+    // own motion over a pixel (its screen derivatives) along the normal of that plane. The border is then as wide in
+    // pixels wherever it is, whichever way the plane cuts the surface (steeply in the creases between spheres, where a
+    // distance in space is wide on the surface) and however the surface faces the view; and the derivatives of the
+    // point do not jump where the pair of nearest tesserae changes, as those of the distance would. Taken before
+    // anything else discards a pixel of the quad.
+    vec3  x_dx = dFdx(x), x_dy = dFdy(x);
+    vec3  edge_n    = (c2 - c1) / max(length(c2 - c1), 1e-6);
+    float edge_dist = (d2 < 1e29) ? (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6)) : 1e3;
+    float edge_fw   = abs(dot(edge_n, x_dx)) + abs(dot(edge_n, x_dy));
+
     if (j1 < 0) discard;    // no tessera faces this way here: the sphere's own picking and colour stay
 
     float own = texelFetch(u_tess_b, j1).w;
@@ -157,16 +169,10 @@ void main() {
     float param = abs(ext) > 0.0 ? clamp((value - u_range.x) / ext, 0.0, 1.0) : 0.5;
     vec3  color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
 
-    if (u_edges != 0 && d2 < 1e29) {
-        // How far the point is from the border of its patch, the plane between the two nearest tesserae where their
-        // powers are equal ((p2 - p1) / 2 |c2 - c1| from it), against the size of a pixel there: the point the
-        // neighbouring pixel's ray reaches at the same distance
-        float dist = (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6));
-        vec3 ro_x, rd_x;
-        ray(gl_FragCoord.xy + vec2(1.0, 0.0), ro_x, rd_x);
-        float pixel = max(length((ro_x + rd_x * t) - (ro + rd * t)), 1e-6);
-        float edge = 1.0 - smoothstep(0.5, 1.5, dist / pixel);
-        color *= mix(1.0, 0.35, edge);
+    if (u_edges != 0 && d2 < 1e29 && edge_fw > 0.0) {
+        // A pixel either side, smoothed over one; towards one dark, so that a border is as strong on any colour
+        float edge = 1.0 - smoothstep(0.5, 1.5, edge_dist / edge_fw);
+        color = mix(color, vec3(0.06), 0.6 * edge);
     }
 
     if (u_switched != 0) {
