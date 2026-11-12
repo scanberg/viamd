@@ -198,7 +198,11 @@ void main() {
 
     ivec2 pixel = ivec2(gl_FragCoord.xy);
     vec4 color = texelFetch(u_texture_color, pixel, 0);
-    if (color.a > 0) {
+    if (color.a > 0 && color.a < 1.5 / 255.0) {
+        // Unlit (an alpha of 1/255, which the coverage still reads as geometry): the colour as the radiance of a white
+        // Lambertian surface under the reference irradiance, so that it is seen as given, whatever the light
+        result = (u_linear_colors > 0.5) ? clamp(color.rgb, 0.0, 1.0) : srgb_to_linear(color.rgb);
+    } else if (color.a > 0) {
         float linear_depth = texelFetch(u_texture_depth, pixel, 0).x;
         vec3 normal = decode_normal(texelFetch(u_texture_normal, pixel, 0).xy);
 

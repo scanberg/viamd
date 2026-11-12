@@ -584,6 +584,8 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
+static void resolve_cavities(ApplicationState* state);
+static void draw_cavity_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
@@ -1150,6 +1152,9 @@ int main(int argc, char** argv) {
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
             }
         }
+
+        // Off the view, no tessera is under the cursor
+        if (!surface_state.hovered) state.cavity_hover = {};
 
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
@@ -7477,6 +7482,14 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
+    // The cavities: colour and picking of their surfaces per pixel, from what the opaque geometry left
+    PUSH_GPU_SECTION("Cavity")
+    resolve_cavities(state);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
+    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
+    glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
+    POP_GPU_SECTION()
+
     immediate::RenderParams params = {};
     params.view = state->view.param.matrix.curr.view;
     params.proj = state->view.param.matrix.curr.proj;
@@ -7665,9 +7678,11 @@ static void render(ApplicationState* state) {
     // it, nor in its history. Drawn again when they change, or the scene was made.
     const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
     const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
+    const bool cavity_hovered = state->cavity_hover.rep_id != 0;
+    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty || cavity_hovered);
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
+        marks_key = md_hash64(&state->cavity_hover, sizeof(state->cavity_hover), marks_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
         marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
         marks_key = marks_key ? marks_key : 1;
@@ -7675,6 +7690,7 @@ static void render(ApplicationState* state) {
             PUSH_GPU_SECTION("Marks")
             gbuffer_marks_begin(&state->gbuffer);
             draw_representations_marks(state);
+            draw_cavity_marks(state);
             gbuffer_marks_end(&state->gbuffer);
             POP_GPU_SECTION()
             lazy.marks_key = marks_key;
@@ -8118,9 +8134,49 @@ static void draw_representations_opaque(ApplicationState* state) {
             args.picking_offset = gl_picking_offset_glyphs(*state);
             draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
+
+        // The spheres of the cavities, a molecule of particles each, picking as their spheres: the full screen pass
+        // after the opaque geometry (resolve_cavities) takes it from there
+        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+        for (size_t i = 0; i < num_representations; ++i) {
+            const Representation& rep = state->representation.reps[i];
+            if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+            const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id) : nullptr;
+            uint32_t mol_id = 0, rep_id = 0;
+            if (!range || !cavity_gl_handles(&mol_id, &rep_id, rep.cavity)) continue;
+            md_gl_draw_op_t op = {};
+            op.type = MD_GL_REP_SPACE_FILL;
+            op.args.space_fill.radius_scale = 1.0f;
+            op.rep = md_gl_rep_t{rep_id};
+            args.draw_operations = {.count = 1, .ops = &op};
+            args.picking_offset = md_gl_picking_offset_t{.atom_base = range->beg, .bond_base = range->beg, .backbone_base = range->beg, .ring_base = range->beg, .gap_base = range->beg};
+            md_gl_draw(&args);
+        }
 #if EXPERIMENTAL_GFX_API
     }
 #endif
+}
+
+// The full screen pass of each cavity shown (cavity_resolve), over what the opaque geometry left in the G-buffer
+static void resolve_cavities(ApplicationState* state) {
+    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+    if (!space) return;
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        const Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        const PickingRange* spheres = picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id);
+        const PickingRange* tess    = picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id);
+        if (!spheres || !tess) continue;
+        cavity_resolve(rep.cavity, state->gbuffer, state->view.param, spheres->beg, tess->beg);
+    }
+}
+
+// The patch of the tessera hovered, into the marks of the highlight
+static void draw_cavity_marks(ApplicationState* state) {
+    if (!state->cavity_hover.rep_id) return;
+    const Representation* rep = find_representation(state, state->cavity_hover.rep_id);
+    if (!rep || rep->type != RepresentationType::Cavity || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
+    cavity_draw_marks(rep->cavity, state->cavity_hover.tessera, state->gbuffer, state->view.param);
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
@@ -8175,6 +8231,10 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
                 h = md_hash64(&im.current, sizeof(im.current), h);
             }
             h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
+        }
+        if (rep.type == RepresentationType::Cavity) {
+            const uint64_t c = cavity_hash(rep.cavity);
+            h = md_hash64(&c, sizeof(c), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);

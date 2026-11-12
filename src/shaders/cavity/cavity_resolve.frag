@@ -1,0 +1,124 @@
+#version 410 core
+
+// The cavity's full screen pass over the G-buffer (cavity.h): where a sphere of the cavity was drawn, the exact point
+// on it, the tessera nearest to it, and the field there through the colour map. Writes the colour (its alpha 1/255
+// when unlit, which the composition reads as such and the coverage as geometry) and the picking index of the tessera.
+
+uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
+uniform samplerBuffer  u_tess_a;        // xyz: the centre of the tessera (the frame of the file), w: the kernel's sigma
+uniform samplerBuffer  u_tess_b;        // xyz: its normal, w: its own value
+uniform samplerBuffer  u_tess_c;        // x: what its kernel spreads per its normalization, y: its area per the same
+uniform samplerBuffer  u_spheres;       // xyz: the centre of the sphere, w: its radius
+uniform usamplerBuffer u_cells;         // x: the first of the cell's tesserae in u_items, y: how many
+uniform usamplerBuffer u_items;
+uniform sampler2D      u_colormap;
+
+uniform mat4  u_clip_to_cavity;
+uniform vec2  u_inv_size;
+uniform uint  u_sphere_base;
+uniform uint  u_sphere_count;
+uniform uint  u_tessera_base;
+uniform vec3  u_grid_min;
+uniform float u_inv_cell;
+uniform ivec3 u_grid_dim;
+uniform int   u_mode;                   // 0: nearest, 1: kernel averaged by area, 2: kernel conservative
+uniform vec2  u_range;
+uniform int   u_unlit;
+uniform int   u_edges;
+
+layout(location = 0) out vec4 out_color;
+layout(location = 1) out vec4 out_picking;
+
+const float KERNEL_CUT = 3.0;
+
+uint decode_index(vec4 c) {
+    uvec4 b = uvec4(round(c * 255.0));
+    return b.x | (b.y << 8u) | (b.z << 16u) | (b.w << 24u);
+}
+
+vec4 encode_index(uint index) {
+    return vec4(
+        (index & 0x000000FFU) >> 0U,
+        (index & 0x0000FF00U) >> 8U,
+        (index & 0x00FF0000U) >> 16U,
+        (index & 0xFF000000U) >> 24U) / 255.0;
+}
+
+void ray(vec2 frag, out vec3 ro, out vec3 rd) {
+    vec2 ndc = frag * u_inv_size * 2.0 - 1.0;
+    vec4 a = u_clip_to_cavity * vec4(ndc, -1.0, 1.0);
+    vec4 b = u_clip_to_cavity * vec4(ndc,  1.0, 1.0);
+    ro = a.xyz / a.w;
+    rd = normalize(b.xyz / b.w - ro);
+}
+
+void main() {
+    uint idx = decode_index(texelFetch(u_tex_picking, ivec2(gl_FragCoord.xy), 0));
+    if (idx < u_sphere_base || idx >= u_sphere_base + u_sphere_count) discard;
+    uint sphere = idx - u_sphere_base;
+
+    vec4 s = texelFetch(u_spheres, int(sphere));
+    vec3 ro, rd;
+    ray(gl_FragCoord.xy, ro, rd);
+    // The ray hits the sphere it was drawn as; at its rim, by rounding, it may graze it: the nearest point then
+    vec3  oc = ro - s.xyz;
+    float b  = dot(oc, rd);
+    float h  = b * b - (dot(oc, oc) - s.w * s.w);
+    float t  = -b - sqrt(max(h, 0.0));
+    vec3  x  = ro + rd * t;
+    vec3  n  = normalize(x - s.xyz);
+    x = s.xyz + n * s.w;
+
+    ivec3 c = ivec3(floor((x - u_grid_min) * u_inv_cell));
+    if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, u_grid_dim))) discard;
+    uvec2 range = texelFetch(u_cells, c.x + u_grid_dim.x * (c.y + u_grid_dim.y * c.z)).xy;
+
+    float d1 = 1e30, d2 = 1e30;
+    int   j1 = -1;
+    vec3  c1 = vec3(0), c2 = vec3(0);
+    float num = 0.0, den = 0.0;
+    for (uint k = range.x; k < range.x + range.y; ++k) {
+        int  j = int(texelFetch(u_items, int(k)).r);
+        vec4 A = texelFetch(u_tess_a, j);
+        vec3 nj = texelFetch(u_tess_b, j).xyz;
+        if (dot(nj, n) <= 0.0) continue;
+        vec3  v = x - A.xyz;
+        float d = dot(v, v);
+        if (d < d1) {
+            d2 = d1; c2 = c1;
+            d1 = d;  c1 = A.xyz; j1 = j;
+        } else if (d < d2) {
+            d2 = d; c2 = A.xyz;
+        }
+        if (u_mode != 0) {
+            float s2 = A.w * A.w;
+            if (d < KERNEL_CUT * KERNEL_CUT * s2) {
+                float K = exp(-0.5 * d / s2);
+                vec2  C = texelFetch(u_tess_c, j).xy;
+                num += K * C.x;
+                den += K * C.y;
+            }
+        }
+    }
+    if (j1 < 0) discard;    // no tessera faces this way here: the sphere's own picking and colour stay
+
+    float own = texelFetch(u_tess_b, j1).w;
+    float value = (u_mode == 0) ? own : (u_mode == 2 ? num : (den > 0.0 ? num / den : own));
+    float ext = u_range.y - u_range.x;
+    float param = abs(ext) > 0.0 ? clamp((value - u_range.x) / ext, 0.0, 1.0) : 0.5;
+    vec3  color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+
+    if (u_edges != 0 && d2 < 1e29) {
+        // How far the point is from the border of its patch, the plane half way between the two nearest tesserae,
+        // against the size of a pixel there: the point the neighbouring pixel's ray reaches at the same distance
+        float dist = (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6));
+        vec3 ro_x, rd_x;
+        ray(gl_FragCoord.xy + vec2(1.0, 0.0), ro_x, rd_x);
+        float pixel = max(length((ro_x + rd_x * t) - (ro + rd * t)), 1e-6);
+        float edge = 1.0 - smoothstep(0.5, 1.5, dist / pixel);
+        color *= mix(1.0, 0.35, edge);
+    }
+
+    out_color = vec4(color, u_unlit != 0 ? 1.0 / 255.0 : 1.0);
+    out_picking = encode_index(u_tessera_base + uint(j1));
+}

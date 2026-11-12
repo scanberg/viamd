@@ -34,6 +34,7 @@
 
 #include <task_system.h>
 #include <surface_field.h>
+#include <cavity.h>
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
@@ -116,6 +117,12 @@ constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking d
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
+// A sphere of a cavity (cavity.h), keyed by the representation: what its spacefill picks as where its full screen pass
+// found no tessera. The index is the QM atom of the sphere.
+constexpr PickingDomainID PickingDomain_CavitySphere = HASH_STR_LIT64("picking domain cavity sphere");
+// A tessera of a cavity, keyed by the representation: what each pixel of the surface picks as once its full screen
+// pass has split the surface between the tesserae (cavity_resolve). The index is the tessera.
+constexpr PickingDomainID PickingDomain_Tessera = HASH_STR_LIT64("picking domain tessera");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
@@ -236,6 +243,7 @@ enum class RepresentationType {
     DipoleMoment,
     SimulationBox,
     Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
+    Cavity,             // The tessellated cavity of the QM atoms (cavity.h), coloured by a field of its tesserae
     Count
 };
 
@@ -272,6 +280,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
+    "Cavity",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -1184,6 +1193,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
+    CavityRepresentation cavity = {};
     bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 
@@ -1227,7 +1237,7 @@ struct PickingRange {
 // past the end fails rather than aliasing, which costs those objects their picking, nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[16] = {};
+    PickingRange ranges[32] = {};
 };
 
 struct PickingReadbackSlot {
@@ -1685,6 +1695,13 @@ struct ApplicationState {
     PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
     PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
     PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
+
+    // The tessera of a cavity under the cursor (PickingDomain_Tessera): its representation's id and its index. Marked as
+    // its patch in the marks of the highlight (cavity_draw_marks). rep_id 0: none.
+    struct {
+        uint32_t rep_id  = 0;
+        uint32_t tessera = 0;
+    } cavity_hover;
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 

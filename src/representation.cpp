@@ -278,6 +278,8 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
+    // the cavity of the old one
+    cavity_invalidate(&rep->cavity);
     // and its meshes of the old one's basis
     electronic_structure_mesh_free(state, &rep->electronic_structure);
 
@@ -296,6 +298,7 @@ static void clear_owned(Representation* rep) {
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.iso_mesh           = nullptr;
+    rep->cavity.data                             = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -372,6 +375,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     }
     surface_field_free(&rep.electronic_structure.field_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
+    cavity_free(&rep.cavity);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -613,6 +617,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
         case RepresentationType::SimulationBox:
+        case RepresentationType::Cavity:
             return false;
         default:
             return true;
@@ -922,6 +927,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
+        break;
+    case RepresentationType::Cavity:
+        // Read and placed every frame as the picking is reserved (cavity_update), which follows the frame
+        rep->type_is_valid = cavity_available(sys);
         break;
     default:
         MD_ASSERT(false);
@@ -1908,6 +1917,13 @@ done:
         box->enabled = false;
     }
 
+    if (cavity_available(state->mold.sys)) {
+        // A run under pressure: the cavity the pressure was held by, coloured by the energy of its wall
+        Representation* cav = create_representation(state, RepresentationType::Cavity);
+        snprintf(cav->name, sizeof(cav->name), "cavity");
+        cav->enabled = true;
+    }
+
     if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "electronic structure");
@@ -2087,6 +2103,32 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         if (viamd::extract_flt(thickness, arg) && thickness == 0.0f) rep->box.thickness = 0.0f;
     } else if (md_str_eq(ident, MD_STR_LIT("BoxAxes"))) {
         viamd::extract_bool(rep->box.axes, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityField"))) {
+        viamd::extract_enum(rep->cavity.field, arg, (int)CavityField::Count);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityColoring"))) {
+        viamd::extract_enum(rep->cavity.coloring, arg, (int)CavityColoring::Count);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityKernelScale"))) {
+        viamd::extract_flt(rep->cavity.kernel_scale, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityUnlit"))) {
+        viamd::extract_bool(rep->cavity.unlit, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityConserve"))) {
+        viamd::extract_bool(rep->cavity.conserve, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityEdges"))) {
+        viamd::extract_bool(rep->cavity.edges, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityColormap"))) {
+        viamd::extract_int(rep->cavity.scale.colormap, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityRange"))) {
+        float range[2];
+        if (viamd::extract_flt_vec(range, 2, arg)) {
+            rep->cavity.scale.range_beg = range[0];
+            rep->cavity.scale.range_end = range[1];
+        }
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityAutoRange"))) {
+        viamd::extract_bool(rep->cavity.scale.auto_range, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavitySymmetric"))) {
+        viamd::extract_bool(rep->cavity.scale.symmetric, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityLegend"))) {
+        viamd::extract_bool(rep->cavity.scale.show_legend, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureMoIdx")) || md_str_eq(ident, MD_STR_LIT("ElectronicStructureOrbitalIdx"))) {
         viamd::extract_int(rep->electronic_structure.orbital_idx, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureNtoIdx")) || md_str_eq(ident, MD_STR_LIT("ElectronicStructureExcitedStateIdx"))) {
@@ -2371,6 +2413,22 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_vec3(state, MD_STR_LIT("DipoleOffset"), rep.dipole.offset);
         viamd::write_dbl(state,  MD_STR_LIT("DipoleScale"), rep.dipole.scale);
         viamd::write_flt(state,  MD_STR_LIT("DipoleRadius"), rep.dipole.radius);
+    }
+
+    if (rep.type == RepresentationType::Cavity) {
+        const CavityRepresentation& c = rep.cavity;
+        const float range[2] = { c.scale.range_beg, c.scale.range_end };
+        viamd::write_int(state,  MD_STR_LIT("CavityField"), (int)c.field);
+        viamd::write_int(state,  MD_STR_LIT("CavityColoring"), (int)c.coloring);
+        viamd::write_flt(state,  MD_STR_LIT("CavityKernelScale"), c.kernel_scale);
+        viamd::write_bool(state, MD_STR_LIT("CavityUnlit"), c.unlit);
+        viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
+        viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
+        viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
+        viamd::write_flt_vec(state, MD_STR_LIT("CavityRange"), range, 2);
+        viamd::write_bool(state, MD_STR_LIT("CavityAutoRange"), c.scale.auto_range);
+        viamd::write_bool(state, MD_STR_LIT("CavitySymmetric"), c.scale.symmetric);
+        viamd::write_bool(state, MD_STR_LIT("CavityLegend"), c.scale.show_legend);
     }
 
     if (rep.type == RepresentationType::SimulationBox) {
@@ -3824,6 +3882,87 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
+// The cavity's own properties: what colours it, how, and what it is. Returns whether it needs updating.
+static bool draw_representation_cavity(Representation& rep) {
+    bool update_rep = false;
+    CavityRepresentation& cav = rep.cavity;
+    if (prop::section("Cavity")) {
+        prop::row("field", "Wall energy per area: P lambda_j, the energy p_j <rho|g_j> of the wall at a tessera over its area.\n"
+                           "Decay length: lambda_j = <rho|g_j> / (-d/dn <rho|g_j>), how soft the density is at the wall.\n"
+                           "Wall density: <rho|g_j>, the density the Gaussian of the tessera overlaps.\n"
+                           "Amplitude per area: p_j / a_j, the potential the wall needs to hold the pressure there.\n"
+                           "Area coverage: the areas of the tesserae spread over the surface, 1 where they account for it.");
+        int field = (int)cav.field;
+        if (ImGui::Combo("##cavity_field", &field, cavity_field_str, (int)CavityField::Count)) {
+            cav.field = (CavityField)field;
+            cav.scale.auto_range = true;
+            update_rep = true;
+        }
+        prop::row("coloring", "Nearest tessera: each tessera's own value over the points of the surface nearest to it.\n"
+                              "Kernel: the values spread by a Gaussian per tessera, of the width of its own, normalized over\n"
+                              "the exposed surface: totals (energy, amplitude, area) conservatively, so that the field\n"
+                              "integrates to their sum; values per tessera (decay length, density) averaged by area.");
+        int coloring = (int)cav.coloring;
+        if (ImGui::Combo("##cavity_coloring", &coloring, cavity_coloring_str, (int)CavityColoring::Count)) {
+            cav.coloring = (CavityColoring)coloring;
+            update_rep = true;
+        }
+        if (cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage) {
+            prop::row("kernel width", "Of each tessera's own Gaussian, sigma_j = 1 / sqrt(2 zeta_j)");
+            update_rep |= ImGui::SliderFloat("##cavity_kernel", &cav.kernel_scale, 0.5f, 3.0f, "%.2f x", ImGuiSliderFlags_AlwaysClamp);
+            if (cav.field == CavityField::WallEnergy || cav.field == CavityField::Amplitude) {
+                prop::row("conserve totals", "Spread the totals of the tesserae so that the field integrates to their sum over the surface.\n"
+                                             "Where the areas of the tesserae do not account for the surface (where the switching shrank\n"
+                                             "them, see Area coverage) the field is lower by as much.\n"
+                                             "Off: their values per area averaged by area, which does not integrate to the sum.");
+                update_rep |= ImGui::Checkbox("##cavity_conserve", &cav.conserve);
+            }
+        } else {
+            prop::row("borders", "The borders between the patches of the tesserae");
+            update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
+        }
+        prop::row("unlit", "The colours as the colour map gives them, not shaded by the light");
+        update_rep |= ImGui::Checkbox("##cavity_unlit", &cav.unlit);
+        prop::section_end();
+    }
+    if (prop::section("Color")) {
+        if (cavity_field_unit_str[(int)cav.field][0] && cav.field != CavityField::DecayLength) {
+            prop::row("unit");
+            ImGui::TextUnformatted(cavity_field_unit_str[(int)cav.field]);
+        }
+        update_rep |= color_scale_draw_controls(&cav.scale, cavity_span(cav), cavity_field_unit(cav.field), "on surface", "Over the exposed surface: the 1st to 99th percentile");
+        prop::section_end();
+    }
+    CavitySummary sum = {};
+    if (cavity_summary(&sum, cav) && prop::section("Data", false)) {
+        char buf[128];
+        prop::row("pressure");
+        ImGui::Text("%.3g GPa", sum.pressure_gpa);
+        prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
+        ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
+        prop::row("area", "The sum of the areas of the tesserae, and the area of the exposed surface of the spheres");
+        snprintf(buf, sizeof(buf), "%.1f / %.1f Å²", sum.tessera_area, sum.exposed_area);
+        ImGui::TextUnformatted(buf);
+        prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
+        ImGui::Text("%.1f kJ/mol", sum.wall_energy);
+        prop::row("inside others", "Tesserae inside the sphere of another atom: the switching keeps them where the spheres overlap,\n"
+                                   "so the cavity of the calculation is a smoothed union of the spheres, not the union drawn.\n"
+                                   "Their share of the area of the tesserae.");
+        ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
+        if (sum.unreached_energy > 0) {
+            prop::row("not on surface", "The share of the wall energy on tesserae too deep inside other spheres for their kernels to\n"
+                                        "reach the surface drawn: it is not in what the kernel spreads");
+            ImGui::Text("%.2f%% of the energy", 100.0f * sum.unreached_energy);
+        }
+        if (cav.coloring == CavityColoring::Kernel && sum.max_kernel_error > 0) {
+            prop::row("conservation", "How far the integral of the field over the surface is from the sum it spreads");
+            ImGui::Text("%.2e", sum.max_kernel_error);
+        }
+        prop::section_end();
+    }
+    return update_rep;
+}
+
 bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
     bool update_rep = false;
     // @TODO: Only display the representations which can be used for the current dataset
@@ -3837,6 +3976,7 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 // one, and a file without an SCF block can still carry density properties
                 if (es_source_mask(state->mold.sys) == 0) continue;
             }
+            if (i == (int)RepresentationType::Cavity && !cavity_available(state->mold.sys)) continue;
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
                 if (rep.type == RepresentationType::ElectronicStructure) {
@@ -4001,6 +4141,9 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             }
             prop::section_end();
         }
+        break;
+    case RepresentationType::Cavity:
+        update_rep |= draw_representation_cavity(rep);
         break;
     default:
         if (prop::section("Color")) {
@@ -4322,6 +4465,18 @@ void draw_representation_legends(ApplicationState& state) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
+        }
+
+        if (rep.type == RepresentationType::Cavity && rep.type_is_valid && rep.cavity.scale.show_legend && cavity_span(rep.cavity).valid) {
+            char label[96];
+            const CavityField f = rep.cavity.field;
+            if (f != CavityField::DecayLength && cavity_field_unit_str[(int)f][0]) {
+                snprintf(label, sizeof(label), "%s (%s)", cavity_field_str[(int)f], cavity_field_unit_str[(int)f]);
+            } else {
+                snprintf(label, sizeof(label), "%s", cavity_field_str[(int)f]);
+            }
+            color_scale_draw_legend(rep.cavity.scale, cavity_field_unit(f), label, rep.name, (int)rep.node.id, slot++);
+            continue;
         }
 
         if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {

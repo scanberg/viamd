@@ -977,6 +977,44 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     }
 }
 
+// A tessera of a cavity: what it is, and the field shown where the cursor is
+static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+    const Representation* rep = nullptr;
+    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+        if (state.representation.reps[i].node.id == (uint32_t)hit.key) rep = &state.representation.reps[i];
+    }
+    if (!rep) return;
+    const CavityRepresentation& cav = rep->cavity;
+    const md_system_t& sys = state.mold.sys;
+
+    if (hit.domain == PickingDomain_CavitySphere) {
+        tooltip_title(req, "cavity" TOOLTIP_SEP "sphere of atom(%u)", hit.local_idx + 1);
+        return;
+    }
+    CavityTesseraInfo info = {};
+    const float world[3] = {hit.world_pos.x, hit.world_pos.y, hit.world_pos.z};
+    if (!cavity_tessera_info(&info, cav, hit.local_idx, world)) return;
+
+    md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += "tessera ";
+    md_writef(&title.w, "%u", hit.local_idx + 1);
+    title += TOOLTIP_SEP;
+    tooltip_append_atom_name(&title, sys, info.sys_atom);
+    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
+
+    if (info.has_field_here) {
+        const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
+        tooltip_row(req, MD_STR_LIT("here"), "%.4g %s (%s, %s)", info.field_here, cavity_field_unit_str[(int)cav.field],
+                    cavity_field_str[(int)cav.field], kernel ? "kernel" : "nearest");
+    }
+    tooltip_row(req, MD_STR_LIT("area"), "%.4f Å²", info.area);
+    tooltip_row(req, MD_STR_LIT("decay length"), "%.4f Å", info.decay_length);
+    tooltip_row(req, MD_STR_LIT("wall energy"), "%.3f kJ/mol/Å²", info.wall_energy);
+    tooltip_row(req, MD_STR_LIT("wall density"), "%.3e e/bohr³", info.wall_density);
+    tooltip_row(req, MD_STR_LIT("amplitude"), "%.4g a.u.", info.amplitude);
+    tooltip_row(req, MD_STR_LIT("index"), "atom(%u)", info.sys_atom + 1);
+}
+
 static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
     MD_ASSERT(req);
     const md_system_t& sys = state.mold.sys;
@@ -999,6 +1037,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
+    } else if (hit.domain == PickingDomain_Tessera || hit.domain == PickingDomain_CavitySphere) {
+        tooltip_cavity(req, state, hit);
     }
 }
 
@@ -7836,6 +7876,16 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             for (size_t j = 0; j < num_groups; ++j) {
                 picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key);
             }
+
+            // Each cavity shown: its spheres and its tesserae, keyed by the representation. Read and placed on the
+            // frame here, so that what it reserves is what it draws this frame.
+            for (size_t j = 0; j < md_array_size(state->representation.reps); ++j) {
+                Representation& rep = state->representation.reps[j];
+                if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep)) continue;
+                if (!cavity_update(&rep.cavity, state->mold.sys, state->mold.state)) continue;
+                picking_range_reserve(NULL, space, PickingDomain_CavitySphere, cavity_sphere_count(rep.cavity), rep.node.id);
+                picking_range_reserve(NULL, space, PickingDomain_Tessera, cavity_tessera_count(rep.cavity), rep.node.id);
+            }
             break;
         }
         case viamd::EventType_ViamdInteractionSurface:
@@ -7847,6 +7897,17 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     draw_picking_tooltip_window(surf->hit, *state);
 					[[fallthrough]];
                 case InteractionSurfaceEventKind::Click:
+                    // The tessera of a cavity under the cursor, marked as its patch; fading in where there was none
+                    {
+                        const uint32_t prev = state->cavity_hover.rep_id;
+                        if (surf->hit.domain == PickingDomain_Tessera) {
+                            state->cavity_hover.rep_id  = (uint32_t)surf->hit.key;
+                            state->cavity_hover.tessera = surf->hit.local_idx;
+                            if (!prev) state->selection.highlight_time = ImGui::GetTime();
+                        } else {
+                            state->cavity_hover = {};
+                        }
+                    }
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback
                     md_bitmask_clear(&state->selection.highlight_mask);
                     picking_hit_mask_set(&state->selection.highlight_mask, *state, surf->hit, state->selection.granularity);
