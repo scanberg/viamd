@@ -48,7 +48,7 @@ struct FragmentTree {
 };
 
 // Builds the tree of the molecules which have an atom in 'include' (an atom count of flags, NULL for all) into
-// 'alloc', which owns it. Needs the system's fragments (md_util_system_infer_fragments).
+// 'alloc', which owns it. Needs the system's fragments (md_system_infer_fragments).
 bool frag_tree_build(FragmentTree* out, const struct md_system_t* sys, const bool* include, struct md_allocator_i* alloc);
 
 static inline md_str_t frag_tree_name(const FragmentTree* t, size_t idx) {

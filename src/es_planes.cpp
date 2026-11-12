@@ -11,7 +11,7 @@
 #include <math.h>
 #include <float.h>
 #include <core/md_vec_math.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 
 static inline md_float3_t transform_point(const md_float4x4_t& m, md_float3_t p) {
     const md_float4_t r = md_float4x4_mul_float4(m, md_float4_set(p.x, p.y, p.z, 1.0f));
@@ -169,7 +169,7 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
     if (n > 1 && md_unitcell_flags(&st.unitcell) != 0) {
         // across the boundary: each the image nearest to the first
         for (size_t i = 1; i < n; ++i) pts[i] = md_float3_sub(pts[i], pts[0]);
-        md_util_min_image((float*)(pts + 1), 0, n - 1, &st.unitcell);
+        md_geom_min_image((float*)(pts + 1), 0, n - 1, &st.unitcell);
         for (size_t i = 1; i < n; ++i) pts[i] = md_float3_add(pts[i], pts[0]);
     }
     const Plane fitted = plane_fit(plane, pts, n, info);

@@ -10,7 +10,7 @@
 #include <md_system.h>
 #include <md_element.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_xyz.h>
 
 #include <math.h>
@@ -183,7 +183,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
     }
     md_system_t osys = {.alloc = temp};
     md_system_state_t ostate = {.alloc = temp};
-    bool ok = md_xyz_system_init_from_str(&osys, &ostate, {text, md_array_size(text)}, MD_XYZ_OPTION_NONE) &&
+    bool ok = md_xyz_system_init_from_str(&osys, &ostate, {text, md_array_size(text)}, NULL) &&
               md_system_infer(&osys, &ostate, MD_SYSTEM_INFER_BOND_BIT, NULL);
     if (!ok) {
         md_arena_allocator_destroy(temp);
@@ -229,7 +229,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
             p[i].x -= comp.x; p[i].y -= comp.y; p[i].z -= comp.z;
             q[i].x -= comq.x; q[i].y -= comq.y; q[i].z -= comq.z;
         }
-        out->R = md_util_optimal_rotation_rel(p, q, n);
+        out->R = md_geom_optimal_rotation_rel(p, q, n);
         out->t = md_float3_sub(comp, md_float3x3_mul_float3(out->R, comq));
         double ss = 0;
         for (size_t i = 0; i < n; ++i) {

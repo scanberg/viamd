@@ -1,7 +1,7 @@
 ﻿
 #include <md_infer.h>
 #include <md_element.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>
@@ -671,7 +671,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 
     // Across a periodic boundary the bond is the short way round
     md_float3_t d = md_float3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
-    md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
+    md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
     tooltip_row(req, MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_float3_length(d));
 
     md_str_writer_t source = md_str_writer_create(req->alloc);
@@ -791,7 +791,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     if (md_system_chain_break_atoms(atoms, &sys, res_idx)) {
         const md_system_state_t& sys_state = state.mold.state;
         md_float3_t d = md_float3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
-        md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
+        md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
         md_str_writer_t span = md_str_writer_create(req->alloc);
         md_str_writer_fmt(&span, "%.1f " TOOLTIP_ANGSTROM " (", md_float3_length(d));
         tooltip_append_atom_name(&span, sys, atoms[0]);
@@ -891,7 +891,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         md_float3_t c = {0, 0, 0};
         for (size_t i = 0; i < count; ++i) {
             md_float3_t d = md_float3_sub(md_state_coord(&sys_state, (size_t)atoms[i]), p0);
-            md_util_min_image(d.elem, 0, 1, &sys_state.unitcell);
+            md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
             p[i] = md_float3_add(p0, d);
             c = md_float3_add(c, p[i]);
         }
@@ -1743,7 +1743,7 @@ void init_system_data(ApplicationState* data) {
 
         md_float3_t aabb_min = {};
         md_float3_t aabb_max = {};
-        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)data->mold.state.xyz, 0, nullptr, data->mold.state.num_atoms);
+        md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)data->mold.state.xyz, 0, nullptr, data->mold.state.num_atoms);
 
         const md_float3_t cell_ext = md_float3x3_mul_float3(A, md_float3_set1(1.0f));
         const float max_cell_ext = md_float3_reduce_max(cell_ext);
@@ -6187,9 +6187,9 @@ void interpolate_system_state(ApplicationState* app) {
         // Tangent scale of the cardinal spline: (p2 - p0) * s. Tension 0 gives s = 0.5, i.e. Catmull-Rom, which plays
         // uniform motion back uniformly; tension 1 eases in and out of every frame.
         const float s = 0.5f * (1.0f - MD_CLAMP(app->animation.tension, 0.0f, 1.0f));
-        md_util_cubic_spline_weights(payload.w, payload.t, s);
+        md_geom_cubic_spline_weights(payload.w, payload.t, s);
     } else if (mode == InterpolationMode::BSpline) {
-        md_util_cubic_bspline_weights(payload.w, payload.t);
+        md_geom_cubic_bspline_weights(payload.w, payload.t);
         // At the ends of the trajectory the missing neighbour is the reflection of the next frame through the end one
         // (p[-1] = 2 p[0] - p[1]) rather than the end frame repeated: that is what makes the B-spline begin and end on
         // the first and last frames, which repeating them would leave it short of. Within the trajectory it lands on none.
@@ -6317,7 +6317,7 @@ void interpolate_system_state(ApplicationState* app) {
                 md_float3_t* dst = data->dst_state->xyz + range_beg;
                 const md_float3_t* src[2] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg };
 
-                md_util_interpolate_linear(dst, src, count, &data->dst_state->unitcell, data->t);
+                md_geom_interpolate_linear(dst, src, count, &data->dst_state->unitcell, data->t);
             });
 
 
@@ -6342,7 +6342,7 @@ void interpolate_system_state(ApplicationState* app) {
                 md_float3_t* dst = data->dst_state->xyz + range_beg;
                 const md_float3_t* src[4] = { data->src_states[0]->xyz + range_beg, data->src_states[1]->xyz + range_beg, data->src_states[2]->xyz + range_beg, data->src_states[3]->xyz + range_beg };
 
-                md_util_interpolate_cubic_weighted(dst, src, count, &data->dst_state->unitcell, data->w);
+                md_geom_interpolate_cubic_weighted(dst, src, count, &data->dst_state->unitcell, data->w);
             });
 
             
@@ -6646,10 +6646,10 @@ void recenter_update_target_data(ApplicationState* state) {
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
-            // The circular mean (md_util_com with a cell) is not the mean of the placed
+            // The circular mean (md_geom_com with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
             md_float3_t com = md_float3_zero();
-            md_util_deperiodize_self(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            md_geom_deperiodize_self(state->operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
             const md_float4_t com4 = md_float4_from_float3(com, 0);
             for (size_t i = 0; i < count; ++i) {
                 state->operations.initial_frame.rel_xyzw[i] = md_float4_sub(state->operations.initial_frame.rel_xyzw[i], com4);
@@ -6718,11 +6718,11 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
         // the target occupies and is not the mean of the placed points.
         if (app->operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_util_optimal_rotation_pbc(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, md_float3_zero(),
+            md_geom_optimal_rotation_pbc(&R, &target_com, target_xyzw, app->operations.initial_frame.rel_xyzw, md_float3_zero(),
                                                    target_xyzw, count, &app->mold.state.unitcell, 8, 1.0e-6f);
             R = md_float3x3_orthonormalize(R);
         } else {
-            md_util_deperiodize_self(target_xyzw, count, &app->mold.state.unitcell, &target_com);
+            md_geom_deperiodize_self(target_xyzw, count, &app->mold.state.unitcell, &target_com);
         }
 
         // Split at the cell centre. The translation preserves the lattice, so it is valid for coordinates
@@ -6789,7 +6789,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
     // box, and for the whole system at once whenever the target's centre lands in another image.
     if (periodic && (pbc || fresh_turn)) {
         task_system::parallel_for((uint32_t)s.num_atoms, 1, [&s](uint32_t range_beg, uint32_t range_end) {
-            md_util_pbc((float*)(s.xyz + range_beg), 0, NULL, range_end - range_beg, &s.unitcell);
+            md_geom_pbc((float*)(s.xyz + range_beg), 0, NULL, range_end - range_beg, &s.unitcell);
         });
     }
 
@@ -6799,7 +6799,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
             task_system::parallel_for((uint32_t)num_molecules, 1, [&s, &sys](uint32_t range_beg, uint32_t range_end) {
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     const md_molecule_t mol = md_system_molecule(&sys, i);
-                    md_util_unwrap_molecule(&s, &mol);
+                    md_geom_unwrap_molecule(&s, &mol);
                 }
             });
         }
@@ -6881,7 +6881,7 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         md_ring_data_free(&sys.ring, sys.alloc);
         sys.ring = rings;
         // And so are its fragments, which the molecules' inference clears
-        md_util_system_infer_fragments(&sys);
+        md_system_infer_fragments(&sys);
     }
     app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
     // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
@@ -7728,7 +7728,7 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
     if (indices && count <= 4) {
         // A handful of atoms has no meaningful shape: center on them, keep the current orientation, fit the distance
         md_float3_t aabb_min = {}, aabb_max = {};
-        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, indices, count);
+        md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, indices, count);
         const md_float3_t center = (aabb_min + aabb_max) * 0.5f;
         transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
         transform->position = center + cell_offset + transform->orientation * md_float3_set(0, 0, transform->distance);

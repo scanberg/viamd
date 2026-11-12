@@ -5,7 +5,7 @@
 #include <md_system.h>
 #include <md_element.h>
 #include <md_infer.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_pdb.h>
 #include <md_tpr.h>
 #include <md_gro.h>
@@ -48,7 +48,7 @@ UTEST(cartoon_glyphs, dppc_heads_split_at_the_phosphate) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), MD_PDB_OPTION_NONE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/dppc64.pdb"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(64, (int)sys.lipid.count);
 
@@ -105,7 +105,7 @@ UTEST(cartoon_glyphs, martini_phospholipids_split_and_sterols_do_not) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/martini/martini3_membrane.tpr")));
+    ASSERT_TRUE(md_tpr_system_init_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/martini/martini3_membrane.tpr"), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL));
 
     CartoonGlyphs g = {};
@@ -290,7 +290,7 @@ UTEST(cartoon_glyphs, nucleic_acids_without_residues) {
     }
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, md_str_t{ text, len }, MD_XYZ_OPTION_NONE));
+    ASSERT_TRUE(md_xyz_system_init_from_str(&sys, &st, md_str_t{ text, len }, NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ((size_t)0, sys.residue.count);
     ASSERT_EQ(ref.nucleic_backbone.segment.count, sys.nucleic_backbone.segment.count);
@@ -327,7 +327,7 @@ static md_float3_t point_position(const CartoonGlyphs& g, const md_system_state_
     md_float3_t pos = md_float3_zero();
     for (uint32_t j = g.point_offset[p]; j < g.point_offset[p + 1]; ++j) {
         md_float3_t d = md_float3_sub(st.xyz[g.point_atom[j]], ref);
-        if (md_unitcell_flags(&st.unitcell)) md_util_min_image(d.elem, 0, 1, &st.unitcell);
+        if (md_unitcell_flags(&st.unitcell)) md_geom_min_image(d.elem, 0, 1, &st.unitcell);
         pos = md_float3_add(pos, md_float3_mul1(md_float3_add(ref, d), g.point_weight[j]));
     }
     return pos;
