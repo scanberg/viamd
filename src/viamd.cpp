@@ -578,7 +578,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
     if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
     // Of a metallic phase: an atom of a metallic bond, which has no bond of the graph (md_bond_metallic_atoms)
-    if (md_bond_conn_count(&sys.bond, atom_idx) == 0) {
+    // Without bonds there is no connectivity (conn.offset is NULL), which the iterator, unlike md_bond_conn_count, allows for
+    md_bond_iter_t graph = md_bond_iter(&sys.bond, atom_idx);
+    if (!md_bond_iter_has_next(&graph)) {
         for (size_t i = 0; i < sys.bond.count; ++i) {
             const md_atom_pair_t p = sys.bond.pairs[i];
             if (md_bond_kind(sys.bond.flags[i]) == MD_BOND_KIND_METALLIC && (p.idx[0] == (md_atom_idx_t)atom_idx || p.idx[1] == (md_atom_idx_t)atom_idx)) {
