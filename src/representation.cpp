@@ -2117,6 +2117,10 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         viamd::extract_bool(rep->cavity.edges, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavitySwitched"))) {
         viamd::extract_bool(rep->cavity.switched, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityWeightOutline"))) {
+        viamd::extract_bool(rep->cavity.weight_outline, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityWeightLevel"))) {
+        viamd::extract_flt(rep->cavity.weight_level, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityMinArea"))) {
         viamd::extract_flt(rep->cavity.min_area, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityFitAreas"))) {
@@ -2431,6 +2435,8 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
         viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
         viamd::write_bool(state, MD_STR_LIT("CavitySwitched"), c.switched);
+        viamd::write_bool(state, MD_STR_LIT("CavityWeightOutline"), c.weight_outline);
+        viamd::write_flt(state,  MD_STR_LIT("CavityWeightLevel"), c.weight_level);
         viamd::write_flt(state,  MD_STR_LIT("CavityMinArea"), c.min_area);
         viamd::write_bool(state, MD_STR_LIT("CavityFitAreas"), c.fit_areas);
         viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
@@ -3934,11 +3940,18 @@ static bool draw_representation_cavity(Representation& rep) {
             prop::row("switching weight", "Measure the surface as GOSTSHYP does. VeloxChem weights each point by a smoothstep\n"
                                           "across a band about every neighbouring sphere (evaluated on the spheres grown by r_ext),\n"
                                           "so the area of a tessera is its Lebedev share of its sphere times that weight.\n"
-                                          "The patches and kernels are sized by the weighted area. Where the weight is below 1/2,\n"
-                                          "the bands along the seams, the surface is outlined and screened by light dots whose\n"
-                                          "area is the weight missing: the paler, the less the surface counts.\n"
+                                          "The patches and kernels are sized by the weighted area, and where the weight is low the\n"
+                                          "surface is masked by light dots: the paler, the less it counts.\n"
                                           "Off: by area alone, as if the union of the spheres were the cavity.");
             update_rep |= ImGui::Checkbox("##cavity_switched", &cav.switched);
+            if (cav.switched) {
+                prop::row("mask below", "Mask the surface where the switching weight is below this: light dots whose area is the\n"
+                                        "share of it missing, 1 - F / level. At 1/2, the bands a cut at 1/2 would remove; at 1,\n"
+                                        "everything the switching touches.");
+                update_rep |= ImGui::SliderFloat("##cavity_weight_level", &cav.weight_level, 0.05f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                prop::row("outline", "A line where the weight is the level of the mask: an isoline of the weight");
+                update_rep |= ImGui::Checkbox("##cavity_weight_outline", &cav.weight_outline);
+            }
         }
         prop::row("smallest area", "Leave the tesserae smaller than this share of a whole point of the Lebedev grid off the surface:\n"
                                    "the switching shrinks the points along the seams down to nothing, and their patches are too\n"

@@ -27,8 +27,8 @@ struct CavityData;
 // VeloxChem's 'swig' weights the points of each sphere by a smoothstep across a band about each neighbouring sphere's
 // surface (cavity_resolve.frag), so that the area of a tessera is its Lebedev share of its sphere times that switching
 // F, and F is the density of GOSTSHYP's area over the spheres. Where the cavity is switched, the union is measured by
-// it: the patches and the kernels below are sized and normalized by F dA, and the shader outlines where F is below
-// 1/2 and screens it by light dots of area 1 - 2F (cavity_resolve.frag). On 5helicene.h5 the union is 361.2 Å^2 and weighs 256.2; the tesserae sum to 312.5,
+// it: the patches and the kernels below are sized and normalized by F dA, and the shader masks where F is below a
+// level (weight_level) by light dots of area 1 - F / level (cavity_resolve.frag). On 5helicene.h5 the union is 361.2 Å^2 and weighs 256.2; the tesserae sum to 312.5,
 // the rest of their weight (56 Å^2) inside other spheres, where no surface drawn can show it. A full screen pass after
 // the opaque geometry (cavity_resolve) then
 // looks at every pixel of the G-buffer that a sphere of the cavity won, intersects the view ray with that sphere again
@@ -101,8 +101,11 @@ struct CavityRepresentation {
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches
-    bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and mark where the
-                                // weight is below 1/2 (when the file's discretization is 'swig'); else by area alone
+    bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and mask where the
+                                // weight is low (when the file's discretization is 'swig'); else by area alone
+    float weight_level = 0.5f;  // The switching weight below which the surface is masked (light dots, of area the share
+                                // missing below it: 1 - F / level), the level of an isosurface of the weight on the surface
+    bool  weight_outline = false;   // and a line along it
     float min_area = 0.01f;     // Leave tesserae smaller than this share of a whole point of the grid (on a sphere of the
                                 // same radius) off the surface: their patches are too small to see or hover, and the
                                 // decay lengths of their needle-thin Gaussians are not comparable. They stay in the data

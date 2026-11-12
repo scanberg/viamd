@@ -9,9 +9,10 @@
 //   F_i(x) = prod_j f((|x' - X_j| - (r_j - alpha gamma r_j)) / (gamma r_j)),   f(t) = 10t^3 - 15t^4 + 6t^5 on [0, 1]
 // with x' the point on the sphere grown by r_ext, r_j = R_j + r_ext, gamma = sqrt(14 / N_lebedev) and
 // alpha = 1/2 + 1/gamma - sqrt(1/gamma^2 - 1/28), and the area of a tessera is its Lebedev share times F. F is below 1
-// over most of the spheres (the bands are about a van der Waals radius wide), so what is marked is where it is below
-// 1/2, the bands along the seams that a cut at F = 1/2 would remove: outlined by a light line at F = 1/2, and screened
-// by light dots whose area is the weight missing there, 1 - 2F, so that the surface washes out as it counts less.
+// over most of the spheres (the bands are about a van der Waals radius wide), so what is marked is where it is below a
+// level, by default 1/2 (the bands along the seams that a cut at F = 1/2 would remove): screened by light dots whose
+// area is the share missing below it, 1 - F / u_level, so that the surface washes out as it counts less, and
+// optionally outlined by a light line where it is the level, an isoline of the weight.
 // In screen space, a halftone on a grid at 45 degrees: on the surface its dots would stretch with the slope.
 
 uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
@@ -45,6 +46,8 @@ uniform float u_gamma;
 uniform float u_alpha;
 uniform float u_r_ext;
 uniform float u_screen_period;         // pixels, of the halftone
+uniform float u_level;                  // the weight below which the surface is masked
+uniform int   u_outline;                // and a line drawn where it is
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking;
@@ -109,7 +112,7 @@ void main() {
     x = s.xyz + n * s.w;
 
     float weight = (u_switched != 0) ? switching(int(sphere), n) : 1.0;
-    // How much the weight changes over a pixel, for the line at 1/2: here, before anything else can discard a pixel of
+    // How much the weight changes over a pixel, for the line: here, before anything else can discard a pixel of
     // the quad. Across the border of two spheres it is not a change of the weight: no line there.
     float weight_fw = fwidth(weight);
 
@@ -167,8 +170,8 @@ void main() {
     }
 
     if (u_switched != 0) {
-        // Dots on a grid at 45 degrees, their area the weight missing below 1/2, smoothed over a pixel
-        float missing = clamp(1.0 - 2.0 * weight, 0.0, 1.0);
+        // Dots on a grid at 45 degrees, their area the share missing below the level, smoothed over a pixel
+        float missing = clamp(1.0 - weight / u_level, 0.0, 1.0);
         if (missing > 0.0) {
             vec2  g  = mat2(0.70710678, -0.70710678, 0.70710678, 0.70710678) * gl_FragCoord.xy / u_screen_period;
             float d  = length(fract(g) - 0.5) * u_screen_period;            // pixels from the centre of its dot
@@ -176,9 +179,9 @@ void main() {
             float dot_cover = 1.0 - smoothstep(r - 0.5, r + 0.5, d);
             color = mix(color, vec3(0.97), 0.8 * dot_cover);
         }
-        // The line where it is 1/2, a pixel and a half wide
-        if (weight_fw > 0.0 && weight_fw < 0.25) {
-            float px = abs(weight - 0.5) / weight_fw;
+        // The line where it is the level, a pixel and a half wide
+        if (u_outline != 0 && weight_fw > 0.0 && weight_fw < 0.25) {
+            float px = abs(weight - u_level) / weight_fw;
             color = mix(color, vec3(1.0), 0.85 * (1.0 - smoothstep(0.5, 1.0, px)));
         }
     }
