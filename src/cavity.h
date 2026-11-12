@@ -47,19 +47,26 @@ struct CavityData;
 //            the spheres) by GOSTSHYP's measure of area, F dA (dA where the cavity is not switched):
 //              K_j(x) = exp(-|x - c_j|^2 / 2 sigma_j^2) where n(x).n_j > 0 and |x - c_j| < 3 sigma_j, else 0
 //              N_j    = integral of K_j F dA over the exposed surface (by quadrature on the spheres)
-//            A quantity that is a total of the tessera (the energy of the wall at it, its amplitude, its area) is
-//            spread conservatively, f(x) = sum_j v_j K_j(x) / N_j, so that the integral of f F dA over the surface
-//            is sum_j v_j exactly: f is per GOSTSHYP's area, comparable with the value of a tessera. One per tessera (a decay length, a density) is averaged by area,
-//            f(x) = sum_j a_j v_j K_j(x) / N_j / sum_j a_j K_j(x) / N_j.
+//            The kernels make a partition of unity, phi_j(x) = s_j K_j(x) / sum_k s_k K_k(x), and the field is the
+//            mean of the tesserae's values it weighs, f(x) = sum_j v_j phi_j(x), the values per area (P lambda_j,
+//            p_j / a_j) or per tessera (lambda_j, <rho|g_j>). So f never leaves the range of the values around it, and
+//            a field of one value is that value everywhere. The scales s_j are fitted (conserve) so that each part
+//            has the area of its tessera, the integral of phi_j F dA being a_j (scaled to the surface the kernels
+//            cover, by Sinkhorn's iteration): f then integrates to sum_j v_j a_j, the totals of the tesserae, for
+//            the energy and the amplitude. Else s_j = a_j / N_j, the kernels weighted by area.
+//            The kernels once spread the totals each by itself, f = sum_j e_j K_j / N_j: conservative, but a field of
+//            one value came out as that value times sum_j a_j K_j / N_j, the coverage, which ranged over +-25% with
+//            the layout of the tesserae and showed as blotches. Area coverage is that coverage.
 //
 // UNITS: positions in Ångström as the system's.
 
 enum class CavityField : int {
-    WallEnergy,         // energy of the wall per area, P lambda_j: kJ/mol/Å^2 (conservative)
-    DecayLength,        // lambda_j: Å (by area)
-    WallDensity,        // <rho|g_j> = P a_j lambda_j / p_j: e/bohr^3 (by area)
-    Amplitude,          // amplitude per area p_j / a_j (conservative)
-    AreaCoverage,       // the areas of the tesserae spread over the surface: 1 where they account for it (conservative)
+    WallEnergy,         // energy of the wall per area, P lambda_j: kJ/mol/Å^2
+    DecayLength,        // lambda_j: Å
+    WallDensity,        // <rho|g_j> = P a_j lambda_j / p_j: e/bohr^3
+    Amplitude,          // amplitude per area p_j / a_j
+    AreaCoverage,       // the areas of the tesserae spread each by its kernel, sum_j a_j K_j / N_j: 1 where they account
+                        // for the surface. A diagnostic of the layout of the tesserae, not of the partition
     Count
 };
 
@@ -129,7 +136,8 @@ struct CavityRepresentation {
     CavityColoring coloring = CavityColoring::Kernel;
     float kernel_scale = 2.0f;  // of the width of each tessera's Gaussian: at 1 the tesserae are two widths apart and
                                 // the spread ripples between them; at 2, one
-    bool  conserve = true;      // Kernel: totals spread conservatively (else averaged by area, as values per tessera)
+    bool  conserve = true;      // Kernel: the parts of the partition of unity fitted to the areas of the tesserae, so that
+                                // the field integrates to their totals (else the kernels weighted by area)
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches

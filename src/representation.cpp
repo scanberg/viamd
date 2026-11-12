@@ -3946,22 +3946,31 @@ static bool draw_representation_cavity(Representation& rep) {
             update_rep = true;
         }
         prop::row("coloring", "Nearest tessera: each tessera's own value over the points of the surface nearest to it.\n"
-                              "Kernel: the values spread by a Gaussian per tessera, of the width of its own, normalized over\n"
-                              "the exposed surface: totals (energy, amplitude, area) conservatively, so that the field\n"
-                              "integrates to their sum; values per tessera (decay length, density) averaged by area.");
+                              "Kernel: a smooth mean of the values of the tesserae around each point, by a Gaussian per tessera\n"
+                              "of the width of its own, made a partition of unity: the field never leaves the range of the\n"
+                              "values around it, and is one value where the tesserae have one.");
         int coloring = (int)cav.coloring;
         if (ImGui::Combo("##cavity_coloring", &coloring, cavity_coloring_str, (int)CavityColoring::Count)) {
             cav.coloring = (CavityColoring)coloring;
             update_rep = true;
         }
         if (cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage) {
-            prop::row("kernel width", "Of each tessera's own Gaussian, sigma_j = 1 / sqrt(2 zeta_j)");
-            update_rep |= ImGui::SliderFloat("##cavity_kernel", &cav.kernel_scale, 0.5f, 3.0f, "%.2f x", ImGuiSliderFlags_AlwaysClamp);
-            if (cav.field == CavityField::WallEnergy || cav.field == CavityField::Amplitude) {
-                prop::row("conserve totals", "Spread the totals of the tesserae so that the field integrates to their sum over the surface.\n"
-                                             "Where the areas of the tesserae do not account for the surface (where the switching shrank\n"
-                                             "them, see Area coverage) the field is lower by as much.\n"
-                                             "Off: their values per area averaged by area, which does not integrate to the sum.");
+            prop::row("kernel width", "Of each tessera's own Gaussian, sigma_j = 1 / sqrt(2 zeta_j): how smooth the field is.\n"
+                                      "Applied when the slider is let go: the partition is fitted again.");
+            {
+                const ImGuiID id = ImGui::GetID("##cavity_kernel");
+                float* w = ImGui::GetStateStorage()->GetFloatRef(id, cav.kernel_scale);
+                if (ImGui::GetActiveID() != id) *w = cav.kernel_scale;
+                ImGui::SliderFloat("##cavity_kernel", w, 0.5f, 3.0f, "%.2f x", ImGuiSliderFlags_AlwaysClamp);
+                if (ImGui::IsItemDeactivatedAfterEdit()) {
+                    cav.kernel_scale = *w;
+                    update_rep = true;
+                }
+            }
+            if (cav.field != CavityField::AreaCoverage) {
+                prop::row("fit to areas", "Fit each tessera's part of the partition of unity to its area, so that the field integrates\n"
+                                          "to the tesserae's totals over the surface (of the share of their area the surface shows:\n"
+                                          "the switching keeps some inside other spheres). Off: the kernels weighted by area alone.");
                 update_rep |= ImGui::Checkbox("##cavity_conserve", &cav.conserve);
             }
         } else {
@@ -4095,7 +4104,8 @@ static bool draw_representation_cavity(Representation& rep) {
             ImGui::Text("%.2f%% of the energy", 100.0f * sum.unreached_energy);
         }
         if (cav.coloring == CavityColoring::Kernel && sum.max_kernel_error > 0) {
-            prop::row("conservation", "How far the integral of the field over the surface is from the sum it spreads");
+            prop::row("conservation", "How far the integral of the field over the surface is from the sum of the tesserae's values\n"
+                                      "over their areas (scaled to the surface covered)");
             ImGui::Text("%.2e", sum.max_kernel_error);
         }
         prop::section_end();

@@ -124,20 +124,24 @@ struct CavityData {
     float kernel_scale = -1.0f;
     std::vector<float>  sigma;      // per tessera
     std::vector<double> norm;       // N_j
+    std::vector<double> share;      // s_j: the scale of each kernel in the partition of unity whose parts have the areas
+                                    // of the tesserae (fit_partition)
+    double share_mismatch = 0;      // how far the parts are from those areas, relative to the surface they cover
     std::vector<QuadPoint> quad;
     double exposed_area = 0.0;      // of the union of the spheres
     double weighted_area = 0.0;     // the same weighted by the switching: what the tesserae's areas are measured in
     CellGrid lists;                 // per cell: every tessera that matters to a point of the surface in it
 
-    // Made for a field, and whether its totals are conserved
+    // Made for a field, and whether the kernel's parts are fitted to the areas
     int field = -1;
     bool conserve = true;
     std::vector<float> nearest_value;   // per tessera
     std::vector<float> coef;            // 2 per: numerator, denominator
-    bool conservative = false;
+    bool conservative = false;          // the field is the numerator alone (Area coverage), else their ratio
     ColorScaleSpan span_nearest = {};
     ColorScaleSpan span_kernel = {};
-    float kernel_error = 0;             // of a conservative field: how far its integral is from the sum it spreads
+    float kernel_error = 0;             // of a fitted field: how far its integral is from the sum of the values over the
+                                        // areas of the tesserae
 
     // Where it is: world = R file + t
     float rot[9] = {1,0,0, 0,1,0, 0,0,1};   // column major
@@ -433,6 +437,72 @@ static void fit_weights(CavityData* d, const CellGrid& coarse) {
     MD_LOG_DEBUG("Cavity: the power diagram splits %.1f%% of the surface otherwise than the areas of the tesserae", 100.0 * mismatch);
 }
 
+// The kernels as a partition of unity, phi_j(x) = s_j K_j(x) / sum_k s_k K_k(x), whose parts have the areas of the
+// tesserae: the integral of phi_j F dA over the surface is a_j, scaled to the surface the kernels cover (the same
+// relative areas as the power diagram, of which this is the smooth version, the kernel width its smoothing). The
+// scales are fitted by Sinkhorn's iteration, s_j <- s_j a_j / (the integral of phi_j F dA). A field made of them,
+// f = sum_j v_j phi_j, is everywhere a weighted mean of the values of the tesserae around it - it never leaves their
+// range, and a field of one value is that value everywhere - and integrates over the surface to sum_j v_j a_j.
+static void fit_partition(CavityData* d, const CellGrid& coarse) {
+    const uint32_t n = d->num_tess;
+    const int ITERATIONS = 300;
+    const double TOLERANCE = 1e-3;
+
+    // The kernels at each point
+    const size_t Q = d->quad.size();
+    std::vector<uint32_t> off(Q + 1, 0), cand;
+    std::vector<float> kv;
+    cand.reserve(Q * 32);
+    kv.reserve(Q * 32);
+    double covered = 0;
+    for (size_t i = 0; i < Q; ++i) {
+        const QuadPoint& q = d->quad[i];
+        query(coarse, q.p, q.p, coarse.cell, [&](uint32_t j) {
+            if (d->norm[j] <= 0) return;
+            const float* nj = &d->nrm[3 * j];
+            if (nj[0] * q.n[0] + nj[1] * q.n[1] + nj[2] * q.n[2] <= 0) return;
+            const float dd = dist2(q.p, &d->pos[3 * j]);
+            const float s = d->sigma[j];
+            if (dd >= KERNEL_CUT * KERNEL_CUT * s * s) return;
+            cand.push_back(j);
+            kv.push_back(expf(-0.5f * dd / (s * s)));
+        });
+        off[i + 1] = (uint32_t)cand.size();
+        if (off[i + 1] > off[i]) covered += (double)q.da * q.w;
+    }
+
+    double sum_a = 0;
+    for (uint32_t j = 0; j < n; ++j) if (d->norm[j] > 0) sum_a += d->area[j];
+    const double scale = sum_a > 0 ? covered / sum_a : 0.0;
+    std::vector<double> target(n), part(n);
+    d->share.assign(n, 0.0);
+    for (uint32_t j = 0; j < n; ++j) {
+        target[j] = d->norm[j] > 0 ? d->area[j] * scale : 0.0;
+        d->share[j] = d->norm[j] > 0 ? target[j] / d->norm[j] : 0.0;   // the area-weighted kernels, to start from
+    }
+
+    int it = 0;
+    for (;; ++it) {
+        std::fill(part.begin(), part.end(), 0.0);
+        for (size_t i = 0; i < Q; ++i) {
+            double D = 0;
+            for (uint32_t k = off[i]; k < off[i + 1]; ++k) D += d->share[cand[k]] * kv[k];
+            if (D <= 0) continue;
+            const double m = (double)d->quad[i].da * d->quad[i].w / D;
+            for (uint32_t k = off[i]; k < off[i + 1]; ++k) part[cand[k]] += d->share[cand[k]] * kv[k] * m;
+        }
+        double err = 0;
+        for (uint32_t j = 0; j < n; ++j) err += fabs(part[j] - target[j]);
+        d->share_mismatch = covered > 0 ? err / covered : 0.0;
+        if (it == 0) MD_LOG_DEBUG("Cavity: the area-weighted kernels give %.1f%% of the surface otherwise than the areas", 100.0 * d->share_mismatch);
+        if (d->share_mismatch < TOLERANCE || it == ITERATIONS) break;
+        for (uint32_t j = 0; j < n; ++j) {
+            if (part[j] > 0 && target[j] > 0) d->share[j] *= target[j] / part[j];
+        }
+    }
+    MD_LOG_DEBUG("Cavity: the kernels' partition of unity, %d iterations: %.2f%% of the surface otherwise than the areas", it, 100.0 * d->share_mismatch);
+}
+
 static void build_kernel(CavityData* d, float scale) {
     const uint32_t n = d->num_tess;
     d->kernel_scale = scale;
@@ -518,6 +588,7 @@ static void build_kernel(CavityData* d, float scale) {
         // Buried: the switching kept it, but no point of the exposed surface is within its reach. It colours nothing.
         MD_LOG_DEBUG("Cavity: %u of %u tesserae reach no exposed point of the surface", num_unreached, n);
     }
+    fit_partition(d, coarse);
 
     // The lists of the cells. A cell of the surface gets every tessera within the furthest a point of it is from its
     // nearest tessera (the quadrature's, grown by its spacing), and every tessera whose kernel reaches into it. A cell
@@ -601,34 +672,30 @@ md_unit_t cavity_field_unit(CavityField field) {
     return field == CavityField::DecayLength ? md_unit_angstrom() : md_unit_none();
 }
 
-// Per tessera: the value of its patch, and the total v_j a kernel spreads (conservative) or the value it averages
-static void tessera_values(const CavityData& d, CavityField field, uint32_t j, double* nearest, double* v, bool* conservative, bool conserve = true) {
+// Per tessera: the value of its patch, which the kernel averages too; and for Area coverage, the total it spreads
+static void tessera_values(const CavityData& d, CavityField field, uint32_t j, double* nearest, double* v, bool* conservative) {
     const double a = d.area[j], lam = d.lambda[j], p = d.amp[j], P = d.pressure;
+    *conservative = false;
     switch (field) {
-    case CavityField::WallEnergy: {
-        const double e = GPA_A3_KJMOL * P * a * lam;    // kJ/mol
-        *nearest = a > 0 ? e / a : 0;
-        // The total, spread; or its value per area, averaged by area: P lambda_j
-        *conservative = conserve;
-        *v = conserve ? e : *nearest;
+    case CavityField::WallEnergy:
+        // Per area, P lambda_j: the energy of the wall at it, P a_j lambda_j, over its area
+        *nearest = *v = GPA_A3_KJMOL * P * lam;
         break;
-    }
     case CavityField::DecayLength:
-        *nearest = *v = lam; *conservative = false;
+        *nearest = *v = lam;
         break;
-    case CavityField::WallDensity: {
+    case CavityField::WallDensity:
         // <rho|g_j> = P a_j lambda_j / p_j, in atomic units
-        const double ov = p > 0 ? (P / AU_PRESSURE_GPA) * (a / (BOHR_A * BOHR_A)) * (lam / BOHR_A) / p : 0;
-        *nearest = *v = ov; *conservative = false;
+        *nearest = *v = p > 0 ? (P / AU_PRESSURE_GPA) * (a / (BOHR_A * BOHR_A)) * (lam / BOHR_A) / p : 0;
         break;
-    }
     case CavityField::Amplitude:
-        *nearest = a > 0 ? p / a : 0;
-        *conservative = conserve;
-        *v = conserve ? p : *nearest;
+        *nearest = *v = a > 0 ? p / a : 0;
         break;
     case CavityField::AreaCoverage:
     default:
+        // The areas spread by the kernels each normalized to 1 over the surface, sum_j a_j K_j / N_j: 1 where the
+        // tesserae account for the surface. What the kernels of the old conservative spreading made of a field of one
+        // value, and why it was given up for the partition of unity
         *nearest = 1.0;
         *v = a; *conservative = true;
         break;
@@ -644,13 +711,18 @@ static void build_field(CavityData* d, CavityField field, bool conserve) {
     for (uint32_t j = 0; j < n; ++j) {
         double nv, v;
         bool cons;
-        tessera_values(*d, field, j, &nv, &v, &cons, conserve);
+        tessera_values(*d, field, j, &nv, &v, &cons);
         d->conservative = cons;
         const double N = d->norm[j];
         d->nearest_value[j] = (float)nv;
-        if (N > 0) {
-            d->coef[2 * j + 0] = (float)(cons ? v / N : d->area[j] * v / N);
-            d->coef[2 * j + 1] = (float)(d->area[j] / N);
+        // The scale of the kernel in the partition of unity: fitted to the areas, or the area-weighted kernel a_j / N_j
+        const double sj = (conserve && d->share.size() == n) ? d->share[j] : (N > 0 ? d->area[j] / N : 0.0);
+        if (N > 0 && cons) {
+            d->coef[2 * j + 0] = (float)(v / N);
+            d->coef[2 * j + 1] = 0.0f;
+        } else if (N > 0) {
+            d->coef[2 * j + 0] = (float)(v * sj);
+            d->coef[2 * j + 1] = (float)sj;
         } else {
             d->coef[2 * j + 0] = d->coef[2 * j + 1] = 0.0f;
         }
@@ -688,20 +760,27 @@ static bool eval_field(float* out, const CavityData& d, const float p[3], const 
 }
 
 // What the field spans over the exposed surface: the 1st to 99th percentile, by area
-// The integral over the surface of what the kernel spreads, against what was spread, by the quadrature at its own
-// points through the lists of the cells as the shader reads them: a list that left out a tessera shows here
+// Of a field of the fitted partition: its integral over the surface, by the quadrature at its own points through the
+// lists of the cells as the shader reads them, against the sum of the values over the parts' areas. A list that left
+// out a tessera shows here, and so does how far the fit is from the areas. Of Area coverage: its integral against the
+// sum of the areas it spreads.
 static float kernel_error(const CavityData& d) {
-    if (!d.conservative || d.field < 0) return 0.0f;
-    double integral = 0, total = 0;
+    if (d.field < 0 || (!d.conserve && !d.conservative)) return 0.0f;
+    double integral = 0, total = 0, covered = 0;
     for (const QuadPoint& q : d.quad) {
         float f;
-        if (eval_field(&f, d, q.p, q.n, true, true)) integral += (double)f * q.da * q.w;
+        if (eval_field(&f, d, q.p, q.n, true, true)) {
+            integral += (double)f * q.da * q.w;
+            covered += (double)q.da * q.w;
+        }
     }
+    double sum_a = 0;
+    for (uint32_t j = 0; j < d.num_tess; ++j) if (d.norm[j] > 0) sum_a += d.area[j];
     for (uint32_t j = 0; j < d.num_tess; ++j) {
         double nv, v;
         bool cons;
-        tessera_values(d, (CavityField)d.field, j, &nv, &v, &cons, d.conserve);
-        if (d.norm[j] > 0) total += v;
+        tessera_values(d, (CavityField)d.field, j, &nv, &v, &cons);
+        if (d.norm[j] > 0) total += cons ? v : v * d.area[j] * (sum_a > 0 ? covered / sum_a : 0.0);
     }
     return total != 0 ? (float)fabs(integral / total - 1.0) : 0.0f;
 }
