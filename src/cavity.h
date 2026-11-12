@@ -130,6 +130,7 @@ struct CavityRepresentation {
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches
+    float edge_width = 0.03f;   // of the borders, Å along the surface
     bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and mask where the
                                 // weight is low (when the file's discretization is 'swig'); else by area alone
     float weight_level = 0.5f;  // The switching weight below which the surface is masked (light dots, of area the share

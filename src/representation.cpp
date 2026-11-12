@@ -2121,6 +2121,8 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         viamd::extract_bool(rep->cavity.weight_outline, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityWeightLevel"))) {
         viamd::extract_flt(rep->cavity.weight_level, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityEdgeWidth"))) {
+        viamd::extract_flt(rep->cavity.edge_width, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavitySurface"))) {
         viamd::extract_bool(rep->cavity.surface, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphs"))) {
@@ -2457,6 +2459,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_flt(state,  MD_STR_LIT("CavityWeightLevel"), c.weight_level);
         viamd::write_flt(state,  MD_STR_LIT("CavityMinArea"), c.min_area);
         viamd::write_bool(state, MD_STR_LIT("CavitySurface"), c.surface);
+        viamd::write_flt(state,  MD_STR_LIT("CavityEdgeWidth"), c.edge_width);
         viamd::write_bool(state, MD_STR_LIT("CavityGlyphs"), c.glyphs);
         viamd::write_int(state,  MD_STR_LIT("CavityGlyphShape"), (int)c.glyph_shape);
         viamd::write_int(state,  MD_STR_LIT("CavityGlyphSet"), (int)c.glyph_set);
@@ -3962,8 +3965,14 @@ static bool draw_representation_cavity(Representation& rep) {
                 update_rep |= ImGui::Checkbox("##cavity_conserve", &cav.conserve);
             }
         } else {
-            prop::row("borders", "The borders between the patches of the tesserae");
+            prop::row("borders", "The borders between the patches of the tesserae, of a width along the surface: painted on it,\n"
+                                 "so that they narrow as the surface turns away and as the view zooms out");
             update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
+            if (cav.edges) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                update_rep |= ImGui::SliderFloat("##cavity_edge_width", &cav.edge_width, 0.005f, 0.1f, "%.3f Å", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+            }
         }
         if (cavity_has_switching(cav)) {
             prop::row("switching weight", "Measure the surface as GOSTSHYP does. VeloxChem weights each point by a smoothstep\n"

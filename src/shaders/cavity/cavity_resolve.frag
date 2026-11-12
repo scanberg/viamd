@@ -39,6 +39,7 @@ uniform int   u_mode;                   // 0: nearest, 1: kernel averaged by are
 uniform vec2  u_range;
 uniform int   u_unlit;
 uniform int   u_edges;
+uniform float u_edge_width;             // Å, along the surface
 uniform float u_power;                  // 1: nearest by power, |x - c_j|^2 - w_j; 0: by distance
 uniform float u_power_reach2;           // a tessera further than this (squared) is never nearest by power
 uniform int   u_switched;
@@ -149,17 +150,20 @@ void main() {
             }
         }
     }
-    // How far the point is from the border of its patch, the plane between the two nearest tesserae where their powers
-    // are equal ((p2 - p1) / 2 |c2 - c1| from it), and how much that changes over a pixel on the screen: the point's
-    // own motion over a pixel (its screen derivatives) along the normal of that plane. The border is then as wide in
-    // pixels wherever it is, whichever way the plane cuts the surface (steeply in the creases between spheres, where a
-    // distance in space is wide on the surface) and however the surface faces the view; and the derivatives of the
-    // point do not jump where the pair of nearest tesserae changes, as those of the distance would. Taken before
-    // anything else discards a pixel of the quad.
+    // How far the point is from the border of its patch ALONG THE SURFACE, so that the border is a band of one width on
+    // the surface, painted on it: foreshortened as the surface turns away, finer as the view zooms out. The border is
+    // where the plane between the two nearest tesserae, where their powers are equal, cuts the sphere. The point is
+    // (p2 - p1) / 2 |c2 - c1| from that plane in space; along the surface the distance grows by how steeply the plane
+    // cuts it, 1 / |the plane's normal in the tangent plane| (to first order, a fine approximation over the width of a
+    // border on a sphere of an Å or more). And how much that changes over a pixel on the screen, for the smoothing: the
+    // point's own motion over a pixel (its screen derivatives) along the plane's normal, which does not jump where the
+    // pair of nearest tesserae changes, as the derivative of the distance would. Taken before anything else discards a
+    // pixel of the quad.
     vec3  x_dx = dFdx(x), x_dy = dFdy(x);
     vec3  edge_n    = (c2 - c1) / max(length(c2 - c1), 1e-6);
-    float edge_dist = (d2 < 1e29) ? (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6)) : 1e3;
-    float edge_fw   = abs(dot(edge_n, x_dx)) + abs(dot(edge_n, x_dy));
+    float edge_tan  = max(length(edge_n - dot(edge_n, n) * n), 1e-3);
+    float edge_dist = (d2 < 1e29) ? (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6)) / edge_tan : 1e3;
+    float edge_fw   = (abs(dot(edge_n, x_dx)) + abs(dot(edge_n, x_dy))) / edge_tan;
 
     if (j1 < 0) discard;    // no tessera faces this way here: the sphere's own picking and colour stay
 
@@ -170,9 +174,13 @@ void main() {
     vec3  color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
 
     if (u_edges != 0 && d2 < 1e29 && edge_fw > 0.0) {
-        // A pixel either side, smoothed over one; towards one dark, so that a border is as strong on any colour
-        float edge = 1.0 - smoothstep(0.5, 1.5, edge_dist / edge_fw);
-        color = mix(color, vec3(0.06), 0.6 * edge);
+        // Half the width either side, smoothed over a pixel. Narrower than a pixel, it is drawn a pixel wide and
+        // fainter by as much, so that it fades as it thins rather than breaking up. Towards one dark, so that a border is
+        // as strong on any colour.
+        float half_w = 0.5 * u_edge_width;
+        float drawn  = max(half_w, 0.5 * edge_fw);
+        float edge   = 1.0 - smoothstep(drawn - 0.5 * edge_fw, drawn + 0.5 * edge_fw, edge_dist);
+        color = mix(color, vec3(0.06), 0.6 * edge * (half_w / drawn));
     }
 
     if (u_switched != 0) {

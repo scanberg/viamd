@@ -984,6 +984,7 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
     h = md_hash64(&cav.switched, sizeof(cav.switched), h);
     h = md_hash64(&cav.min_area, sizeof(cav.min_area), h);
     h = md_hash64(&cav.edges, sizeof(cav.edges), h);
+    h = md_hash64(&cav.edge_width, sizeof(cav.edge_width), h);
     h = md_hash64(&cav.weight_outline, sizeof(cav.weight_outline), h);
     h = md_hash64(&cav.weight_level, sizeof(cav.weight_level), h);
     h = md_hash64(&cav.scale, sizeof(cav.scale), h);
@@ -1159,6 +1160,7 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glUniform2f(glGetUniformLocation(prog, "u_range"), cav.scale.range_beg, cav.scale.range_end);
     glUniform1i(glGetUniformLocation(prog, "u_unlit"), cav.unlit ? 1 : 0);
     glUniform1i(glGetUniformLocation(prog, "u_edges"), cav.edges && mode == 0 ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_edge_width"), MD_CLAMP(cav.edge_width, 0.001f, 0.2f));
     glUniform1f(glGetUniformLocation(prog, "u_level"), MD_CLAMP(cav.weight_level, 0.01f, 1.0f));
     glUniform1i(glGetUniformLocation(prog, "u_outline"), cav.weight_outline ? 1 : 0);
     glUniform1f(glGetUniformLocation(prog, "u_power"), cav.fit_areas ? 1.0f : 0.0f);
