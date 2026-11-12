@@ -1397,6 +1397,20 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_window = false;
     } summary;
 
+    // The GOSTSHYP cavity as a whole (vlx/scf/gostshyp/*, md_vlx.h), for the Summary: made again when the
+    // attributes it is made of change, as finding the tesserae inside other spheres goes over all pairs
+    struct GostshypSummary {
+        uint64_t key = 0;
+        bool     valid = false;
+        size_t   num_tess = 0;
+        size_t   num_spheres = 0;           // the QM atoms
+        size_t   num_inside = 0;            // tesserae inside the sphere of another atom than their own
+        double   area = 0;                  // sum a_j, Å^2
+        double   inside_area = 0;
+        double   skin = 0;                  // sum a_j lambda_j, Å^3
+        double   lambda_min = 0, lambda_max = 0;
+    } gostshyp;
+
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
         bool enabled = false;
@@ -6153,6 +6167,104 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
+    // The cavity of a run under pressure, as a whole. The wall's energy is p_j <rho|g_j> summed, which the
+    // amplitudes make P a_j lambda_j (p_j (-d/dn <rho|g_j>) = P a_j): P times the volume sum a_j lambda_j, a skin
+    // of density outside the cavity.
+    void update_gostshyp_summary(const md_system_t& sys) {
+        static const md_str_t paths[] = {
+            MD_STR_INIT("vlx/scf/gostshyp/tessera/coordinate"), MD_STR_INIT("vlx/scf/gostshyp/tessera/area"),
+            MD_STR_INIT("vlx/scf/gostshyp/tessera/decay_length"), MD_STR_INIT("vlx/scf/gostshyp/tessera/atom_index"),
+            MD_STR_INIT("vlx/scf/gostshyp/sphere_radius"), MD_STR_INIT("qm/atom/coordinate"),
+        };
+        uint64_t key = 0x5bd1e995;
+        for (const md_str_t& p : paths) {
+            const md_attribute_t* a = md_attributes_find(&sys.attributes, p);
+            const uint64_t v[2] = {a ? (uint64_t)a->id : 0, a ? a->version : 0};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (key == gostshyp.key) return;
+        gostshyp = {};
+        gostshyp.key = key;
+
+        size_t n = 0, n_lam = 0, n_xyz = 0, n_idx = 0, n_rad = 0, n_qm = 0;
+        const double* area = attribute_series_f64(&n, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+        const double* lam  = attribute_series_f64(&n_lam, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/decay_length"));
+        const md_f64x3_t* xyz = attribute_vec3_series(&n_xyz, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/coordinate"));
+        const uint32_t* idx = (const uint32_t*)attribute_column(&n_idx, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_ATTRIBUTE_TYPE_U32);
+        const double* rad = attribute_series_f64(&n_rad, sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
+        const md_f64x3_t* qm = attribute_vec3_series(&n_qm, sys, MD_STR_LIT("qm/atom/coordinate"));
+        if (!area || n == 0) return;
+
+        gostshyp.valid = true;
+        gostshyp.num_tess = n;
+        gostshyp.num_spheres = n_rad;
+        gostshyp.lambda_min = DBL_MAX;
+        gostshyp.lambda_max = -DBL_MAX;
+        for (size_t j = 0; j < n; ++j) {
+            gostshyp.area += area[j];
+            if (lam && n_lam == n) {
+                gostshyp.skin += area[j] * lam[j];
+                gostshyp.lambda_min = MD_MIN(gostshyp.lambda_min, lam[j]);
+                gostshyp.lambda_max = MD_MAX(gostshyp.lambda_max, lam[j]);
+            }
+        }
+        if (xyz && idx && rad && qm && n_xyz == n && n_idx == n && n_qm == n_rad) {
+            for (size_t j = 0; j < n; ++j) {
+                for (size_t k = 0; k < n_rad; ++k) {
+                    if (k == idx[j] || !(rad[k] > 0)) continue;
+                    const double dx = xyz[j].x - qm[k].x, dy = xyz[j].y - qm[k].y, dz = xyz[j].z - qm[k].z;
+                    if (dx * dx + dy * dy + dz * dz < rad[k] * rad[k] * (1.0 - 1e-6)) {
+                        gostshyp.num_inside += 1;
+                        gostshyp.inside_area += area[j];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    void draw_gostshyp_summary(const md_system_t& sys) {
+        update_gostshyp_summary(sys);
+        if (!gostshyp.valid) return;
+        const GostshypSummary& g = gostshyp;
+
+        const double P = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), 0.0);
+        const double n_leb = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), 0.0);
+        const double scale = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), 0.0);
+        const md_str_t disc = attribute_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"));
+        // GPa Å^3 to kJ/mol: 1e9 Pa 1e-30 m^3 N_A
+        const double energy_kj = 0.602214076 * P * g.skin;
+
+        ImGui::Text("Pressure:               %.4g GPa", P);
+        if (!md_str_empty(disc)) ImGui::Text("Discretization:         %.*s", (int)disc.len, disc.ptr);
+        if (n_leb > 0)  ImGui::Text("Lebedev points:         %.0f per sphere", n_leb);
+        if (scale > 0)  ImGui::Text("Sphere radius:          %.3g x vdW", scale);
+        if (n_leb > 0 && g.num_spheres > 0) {
+            ImGui::Text("Tesserae:               %zu of %.0f kept", g.num_tess, n_leb * (double)g.num_spheres);
+        } else {
+            ImGui::Text("Tesserae:               %zu", g.num_tess);
+        }
+        ImGui::Text("Inside other spheres:   %zu (%.1f%% of the area)", g.num_inside, g.area > 0 ? 100.0 * g.inside_area / g.area : 0.0);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Tesserae inside the sphere of another atom than their own: the switching keeps points where\n"
+                              "the spheres overlap, so the cavity of the calculation is a smoothed union of the spheres");
+        }
+        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", g.area);
+        if (g.skin > 0) {
+            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", g.skin);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("The volume of density outside the cavity the wall holds against the pressure: each tessera's\n"
+                                  "area times the decay length of the density there, <rho|g> / (-d/dn <rho|g>)");
+            }
+            ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", g.skin / g.area, g.lambda_min, g.lambda_max);
+            ImGui::Text("Wall energy:            %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("sum p_j <rho|g_j> = P sum a_j lambda_j: the amplitudes hold the pressure, p_j (-d/dn <rho|g_j>) = P a_j");
+            }
+            ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / g.area);
+        }
+    }
+
     void draw_summary_window(ApplicationState& state) {
         const md_system_t& sys = state.mold.sys;
 
@@ -6313,6 +6425,12 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
                 ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy")));
+                ImGui::Spacing();
+                ImGui::TreePop();
+            }
+
+            if (attribute_exists(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area")) && ImGui::TreeNode("GOSTSHYP")) {
+                draw_gostshyp_summary(sys);
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
