@@ -1702,6 +1702,12 @@ struct ApplicationState {
         uint32_t rep_id  = 0;
         uint32_t tessera = 0;
     } cavity_hover;
+    // The same, hovered elsewhere than in the view (a row of the GOSTSHYP table): set by what draws it, every frame it
+    // is hovered. Marked in place of the one in the view.
+    struct {
+        uint32_t rep_id  = 0;
+        uint32_t tessera = 0;
+    } cavity_hover_ui;
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 

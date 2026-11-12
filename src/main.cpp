@@ -7678,11 +7678,12 @@ static void render(ApplicationState* state) {
     // it, nor in its history. Drawn again when they change, or the scene was made.
     const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
     const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool cavity_hovered = state->cavity_hover.rep_id != 0;
+    const bool cavity_hovered = state->cavity_hover.rep_id != 0 || state->cavity_hover_ui.rep_id != 0;
     const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty || cavity_hovered);
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
         marks_key = md_hash64(&state->cavity_hover, sizeof(state->cavity_hover), marks_key);
+        marks_key = md_hash64(&state->cavity_hover_ui, sizeof(state->cavity_hover_ui), marks_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
         marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
         marks_key = marks_key ? marks_key : 1;
@@ -8173,10 +8174,13 @@ static void resolve_cavities(ApplicationState* state) {
 
 // The patch of the tessera hovered, into the marks of the highlight
 static void draw_cavity_marks(ApplicationState* state) {
-    if (!state->cavity_hover.rep_id) return;
-    const Representation* rep = find_representation(state, state->cavity_hover.rep_id);
+    const bool ui = state->cavity_hover_ui.rep_id != 0;
+    const uint32_t rep_id  = ui ? state->cavity_hover_ui.rep_id : state->cavity_hover.rep_id;
+    const uint32_t tessera = ui ? state->cavity_hover_ui.tessera : state->cavity_hover.tessera;
+    if (!rep_id) return;
+    const Representation* rep = find_representation(state, rep_id);
     if (!rep || rep->type != RepresentationType::Cavity || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
-    cavity_draw_marks(rep->cavity, state->cavity_hover.tessera, state->gbuffer, state->view.param);
+    cavity_draw_marks(rep->cavity, tessera, state->gbuffer, state->view.param);
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
