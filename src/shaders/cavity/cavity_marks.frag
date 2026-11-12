@@ -25,6 +25,8 @@ uniform ivec3 u_grid_dim;
 uniform vec4  u_local[32];              // the sphere of the tessera first, then those that overlap it
 uniform int   u_num_local;
 uniform uint  u_tessera;
+uniform float u_power;
+uniform float u_power_reach2;
 
 layout(location = 0) out vec4 out_marks;
 layout(location = 1) out vec4 out_group;
@@ -40,7 +42,8 @@ int nearest_tessera(vec3 x, vec3 n) {
         if (dot(texelFetch(u_tess_b, j).xyz, n) <= 0.0) continue;
         vec3  v = x - texelFetch(u_tess_a, j).xyz;
         float d = dot(v, v);
-        if (d < best) { best = d; bj = j; }
+        float p = (u_power != 0.0) ? (d < u_power_reach2 ? d - texelFetch(u_tess_c, j).z : 1e30) : d;
+        if (p < best) { best = p; bj = j; }
     }
     return bj;
 }

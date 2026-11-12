@@ -52,6 +52,8 @@ static const double AU_PRESSURE_GPA = 29421.02648438959;
 static const float QUAD_SPACING = 0.06f;
 static const float SIGMA_FLOOR  = 0.12f;
 static const float KERNEL_CUT   = 3.0f;     // in sigmas: the same cut in the normalization and in the shader
+static const float POWER_REACH  = 2.0f;     // Å: a tessera further than this from a point is never its patch by power, in
+                                            // the fit as in the shader
 
 struct CellGrid {
     float    min[3] = {};
@@ -75,6 +77,7 @@ struct QuadPoint {
     float da;
     float d_nn;     // to the nearest tessera facing the same way
     uint32_t nn;
+    float p_nn;     // the least power, |p - c_j|^2 - w_j, of a tessera facing the same way
 };
 
 struct CavityData {
@@ -93,6 +96,10 @@ struct CavityData {
     uint32_t num_spheres = 0;
     std::vector<float>    sph;      // 4 per: centre, radius
     std::vector<uint32_t> sys_idx;  // the system's atom of each
+
+    // The weights of the power diagram the surface is split by, |x - c_j|^2 - w_j (Å^2): fitted so that each patch
+    // has the area of its tessera, relative to the surface drawn (fit_weights). Made once per cavity.
+    std::vector<float> weight;
 
     // Made for a kernel width
     float kernel_scale = -1.0f;
@@ -281,6 +288,72 @@ static void query(const CellGrid& g, const float lo[3], const float hi[3], float
             }
 }
 
+// The weights of the power diagram whose cells, on the exposed surface, have the areas of the tesserae: the dual of a
+// semi-discrete optimal transport problem, concave in the weights, climbed by its gradient - the target area of a
+// tessera less the area of its cell, both by the quadrature. The targets are the areas of the tesserae scaled to the
+// surface drawn: the switching (SWIG) attenuates the areas where spheres overlap rather than clipping them at the
+// union, so sum a_j is not the area of the union, and only the relative areas can be matched. A tessera no point of the
+// surface can reach keeps a weight of 0 and no cell.
+static void fit_weights(CavityData* d, const CellGrid& coarse) {
+    const uint32_t n = d->num_tess;
+    const float REACH = POWER_REACH;    // Å: the candidates of a point; the cells stay within it
+    const float W_MAX = 3.0f;           // Å^2
+    const int   ITERATIONS = 200;
+    const float STEP = 0.25f;
+
+    // The candidates of each point and their squared distances
+    const size_t Q = d->quad.size();
+    std::vector<uint32_t> off(Q + 1, 0), cand;
+    std::vector<float> dist;
+    cand.reserve(Q * 32);
+    dist.reserve(Q * 32);
+    std::vector<uint8_t> reached(n, 0);
+    for (size_t i = 0; i < Q; ++i) {
+        const QuadPoint& q = d->quad[i];
+        query(coarse, q.p, q.p, REACH, [&](uint32_t j) {
+            const float* nj = &d->nrm[3 * j];
+            if (nj[0] * q.n[0] + nj[1] * q.n[1] + nj[2] * q.n[2] <= 0) return;
+            const float dd = dist2(q.p, &d->pos[3 * j]);
+            if (dd >= REACH * REACH) return;
+            cand.push_back(j);
+            dist.push_back(dd);
+            reached[j] = 1;
+        });
+        off[i + 1] = (uint32_t)cand.size();
+    }
+
+    double sum_a = 0;
+    for (uint32_t j = 0; j < n; ++j) if (reached[j]) sum_a += d->area[j];
+    const double scale = sum_a > 0 ? d->exposed_area / sum_a : 0.0;
+    std::vector<double> target(n), cell(n);
+    for (uint32_t j = 0; j < n; ++j) target[j] = reached[j] ? d->area[j] * scale : 0.0;
+
+    d->weight.assign(n, 0.0f);
+    double mismatch = 0;
+    for (int it = 0; it <= ITERATIONS; ++it) {
+        std::fill(cell.begin(), cell.end(), 0.0);
+        for (size_t i = 0; i < Q; ++i) {
+            float best = FLT_MAX;
+            uint32_t bj = UINT32_MAX;
+            for (uint32_t k = off[i]; k < off[i + 1]; ++k) {
+                const float v = dist[k] - d->weight[cand[k]];
+                if (v < best) { best = v; bj = cand[k]; }
+            }
+            if (bj != UINT32_MAX) cell[bj] += d->quad[i].da;
+        }
+        double err = 0;
+        for (uint32_t j = 0; j < n; ++j) err += fabs(cell[j] - target[j]);
+        mismatch = d->exposed_area > 0 ? err / d->exposed_area : 0.0;
+        if (it == 0) MD_LOG_DEBUG("Cavity: the nearest tesserae split %.1f%% of the surface otherwise than their areas", 100.0 * mismatch);
+        if (it == ITERATIONS) break;
+        for (uint32_t j = 0; j < n; ++j) {
+            if (!reached[j]) continue;
+            d->weight[j] = MD_CLAMP(d->weight[j] + STEP * (float)(target[j] - cell[j]), -W_MAX, W_MAX);
+        }
+    }
+    MD_LOG_DEBUG("Cavity: the power diagram splits %.1f%% of the surface otherwise than the areas of the tesserae", 100.0 * mismatch);
+}
+
 static void build_kernel(CavityData* d, float scale) {
     const uint32_t n = d->num_tess;
     d->kernel_scale = scale;
@@ -295,7 +368,7 @@ static void build_kernel(CavityData* d, float scale) {
     // The nearest tessera of a point of the surface is never further than the spacing of the tesserae, which the
     // Lebedev grid of the largest sphere bounds: about 1.2 Å. The coarse grid reaches both that and the kernels.
     CellGrid coarse;
-    build_coarse(&coarse, *d, fmaxf(KERNEL_CUT * sigma_max, 1.5f));
+    build_coarse(&coarse, *d, fmaxf(KERNEL_CUT * sigma_max, POWER_REACH));
 
     // The exposed surface on points: a Fibonacci sphere per atom, the points inside another sphere left out
     d->quad.clear();
@@ -329,12 +402,15 @@ static void build_kernel(CavityData* d, float scale) {
             q.da = (float)(area / m);
             q.d_nn = FLT_MAX;
             q.nn = UINT32_MAX;
+            q.p_nn = FLT_MAX;
             d->quad.push_back(q);
             d->exposed_area += q.da;
         }
     }
 
-    // N_j, the integral of each kernel over the exposed surface, and the nearest tessera of each point
+    if (d->weight.size() != n) fit_weights(d, coarse);
+
+    // N_j, the integral of each kernel over the exposed surface, and the nearest tessera of each point, plain and by power
     d->norm.assign(n, 0.0);
     for (QuadPoint& q : d->quad) {
         query(coarse, q.p, q.p, coarse.cell, [&](uint32_t j) {
@@ -342,6 +418,7 @@ static void build_kernel(CavityData* d, float scale) {
             if (nj[0] * q.n[0] + nj[1] * q.n[1] + nj[2] * q.n[2] <= 0) return;
             const float dd = dist2(q.p, &d->pos[3 * j]);
             if (dd < q.d_nn) { q.d_nn = dd; q.nn = j; }
+            if (dd < POWER_REACH * POWER_REACH) q.p_nn = fminf(q.p_nn, dd - d->weight[j]);
             const float s = d->sigma[j];
             if (dd < KERNEL_CUT * KERNEL_CUT * s * s) d->norm[j] += exp(-0.5 * dd / (s * s)) * q.da;
         });
@@ -367,27 +444,35 @@ static void build_kernel(CavityData* d, float scale) {
         g.dim[k] = (int)ceilf(coarse.dim[k] * coarse.cell / cell) + 1;
     }
     const size_t cells = (size_t)g.dim[0] * g.dim[1] * g.dim[2];
-    std::vector<float> reach(cells, -1.0f);
+    // And by power: every tessera whose power can be below the least power of a point in it, grown by how much the
+    // power of a tessera changes between the points of the quadrature (2 d h, d within the reach of the fit)
+    std::vector<float> reach(cells, -1.0f), preach(cells, -FLT_MAX);
     for (const QuadPoint& q : d->quad) {
         int c[3];
         const int ci = g.cell_of(q.p, c);
         if (ci >= 0 && q.d_nn < FLT_MAX) reach[ci] = fmaxf(reach[ci], q.d_nn + QUAD_SPACING);
+        if (ci >= 0 && q.p_nn < FLT_MAX) preach[ci] = fmaxf(preach[ci], q.p_nn + 4.0f * 2.0f * QUAD_SPACING);
     }
-    std::vector<float> grown = reach;
+    float w_max = 0;
+    for (float w : d->weight) w_max = fmaxf(w_max, w);
+    std::vector<float> grown = reach, pgrown = preach;
     for (int z = 0; z < g.dim[2]; ++z)
         for (int y = 0; y < g.dim[1]; ++y)
             for (int x = 0; x < g.dim[0]; ++x) {
                 const size_t ci = (size_t)x + g.dim[0] * ((size_t)y + g.dim[1] * (size_t)z);
                 if (reach[ci] >= 0) continue;
-                float r = -1.0f;
+                float r = -1.0f, pr = -FLT_MAX;
                 for (int dz = -1; dz <= 1; ++dz)
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx) {
                             const int X = x + dx, Y = y + dy, Z = z + dz;
                             if (X < 0 || Y < 0 || Z < 0 || X >= g.dim[0] || Y >= g.dim[1] || Z >= g.dim[2]) continue;
-                            r = fmaxf(r, reach[(size_t)X + g.dim[0] * ((size_t)Y + g.dim[1] * (size_t)Z)]);
+                            const size_t ni = (size_t)X + g.dim[0] * ((size_t)Y + g.dim[1] * (size_t)Z);
+                            r  = fmaxf(r, reach[ni]);
+                            pr = fmaxf(pr, preach[ni]);
                         }
                 grown[ci] = r;
+                pgrown[ci] = pr;
             }
 
     g.offset.assign(cells + 1, 0);
@@ -399,9 +484,11 @@ static void build_kernel(CavityData* d, float scale) {
                 g.offset[ci] = (uint32_t)g.items.size();
                 const float r = grown[ci];
                 if (r < 0) continue;
+                const float pr = pgrown[ci];
+                const float pr_reach = pr > -FLT_MAX ? sqrtf(fmaxf(pr + w_max, 0.0f)) : 0.0f;
                 const float lo[3] = {g.min[0] + x * cell, g.min[1] + y * cell, g.min[2] + z * cell};
                 const float hi[3] = {lo[0] + cell, lo[1] + cell, lo[2] + cell};
-                query(coarse, lo, hi, fmaxf(r, KERNEL_CUT * sigma_max), [&](uint32_t j) {
+                query(coarse, lo, hi, fmaxf(fmaxf(r, pr_reach), KERNEL_CUT * sigma_max), [&](uint32_t j) {
                     // Its distance from the box
                     const float* p = &d->pos[3 * j];
                     float dd = 0;
@@ -410,7 +497,7 @@ static void build_kernel(CavityData* d, float scale) {
                         dd += e * e;
                     }
                     const float kr = KERNEL_CUT * d->sigma[j];
-                    if (dd <= r * r || (dd < kr * kr && d->norm[j] > 0)) g.items.push_back(j);
+                    if (dd <= r * r || dd - d->weight[j] <= pr || (dd < kr * kr && d->norm[j] > 0)) g.items.push_back(j);
                 });
             }
     g.offset[cells] = (uint32_t)g.items.size();
@@ -483,7 +570,7 @@ static void build_field(CavityData* d, CavityField field, bool conserve) {
 }
 
 // The field at a point of the surface (the frame of the file) with its normal, as the shader makes it
-static bool eval_field(float* out, const CavityData& d, const float p[3], const float n[3], bool kernel, uint32_t* nearest = nullptr) {
+static bool eval_field(float* out, const CavityData& d, const float p[3], const float n[3], bool kernel, bool power, uint32_t* nearest = nullptr) {
     const CellGrid& g = d.lists;
     int c[3];
     const int ci = g.cell_of(p, c);
@@ -495,7 +582,8 @@ static bool eval_field(float* out, const CavityData& d, const float p[3], const 
         const float* nj = &d.nrm[3 * j];
         if (nj[0] * n[0] + nj[1] * n[1] + nj[2] * n[2] <= 0) continue;
         const float dd = dist2(p, &d.pos[3 * j]);
-        if (dd < best) { best = dd; bj = j; }
+        const float v = power ? (dd < POWER_REACH * POWER_REACH ? dd - d.weight[j] : FLT_MAX) : dd;
+        if (v < best) { best = v; bj = j; }
         const float s = d.sigma[j];
         if (kernel && dd < KERNEL_CUT * KERNEL_CUT * s * s) {
             const float K = expf(-0.5f * dd / (s * s));
@@ -519,7 +607,7 @@ static float kernel_error(const CavityData& d) {
     double integral = 0, total = 0;
     for (const QuadPoint& q : d.quad) {
         float f;
-        if (eval_field(&f, d, q.p, q.n, true)) integral += (double)f * q.da;
+        if (eval_field(&f, d, q.p, q.n, true, true)) integral += (double)f * q.da;
     }
     for (uint32_t j = 0; j < d.num_tess; ++j) {
         double nv, v;
@@ -535,7 +623,7 @@ static ColorScaleSpan field_span(const CavityData& d, bool kernel) {
     const size_t stride = MD_MAX((size_t)1, d.quad.size() / 40000);
     for (size_t i = 0; i < d.quad.size(); i += stride) {
         float f;
-        if (eval_field(&f, d, d.quad[i].p, d.quad[i].n, kernel)) v.push_back(f);
+        if (eval_field(&f, d, d.quad[i].p, d.quad[i].n, kernel, true)) v.push_back(f);
     }
     ColorScaleSpan span = {};
     if (v.empty()) return span;
@@ -595,7 +683,14 @@ static void upload_field(CavityData* d) {
         b[4 * j + 3] = d->nearest_value[j];
     }
     upload_buffer(d, BUF_TESS_B, GL_RGBA32F, b.data(), b.size() * sizeof(float));
-    upload_buffer(d, BUF_TESS_C, GL_RG32F, d->coef.data(), d->coef.size() * sizeof(float));
+    std::vector<float> c(4 * n);
+    for (uint32_t j = 0; j < n; ++j) {
+        c[4 * j + 0] = d->coef[2 * j + 0];
+        c[4 * j + 1] = d->coef[2 * j + 1];
+        c[4 * j + 2] = d->weight.size() == n ? d->weight[j] : 0.0f;
+        c[4 * j + 3] = 0.0f;
+    }
+    upload_buffer(d, BUF_TESS_C, GL_RGBA32F, c.data(), c.size() * sizeof(float));
 }
 
 static void free_gpu(CavityData* d) {
@@ -769,6 +864,7 @@ uint64_t cavity_hash(const CavityRepresentation& cav) {
     h = md_hash64(&cav.kernel_scale, sizeof(cav.kernel_scale), h);
     h = md_hash64(&cav.unlit, sizeof(cav.unlit), h);
     h = md_hash64(&cav.conserve, sizeof(cav.conserve), h);
+    h = md_hash64(&cav.fit_areas, sizeof(cav.fit_areas), h);
     h = md_hash64(&cav.edges, sizeof(cav.edges), h);
     h = md_hash64(&cav.scale, sizeof(cav.scale), h);
     if (cav.data) h = md_hash64(&cav.data->version, sizeof(cav.data->version), h);
@@ -916,6 +1012,8 @@ void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const 
     glUniform2f(glGetUniformLocation(prog, "u_range"), cav.scale.range_beg, cav.scale.range_end);
     glUniform1i(glGetUniformLocation(prog, "u_unlit"), cav.unlit ? 1 : 0);
     glUniform1i(glGetUniformLocation(prog, "u_edges"), cav.edges && mode == 0 ? 1 : 0);
+    glUniform1f(glGetUniformLocation(prog, "u_power"), cav.fit_areas ? 1.0f : 0.0f);
+    glUniform1f(glGetUniformLocation(prog, "u_power_reach2"), POWER_REACH * POWER_REACH);
 
     glBindVertexArray(gl_state.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -979,6 +1077,8 @@ void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const 
     glUniform4fv(glGetUniformLocation(prog, "u_local"), num_local, local);
     glUniform1i(glGetUniformLocation(prog, "u_num_local"), num_local);
     glUniform1ui(glGetUniformLocation(prog, "u_tessera"), tessera);
+    glUniform1f(glGetUniformLocation(prog, "u_power"), cav.fit_areas ? 1.0f : 0.0f);
+    glUniform1f(glGetUniformLocation(prog, "u_power_reach2"), POWER_REACH * POWER_REACH);
 
     glBindVertexArray(gl_state.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -1016,7 +1116,7 @@ bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& ca
         if (len > 0) {
             for (int k = 0; k < 3; ++k) { n[k] /= len; x[k] = s[k] + s[3] * n[k]; }
             const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
-            info->has_field_here = eval_field(&info->field_here, *d, x, n, kernel);
+            info->has_field_here = eval_field(&info->field_here, *d, x, n, kernel, cav.fit_areas);
         }
     }
     return true;

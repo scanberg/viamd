@@ -7,7 +7,8 @@
 uniform sampler2D      u_tex_picking;   // a copy of the G-buffer's picking target
 uniform samplerBuffer  u_tess_a;        // xyz: the centre of the tessera (the frame of the file), w: the kernel's sigma
 uniform samplerBuffer  u_tess_b;        // xyz: its normal, w: its own value
-uniform samplerBuffer  u_tess_c;        // x: what its kernel spreads per its normalization, y: its area per the same
+uniform samplerBuffer  u_tess_c;        // x: what its kernel spreads per its normalization, y: its area per the same,
+                                        // z: its weight in the power diagram (Å^2)
 uniform samplerBuffer  u_spheres;       // xyz: the centre of the sphere, w: its radius
 uniform usamplerBuffer u_cells;         // x: the first of the cell's tesserae in u_items, y: how many
 uniform usamplerBuffer u_items;
@@ -25,6 +26,8 @@ uniform int   u_mode;                   // 0: nearest, 1: kernel averaged by are
 uniform vec2  u_range;
 uniform int   u_unlit;
 uniform int   u_edges;
+uniform float u_power;                  // 1: nearest by power, |x - c_j|^2 - w_j; 0: by distance
+uniform float u_power_reach2;           // a tessera further than this (squared) is never nearest by power
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_picking;
@@ -82,19 +85,21 @@ void main() {
         vec4 A = texelFetch(u_tess_a, j);
         vec3 nj = texelFetch(u_tess_b, j).xyz;
         if (dot(nj, n) <= 0.0) continue;
+        vec4  C = texelFetch(u_tess_c, j);
         vec3  v = x - A.xyz;
         float d = dot(v, v);
-        if (d < d1) {
+        // The power of the point to the tessera, what the patches are split by: the squared distance less its weight
+        float p = (u_power != 0.0) ? (d < u_power_reach2 ? d - C.z : 1e30) : d;
+        if (p < d1) {
             d2 = d1; c2 = c1;
-            d1 = d;  c1 = A.xyz; j1 = j;
-        } else if (d < d2) {
-            d2 = d; c2 = A.xyz;
+            d1 = p;  c1 = A.xyz; j1 = j;
+        } else if (p < d2) {
+            d2 = p; c2 = A.xyz;
         }
         if (u_mode != 0) {
             float s2 = A.w * A.w;
             if (d < KERNEL_CUT * KERNEL_CUT * s2) {
                 float K = exp(-0.5 * d / s2);
-                vec2  C = texelFetch(u_tess_c, j).xy;
                 num += K * C.x;
                 den += K * C.y;
             }
@@ -109,8 +114,9 @@ void main() {
     vec3  color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
 
     if (u_edges != 0 && d2 < 1e29) {
-        // How far the point is from the border of its patch, the plane half way between the two nearest tesserae,
-        // against the size of a pixel there: the point the neighbouring pixel's ray reaches at the same distance
+        // How far the point is from the border of its patch, the plane between the two nearest tesserae where their
+        // powers are equal ((p2 - p1) / 2 |c2 - c1| from it), against the size of a pixel there: the point the
+        // neighbouring pixel's ray reaches at the same distance
         float dist = (d2 - d1) / (2.0 * max(length(c2 - c1), 1e-6));
         vec3 ro_x, rd_x;
         ray(gl_FragCoord.xy + vec2(1.0, 0.0), ro_x, rd_x);

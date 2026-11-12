@@ -31,8 +31,10 @@ struct CavityData;
 // marks (cavity_draw_marks).
 //
 // COLOURING
-//   Nearest  each tessera's own value over its patch: the points nearest to it on the surface (a Voronoi split,
-//            among the tesserae facing the same way as the surface there)
+//   Nearest  each tessera's own value over its patch: the points nearest to it on the surface, among the tesserae
+//            facing the same way as the surface there. Nearest by power, |x - c_j|^2 - w_j, with the weights fitted
+//            so that each patch has the area of its tessera (fit_areas), or by distance alone (a Voronoi split, where
+//            the tesserae the switching kept inside other spheres crowd the seams with slivers)
 //   Kernel   the values spread over the surface by a Gaussian kernel per tessera, of the width of its own Gaussian
 //            (sigma_j = 1 / sqrt(2 zeta_j), times kernel_scale), normalized over the exposed surface:
 //              K_j(x) = exp(-|x - c_j|^2 / 2 sigma_j^2) where n(x).n_j > 0 and |x - c_j| < 3 sigma_j, else 0
@@ -91,6 +93,8 @@ struct CavityRepresentation {
     bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
                                 // what show the shape of the surface, and they leave its colours readable
     bool  edges = true;         // Nearest: the borders between the patches
+    bool  fit_areas = true;     // Split the surface by a power diagram whose patches have the areas of the tesserae
+                                // (relative to the surface drawn), not by the nearest tessera alone
     ColorScale scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
 
     CavityData* data = nullptr; // owned, made by cavity_update

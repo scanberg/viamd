@@ -2115,6 +2115,8 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         viamd::extract_bool(rep->cavity.conserve, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityEdges"))) {
         viamd::extract_bool(rep->cavity.edges, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityFitAreas"))) {
+        viamd::extract_bool(rep->cavity.fit_areas, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityColormap"))) {
         viamd::extract_int(rep->cavity.scale.colormap, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityRange"))) {
@@ -2424,6 +2426,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_bool(state, MD_STR_LIT("CavityUnlit"), c.unlit);
         viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
         viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
+        viamd::write_bool(state, MD_STR_LIT("CavityFitAreas"), c.fit_areas);
         viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
         viamd::write_flt_vec(state, MD_STR_LIT("CavityRange"), range, 2);
         viamd::write_bool(state, MD_STR_LIT("CavityAutoRange"), c.scale.auto_range);
@@ -3921,6 +3924,11 @@ static bool draw_representation_cavity(Representation& rep) {
             prop::row("borders", "The borders between the patches of the tesserae");
             update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
         }
+        prop::row("area weighted", "Split the surface between the tesserae so that each patch has the area of its tessera, relative\n"
+                                   "to the surface drawn (a power diagram, |x - c|^2 - w, with fitted weights). Off: each point to\n"
+                                   "the nearest tessera, which crowds the seams with slivers of the tesserae the switching kept\n"
+                                   "inside other spheres.");
+        update_rep |= ImGui::Checkbox("##cavity_fit_areas", &cav.fit_areas);
         prop::row("unlit", "The colours as the colour map gives them, not shaded by the light");
         update_rep |= ImGui::Checkbox("##cavity_unlit", &cav.unlit);
         prop::section_end();
