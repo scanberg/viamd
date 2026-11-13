@@ -35,7 +35,7 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <md_system.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 
 #include <viamd_event.h>
 #include <viamd.h>

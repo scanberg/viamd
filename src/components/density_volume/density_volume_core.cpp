@@ -10,7 +10,7 @@
 #include <md_system.h>
 #include <md_element.h>
 #include <md_infer.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_xyz.h>
 
 #include <math.h>

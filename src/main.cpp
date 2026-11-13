@@ -13,7 +13,7 @@
 #include <md_element.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_gl.h>
 #include <md_system.h>
 #include <md_run.h>

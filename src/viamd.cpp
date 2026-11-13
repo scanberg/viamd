@@ -1,7 +1,7 @@
 ﻿
 #include <md_infer.h>
 #include <md_element.h>
-#include <md_geom.h>
+#include <core/md_geom.h>
 #include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>
@@ -6785,7 +6785,7 @@ bool apply_state_operations(ApplicationState* app, bool recenter, bool pbc, bool
             task_system::parallel_for((uint32_t)num_molecules, 1, [&s, &sys](uint32_t range_beg, uint32_t range_end) {
                 for (uint32_t i = range_beg; i < range_end; ++i) {
                     const md_molecule_t mol = md_system_molecule(&sys, i);
-                    md_geom_unwrap_molecule(&s, &mol);
+                    md_geom_unwrap((float*)s.xyz, sizeof(md_float3_t), mol.atom_idx, mol.parent_idx, mol.count, &s.unitcell);
                 }
             });
         }
