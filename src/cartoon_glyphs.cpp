@@ -2,7 +2,7 @@
 
 #include <md_system.h>
 #include <md_element.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -281,7 +281,7 @@ static bool sterol_slab(GlyphBuilder& b, const md_system_t& sys, const md_lipid_
     const int32_t anchor = L.tail.anchor_beg[t];
     md_float3_t* d = (md_float3_t*)md_alloc(temp_alloc, n * sizeof(md_float3_t));
     for (size_t k = 0; k < n; ++k) d[k] = md_float3_sub(refs.xyz[ring[k]], refs.xyz[anchor]);
-    if (md_unitcell_flags(&refs.unitcell)) md_util_min_image((float*)d, 0, n, &refs.unitcell);
+    if (md_unitcell_flags(&refs.unitcell)) md_geom_min_image((float*)d, 0, n, &refs.unitcell);
     md_float3_t c = md_float3_zero();
     for (size_t k = 0; k < n; ++k) c = md_float3_add(c, d[k]);
     c = md_float3_mul1(c, 1.0f / (float)n);

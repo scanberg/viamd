@@ -133,7 +133,7 @@ UTEST(viamd_color, res_type) {
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
-    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL));
+    ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
     ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
     ASSERT_EQ(3, (int)sys.residue.count);
 

@@ -13,7 +13,7 @@
 #include <md_element.h>
 #include <core/md_spatial_acc.h>
 #include <core/md_coord_stream.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 #include <md_gl.h>
 #include <md_gfx.h>
 #include <md_system.h>
@@ -1626,7 +1626,7 @@ int main(int argc, char** argv) {
             size_t count = md_array_size(fit_request.xyzw);
             if (count > 0) {
                 // Extract OBB from returned pointcloud
-                md_float3_t com = md_util_com((const float*)fit_request.xyzw, sizeof(md_float4_t), (const float*)fit_request.xyzw + 3, sizeof(md_float4_t), 0, count, 0);
+                md_float3_t com = md_geom_com((const float*)fit_request.xyzw, sizeof(md_float4_t), (const float*)fit_request.xyzw + 3, sizeof(md_float4_t), 0, count, 0);
                 md_float3x3_t cov = md_float3x3_covariance_matrix_float4(fit_request.xyzw, 0, count, com);
                 md_float3x3_eigen_t eigen = md_float3x3_eigen(cov);
                 md_float3x3_t PCA = md_float3x3_orthonormalize(md_float3x3_extract_rotation(eigen.vectors));
@@ -2907,6 +2907,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 
         if (ImGui::BeginCombo("Loader", loader::type_name(state.loader_idx).ptr)) {
             for (int i = 1; i < loader_count; ++i) {
+                if (!loader::type_available(i)) continue;
                 const char* str = loader::type_name(i).ptr;
                 if (!str) continue;
                 if (ImGui::Selectable(str, state.loader_idx == i)) {
@@ -7098,7 +7099,7 @@ static void update_md_buffers(ApplicationState* data) {
         }
 #if EXPERIMENTAL_GFX_API
         md_float3_t aabb_min, aabb_max;
-        md_util_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, nullptr, state.num_atoms);
+        md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, nullptr, state.num_atoms);
         md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
         md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
 #endif

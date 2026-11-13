@@ -40,7 +40,8 @@ UTEST(viamd_loader, an_extension_round_trips_to_its_own_type) {
     /* The property that keeps the tables aligned: whatever extension a type advertises must look
      * that same type back up. A shifted array fails this immediately. */
     for (LoaderType t = LoaderType_Undefined + 1; t < LoaderType_COUNT; ++t) {
-        EXPECT_EQ(t, loader::type_from_ext(loader::type_ext(t)));
+        /* A format not built in (those of HDF5 without it) is in the table, and an extension of it reads nothing */
+        EXPECT_EQ(loader::type_available(t) ? t : (LoaderType)LoaderType_Undefined, loader::type_from_ext(loader::type_ext(t)));
     }
 }
 

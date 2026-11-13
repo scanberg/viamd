@@ -35,7 +35,7 @@
 #include <md_csv.h>
 #include <md_xvg.h>
 #include <md_system.h>
-#include <md_util_geom.h>
+#include <md_geom.h>
 
 #include <viamd_event.h>
 #include <viamd.h>
@@ -94,7 +94,7 @@ static inline md_float2_t shape_coord(md_float3_t w) {
     return tri_lin * w.x + tri_pla * w.y + tri_iso * w.z;
 }
 
-// The weights back from the point: they sum to one (md_util_shape_weights), which the corners' barycentric coordinates
+// The weights back from the point: they sum to one (md_geom_shape_weights), which the corners' barycentric coordinates
 // are, so the point is all there is to keep
 static inline md_float3_t shape_weights_of(md_float2_t c) {
     const float iso = c.y / tri_iso.y;
@@ -121,9 +121,9 @@ static md_float3_t structure_shape(md_bitset_t atoms, const md_float3_t* xyz, co
     // Covariance about the mean of the placed points, not the circular mean the placement is seeded from (their offset
     // enters the covariance squared)
     md_float3_t com = md_float3_zero();
-    md_util_deperiodize_self(xyzw, k, cell, &com);
+    md_geom_deperiodize_self(xyzw, k, cell, &com);
     const md_float3x3_t M = md_float3x3_covariance_matrix_float4(xyzw, 0, k, com);
-    return md_util_shape_weights(&M);
+    return md_geom_shape_weights(&M);
 }
 
 // ## Evaluations

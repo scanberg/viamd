@@ -1,4 +1,5 @@
 #include "utest.h"
+#include <md_io.h>
 #include "test_executor.h"
 
 #include <script_engine.h>
@@ -84,16 +85,18 @@ const Data* load(const std::string& files) {
     d->state = {.alloc = d->alloc};
     const md_str_t top = {names[0].c_str(), names[0].size()};
     bool ok = ends_with(names[0], ".gro") ? md_gro_system_init_from_file(&d->sys, &d->state, top, NULL)
-                                           : md_pdb_system_init_from_file(&d->sys, &d->state, top, MD_PDB_OPTION_DISABLE_CACHE_FILE_WRITE, NULL);
+                                           : md_pdb_system_init_from_file(&d->sys, &d->state, top, NULL);
     ok = ok && md_system_infer(&d->sys, &d->state, MD_SYSTEM_INFER_ALL, NULL);
     if (!ok) return nullptr;
     bool run = false;
     if (ends_with(names[0], ".pdb") && names.size() == 1) run = md_pdb_system_publish_run(&d->sys, top, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
+    md_load_desc_t run_desc = {};
+    run_desc.run = MD_STR_LIT("run");
     for (size_t i = 1; i < names.size(); ++i) {
         const md_str_t f = {names[i].c_str(), names[i].size()};
         if (ends_with(names[i], ".xtc"))      run = md_xtc_system_publish_run(&d->sys, f, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
         else if (ends_with(names[i], ".trr")) run = md_trr_system_publish_run(&d->sys, f, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE);
-        else if (ends_with(names[i], ".edr")) run = md_edr_system_supplement_from_file(&d->sys, f, MD_STR_LIT("run"));
+        else if (ends_with(names[i], ".edr")) run = md_edr_system_supplement_from_file(&d->sys, f, &run_desc);
         else return nullptr;
     }
     if (run) {
