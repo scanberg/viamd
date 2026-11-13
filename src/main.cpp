@@ -15,7 +15,6 @@
 #include <core/md_coord_stream.h>
 #include <md_geom.h>
 #include <md_gl.h>
-#include <md_gfx.h>
 #include <md_system.h>
 #include <md_run.h>
 #include <md_xvg.h>
@@ -84,7 +83,6 @@
 #include <viamd_event.h>
 #include <event.h>
 
-#define EXPERIMENTAL_GFX_API 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
@@ -137,7 +135,6 @@ static void mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* sta
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
 
-static bool use_gfx = false;
 
 // The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames, and whether it has
 // converged (the view is made until it has)
@@ -950,9 +947,6 @@ int main(int argc, char** argv) {
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
-#if EXPERIMENTAL_GFX_API
-    md_gfx_initialize(state.gbuffer.width, state.gbuffer.height, 0);
-#endif
 
     ImGui::init_theme();
 
@@ -7097,12 +7091,6 @@ static void update_md_buffers(ApplicationState* data) {
         if (!(data->mold.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(data->mold.gl_mol, pbc_ext.elem);
         }
-#if EXPERIMENTAL_GFX_API
-        md_float3_t aabb_min, aabb_max;
-        md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, nullptr, state.num_atoms);
-        md_gfx_structure_set_atom_position(data->mold.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
-        md_gfx_structure_set_aabb(data->mold.gfx_structure, &aabb_min, &aabb_max);
-#endif
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_ClearVelocity) {
@@ -7124,9 +7112,6 @@ static void update_md_buffers(ApplicationState* data) {
         md_atom_extract_radii(radii, 0, sys.atom.count, &sys.atom);
 
         md_gl_mol_set_atom_radius(data->mold.gl_mol, 0, (uint32_t)sys.atom.count, radii, 0);
-#if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_radius(data->mold.gfx_structure, 0, (uint32_t)sys.atom.count, sys.atom.radius, 0);
-#endif
     }
 
     if (data->mold.dirty_gpu_buffers & MolBit_DirtyFlags) {
@@ -7387,7 +7372,6 @@ static uint64_t scene_key(const ApplicationState* state) {
     const md_float4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
     h = md_hash64(vis_colors, sizeof(vis_colors), h);
     h = md_hash64(&state->render.version, sizeof(state->render.version), h);
-    h = md_hash64(&use_gfx, sizeof(use_gfx), h);
 
     RenderKey rk = {state, h};
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderKey, viamd::EventPayloadType_RenderKey, &rk);
@@ -7459,15 +7443,13 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
         }
     }
 
-    if (!use_gfx) {
-        // DRAW VELOCITY OF STATIC OBJECTS
-        PUSH_GPU_SECTION("Blit Static Velocity")
-        glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
-        glDepthMask(0);
-        postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
-        glDepthMask(1);
-        POP_GPU_SECTION()
-    }
+    // DRAW VELOCITY OF STATIC OBJECTS
+    PUSH_GPU_SECTION("Blit Static Velocity")
+    glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
+    glDepthMask(0);
+    postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
+    glDepthMask(1);
+    POP_GPU_SECTION()
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 
@@ -7666,7 +7648,7 @@ static void render(ApplicationState* state) {
     // it, nor in its history. Drawn again when they change, or the scene was made.
     const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
     const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
+    const bool draw_marks = !selection_empty || !highlight_empty;
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
@@ -7966,162 +7948,116 @@ static void draw_representations_opaque(ApplicationState* state) {
         return;
     }
 
-#if EXPERIMENTAL_GFX_API
-    if (use_gfx) {
-        const uint32_t instance_count = 10000;
-        static md_float4x4_t* transforms = 0;
+    const size_t num_representations = md_array_size(state->representation.reps);
+    if (num_representations == 0) return;
 
-        if (transforms == 0) {
-            auto rnd = []() -> float {
-                return (float)rand() / RAND_MAX;
-            };
-            for (uint32_t i = 0; i < instance_count; ++i) {
-                md_float3_t axis = {rnd(), rnd(), rnd()};
-                md_quat_t ori = quat_angle_axis(rnd() * MD_TWO_PI, md_float3_normalize(axis));
-                md_float4x4_t R = md_float4x4_from_quat(ori);
-                md_float4x4_t T = md_float4x4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
-                md_float4x4_t M = T * R;
-                md_urange_t range = {0, (int32_t)state->mold.sys.atom.count};
-                md_array_push(transforms, M, persistent_alloc);
-            }
+	glEnable(GL_DEPTH_TEST);
+
+    md_array(md_gl_draw_op_t) draw_ops = 0;
+    // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
+    md_array(md_gl_draw_op_t) glyph_ops = 0;
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = state->representation.reps[i];
+
+        if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid && !rep.sphere_fallback) {
+            const size_t beg = md_array_size(glyph_ops);
+            representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
+            place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
+            // The cartoon of the proteins needs a protein backbone to draw
+            if (state->mold.sys.protein_backbone.range.count == 0) continue;
         }
 
-        md_gfx_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-            if (representation_shown(*state, state->representation.reps[i])) {
-                md_gfx_draw_op_t op;
-                op.structure = state->mold.gfx_structure;
-                op.representation = state->representation.reps[i].gfx_rep;
-                op.model_mat = NULL;
+        if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
+            if (representation_shown(*state, rep) && rep.type_is_valid) {
+                const md_gl_draw_op_t op = representation_draw_op(rep);
+                const size_t beg = md_array_size(draw_ops);
                 md_array_push(draw_ops, op, frame_alloc);
-                
-                for (uint32_t j = 0; j < instance_count; ++j) {
-                    md_gfx_draw_op_t op;
-                    op.structure = state->mold.gfx_structure;
-                    op.representation = state->representation.reps[i].gfx_rep;
-                    op.model_mat = &transforms[j];
-                    md_array_push(draw_ops, op, frame_alloc);
-                }
-                
+                // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
+                representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
+                place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
             }
-        }
-
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &state->view.param.matrix.curr.proj, &state->view.param.matrix.curr.view, &state->view.param.matrix.inv.proj, &state->view.param.matrix.inv.view);
-    } else {
-#endif
-        const size_t num_representations = md_array_size(state->representation.reps);
-        if (num_representations == 0) return;
-
-		glEnable(GL_DEPTH_TEST);
-
-        md_array(md_gl_draw_op_t) draw_ops = 0;
-        // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
-        md_array(md_gl_draw_op_t) glyph_ops = 0;
-        for (size_t i = 0; i < num_representations; ++i) {
-            const Representation& rep = state->representation.reps[i];
-
-            if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid && !rep.sphere_fallback) {
-                const size_t beg = md_array_size(glyph_ops);
-                representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
-                place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
-                // The cartoon of the proteins needs a protein backbone to draw
-                if (state->mold.sys.protein_backbone.range.count == 0) continue;
+        } else if (rep.type == RepresentationType::Bonds) {
+            if (representation_shown(*state, rep) && rep.type_is_valid) {
+                const size_t beg = md_array_size(draw_ops);
+                representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
+                place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
             }
+        } else if (rep.type == RepresentationType::DipoleMoment) {
+            if (representation_shown(*state, rep)) {
+                // immediate draw of dipole moment as arrow
+                md_float3_t dipole_vec = { 0, 0, 0 };
+                md_float3_t dipole_org = { 0, 0, 0 };
+                if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
+                    // The representation's own (key, index) IS the picking address: the group's
+                    // range was reserved under that key this frame, and the shader adds the base to
+                    // the per primitive index, so the element index is what goes on the primitive.
+                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
+                    // which the shader passes through untouched - visible, just not pickable.
+                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
 
-            if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    const md_gl_draw_op_t op = representation_draw_op(rep);
-                    const size_t beg = md_array_size(draw_ops);
-                    md_array_push(draw_ops, op, frame_alloc);
-                    // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
-                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
-                    place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
-                }
-            } else if (rep.type == RepresentationType::Bonds) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    const size_t beg = md_array_size(draw_ops);
-                    representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
-                    place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
-                }
-            } else if (rep.type == RepresentationType::DipoleMoment) {
-                if (representation_shown(*state, rep)) {
-                    // immediate draw of dipole moment as arrow
-                    md_float3_t dipole_vec = { 0, 0, 0 };
-                    md_float3_t dipole_org = { 0, 0, 0 };
-                    if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
-                        // The representation's own (key, index) IS the picking address: the group's
-                        // range was reserved under that key this frame, and the shader adds the base to
-                        // the per primitive index, so the element index is what goes on the primitive.
-                        // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
-                        // which the shader passes through untouched - visible, just not pickable.
-                        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
+                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                        immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                        immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+                    const md_float3_t beg = rep.dipole.offset + dipole_org;
+                    const md_float3_t vec = dipole_vec * (float)rep.dipole.scale;
+                    const float  len = md_float3_length(vec);
 
-                        const md_float3_t beg = rep.dipole.offset + dipole_org;
-                        const md_float3_t vec = dipole_vec * (float)rep.dipole.scale;
-                        const float  len = md_float3_length(vec);
+                    // The head is a fixed shape in units of the shaft radius, never a share of the
+                    // length: a longer dipole is a longer shaft under the same head. Below the length
+                    // where the head would take more than its share of the arrow, the arrow is that
+                    // shortest one compressed along its length only: the radii stay, so a small dipole
+                    // flattens toward a disc that is still as easy to see and hover as a large one.
+                    const float HEAD_RADIUS   = 2.0f;   // x shaft radius
+                    const float HEAD_LENGTH   = 5.0f;   // x shaft radius
+                    const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
 
-                        // The head is a fixed shape in units of the shaft radius, never a share of the
-                        // length: a longer dipole is a longer shaft under the same head. Below the length
-                        // where the head would take more than its share of the arrow, the arrow is that
-                        // shortest one compressed along its length only: the radii stay, so a small dipole
-                        // flattens toward a disc that is still as easy to see and hover as a large one.
-                        const float HEAD_RADIUS   = 2.0f;   // x shaft radius
-                        const float HEAD_LENGTH   = 5.0f;   // x shaft radius
-                        const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
-
-                        const float shaft_radius = rep.dipole.radius;
-                        const float head_radius  = shaft_radius * HEAD_RADIUS;
-                        float       head_length  = shaft_radius * HEAD_LENGTH;
-                        const float min_len = head_length / HEAD_FRACTION;
-                        if (len < min_len) {
-                            head_length *= len / min_len;   // the shaft, the rest of the length, follows
-                        }
-
-                        const uint32_t color_u32   = convert_color(rep.dipole.color);
-                        const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
-
-                        immediate::arrow(scope, beg, beg + vec, shaft_radius, head_radius, head_length, color_u32, picking_idx);
+                    const float shaft_radius = rep.dipole.radius;
+                    const float head_radius  = shaft_radius * HEAD_RADIUS;
+                    float       head_length  = shaft_radius * HEAD_LENGTH;
+                    const float min_len = head_length / HEAD_FRACTION;
+                    if (len < min_len) {
+                        head_length *= len / min_len;   // the shaft, the rest of the length, follows
                     }
-                }
-            } else if (rep.type == RepresentationType::SimulationBox) {
-                if (representation_shown(*state, rep) && rep.type_is_valid) {
-                    draw_simulation_box(state, rep);
+
+                    const uint32_t color_u32   = convert_color(rep.dipole.color);
+                    const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
+
+                    immediate::arrow(scope, beg, beg + vec, shaft_radius, head_radius, head_length, color_u32, picking_idx);
                 }
             }
+        } else if (rep.type == RepresentationType::SimulationBox) {
+            if (representation_shown(*state, rep) && rep.type_is_valid) {
+                draw_simulation_box(state, rep);
+            }
         }
-
-        const float max_bond_length = bond_length_limit(state);
-
-        md_gl_draw_args_t args = {
-            .shaders = state->gl.shaders,
-            .draw_operations = {
-                .count = (uint32_t)md_array_size(draw_ops),
-                .ops = draw_ops,
-            },
-            .view_transform = {
-                .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
-                .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
-                // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
-                .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
-            },
-            .picking_offset = gl_picking_offset(*state),
-            .max_bond_length = max_bond_length,
-        };
-
-        draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
-
-        if (md_array_size(glyph_ops) > 0) {
-            args.picking_offset = gl_picking_offset_glyphs(*state);
-            draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
-        }
-#if EXPERIMENTAL_GFX_API
     }
-#endif
+
+    const float max_bond_length = bond_length_limit(state);
+
+    md_gl_draw_args_t args = {
+        .shaders = state->gl.shaders,
+        .draw_operations = {
+            .count = (uint32_t)md_array_size(draw_ops),
+            .ops = draw_ops,
+        },
+        .view_transform = {
+            .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
+            .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
+            // These two are for temporal anti-aliasing reprojection (optional)
+            .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
+            .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
+        },
+        .picking_offset = gl_picking_offset(*state),
+        .max_bond_length = max_bond_length,
+    };
+
+    draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
+
+    if (md_array_size(glyph_ops) > 0) {
+        args.picking_offset = gl_picking_offset_glyphs(*state);
+        draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
+    }
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:

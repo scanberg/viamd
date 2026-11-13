@@ -254,9 +254,6 @@ bool representation_move(ApplicationState* app, bool group, uint32_t id, bool ta
 // ---------------------------------------------------------------------------------------------------------
 
 static void init_representation(ApplicationState* state, Representation* rep) {
-#if EXPERIMENTAL_GFX_API
-    rep->gfx_rep = md_gfx_rep_create(state->mold.sys.atom.count);
-#endif
     rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
     // Of the glyphs of the system loaded now: one of a system before it goes
     md_gl_rep_destroy(rep->glyph_rep);
@@ -940,12 +937,6 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             }
             state->representation.gl_version += 1;
 
-#if EXPERIMENTAL_GFX_API
-            md_gfx_rep_attr_t attributes = {};
-            attributes.spacefill.radius_scale = 1.0f;
-            md_gfx_rep_set_type_and_attr(rep->gfx_rep, MD_GFX_REP_TYPE_SPACEFILL, &attributes);
-            md_gfx_rep_set_color(rep->gfx_rep, 0, (uint32_t)mol.atom.count, (md_gfx_color_t*)colors, 0);
-#endif
         }
     }
 
