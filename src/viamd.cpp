@@ -4195,64 +4195,6 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
     return atom_xyz;
 }
 
-// The basis an evaluation runs against, rebuilt from the system's basis/ attributes. Positions are
-// NOT part of it: they come in as a parameter, because which geometry an orbital is drawn at is the
-// caller's decision and nothing down here is in a position to make it.
-static bool gto_basis_context(md_gto_basis_t* out_basis, md_temp_scope_t temp, const md_system_t& sys) {
-    MD_ASSERT(out_basis);
-    md_memset(out_basis, 0, sizeof(*out_basis));
-    return md_gto_basis_extract_attributes(out_basis, &sys.attributes, md_temp_allocator(temp));
-}
-
-// Every evaluation checks its positions the same way, and the count is the only thing that can be
-// wrong about them: an array of the wrong length would put shells on the wrong nuclei.
-static bool gto_positions_match_basis(const md_gto_basis_t* basis, const md_float3_t* atom_pos, size_t num_atom_pos) {
-    const size_t expected = md_gto_basis_num_atoms(basis);
-    if (!atom_pos || num_atom_pos != expected) {
-        MD_LOG_ERROR("The basis spans %zu atoms and %zu positions were supplied", expected, num_atom_pos);
-        return false;
-    }
-    return true;
-}
-
-bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const md_float3_t* atom_pos, size_t num_atom_pos,
-                         md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    size_t  num_ao    = 0;
-    double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, sys, coefficient_path, slice);
-    if (!ao_coeffs) {
-        return false;
-    }
-    return orbital_coefficients_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, ao_coeffs, num_ao, mode, op, cutoff);
-}
-
-bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                      const md_float3_t* atom_pos, size_t num_atom_pos,
-                                      const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
-    if (!ao_coeffs || num_ao == 0) return false;
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    md_gto_basis_t basis = {};
-    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
-        return false;
-    }
-
-    // The coefficients and the basis come from different places, so nothing guarantees they agree
-    // until it is checked here.
-    if (md_gto_basis_num_ao(&basis) != num_ao) {
-        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the orbital %zu", md_gto_basis_num_ao(&basis), num_ao);
-        return false;
-    }
-
-    md_gto_grid_evaluate_mo_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_float3_t), ao_coeffs, cutoff, mode, op);
-    volume::notify_data_changed(vol_tex);
-    return true;
-}
-
 // ---------------------------------------------------------------------------
 // Density evaluation
 // ---------------------------------------------------------------------------
@@ -4295,102 +4237,6 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 
     if (out_dim) *out_dim = dim;
     return dst;
-}
-
-// The same matrix as its packed upper triangle in float - what both density paths hand the shader.
-// A packed attribute is extracted as it is and nothing larger is ever made; a square one is
-// extracted whole into scratch first.
-float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice_ptr) {
-    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
-    if (!attr) {
-        MD_LOG_DEBUG("No density published at '" MD_STR_FMT "'", MD_STR_ARG(density_path));
-        return nullptr;
-    }
-
-    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, slice, nullptr);
-    if (dim == 0) {
-        return nullptr;
-    }
-    const size_t len = dim * (dim + 1) / 2;
-    float* dst = (float*)md_temp_alloc(temp, sizeof(float) * len);
-    DensityIo io;
-    if (!dst || md_qm_extract_packed_symmetric_f32(dst, len, attr, slice, io.io) != dim) {
-        return nullptr;
-    }
-
-    if (out_dim) *out_dim = dim;
-    return dst;
-}
-
-static bool density_packed_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                       const md_float3_t* atom_pos, size_t num_atom_pos,
-                                       const float* packed, size_t dim, md_gto_op_t op) {
-    if (!packed || dim == 0) {
-        return false;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    md_gto_basis_t basis = {};
-    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
-        return false;
-    }
-
-    if (md_gto_basis_num_ao(&basis) != dim) {
-        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&basis), dim);
-        return false;
-    }
-
-    {
-        // It times itself with a GL_TIME_ELAPSED query, which cannot run within the profiler's
-        profiler::Pause pause;
-        md_gto_grid_evaluate_density_packed_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_float3_t), packed, false, op);
-    }
-    volume::notify_data_changed(vol_tex);
-    return true;
-}
-
-bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                const md_float3_t* atom_pos, size_t num_atom_pos,
-                                const double* density_matrix, size_t dim, md_gto_op_t op) {
-    if (!density_matrix || dim == 0) {
-        return false;
-    }
-
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    md_gto_basis_t basis = {};
-    if (!gto_basis_context(&basis, temp, sys) || !gto_positions_match_basis(&basis, atom_pos, num_atom_pos)) {
-        return false;
-    }
-
-    if (md_gto_basis_num_ao(&basis) != dim) {
-        MD_LOG_ERROR("The basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&basis), dim);
-        return false;
-    }
-
-    md_gto_grid_evaluate_density_GL(vol_tex, &grid, &basis, (const float*)atom_pos, sizeof(md_float3_t), density_matrix, false, op);
-    volume::notify_data_changed(vol_tex);
-    return true;
-}
-
-bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const md_float3_t* atom_pos, size_t num_atom_pos,
-                         md_str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op) {
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    // Packed from the start: the shader reads the upper triangle as float, so that is all that is made
-    size_t dim = 0;
-    const float* packed = density_packed_extract(&dim, temp, sys, density_path, slice);
-    if (!packed) {
-        return false;
-    }
-
-    return density_packed_evaluate_gl(vol_tex, grid, sys, atom_pos, num_atom_pos, packed, dim, op);
 }
 
 static bool es_attribute_exists(const md_system_t& sys, md_str_t path) {
@@ -5144,6 +4990,16 @@ static bool gpu_evaluation_ready(const ApplicationState* state) {
 }
 #endif
 
+// Orbitals and densities are evaluated on a grid by md_gpu. Without a device for it, or in a build without
+// MD_ENABLE_GPU, there is nothing to evaluate them with: said once, rather than every frame something asks.
+static void gpu_evaluation_unavailable(const char* what) {
+    static bool said = false;
+    if (!said) {
+        MD_LOG_ERROR("Cannot evaluate %s: evaluation on a grid needs a GPU device (md_gpu), and none is available", what);
+        said = true;
+    }
+}
+
 bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff) {
     MD_ASSERT(state);
@@ -5202,14 +5058,9 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
     }
 #endif
 
-    // The call site's choice of geometry, made explicit: this wrapper draws at the system's CURRENT
-    // state. A caller wanting another one gathers its own positions and calls the _gl form.
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    size_t num_atom_pos = 0;
-    const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
-    return orbital_coefficients_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, ao_coeffs, num_ao, mode, op, cutoff);
+    (void)vol_tex; (void)grid; (void)mode; (void)op; (void)cutoff;
+    gpu_evaluation_unavailable("an orbital");
+    return false;
 }
 
 #if MD_ENABLE_GPU
@@ -5674,20 +5525,13 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
     }
 
 #if MD_ENABLE_GPU
-    if (density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op)) {
-        return gpu_volume_readback(state, vol_tex, grid);
-    }
     if (gpu_evaluation_ready(state)) {
-        return false;   // the GPU path was available and failed; the GL one would fail the same way
+        return density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op) && gpu_volume_readback(state, vol_tex, grid);
     }
 #endif
-
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    size_t num_atom_pos = 0;
-    const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
-    return density_matrix_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_matrix, dim, op);
+    (void)vol_tex; (void)grid; (void)op;
+    gpu_evaluation_unavailable("a density");
+    return false;
 }
 
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
@@ -5698,21 +5542,14 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     // Evaluate, then read back. The split exists because a consumer that runs another kernel over
     // the result - the critical point extraction does - wants the first half and not the second.
     md_gto_gpu_job_t* job = nullptr;
-    if (density_to_gpu_volume(state, grid, density_path, slice, op, async ? &job : nullptr)) {
+    if (gpu_evaluation_ready(state)) {
+        if (!density_to_gpu_volume(state, grid, density_path, slice, op, async ? &job : nullptr)) return false;
         return job ? gpu_volume_readback_after(state, vol_tex, grid, job) : gpu_volume_readback(state, vol_tex, grid);
     }
-    if (gpu_evaluation_ready(state)) {
-        return false;   // the GPU path was available and failed; the GL one would fail the same way
-    }
 #endif
-
-    // As above: the current state, chosen here rather than assumed further down.
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-
-    size_t num_atom_pos = 0;
-    const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state->mold.sys, state->mold.state);
-    return density_evaluate_gl(vol_tex, grid, state->mold.sys, atom_pos, num_atom_pos, density_path, slice, op);
+    (void)vol_tex; (void)grid; (void)density_path; (void)slice; (void)op; (void)async;
+    gpu_evaluation_unavailable("a density");
+    return false;
 }
 
 // The transfer function of a volume rendering, set up for the field when it is first drawn (or when the kind of its

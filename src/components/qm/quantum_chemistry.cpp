@@ -5666,19 +5666,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
             }
 #else
-            md_temp_scope_t temp = md_temp_begin();
-            MD_DEFER { md_temp_end(temp); };
-            uint32_t tex_id = 0;
-            if (gl::init_texture_3D(&tex_id, grid.dim[0], grid.dim[1], grid.dim[2], GL_R32F)) {
-                size_t num_atom_pos = 0;
-                const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atom_pos, temp, state.mold.sys, state.mold.state);
-                if (density_evaluate_gl(tex_id, grid, state.mold.sys, atom_pos, num_atom_pos, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
-                    if (!md_topo_compute_extremum_graph_GPU(&cp.raw_graph, tex_id, &grid, 0.0f)) {
-                        MD_LOG_ERROR("Failed to compute extremum graph for electron density");
-                    }
-                }
-                glDeleteTextures(1, &tex_id);
-            }
+            MD_LOG_ERROR("The critical points of the density are found on the GPU (md_gpu), which this build is without");
 #endif
         }
 
@@ -12958,7 +12946,6 @@ struct QuantumChemistry : viamd::EventHandler {
 
 			if (rsp.selected != -1) {
 				const size_t nto_idx = (size_t)rsp.selected;
-#if 1
 				{
 					md_temp_scope_t temp = md_temp_begin();
                     MD_DEFER { md_temp_end(temp); };
@@ -13023,63 +13010,6 @@ struct QuantumChemistry : viamd::EventHandler {
 					}
 				}
 
-#else
-                const float samples_per_unit_length = DEFAULT_SAMPLES_PER_ANGSTROM * BOHR_TO_ANGSTROM;
-
-                if (use_gpu_path) {
-                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_part, nto.group.count, nto.vol[NTO_Attachment].tex_id, &nto.grid, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
-                    md_gto_segment_and_attribute_to_groups_GPU(nto.transition_density_hole, nto.group.count, nto.vol[NTO_Detachment].tex_id, &nto.grid, (const float*)nto.atom_xyzr, nto.atom_group_idx, nto.num_atoms);
-                    compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
-                } else {
-                    task_system::ID eval_attach = 0;
-                    task_system::ID seg_attach  = 0;
-                    task_system::ID eval_detach = 0;
-                    task_system::ID seg_detach  = 0;
-
-                    if (compute_transition_group_values_async(&eval_attach, &seg_attach, nto.transition_density_part, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Particle, MD_GTO_EVAL_MODE_PSI, samples_per_unit_length) &&
-                        compute_transition_group_values_async(&eval_detach, &seg_detach, nto.transition_density_hole, nto.group.count, nto.grid, nto.atom_group_idx, nto.atom_xyzr, nto.num_atoms, nto_idx, ElectronicStructureNtoComponent::Hole,     MD_GTO_EVAL_MODE_PSI, samples_per_unit_length))
-                    {
-                        task_system::ID compute_matrix_task = task_system::create_main_task(MD_STR_LIT("##Compute Transition Matrix"), [nto = &nto]() {
-                            compute_transition_matrix(nto->transition_matrix, nto->group.count, nto->transition_density_hole, nto->transition_density_part);
-                            // Print out the groups and the values for debugging
-#if 1
-                            printf("Computed Transition Matrix for NTO index %d\n", nto->sel_nto_idx);
-                            printf("Number of Groups: %zu\n", nto->group.count);
-                            printf("Atom to Group Mapping:\n");
-                            for (size_t i = 0; i < nto->num_atoms; i++) {
-                                printf("    Atom %zu: Group %u\n", i, nto->atom_group_idx[i]);
-                            }
-                            printf("Transition Matrix:\n");
-                            for (size_t i = 0; i < nto->group.count; i++) {
-                                printf("  From Group %zu:\n", i);
-                                for (size_t j = 0; j < nto->group.count; j++) {
-                                    printf("    To Group %zu: %f\n", j, nto->transition_matrix[i * nto->group.count + j]);
-                                }
-                            }
-                            printf("Group Densities (Particle):\n");
-                            for (size_t i = 0; i < nto->group.count; i++) {
-                                printf("    Group %zu: %f\n", i, nto->transition_density_part[i]);
-                            }
-                            printf("Group Densities (Hole):\n");
-                            for (size_t i = 0; i < nto->group.count; i++) {
-                                printf("    Group %zu: %f\n", i, nto->transition_density_hole[i]);
-                            }
-#endif          
-                        });
-
-                        task_system::set_task_dependency(compute_matrix_task, seg_attach);
-                        task_system::set_task_dependency(compute_matrix_task, seg_detach);
-
-                        task_system::enqueue_task(eval_attach);
-                        task_system::enqueue_task(eval_detach);
-
-                        nto.seg_task[0] = seg_attach;
-                        nto.seg_task[1] = seg_detach;
-                    } else {
-                        MD_LOG_DEBUG("An error occured when computing nto group values");
-                    }
-                }
-#endif
             }
         }
     }

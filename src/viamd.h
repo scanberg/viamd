@@ -2717,22 +2717,6 @@ void system_gpu_data_free(ApplicationState* state);
 // which of the two it was addressing.
 double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, const md_system_t& sys, md_str_t coefficient_path, const md_attribute_slice_t* slice);
 
-// Evaluates one molecular orbital into a 3D texture, sourcing everything it needs from the system:
-// the GTO basis and the AO coefficients from the attribute table, the atom positions from the state.
-// coefficient_path is a rank 2 {M,A} attribute of doubles, "orbital/alpha/coefficient" or its beta
-// sibling; orbital_idx selects the row.
-//
-// The caller owns the grid, the destination texture and the evaluation parameters, which is why no
-// registry of "fields" is needed to sit between: what varies per request is the request, and what
-// is data is data.
-bool orbital_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const md_float3_t* atom_pos, size_t num_atom_pos,
-                         md_str_t coefficient_path, const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
-// From coefficients the caller holds, num_ao of them
-bool orbital_coefficients_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                      const md_float3_t* atom_pos, size_t num_atom_pos,
-                                      const double* ao_coeffs, size_t num_ao, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
-
 // Positions for a system's BASIS atoms, in the bohr and interleaved layout md_gto works in, taken
 // out of `state` through the QM -> system map. Allocated from temp; null with a zero count when the
 // system publishes no basis or the state cannot serve it.
@@ -2905,26 +2889,6 @@ void es_nto_warm_free(ApplicationState* state);
 // properties are). out_dim receives A.
 double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice);
 
-// The same matrix as its packed upper triangle in float, A(A+1)/2 values - the form both density
-// evaluation paths hand the shader. Prefer it wherever the matrix only goes on to be evaluated: a
-// packed attribute is read as it is, and its full double matrix is never made.
-float* density_packed_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice);
-
-// Evaluates one density into a 3D texture, from the same two sources as orbital_evaluate_gl: the
-// basis/ attributes and the state's atom positions. density_path plus 'slice' name the matrix -
-// "orbital/total/density" with no slice, "vlx/rsp/transition_density/attachment" with the excited
-// state index - and whether that matrix is stored or computed on demand is the table's business.
-bool density_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                         const md_float3_t* atom_pos, size_t num_atom_pos,
-                         md_str_t density_path, const md_attribute_slice_t* slice, md_gto_op_t op);
-
-// The same, over a matrix the caller already has in hand rather than a path to extract it from.
-// The transition densities are VIRTUAL and are rebuilt from the response solution on every read,
-// so a caller which needs one twice holds on to it and calls this instead.
-bool density_matrix_evaluate_gl(uint32_t vol_tex, const md_grid_t& grid, const md_system_t& sys,
-                                const md_float3_t* atom_pos, size_t num_atom_pos,
-                                const double* density_matrix, size_t dim, md_gto_op_t op);
-
 // ---------------------------------------------------------------------------
 // The attribute paths an electronic structure representation draws from
 // ---------------------------------------------------------------------------
@@ -2991,12 +2955,14 @@ inline md_str_t es_electron_density_path(ElectronicStructureSpin spin) {
 // no basis, which is the normal "nothing to draw" case rather than a failure.
 bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, const md_system_state_t& state, double samples_per_unit_length);
 
-// The entry points a representation calls: name the attribute, get a filled 3D texture. One
-// function per kind of thing being evaluated, with the choice of backend inside - so a caller never
-// asks which device is available, and both backends share the basis, the atom gather and the map.
+// The entry points a representation calls: name the attribute, get a filled 3D texture, evaluated on the GPU
+// (md_gpu) at the system's current state. One function per kind of thing being evaluated. coefficient_path is a rank
+// 2 {M,A} attribute of doubles, "orbital/alpha/coefficient" or its beta sibling, and slice selects the row;
+// density_path and slice name a density matrix - "orbital/total/density" with no slice,
+// "vlx/rsp/transition_density/attachment" with the excited state index. False, and said once, without a GPU device.
 //
-// With the GPU backend the texture is filled from the frame loop rather than before the call
-// returns; gpu_volume_jobs_drain() forces it where the contents are needed immediately.
+// The texture is filled from the frame loop rather than before the call returns; gpu_volume_jobs_drain() forces it
+// where the contents are needed immediately.
 bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t coefficient_path,
                       const md_attribute_slice_t* slice, md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
 // The same for an orbital the caller made itself (a block NTO, a combination of orbitals): its AO coefficients,
@@ -3008,23 +2974,25 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op, bool async = false);
 
-// density_evaluate over a matrix the caller already holds - see density_matrix_evaluate_gl.
+// density_evaluate over a matrix the caller already has in hand rather than a path to extract it from. The
+// transition densities are VIRTUAL and are rebuilt from the response solution on every read, so a caller which needs
+// one twice holds on to it and calls this instead.
 bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
                              const double* density_matrix, size_t dim, md_gto_op_t op);
 
-// Whether an evaluation above goes to the GPU, and the main thread only queues it. False means the GL fallback, which
-// evaluates on the main thread before it returns: what is evaluated ahead of being asked for should then wait.
+// Whether the evaluations above can run: the GPU is there, and the main thread only queues them. False when they
+// cannot, and what would be evaluated ahead of being asked for should not be asked for.
 bool gpu_volume_evaluation_available(const ApplicationState* state);
 
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
 // stream instead of reading it back. False when the GPU backend is unavailable, in which case there
-// is no scratch volume to run anything over and the caller wants the GL path instead.
+// is no scratch volume to run anything over.
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
 
-// The same, over a matrix the caller already holds - see density_matrix_evaluate_gl.
+// The same, over a matrix the caller already holds - see density_matrix_evaluate.
 bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
                                            const double* density_matrix, size_t dim, md_gto_op_t op);
 #endif
