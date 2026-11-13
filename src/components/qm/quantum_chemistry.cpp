@@ -18,8 +18,8 @@
 #include <md_system.h>
 #include <md_element.h>
 #include <md_topo.h>
-#include <md_vector_graphics.h>
-#include <md_flow.h>
+#include "svg_core.h"
+#include "flow_core.h"
 #include <md_qm_ct.h>
 #include <md_fragment.h>
 #include <md_csv.h>
@@ -1694,10 +1694,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
         flow_mode_t mode = FLOW_MODE_FRAGMENTS;
 
-        md_flow_graph_t  graph  = {};
-        md_flow_cut_t    cut    = {};
-        md_flow_layout_t layout = {};
-        md_flow_layout_params_t params = {};
+        flow_graph_t  graph  = {};
+        flow_cut_t    cut    = {};
+        flow_layout_t layout = {};
+        flow_layout_params_t params = {};
 
         // Node labels are borrowed by the graph rather than owned, so they have to outlive it.
         // Group labels already live in nto.group.label; these two are ours.
@@ -1736,7 +1736,7 @@ struct QuantumChemistry : viamd::EventHandler {
         float nto_dropped  = 0.0f;
         float link_dropped = 0.0f;
 
-        // Rows per column up to which the diagram opens fragments on its own (md_flow_cut_t.max_rows)
+        // Rows per column up to which the diagram opens fragments on its own (flow_cut_t.max_rows)
         int max_rows = 12;
 
         // The system's fragments (sys->fragment, md_fragment.h) as a tree to show (fragment_tree.h), and the
@@ -2992,8 +2992,8 @@ struct QuantumChemistry : viamd::EventHandler {
         return { v.x, v.y };
     }
 
-    static inline md_vg_color_t vg_color_from_imvec4(const ImVec4& color) {
-        return md_vg_color_from_vec4({ color.x, color.y, color.z, color.w });
+    static inline vg_color_t vg_color_from_imvec4(const ImVec4& color) {
+        return vg_color_from_vec4({ color.x, color.y, color.z, color.w });
     }
 
     static inline ImVec2 aligned_text_pos(const char* text, ImVec2 pos, ImVec2 alignment = { 0,0 }) {
@@ -3124,7 +3124,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
-    static inline void vg_sankey_diagram(md_vg_scene_t* scene, ImRect area, Nto* nto, bool hide_text_overlaps) {
+    static inline void vg_sankey_diagram(vg_scene_t* scene, ImRect area, Nto* nto, bool hide_text_overlaps) {
         if (!scene) return;
         if (!nto->transition_density_hole) return;
         if (!nto->transition_density_part) return;
@@ -3132,7 +3132,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin_avoid(scene->alloc);
         MD_DEFER { md_temp_end(temp); };
 
-        md_vg_add_rect_filled(scene, vec2_from_imvec2(area.Min), vec2_from_imvec2(area.Max), MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
+        vg_add_rect_filled(scene, vec2_from_imvec2(area.Min), vec2_from_imvec2(area.Max), VG_COLOR_RGB(255, 255, 255), 0.0f);
 
         ImRect plot_area = area;
         const float plot_percent = 0.8f;
@@ -3191,8 +3191,8 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t num_flow_labels = 0;
 
         const float font_size = ImGui::GetFontSize();
-        const md_vg_color_t text_color = MD_VG_COLOR_RGB(0, 0, 0);
-        const md_vg_color_t outline_color = MD_VG_COLOR_RGBA(0, 0, 0, 128);
+        const vg_color_t text_color = VG_COLOR_RGB(0, 0, 0);
+        const vg_color_t outline_color = VG_COLOR_RGBA(0, 0, 0, 128);
 
         for (size_t beg_i = 0; beg_i < nto->group.count; ++beg_i) {
             if (hole_percentages[beg_i] == 0.0f) continue;
@@ -3215,13 +3215,13 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImVec2 p4 = {};
                 compute_vertical_sankey_bezier(&p1, &p2, &p3, &p4, start_pos, end_pos, width);
 
-                md_vg_style_t flow_style = md_vg_style_stroke(vg_color_from_imvec4(start_col), width);
-                flow_style.line_cap = MD_VG_LINE_CAP_BUTT;
-                flow_style.line_join = MD_VG_LINE_JOIN_ROUND;
+                vg_style_t flow_style = vg_style_stroke(vg_color_from_imvec4(start_col), width);
+                flow_style.line_cap = VG_LINE_CAP_BUTT;
+                flow_style.line_join = VG_LINE_JOIN_ROUND;
                 if (end_i != beg_i) {
-                    flow_style.stroke = md_vg_paint_linear_gradient(vec2_from_imvec2({ start_pos.x, start_pos.y }), vec2_from_imvec2({ start_pos.x, end_pos.y }), vg_color_from_imvec4(start_col), vg_color_from_imvec4(end_col));
+                    flow_style.stroke = vg_paint_linear_gradient(vec2_from_imvec2({ start_pos.x, start_pos.y }), vec2_from_imvec2({ start_pos.x, end_pos.y }), vg_color_from_imvec4(start_col), vg_color_from_imvec4(end_col));
                 }
-                md_vg_add_bezier_cubic_styled(scene, vec2_from_imvec2(p1), vec2_from_imvec2(p2), vec2_from_imvec2(p3), vec2_from_imvec2(p4), &flow_style);
+                vg_add_bezier_cubic_styled(scene, vec2_from_imvec2(p1), vec2_from_imvec2(p2), vec2_from_imvec2(p3), vec2_from_imvec2(p4), &flow_style);
 
                 char label[32];
                 snprintf(label, sizeof(label), "%3.2f%%", percentage * 100.0f);
@@ -3249,7 +3249,7 @@ struct QuantumChemistry : viamd::EventHandler {
             char label[16];
             snprintf(label, sizeof(label), "%3.2f%%", flow_labels[i].value * 100.0f);
             const ImVec2 pos = aligned_text_pos(label, flow_labels[i].pos, { 0.5f, 0.5f });
-            md_vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, md_str_from_cstr(label));
+            vg_add_text(scene, vec2_from_imvec2(pos), font_size, text_color, md_str_from_cstr(label));
         }
 
         bool* show_start_text = md_temp_alloc_array(temp, bool, nto->group.count);
@@ -3330,18 +3330,18 @@ struct QuantumChemistry : viamd::EventHandler {
             ImVec2 end_p1 = { end_positions[i] + bars_avail_width * part_percentages[i], plot_area.Min.y + bar_height };
             ImVec2 end_midpoint = { (end_p0.x + end_p1.x) * 0.5f, end_p0.y };
 
-            md_vg_add_rect_filled(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), vg_color_from_imvec4(bar_color), 0.0f);
-            md_vg_add_rect(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), outline_color, 0.0f, 1.0f);
+            vg_add_rect_filled(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), vg_color_from_imvec4(bar_color), 0.0f);
+            vg_add_rect(scene, vec2_from_imvec2(start_p0), vec2_from_imvec2(start_p1), outline_color, 0.0f, 1.0f);
             if (show_start_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, md_str_from_cstr(start_label));
+                vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], start_midpoint, { 0.5f, -0.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(start_label, start_midpoint, { 0.5f, -1.2f })), font_size, text_color, md_str_from_cstr(start_label));
             }
 
-            md_vg_add_rect_filled(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), vg_color_from_imvec4(bar_color), 0.0f);
-            md_vg_add_rect(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), outline_color, 0.0f, 1.0f);
+            vg_add_rect_filled(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), vg_color_from_imvec4(bar_color), 0.0f);
+            vg_add_rect(scene, vec2_from_imvec2(end_p0), vec2_from_imvec2(end_p1), outline_color, 0.0f, 1.0f);
             if (show_end_text[i]) {
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
-                md_vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, md_str_from_cstr(end_label));
+                vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(nto->group.label[i], end_midpoint, { 0.5f, 1.2f })), font_size, text_color, md_str_from_cstr(nto->group.label[i]));
+                vg_add_text(scene, vec2_from_imvec2(aligned_text_pos(end_label, end_midpoint, { 0.5f, 2.2f })), font_size, text_color, md_str_from_cstr(end_label));
             }
         }
     }
@@ -3359,11 +3359,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
-        md_vg_scene_t scene = {};
-        md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
+        vg_scene_t scene = {};
+        vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
         vg_sankey_diagram(&scene, { 0.0f, 0.0f, size.x, size.y }, nto, hide_text_overlaps);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
+        const bool success = vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported transition diagram to '%s'", path_buf);
         } else {
@@ -10184,9 +10184,9 @@ struct QuantumChemistry : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
                 viamd::extract_flt(flow.style.ribbon_curvature, arg);
             } else if (md_str_eq_cstr(ident, "FlowOrder")) {
-                int order = MD_FLOW_ORDER_WEIGHT;
+                int order = FLOW_ORDER_WEIGHT;
                 if (viamd::extract_int(order, arg)) {
-                    flow.params.order = (md_flow_order_t)MD_CLAMP(order, 0, (int)MD_FLOW_ORDER_GRAPH);
+                    flow.params.order = (flow_order_t)MD_CLAMP(order, 0, (int)FLOW_ORDER_GRAPH);
                 }
             } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
                 viamd::extract_flt(flow.style.ribbon_min_px, arg);
@@ -10289,7 +10289,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
     static inline uint32_t flow_key_index(uint64_t key) { return (uint32_t)(key & 0xFFFFFFFFu); }
     static inline uint32_t flow_key_level(uint64_t key) { return (uint32_t)((key >> 32) & 0xFFu); }
-    // What a node stands for regardless of its column (md_flow_node_t.entity): never 0
+    // What a node stands for regardless of its column (flow_node_t.entity): never 0
     static inline uint64_t flow_entity(uint32_t level, uint32_t index) {
         return ((uint64_t)(level + 1) << 32) | (uint64_t)index;
     }
@@ -10512,11 +10512,11 @@ struct QuantumChemistry : viamd::EventHandler {
     // level, then the automatic fragments (md_fragment.h) of whatever is in none of them.
     //
     // Both columns list the same nodes in the same order, and a node is the same ENTITY on both sides
-    // (md_flow_node_t.entity): a flow from a fragment to itself is local excitation, drawn inside the
+    // (flow_node_t.entity): a flow from a fragment to itself is local excitation, drawn inside the
     // node, and every band that crosses the diagram is a genuine transfer. Between atoms most of any
     // excitation crosses - neighbours in a pi system always exchange - which is why fragments open first.
     bool build_flow_graph_fragments() {
-        md_flow_graph_init(&flow.graph, 2, arena);
+        flow_graph_init(&flow.graph, 2, arena);
         flow.nto_dropped = 0.0f;
         flow.link_dropped = 0.0f;
 
@@ -10552,7 +10552,7 @@ struct QuantumChemistry : viamd::EventHandler {
             md_temp_alloc_array(temp, uint32_t, N),
             md_temp_alloc_array(temp, uint32_t, N),
         };
-        for (size_t a = 0; a < N; ++a) atom_node[0][a] = atom_node[1][a] = MD_FLOW_INVALID_INDEX;
+        for (size_t a = 0; a < N; ++a) atom_node[0][a] = atom_node[1][a] = FLOW_INVALID_INDEX;
         uint32_t* frag_node = md_temp_alloc_array(temp, uint32_t, num_frags ? num_frags : 1);
 
         for (uint32_t column = 0; column < 2; ++column) {
@@ -10561,14 +10561,14 @@ struct QuantumChemistry : viamd::EventHandler {
 
             auto add_atom = [&](uint32_t a, uint32_t parent, md_float4_t color) {
                 if (weight[a] <= 0.0) return;
-                md_flow_node_t node = {
+                flow_node_t node = {
                     .column = column, .parent = parent, .level = FLOW_LEVEL_ATOM,
                     .weight = (float)weight[a], .color = color,
                     .label  = md_str_from_cstr(flow_atom_label(a)),
                     .key    = flow_node_key(column, FLOW_LEVEL_ATOM, a),
                     .entity = flow_entity(FLOW_LEVEL_ATOM, a),
                 };
-                nodes[a] = md_flow_graph_add_node(&flow.graph, &node);
+                nodes[a] = flow_graph_add_node(&flow.graph, &node);
             };
 
             // The user's groups, at the top
@@ -10576,15 +10576,15 @@ struct QuantumChemistry : viamd::EventHandler {
                 double group_weight = 0.0;
                 for (uint32_t a = 0; a < N; ++a) if (flow_group_of(a) == g) group_weight += weight[a];
                 if (group_weight <= 0.0) continue;
-                md_flow_node_t group_node = {
-                    .column = column, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
+                flow_node_t group_node = {
+                    .column = column, .parent = FLOW_INVALID_INDEX, .level = FLOW_LEVEL_GROUP,
                     .weight = (float)group_weight, .color = nto.group.color[g],
                     .label  = md_str_from_cstr(nto.group.label[g]),
                     .key    = flow_node_key(column, FLOW_LEVEL_GROUP, g),
                     .entity = flow_entity(FLOW_LEVEL_GROUP, g),
                 };
-                const uint32_t parent = md_flow_graph_add_node(&flow.graph, &group_node);
-                if (parent == MD_FLOW_INVALID_INDEX) continue;
+                const uint32_t parent = flow_graph_add_node(&flow.graph, &group_node);
+                if (parent == FLOW_INVALID_INDEX) continue;
                 for (uint32_t a = 0; a < N; ++a) {
                     if (flow_group_of(a) == g) add_atom(a, parent, nto.group.color[g]);
                 }
@@ -10592,22 +10592,22 @@ struct QuantumChemistry : viamd::EventHandler {
 
             // The automatic fragments of the rest, in their own (pre-)order
             for (size_t f = 0; f < num_frags; ++f) {
-                frag_node[f] = MD_FLOW_INVALID_INDEX;
+                frag_node[f] = FLOW_INVALID_INDEX;
                 if (frag_weight[column][f] <= 0.0) continue;
-                uint32_t parent = MD_FLOW_INVALID_INDEX;
+                uint32_t parent = FLOW_INVALID_INDEX;
                 for (uint32_t p = F.parent[f]; p != MD_FRAGMENT_NONE; p = F.parent[p]) {
-                    if (frag_node[p] != MD_FLOW_INVALID_INDEX) { parent = frag_node[p]; break; }
+                    if (frag_node[p] != FLOW_INVALID_INDEX) { parent = frag_node[p]; break; }
                 }
                 const md_float4_t color = flow_fragment_color((uint32_t)f);
-                md_flow_node_t node = {
+                flow_node_t node = {
                     .column = column, .parent = parent, .level = FLOW_LEVEL_FRAGMENT,
                     .weight = (float)frag_weight[column][f], .color = color,
                     .label  = frag_tree_name(&F, f),
                     .key    = flow_node_key(column, FLOW_LEVEL_FRAGMENT, (uint32_t)f),
                     .entity = flow_entity(FLOW_LEVEL_FRAGMENT, (uint32_t)f),
                 };
-                frag_node[f] = md_flow_graph_add_node(&flow.graph, &node);
-                if (frag_node[f] == MD_FLOW_INVALID_INDEX || !frag_tree_is_leaf(&F, f)) continue;
+                frag_node[f] = flow_graph_add_node(&flow.graph, &node);
+                if (frag_node[f] == FLOW_INVALID_INDEX || !frag_tree_is_leaf(&F, f)) continue;
                 for (uint32_t k = F.atom_beg[f]; k < F.atom_end[f]; ++k) {
                     const int32_t s = F.atom_idx[k];
                     const int32_t a = (flow.sys_to_qm && s >= 0 && (size_t)s < flow.num_sys_atoms) ? flow.sys_to_qm[s] : s;
@@ -10619,17 +10619,17 @@ struct QuantumChemistry : viamd::EventHandler {
             // QM atoms in no fragment (none, when the system has its atoms): roots of their own
             for (uint32_t a = 0; a < N; ++a) {
                 if (flow_group_of(a) != 0 || flow_fragment_of(a) != MD_FRAGMENT_NONE) continue;
-                add_atom(a, MD_FLOW_INVALID_INDEX, flow_atom_color(a, column));
+                add_atom(a, FLOW_INVALID_INDEX, flow_atom_color(a, column));
             }
         }
 
         for (size_t a = 0; a < N; ++a) {
-            if (atom_node[0][a] == MD_FLOW_INVALID_INDEX) continue;
+            if (atom_node[0][a] == FLOW_INVALID_INDEX) continue;
             const double* row = job->omega + a * N;
             for (size_t b = 0; b < N; ++b) {
-                if (atom_node[1][b] == MD_FLOW_INVALID_INDEX) continue;
+                if (atom_node[1][b] == FLOW_INVALID_INDEX) continue;
                 const float w = (float)row[b];
-                if (w > 0.0f) md_flow_graph_add_link(&flow.graph, atom_node[0][a], atom_node[1][b], w);
+                if (w > 0.0f) flow_graph_add_link(&flow.graph, atom_node[0][a], atom_node[1][b], w);
             }
         }
 
@@ -10725,7 +10725,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // population on the dominant transition: a diagram that adds up perfectly and is wrong by a
     // third about which atoms donated. See docs/transition_flow_design.md.
     bool build_flow_graph_orbitals(const FlowData& qm) {
-        md_flow_graph_init(&flow.graph, 3, arena);
+        flow_graph_init(&flow.graph, 3, arena);
 
         if (rsp.selected < 0) return false;
 
@@ -10817,7 +10817,7 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t* occ_node = md_temp_alloc_array(temp, uint32_t, num_mo);
         uint32_t* vir_node = md_temp_alloc_array(temp, uint32_t, num_mo);
         uint32_t* mid_node = md_temp_alloc_array(temp, uint32_t, num_keep);
-        for (size_t mo = 0; mo < num_mo; ++mo) { occ_node[mo] = vir_node[mo] = MD_FLOW_INVALID_INDEX; }
+        for (size_t mo = 0; mo < num_mo; ++mo) { occ_node[mo] = vir_node[mo] = FLOW_INVALID_INDEX; }
 
         // Every orbital with any weight becomes a node. There is no truncation here on purpose:
         // dropping the tail would break conservation, and the cut's threshold already folds the
@@ -10833,39 +10833,39 @@ struct QuantumChemistry : viamd::EventHandler {
             if (!dst) continue;
             snprintf(dst, FLOW_ATOM_LABEL_STRIDE, "%s", label);
 
-            md_flow_node_t node = {
+            flow_node_t node = {
                 .column = occupied ? 0u : 2u,
-                .parent = MD_FLOW_INVALID_INDEX,
+                .parent = FLOW_INVALID_INDEX,
                 .level  = FLOW_LEVEL_MO,
                 .weight = (float)w,
                 .color  = occupied ? md_float4_t{0.78f, 0.24f, 0.22f, 1.0f} : md_float4_t{0.13f, 0.56f, 0.35f, 1.0f},
                 .label  = md_str_from_cstr(dst),
                 .key    = flow_node_key(occupied ? 0u : 2u, FLOW_LEVEL_MO, (uint32_t)mo),
             };
-            (occupied ? occ_node : vir_node)[mo] = md_flow_graph_add_node(&flow.graph, &node);
+            (occupied ? occ_node : vir_node)[mo] = flow_graph_add_node(&flow.graph, &node);
         }
 
         for (size_t k = 0; k < num_keep; ++k) {
             const ImVec4 c = ImPlot::GetColormapColor((int)k, ImPlotColormap_Deep);
-            md_flow_node_t node = {
-                .column = 1, .parent = MD_FLOW_INVALID_INDEX, .level = FLOW_LEVEL_NTO,
+            flow_node_t node = {
+                .column = 1, .parent = FLOW_INVALID_INDEX, .level = FLOW_LEVEL_NTO,
                 .weight = (float)lambda_keep[k], .color = vec_cast(c),
                 .label = md_str_from_cstr(flow.nto_label[k]),
                 .sublabel = md_str_from_cstr(flow.nto_character[k]),
                 .key = flow_node_key(1, FLOW_LEVEL_NTO, (uint32_t)k),
             };
-            mid_node[k] = md_flow_graph_add_node(&flow.graph, &node);
+            mid_node[k] = flow_graph_add_node(&flow.graph, &node);
         }
 
         for (size_t k = 0; k < num_keep; ++k) {
             for (size_t mo = 0; mo < num_mo; ++mo) {
-                if (occ_node[mo] != MD_FLOW_INVALID_INDEX) {
+                if (occ_node[mo] != FLOW_INVALID_INDEX) {
                     const float w = (float)(lambda_keep[k] * proj_occ[k * num_mo + mo]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, occ_node[mo], mid_node[k], w);
+                    if (w > 0.0f) flow_graph_add_link(&flow.graph, occ_node[mo], mid_node[k], w);
                 }
-                if (vir_node[mo] != MD_FLOW_INVALID_INDEX) {
+                if (vir_node[mo] != FLOW_INVALID_INDEX) {
                     const float w = (float)(lambda_keep[k] * proj_vir[k * num_mo + mo]);
-                    if (w > 0.0f) md_flow_graph_add_link(&flow.graph, mid_node[k], vir_node[mo], w);
+                    if (w > 0.0f) flow_graph_add_link(&flow.graph, mid_node[k], vir_node[mo], w);
                 }
             }
         }
@@ -10906,23 +10906,23 @@ struct QuantumChemistry : viamd::EventHandler {
             if (lists[l]) qsort(lists[l], md_array_size(lists[l]), sizeof(uint64_t), flow_key_cmp);
         }
 
-        md_flow_graph_free(&flow.graph);
+        flow_graph_free(&flow.graph);
         flow.built = false;
         flow.hover = FlowHit{};     // a cut index, and stale now (selection is by key, so it lives)
 
         const bool ok = (flow.mode == FLOW_MODE_ORBITALS) ? (qm && build_flow_graph_orbitals(*qm))
                                                           : build_flow_graph_fragments();
         if (!ok) {
-            md_flow_graph_free(&flow.graph);
+            flow_graph_free(&flow.graph);
             return;
         }
 
         // Validating every build is cheap and it is the only thing standing between a arithmetic
         // slip upstream and a diagram that looks plausible while being wrong.
-        const md_flow_result_t result = md_flow_graph_validate(&flow.graph, 1.0e-3f);
-        if (result != MD_FLOW_OK) {
-            MD_LOG_ERROR("Charge transfer graph is inconsistent: %s", md_flow_result_str(result));
-            md_flow_graph_clear(&flow.graph);
+        const flow_result_t result = flow_graph_validate(&flow.graph, 1.0e-3f);
+        if (result != FLOW_OK) {
+            MD_LOG_ERROR("Charge transfer graph is inconsistent: %s", flow_result_str(result));
+            flow_graph_clear(&flow.graph);
             return;
         }
 
@@ -10931,18 +10931,18 @@ struct QuantumChemistry : viamd::EventHandler {
         const bool fragments = flow.mode == FLOW_MODE_FRAGMENTS;
         flow.cut.mirror   = fragments;
         flow.cut.max_rows = fragments ? (uint32_t)MD_MAX(flow.max_rows, 0) : 0u;
-        md_flow_cut_clear_pins(&flow.cut);
+        flow_cut_clear_pins(&flow.cut);
         md_bitmask_clear(&flow.cut.other_open);
         for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
             const uint64_t key = flow.graph.nodes[i].key;
-            if (flow_key_in(lists[0], key) || (!fragments && !flow_key_in(lists[3], key))) md_flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
+            if (flow_key_in(lists[0], key) || (!fragments && !flow_key_in(lists[3], key))) flow_cut_set_expanded(&flow.cut, (uint32_t)i, true);
             if (flow_key_in(lists[1], key)) md_bitmask_set_bit(&flow.cut.collapsed,  (uint32_t)i);
             if (flow_key_in(lists[2], key)) md_bitmask_set_bit(&flow.cut.other_open, (uint32_t)i);
         }
 
         flow.built = true;
         flow.fit_requested = true;
-        md_flow_cut_resolve(&flow.cut, &flow.graph);
+        flow_cut_resolve(&flow.cut, &flow.graph);
     }
 
     // Frame the diagram with room to breathe.
@@ -10968,9 +10968,9 @@ struct QuantumChemistry : viamd::EventHandler {
         notes->caption[2] = "Particle";
         float local = 0.0f, total = 0.0f;
         for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
-            const md_flow_link_t* l = flow.cut.links + i;
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            const flow_link_t* l = flow.cut.links + i;
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, l->dst);
             if (a && b && a->entity != 0 && a->entity == b->entity) local += l->weight;
             total += l->weight;
         }
@@ -10989,7 +10989,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // Pan and zoom that put the nodes' box, with the room its labels and annotations take, inside a
     // canvas of 'canvas_size' pixels.
-    void flow_fit(md_float2_t* pan, float* zoom, const md_flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
+    void flow_fit(md_float2_t* pan, float* zoom, const flow_layout_t& layout, ImVec2 canvas_size, const FlowMargins& m) const {
         *pan = { 0, 0 };
         *zoom = 1.0f;
         if (md_array_size(layout.nodes) == 0) return;
@@ -10997,7 +10997,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_float2_t bb_min = { 1.0e30f,  1.0e30f };
         md_float2_t bb_max = {-1.0e30f, -1.0e30f };
         for (size_t i = 0; i < md_array_size(layout.nodes); ++i) {
-            const md_flow_layout_node_t* n = layout.nodes + i;
+            const flow_layout_node_t* n = layout.nodes + i;
             bb_min.x = MD_MIN(bb_min.x, n->min.x);  bb_min.y = MD_MIN(bb_min.y, n->min.y);
             bb_max.x = MD_MAX(bb_max.x, n->max.x);  bb_max.y = MD_MAX(bb_max.y, n->max.y);
         }
@@ -11049,8 +11049,8 @@ struct QuantumChemistry : viamd::EventHandler {
                               md_allocator_i* alloc)
     {
         for (size_t i = 0; i < md_array_size(flow.layout.nodes); ++i) {
-            const md_flow_layout_node_t* ln = flow.layout.nodes + i;
-            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, ln->cut_idx);
+            const flow_layout_node_t* ln = flow.layout.nodes + i;
+            const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, ln->cut_idx);
             if (!node || !flow_level_has_atoms(node->level)) continue;
 
             const ImVec2 min = flow_view_to_screen(view, ln->min);
@@ -11109,7 +11109,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // directly - there is no diagram-local copy to keep in step - while NTO nodes are a separate
     // axis and never touch it.
     void flow_set_selected(ApplicationState& state, uint32_t cut_idx, bool selected) {
-        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, cut_idx);
         if (!node) return;
 
         if (!flow_level_has_atoms(node->level)) {
@@ -11136,8 +11136,8 @@ struct QuantumChemistry : viamd::EventHandler {
     // Atoms belonging to a visible node, for the two-way link with the viewport.
     // Allocated with alloc
     md_bitset_t flow_node_atom_mask(uint32_t cut_idx, md_allocator_i* alloc) {
-        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
-        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER)) return md_bitset_empty_set();
+        const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & FLOW_NODE_FLAG_OTHER)) return md_bitset_empty_set();
 
         // Orbitals own no atoms; selecting "all the atoms an NTO touches" would be the whole
         // molecule and mean nothing. Gated on the LEVEL rather than the column, because in the
@@ -11171,10 +11171,10 @@ struct QuantumChemistry : viamd::EventHandler {
     float flow_node_self_weight(uint32_t cut_idx) const {
         float sum = 0.0f;
         for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
-            const md_flow_link_t* l = flow.cut.links + i;
+            const flow_link_t* l = flow.cut.links + i;
             if (l->src != cut_idx && l->dst != cut_idx) continue;
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, l->dst);
             if (a && b && a->entity != 0 && a->entity == b->entity) sum += l->weight;
         }
         return sum;
@@ -11182,8 +11182,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The QM atoms a visible node stands for; false for an "Others" and for orbitals
     bool flow_node_qm_atoms(md_array(uint32_t)* out, uint32_t cut_idx, md_allocator_i* alloc) const {
-        const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
-        if (!node || (node->flags & MD_FLOW_NODE_FLAG_OTHER) || !flow_level_has_atoms(node->level)) return false;
+        const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!node || (node->flags & FLOW_NODE_FLAG_OTHER) || !flow_level_has_atoms(node->level)) return false;
         const uint32_t index = flow_key_index(node->key);
         const size_t N = md_array_size(nto.atom_group_idx);
         if (node->level == FLOW_LEVEL_ATOM) {
@@ -11207,7 +11207,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_update_stripes() {
         const bool active = flow.mode == FLOW_MODE_FRAGMENTS && flow.built && ct_state_job_ready(ct_job) && ct_job->state == rsp.selected;
         const size_t L = md_array_size(flow.cut.links);
-        const uint64_t hash = active ? md_hash64(flow.cut.links, sizeof(md_flow_link_t) * L, flow.data_hash ^ 0x57121e5ull) : 0;
+        const uint64_t hash = active ? md_hash64(flow.cut.links, sizeof(flow_link_t) * L, flow.data_hash ^ 0x57121e5ull) : 0;
         if (hash == flow.stripe_hash && (active || md_array_size(flow.stripe_offset) == 0)) return;
         flow.stripe_hash = hash;
         md_array_shrink(flow.stripe_offset, 0);
@@ -11238,9 +11238,9 @@ struct QuantumChemistry : viamd::EventHandler {
         double* w = md_temp_alloc_array(temp, double, K);
         for (size_t l = 0; l < L; ++l) {
             md_array_push(flow.stripe_offset, (uint32_t)md_array_size(flow.stripe_frac), arena);
-            const md_flow_link_t* link = flow.cut.links + l;
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+            const flow_link_t* link = flow.cut.links + l;
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, link->src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, link->dst);
             if (!a || !b || (a->entity != 0 && a->entity == b->entity)) continue;    // local: drawn in the node
             const double* H = node_block(link->src, ct_job->hole_blocks);
             const double* P = node_block(link->dst, ct_job->part_blocks);
@@ -11558,8 +11558,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The NTO pair a node of the orbital route's middle column stands for, -1 for any other node
     int32_t ctv_nto_of_cut_node(uint32_t cut_idx) const {
-        const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, cut_idx);
-        if (!n || (n->flags & MD_FLOW_NODE_FLAG_OTHER) || n->level != FLOW_LEVEL_NTO) return -1;
+        const flow_node_t* n = flow_cut_node(&flow.cut, &flow.graph, cut_idx);
+        if (!n || (n->flags & FLOW_NODE_FLAG_OTHER) || n->level != FLOW_LEVEL_NTO) return -1;
         const uint32_t k = flow_key_index(n->key);
         return k < MAX_NTO_LABELS ? (int32_t)flow.nto_index[k] : -1;
     }
@@ -11569,10 +11569,10 @@ struct QuantumChemistry : viamd::EventHandler {
         if (rsp.selected < 0) return r;
         if (flow.mode == FLOW_MODE_FRAGMENTS) {
             if (link < 0 || (size_t)link >= md_array_size(flow.cut.links) || !ctv_block_ready()) return r;
-            const md_flow_link_t* l = flow.cut.links + link;
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, l->src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, l->dst);
-            if (!a || !b || (a->flags & MD_FLOW_NODE_FLAG_OTHER) || (b->flags & MD_FLOW_NODE_FLAG_OTHER)) return r;
+            const flow_link_t* l = flow.cut.links + link;
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, l->src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, l->dst);
+            if (!a || !b || (a->flags & FLOW_NODE_FLAG_OTHER) || (b->flags & FLOW_NODE_FLAG_OTHER)) return r;
             if (!flow_level_has_atoms(a->level) || !flow_level_has_atoms(b->level)) return r;
             r.link = link;
             r.pair = stripe > 0 ? (uint32_t)stripe : 0;
@@ -11611,8 +11611,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const CtViews::Pin& p = ctv.pin;
         if (!p.on || p.state != rsp.selected || flow.mode != FLOW_MODE_FRAGMENTS) return -1;
         for (size_t i = 0; i < md_array_size(flow.cut.links); ++i) {
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].dst);
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[i].dst);
             if (a && b && a->key == p.src_key && b->key == p.dst_key) return (int32_t)i;
         }
         return -1;
@@ -11628,8 +11628,8 @@ struct QuantumChemistry : viamd::EventHandler {
         ctv.pin.nto = r.nto;
         ctv.pin.pair = r.pair;
         if (r.link >= 0) {
-            const md_flow_node_t* a = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].src);
-            const md_flow_node_t* b = md_flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].dst);
+            const flow_node_t* a = flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].src);
+            const flow_node_t* b = flow_cut_node(&flow.cut, &flow.graph, flow.cut.links[r.link].dst);
             ctv.pin.src_key = a ? a->key : 0;
             ctv.pin.dst_key = b ? b->key : 0;
         }
@@ -11644,7 +11644,7 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
         md_allocator_i* talloc = md_temp_allocator(temp);
 
-        const md_flow_link_t* l = flow.cut.links + link;
+        const flow_link_t* l = flow.cut.links + link;
         const uint32_t end[2] = { l->src, l->dst };
         const double* x_lowdin[2] = { ct_job->hole, ct_job->part };
         const double* blocks[2]   = { ct_job->hole_blocks, ct_job->part_blocks };
@@ -11682,7 +11682,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 out[side][mu] = v;
             }
-            const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, end[side]);
+            const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, end[side]);
             snprintf(info[side], 64, "%.*s", node ? (int)node->label.len : 0, node && node->label.ptr ? node->label.ptr : "");
         }
         if (n > 1) {
@@ -12100,12 +12100,12 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_excited_states == 0) return;
 
         if (!flow.cut.alloc) {
-            md_flow_cut_init(&flow.cut, arena);
-            md_flow_layout_init(&flow.layout, arena);
-            flow.params = md_flow_layout_params_default();
+            flow_cut_init(&flow.cut, arena);
+            flow_layout_init(&flow.layout, arena);
+            flow.params = flow_layout_params_default();
             // The same fragments in the same order on both sides: a straight band is local, a
             // slanted one is transfer.
-            flow.params.order = MD_FLOW_ORDER_GRAPH;
+            flow.params.order = FLOW_ORDER_GRAPH;
             // Thin bars: the labels sit outside them, and the width between belongs to the ribbons
             flow.params.node_thickness = flow.bar_width;
             flow.cut.threshold = flow.initial_threshold;
@@ -12198,7 +12198,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Separator();
                     ImGui::SliderFloat("Bar width", &flow.params.node_thickness, 0.01f, 0.25f);
                     ImGui::SliderFloat("Node gap", &flow.params.node_gap, 0.0f, 0.1f);
-                    ImGui::BeginDisabled(flow.params.order != MD_FLOW_ORDER_BARYCENTRE);
+                    ImGui::BeginDisabled(flow.params.order != FLOW_ORDER_BARYCENTRE);
                     int sweeps = (int)flow.params.barycentre_sweeps;
                     if (ImGui::SliderInt("Crossing sweeps", &sweeps, 0, 4)) {
                         flow.params.barycentre_sweeps = (uint32_t)MD_MAX(0, sweeps);
@@ -12215,7 +12215,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         float other_pct = flow.cut.other_max * 100.0f;
                         if (ImGui::SliderFloat("Others cap", &other_pct, 1.0f, 100.0f, "%.0f%%")) {
                             flow.cut.other_max = other_pct * 0.01f;
-                            md_flow_cut_resolve(&flow.cut, &flow.graph);
+                            flow_cut_resolve(&flow.cut, &flow.graph);
                         }
                         ImGui::SetItemTooltip("The most a single 'Others' may hold. Below 100%% folding stops early,\n"
                                               "which means rows under 'Fold below' STAY on screen. Leave it at 100%%\n"
@@ -12268,7 +12268,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::PushItemWidth(120.0f);
                 if (ImGui::SliderInt("Rows", &flow.max_rows, 2, 40)) {
                     flow.cut.max_rows = (uint32_t)flow.max_rows;
-                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    flow_cut_resolve(&flow.cut, &flow.graph);
                 }
                 ImGui::SetItemTooltip("How many rows a column may show. Fragments open on their own, the\n"
                                       "heaviest first, until the next would not fit - so the detail goes where\n"
@@ -12281,7 +12281,7 @@ struct QuantumChemistry : viamd::EventHandler {
             float threshold_pct = flow.cut.threshold * 100.0f;
             if (ImGui::SliderFloat("Fold below", &threshold_pct, 0.0f, 25.0f, "%.1f%%")) {
                 flow.cut.threshold = threshold_pct * 0.01f;
-                md_flow_cut_resolve(&flow.cut, &flow.graph);
+                flow_cut_resolve(&flow.cut, &flow.graph);
             }
             ImGui::SetItemTooltip("Share of a COLUMN, not of the whole diagram. Siblings below it fold into\n"
                                   "an 'Others' inside their parent; double click that to draw them.");
@@ -12300,24 +12300,24 @@ struct QuantumChemistry : viamd::EventHandler {
             if (fragments) {
                 ImGui::SameLine();
                 if (ImGui::Button("Expand all")) {
-                    md_flow_cut_expand_all(&flow.cut, &flow.graph);
+                    flow_cut_expand_all(&flow.cut, &flow.graph);
                     md_bitmask_clear(&flow.cut.collapsed);
-                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    flow_cut_resolve(&flow.cut, &flow.graph);
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Collapse all")) {
                     md_bitmask_clear(&flow.cut.expanded);
                     for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
-                        if (!md_flow_node_is_leaf(&flow.graph, (uint32_t)i)) md_bitmask_set_bit(&flow.cut.collapsed, (uint32_t)i);
+                        if (!flow_node_is_leaf(&flow.graph, (uint32_t)i)) md_bitmask_set_bit(&flow.cut.collapsed, (uint32_t)i);
                     }
-                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    flow_cut_resolve(&flow.cut, &flow.graph);
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Auto")) {
-                    md_flow_cut_clear_pins(&flow.cut);
+                    flow_cut_clear_pins(&flow.cut);
                     md_bitmask_clear(&flow.cut.other_open);
                     flow.cut.other_expanded = 0;
-                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    flow_cut_resolve(&flow.cut, &flow.graph);
                 }
                 ImGui::SetItemTooltip("Forget what was opened and closed by hand: the row budget decides again.");
             }
@@ -12325,10 +12325,10 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::PushItemWidth(150.0f);
             int order = (int)flow.params.order;
-            // In md_flow_order_t's order
+            // In flow_order_t's order
             static const char* order_str[] = { "By contribution", "Fewest crossings", "As listed" };
             if (ImGui::Combo("Order", &order, order_str, IM_ARRAYSIZE(order_str))) {
-                flow.params.order = (md_flow_order_t)order;
+                flow.params.order = (flow_order_t)order;
             }
             ImGui::SetItemTooltip("Rows within a column. 'As listed' keeps the fragments in the same order\n"
                                   "on both sides, so a straight band is local and a slanted one is transfer.\n"
@@ -12450,12 +12450,12 @@ struct QuantumChemistry : viamd::EventHandler {
             // proportional, because their proportions ARE the charge transfer.
             {
                 const float e = 1.0f - flow.size_normalize * 0.85f;   // 1.0 .. 0.15
-                for (uint32_t c = 0; c < MD_FLOW_MAX_COLUMNS; ++c) {
+                for (uint32_t c = 0; c < FLOW_MAX_COLUMNS; ++c) {
                     flow.params.weight_exponent[c] = (flow.mode == FLOW_MODE_ORBITALS) ? e : 1.0f;
                 }
             }
 
-            md_flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
+            flow_layout_compute(&flow.layout, &flow.graph, &flow.cut, &flow.params);
             flow_layout_indent(&flow.layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
             // The layout lives in graph space and knows nothing about pan or zoom, so fitting
@@ -12529,7 +12529,7 @@ struct QuantumChemistry : viamd::EventHandler {
             };
 
             for (size_t i = 0; i < md_array_size(flow.graph.nodes); ++i) {
-                const md_flow_node_t* n = flow.graph.nodes + i;
+                const flow_node_t* n = flow.graph.nodes + i;
                 uint8_t st = 0;
                 const uint32_t index = flow_key_index(n->key);
                 switch (n->level) {
@@ -12597,8 +12597,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && io.MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f) {
                     const uint32_t idx = (uint32_t)hit.toggle;
-                    md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
-                    md_flow_cut_resolve(&flow.cut, &flow.graph);
+                    flow_cut_pin(&flow.cut, &flow.graph, idx, !flow_cut_is_open(&flow.cut, idx));
+                    flow_cut_resolve(&flow.cut, &flow.graph);
                 }
             }
             if (canvas_hovered && hit.subtitle && flow.mode == FLOW_MODE_FRAGMENTS) {
@@ -12724,8 +12724,8 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (canvas_hovered && hit.node >= 0) {
-                const md_flow_node_t* node = md_flow_cut_node(&flow.cut, &flow.graph, (uint32_t)hit.node);
-                if (node && (node->flags & MD_FLOW_NODE_FLAG_OTHER)) {
+                const flow_node_t* node = flow_cut_node(&flow.cut, &flow.graph, (uint32_t)hit.node);
+                if (node && (node->flags & FLOW_NODE_FLAG_OTHER)) {
                     // An "Others" is a sum, so its tooltip has to say what it is a sum OF - an
                     // unexplained grey box holding a chunk of the transfer is worse than no box.
                     const uint32_t other_idx = (uint32_t)hit.node - (uint32_t)md_array_size(flow.graph.nodes);
@@ -12740,7 +12740,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                      : (node->column == 1 && !two_columns) ? "transition"
                                      : (two_columns ? "particle" : "attachment");
                     const bool has_children = (uint32_t)hit.node < md_array_size(flow.graph.nodes)
-                                              && !md_flow_node_is_leaf(&flow.graph, (uint32_t)hit.node);
+                                              && !flow_node_is_leaf(&flow.graph, (uint32_t)hit.node);
                     // Of a fragment's share, what stays on it (drawn inside the node) and what moves
                     char local[96] = "";
                     if (flow.mode == FLOW_MODE_FRAGMENTS && node->weight > 0.0f) {
@@ -12750,7 +12750,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                  node->column == 0 ? "transferred away" : "transferred in");
                     }
                     if (has_children) {
-                        const bool open = md_flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
+                        const bool open = flow_cut_is_open(&flow.cut, (uint32_t)hit.node);
                         // a group with an arrow (its band) says so; a fragment of atoms has none
                         bool has_arrow = flow_node_is_container(&flow.graph, &flow.cut, (uint32_t)hit.node);
                         for (size_t b = 0; b < md_array_size(flow.layout.bands); ++b) has_arrow |= flow.layout.bands[b].node == (uint32_t)hit.node;
@@ -12778,20 +12778,20 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Not on an arrow: its two clicks have already closed and opened it again
                 if (!io.KeyShift && hit.toggle < 0 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     const uint32_t idx = (uint32_t)hit.node;
-                    const md_flow_node_t* n = md_flow_cut_node(&flow.cut, &flow.graph, idx);
-                    if (n && (n->flags & MD_FLOW_NODE_FLAG_OTHER)) {
-                        md_flow_cut_open_other(&flow.cut, &flow.graph, n, true);
-                        md_flow_cut_resolve(&flow.cut, &flow.graph);
-                    } else if (idx < md_array_size(flow.graph.nodes) && !md_flow_node_is_leaf(&flow.graph, idx)) {
-                        md_flow_cut_pin(&flow.cut, &flow.graph, idx, !md_flow_cut_is_open(&flow.cut, idx));
-                        md_flow_cut_resolve(&flow.cut, &flow.graph);
-                    } else if (n && md_flow_cut_is_other_open_for(&flow.cut, n)) {
+                    const flow_node_t* n = flow_cut_node(&flow.cut, &flow.graph, idx);
+                    if (n && (n->flags & FLOW_NODE_FLAG_OTHER)) {
+                        flow_cut_open_other(&flow.cut, &flow.graph, n, true);
+                        flow_cut_resolve(&flow.cut, &flow.graph);
+                    } else if (idx < md_array_size(flow.graph.nodes) && !flow_node_is_leaf(&flow.graph, idx)) {
+                        flow_cut_pin(&flow.cut, &flow.graph, idx, !flow_cut_is_open(&flow.cut, idx));
+                        flow_cut_resolve(&flow.cut, &flow.graph);
+                    } else if (n && flow_cut_is_other_open_for(&flow.cut, n)) {
                         // Double clicking a member of an opened "Others" folds it again - the pair of
                         // gestures is symmetric, since the "Others" itself is gone while open.
-                        const md_flow_node_t other = { .column = n->column, .parent = n->parent };
-                        md_flow_cut_open_other(&flow.cut, &flow.graph, &other, false);
-                        md_flow_cut_set_other_expanded(&flow.cut, n->column, false);
-                        md_flow_cut_resolve(&flow.cut, &flow.graph);
+                        const flow_node_t other = { .column = n->column, .parent = n->parent };
+                        flow_cut_open_other(&flow.cut, &flow.graph, &other, false);
+                        flow_cut_set_other_expanded(&flow.cut, n->column, false);
+                        flow_cut_resolve(&flow.cut, &flow.graph);
                     }
                 }
             } else if (canvas_hovered && hit.node < 0 && hit.link < 0) {
@@ -12809,9 +12809,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             if (canvas_hovered && hit.link >= 0) {
-                const md_flow_link_t* link = flow.cut.links + hit.link;
-                const md_flow_node_t* src = md_flow_cut_node(&flow.cut, &flow.graph, link->src);
-                const md_flow_node_t* dst = md_flow_cut_node(&flow.cut, &flow.graph, link->dst);
+                const flow_link_t* link = flow.cut.links + hit.link;
+                const flow_node_t* src = flow_cut_node(&flow.cut, &flow.graph, link->src);
+                const flow_node_t* dst = flow_cut_node(&flow.cut, &flow.graph, link->dst);
                 if (src && dst) {
                     // What it is made of: the orbital pairs of this transfer, when there are several
                     char pairs[160] = "";
@@ -12856,15 +12856,15 @@ struct QuantumChemistry : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
 
-        md_vg_scene_t scene = {};
-        md_vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
+        vg_scene_t scene = {};
+        vg_scene_init(&scene, { size.x, size.y }, md_temp_allocator(temp));
 
         // The export draws the SAME layout the screen does, at a different size. That is the
         // point of keeping layout separate from drawing: there is no second implementation to
         // drift out of agreement with the first.
-        md_flow_layout_t layout = {};
-        md_flow_layout_init(&layout, md_temp_allocator(temp));
-        md_flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
+        flow_layout_t layout = {};
+        flow_layout_init(&layout, md_temp_allocator(temp));
+        flow_layout_compute(&layout, &flow.graph, &flow.cut, &flow.params);
         flow_layout_indent(&layout, &flow.graph, &flow.cut, flow.style.level_gap);
 
         FlowAnnotations notes = {};
@@ -12879,7 +12879,7 @@ struct QuantumChemistry : viamd::EventHandler {
         view.pan = { pan.x, pan.y };
 
         // the page under it, so the file reads the same in any viewer's theme
-        md_vg_add_rect_filled(&scene, { 0.0f, 0.0f }, { size.x, size.y }, MD_VG_COLOR_RGB(255, 255, 255), 0.0f);
+        vg_add_rect_filled(&scene, { 0.0f, 0.0f }, { size.x, size.y }, VG_COLOR_RGB(255, 255, 255), 0.0f);
 
         FlowStripes stripes = {};
         stripes.offset    = flow.stripe_offset;
@@ -12887,7 +12887,7 @@ struct QuantumChemistry : viamd::EventHandler {
         stripes.num_links = md_array_size(flow.stripe_offset) ? md_array_size(flow.stripe_offset) - 1 : 0;
         flow_draw_vg(&scene, view, &flow.graph, &flow.cut, &layout, flow.style, &stripes, &notes);
 
-        const bool success = md_vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
+        const bool success = vg_scene_write_svg_file(&scene, md_str_from_cstr(path_buf));
         if (success) {
             MD_LOG_INFO("Exported charge transfer diagram to '%s'", path_buf);
         } else {

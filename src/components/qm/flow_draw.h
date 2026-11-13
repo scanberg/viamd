@@ -1,18 +1,18 @@
 ﻿#pragma once
 
-// Drawing backends for md_flow layouts.
+// Drawing backends for flow layouts (flow_core.h).
 //
-// The layout (md_flow_layout_compute) is a pure function producing geometry in graph space.
+// The layout (flow_layout_compute) is a pure function producing geometry in graph space.
 // Everything here is a thin consumer of that geometry: one drawing routine, behind two backends - the
-// screen (ImGui draw list) and export (md_vg_scene_t) - that only supply rectangles, ribbons and text.
+// screen (ImGui draw list) and export (vg_scene_t) - that only supply rectangles, ribbons and text.
 // Neither computes a position of its own, which is why they cannot drift apart the way the hand-rolled
 // im_sankey_diagram / vg_sankey_diagram pair did.
 
-#include <md_flow.h>
+#include "flow_core.h"
 
 #include <imgui.h>
 
-struct md_vg_scene_t;
+struct vg_scene_t;
 
 // Graph space -> screen. Pan and zoom live here rather than in the layout, so changing the view
 // never triggers a relayout.
@@ -28,7 +28,7 @@ struct FlowDrawStyle {
     // a middle column in the orbital colour, and every ribbon in one neutral colour. What a node IS is said
     // by its label and by the mirrored order of the columns; colour says only which side it is on, so the
     // picture has two hues and the ribbons read as one material. Off: each node in its own colour
-    // (md_flow_node_t.color), ribbons blending from source to destination.
+    // (flow_node_t.color), ribbons blending from source to destination.
     bool   color_by_side   = true;
     md_float4_t side_color[3]   = { { 0.847f, 0.353f, 0.188f, 1.0f },     // first column: coral
                                { 0.498f, 0.467f, 0.867f, 1.0f },     // middle: the ribbons' violet
@@ -36,7 +36,7 @@ struct FlowDrawStyle {
     md_float4_t ribbon_color    = { 0.498f, 0.467f, 0.867f, 1.0f };
 
     float ribbon_alpha     = 0.32f;
-    // A self flow (MD_FLOW_RIBBON_FLAG_SELF) is not a ribbon: it is the part of a node that stays where
+    // A self flow (FLOW_RIBBON_FLAG_SELF) is not a ribbon: it is the part of a node that stays where
     // it is - local excitation in the charge transfer diagram - drawn solid over its stub inside the node.
     float self_alpha       = 0.9f;
     int   ribbon_segments  = 24;
@@ -144,29 +144,29 @@ ImVec2 flow_view_to_screen(const FlowView& view, md_float2_t graph_point);
 // tree, counted against the deepest row shown on that side - and every band (an open group) to the x of its own,
 // one bar's width plus 'gap' of it per level. The rows of one level then stand in one line whatever is opened
 // around them, and a collapsed group stands where it stands open, as its band. The ribbons' ends go with their
-// rows. In graph space, so it scales with the zoom like the bars; call it after md_flow_layout_compute, before
+// rows. In graph space, so it scales with the zoom like the bars; call it after flow_layout_compute, before
 // anything reads the layout (drawing, fitting, picking).
-void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, const md_flow_cut_t* cut, float gap);
+void flow_layout_indent(flow_layout_t* layout, const flow_graph_t* graph, const flow_cut_t* cut, float gap);
 
 // Whether a node opens into rows that open in turn (a molecule of fragments): what has an arrow to open it by
-bool flow_node_is_container(const md_flow_graph_t* graph, const md_flow_cut_t* cut, uint32_t cut_idx);
+bool flow_node_is_container(const flow_graph_t* graph, const flow_cut_t* cut, uint32_t cut_idx);
 
 // Draws the diagram and returns what the mouse is over.
-FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_flow_graph_t* graph,
-                        const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const flow_graph_t* graph,
+                        const flow_cut_t* cut, const flow_layout_t* layout,
                         const FlowDrawStyle& style, const FlowEmphasis& emphasis,
                         const FlowStripes* stripes = nullptr, const FlowAnnotations* notes = nullptr);
 
 // The same picture into a vector-graphics scene, for SVG export: one drawing routine behind both, so the
-// export is the screen by construction. Text widths are estimated (md_vg has no font metrics).
-void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_graph_t* graph,
-                  const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+// export is the screen by construction. Text widths are estimated (svg_core has no font metrics).
+void flow_draw_vg(vg_scene_t* scene, const FlowView& view, const flow_graph_t* graph,
+                  const flow_cut_t* cut, const flow_layout_t* layout,
                   const FlowDrawStyle& style, const FlowStripes* stripes = nullptr,
                   const FlowAnnotations* notes = nullptr);
 
 // What flow_draw_imgui will need outside the nodes at the current font, for any zoom
-FlowMargins flow_measure_margins(const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowMargins flow_measure_margins(const flow_graph_t* graph, const flow_cut_t* cut, const flow_layout_t* layout,
                                  const FlowDrawStyle& style, const FlowAnnotations* notes);
 // The same for flow_draw_vg's text
-FlowMargins flow_measure_margins_vg(const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowMargins flow_measure_margins_vg(const flow_graph_t* graph, const flow_cut_t* cut, const flow_layout_t* layout,
                                     const FlowDrawStyle& style, const FlowAnnotations* notes);

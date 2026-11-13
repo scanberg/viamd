@@ -2,7 +2,7 @@
 
 #include "flow_draw.h"
 
-#include <md_vector_graphics.h>
+#include "svg_core.h"
 
 #include <core/md_allocator.h>
 #include <core/md_common.h>
@@ -71,9 +71,9 @@ static inline ImU32 flow_color_u32(md_float4_t color, float alpha_scale) {
     return ImGui::ColorConvertFloat4ToU32(c);
 }
 
-static inline md_vg_color_t flow_color_vg(md_float4_t color, float alpha_scale) {
+static inline vg_color_t flow_color_vg(md_float4_t color, float alpha_scale) {
     const float a = MD_CLAMP(color.w * alpha_scale, 0.0f, 1.0f);
-    return MD_VG_COLOR_RGBA(
+    return VG_COLOR_RGBA(
         (uint32_t)(MD_CLAMP(color.x, 0.0f, 1.0f) * 255.0f + 0.5f),
         (uint32_t)(MD_CLAMP(color.y, 0.0f, 1.0f) * 255.0f + 0.5f),
         (uint32_t)(MD_CLAMP(color.z, 0.0f, 1.0f) * 255.0f + 0.5f),
@@ -281,11 +281,11 @@ static void im_text_up(void* u, ImVec2 c, float size, md_float4_t col, const cha
     }
 }
 
-// ---- md_vg (SVG) ----
+// ---- SVG (svg_core.h) ----
 
 #define FLOW_VG_TEXT_SIZE 13.0f
 
-struct FlowVgCanvas { md_vg_scene_t* scene; float curvature; };
+struct FlowVgCanvas { vg_scene_t* scene; float curvature; };
 
 // An estimate, on the generous side: it only spaces things (the viewer aligns the text itself, by its
 // anchor), and too wide leaves a little air where too narrow would collide.
@@ -295,34 +295,34 @@ static float vg_measure(void*, const char* t, float size) {
     return 0.6f * size * (float)n;
 }
 static inline md_float2_t flow_v2(ImVec2 p) { return md_float2_t{ p.x, p.y }; }
-static void vg_fill(void* u, ImVec2 a, ImVec2 b, md_float4_t c, float r) { md_vg_add_rect_filled(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r); }
-static void vg_stroke(void* u, ImVec2 a, ImVec2 b, md_float4_t c, float r, float w) { md_vg_add_rect(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r, w); }
+static void vg_fill(void* u, ImVec2 a, ImVec2 b, md_float4_t c, float r) { vg_add_rect_filled(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r); }
+static void vg_stroke(void* u, ImVec2 a, ImVec2 b, md_float4_t c, float r, float w) { vg_add_rect(((FlowVgCanvas*)u)->scene, flow_v2(a), flow_v2(b), flow_color_vg(c, 1.0f), r, w); }
 static void vg_text(void* u, ImVec2 p, float size, md_float4_t c, int align, const char* t) {
-    const md_vg_text_anchor_t anchor = align < 0 ? MD_VG_TEXT_ANCHOR_START : (align == 0 ? MD_VG_TEXT_ANCHOR_MIDDLE : MD_VG_TEXT_ANCHOR_END);
-    md_vg_add_text_anchored(((FlowVgCanvas*)u)->scene, flow_v2(p), size, flow_color_vg(c, 1.0f), anchor, md_str_from_cstr(t));
+    const vg_text_anchor_t anchor = align < 0 ? VG_TEXT_ANCHOR_START : (align == 0 ? VG_TEXT_ANCHOR_MIDDLE : VG_TEXT_ANCHOR_END);
+    vg_add_text_anchored(((FlowVgCanvas*)u)->scene, flow_v2(p), size, flow_color_vg(c, 1.0f), anchor, md_str_from_cstr(t));
 }
 static void vg_text_up(void* u, ImVec2 c, float size, md_float4_t col, const char* t) {
-    md_vg_add_text_rotated(((FlowVgCanvas*)u)->scene, md_float2_t{ c.x, c.y - size * 0.5f }, size, flow_color_vg(col, 1.0f), MD_VG_TEXT_ANCHOR_MIDDLE, -90.0f, md_str_from_cstr(t));
+    vg_add_text_rotated(((FlowVgCanvas*)u)->scene, md_float2_t{ c.x, c.y - size * 0.5f }, size, flow_color_vg(col, 1.0f), VG_TEXT_ANCHOR_MIDDLE, -90.0f, md_str_from_cstr(t));
 }
 static void vg_ribbon(void* u, ImVec2 p0, ImVec2 p1, ImVec2 q0, ImVec2 q1, md_float4_t c0, md_float4_t c1, int) {
     // Native cubics rather than the sampled strip of the screen: an SVG viewer resamples for its own
     // resolution, so handing it curves beats handing it triangles.
     const FlowVgCanvas* cv = (const FlowVgCanvas*)u;
-    md_vg_scene_t* scene = cv->scene;
+    vg_scene_t* scene = cv->scene;
     const float dx = (q0.x - p0.x) * 0.5f * cv->curvature;
-    md_vg_path_clear(scene);
-    md_vg_path_move_to(scene, flow_v2(p0));
-    md_vg_path_bezier_cubic_curve_to(scene, md_float2_t{ p0.x + dx, p0.y }, md_float2_t{ q0.x - dx, q0.y }, flow_v2(q0));
-    md_vg_path_line_to(scene, flow_v2(q1));
-    md_vg_path_bezier_cubic_curve_to(scene, md_float2_t{ q1.x - dx, q1.y }, md_float2_t{ p1.x + dx, p1.y }, flow_v2(p1));
-    md_vg_path_close(scene);
-    md_vg_style_t st = {};
-    st.fill.type = MD_VG_PAINT_LINEAR_GRADIENT;
+    vg_path_clear(scene);
+    vg_path_move_to(scene, flow_v2(p0));
+    vg_path_bezier_cubic_curve_to(scene, md_float2_t{ p0.x + dx, p0.y }, md_float2_t{ q0.x - dx, q0.y }, flow_v2(q0));
+    vg_path_line_to(scene, flow_v2(q1));
+    vg_path_bezier_cubic_curve_to(scene, md_float2_t{ q1.x - dx, q1.y }, md_float2_t{ p1.x + dx, p1.y }, flow_v2(p1));
+    vg_path_close(scene);
+    vg_style_t st = {};
+    st.fill.type = VG_PAINT_LINEAR_GRADIENT;
     st.fill.data.linear_gradient.p0   = flow_v2(p0);
     st.fill.data.linear_gradient.p1   = flow_v2(q0);
     st.fill.data.linear_gradient.col0 = flow_color_vg(c0, 1.0f);
     st.fill.data.linear_gradient.col1 = flow_color_vg(c1, 1.0f);
-    md_vg_path_fill_styled(scene, &st);
+    vg_path_fill_styled(scene, &st);
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -352,14 +352,14 @@ static int flow_column_side(uint32_t column, uint32_t num_columns) {
 }
 
 // Ancestors in the graph of a node (an "Others" counts from the parent it folds the children of)
-static uint32_t flow_depth(const md_flow_graph_t* graph, const md_flow_node_t* node) {
+static uint32_t flow_depth(const flow_graph_t* graph, const flow_node_t* node) {
     const size_t n = md_array_size(graph->nodes);
     uint32_t d = 0;
     for (uint32_t p = node->parent; p < n && d < 64; p = graph->nodes[p].parent) ++d;
     return d;
 }
 
-bool flow_node_is_container(const md_flow_graph_t* graph, const md_flow_cut_t* cut, uint32_t cut_idx) {
+bool flow_node_is_container(const flow_graph_t* graph, const flow_cut_t* cut, uint32_t cut_idx) {
     const size_t n = md_array_size(graph->nodes);
     if (cut_idx >= n) return false;     // an "Others" opens by its own rules
     (void)cut;
@@ -371,7 +371,7 @@ bool flow_node_is_container(const md_flow_graph_t* graph, const md_flow_cut_t* c
 }
 
 // The same for every graph node at once: out[i] for graph node i
-static void flow_containers(bool* out, const md_flow_graph_t* graph) {
+static void flow_containers(bool* out, const flow_graph_t* graph) {
     const size_t n = md_array_size(graph->nodes);
     for (size_t i = 0; i < n; ++i) out[i] = false;
     for (size_t j = 0; j < n; ++j) {
@@ -380,7 +380,7 @@ static void flow_containers(bool* out, const md_flow_graph_t* graph) {
     }
 }
 
-void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, const md_flow_cut_t* cut, float gap) {
+void flow_layout_indent(flow_layout_t* layout, const flow_graph_t* graph, const flow_cut_t* cut, float gap) {
     if (!layout || !graph || !cut) return;
     const uint32_t C = graph->num_columns;
     const size_t num_nodes = md_array_size(layout->nodes);
@@ -394,14 +394,14 @@ void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, 
     int32_t max_depth[3] = { -1, -1, -1 };
     float pitch[3] = { 0, 0, 0 };
     for (size_t i = 0; i < num_nodes; ++i) {
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+        const flow_node_t* node = flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
         depth[i] = node ? flow_depth(graph, node) : 0;
         const int s = node ? flow_side_index(flow_column_side(node->column, C)) : 1;
         max_depth[s] = MD_MAX(max_depth[s], (int32_t)depth[i]);
         pitch[s] = (layout->nodes[i].max.x - layout->nodes[i].min.x) * (1.0f + gap);
     }
     for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
-        const md_flow_layout_band_t* b = layout->bands + i;
+        const flow_layout_band_t* b = layout->bands + i;
         const int s = flow_side_index(flow_column_side(b->column, C));
         max_depth[s] = MD_MAX(max_depth[s], (int32_t)b->depth);
     }
@@ -416,8 +416,8 @@ void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, 
     const size_t cut_space = md_array_size(graph->nodes) + md_array_size(cut->other);
     float* dx = md_temp_alloc_zero_array(temp, float, cut_space ? cut_space : 1);
     for (size_t i = 0; i < num_nodes; ++i) {
-        md_flow_layout_node_t* ln = layout->nodes + i;
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, ln->cut_idx);
+        flow_layout_node_t* ln = layout->nodes + i;
+        const flow_node_t* node = flow_cut_node(cut, graph, ln->cut_idx);
         if (!node) continue;
         const float d = shift(flow_column_side(node->column, C), depth[i]);
         ln->min.x += d;
@@ -425,15 +425,15 @@ void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, 
         if (ln->cut_idx < cut_space) dx[ln->cut_idx] = d;
     }
     for (size_t i = 0; i < md_array_size(layout->ribbons); ++i) {
-        md_flow_layout_ribbon_t* r = layout->ribbons + i;
-        const md_flow_link_t* l = cut->links + r->link_idx;
+        flow_layout_ribbon_t* r = layout->ribbons + i;
+        const flow_link_t* l = cut->links + r->link_idx;
         const float ds = l->src < cut_space ? dx[l->src] : 0.0f;
         const float dd = l->dst < cut_space ? dx[l->dst] : 0.0f;
         r->p0.x += ds; r->p1.x += ds;
         r->q0.x += dd; r->q1.x += dd;
     }
     for (size_t i = 0; i < md_array_size(layout->bands); ++i) {
-        md_flow_layout_band_t* b = layout->bands + i;
+        flow_layout_band_t* b = layout->bands + i;
         const float d = shift(flow_column_side(b->column, C), b->depth);
         b->min.x += d;
         b->max.x += d;
@@ -443,7 +443,7 @@ void flow_layout_indent(md_flow_layout_t* layout, const md_flow_graph_t* graph, 
 
 // The lines of a node's label for a node 'h' pixels tall: name over share (and what it is made of, when
 // there is room), or one small line when there is not.
-static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_node_t* node, float h, const char* share_suffix = nullptr) {
+static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const flow_node_t* node, float h, const char* share_suffix = nullptr) {
     char name[FLOW_LABEL_CAP], share[FLOW_LABEL_CAP], sub[FLOW_LABEL_CAP];
     snprintf(name, sizeof(name), "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
     snprintf(sub, sizeof(sub), "%.*s", (int)node->sublabel.len, node->sublabel.ptr ? node->sublabel.ptr : "");
@@ -478,7 +478,7 @@ static void flow_label_lines(FlowLabel* lb, const FlowCanvas& cv, const md_flow_
 }
 
 // The widest a node's label can be, whichever form it takes
-static float flow_label_width_any(const FlowCanvas& cv, const md_flow_node_t* node, const char* share_suffix = nullptr) {
+static float flow_label_width_any(const FlowCanvas& cv, const flow_node_t* node, const char* share_suffix = nullptr) {
     FlowLabel a = {}, b = {};
     flow_label_lines(&a, cv, node, 1.0e6f, share_suffix);
     flow_label_lines(&b, cv, node, 0.0f, share_suffix);
@@ -492,7 +492,7 @@ static void flow_member_count(char* buf, size_t cap, const FlowDrawStyle& style,
 }
 
 // The children of every graph node, counted
-static void flow_child_counts(uint32_t* out, const md_flow_graph_t* graph) {
+static void flow_child_counts(uint32_t* out, const flow_graph_t* graph) {
     const size_t n = md_array_size(graph->nodes);
     for (size_t i = 0; i < n; ++i) out[i] = 0;
     for (size_t i = 0; i < n; ++i) {
@@ -505,7 +505,7 @@ static void flow_child_counts(uint32_t* out, const md_flow_graph_t* graph) {
 // The diagram
 // ---------------------------------------------------------------------------------------------------------
 
-static md_float4_t flow_node_base_color(const FlowDrawStyle& style, const md_flow_node_t* node, int side) {
+static md_float4_t flow_node_base_color(const FlowDrawStyle& style, const flow_node_t* node, int side) {
     if (style.color_by_side) return style.side_color[flow_side_index(side)];
     return node->color.w > 0.0f ? node->color : flow_vec4(style.node_border_color);
 }
@@ -518,7 +518,7 @@ static bool flow_band_label_fits(const FlowCanvas& cv, const FlowDrawStyle& styl
     return size >= 6.0f && cv.measure(cv.user, name, size) + 8.0f <= length;
 }
 
-static void flow_node_name(char* buf, size_t cap, const md_flow_node_t* node) {
+static void flow_node_name(char* buf, size_t cap, const flow_node_t* node) {
     snprintf(buf, cap, "%.*s", (int)node->label.len, node->label.ptr ? node->label.ptr : "");
 }
 
@@ -527,21 +527,21 @@ static float flow_arrow_box(const FlowCanvas& cv) { return MD_MAX(8.0f, cv.small
 static const float FLOW_ARROW_PAD = 4.0f;
 
 // Whether any row of a side has an arrow beside it (container: flow_containers): that side's labels stand out by its room
-static void flow_sides_with_arrows(bool out[3], const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+static void flow_sides_with_arrows(bool out[3], const flow_graph_t* graph, const flow_cut_t* cut, const flow_layout_t* layout,
                                    const bool* container) {
     out[0] = out[1] = out[2] = false;
     const size_t n = md_array_size(graph->nodes);
     for (size_t i = 0; i < md_array_size(layout->nodes); ++i) {
         const uint32_t c = layout->nodes[i].cut_idx;
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, c);
+        const flow_node_t* node = flow_cut_node(cut, graph, c);
         if (!node || c >= n || !container[c]) continue;
         const int side = flow_column_side(node->column, graph->num_columns);
         if (side != 0) out[flow_side_index(side)] = true;
     }
 }
 
-static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, const md_flow_graph_t* graph,
-                                const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, const flow_graph_t* graph,
+                                const flow_cut_t* cut, const flow_layout_t* layout,
                                 const FlowDrawStyle& style, const FlowEmphasis& emphasis,
                                 const FlowStripes* stripes, const FlowAnnotations* notes, const ImVec2* mouse_ptr)
 {
@@ -567,7 +567,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     // the arrows of the collapsed groups where a side has any
     float outer[3] = { 1.0e30f, 0.0f, -1.0e30f };
     for (size_t i = 0; i < num_nodes; ++i) {
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+        const flow_node_t* node = flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
         if (!node) continue;
         const int side = flow_column_side(node->column, num_columns);
         if (side < 0) outer[0] = ImMin(outer[0], flow_view_to_screen(view, layout->nodes[i].min).x);
@@ -593,8 +593,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         int32_t prev_col = -1;
         float prev_bottom = -1.0e30f;
         for (size_t i = 0; i < num_nodes; ++i) {
-            const md_flow_layout_node_t* ln = layout->nodes + i;
-            const md_flow_node_t* node = md_flow_cut_node(cut, graph, ln->cut_idx);
+            const flow_layout_node_t* ln = layout->nodes + i;
+            const flow_node_t* node = flow_cut_node(cut, graph, ln->cut_idx);
             if (!node) continue;
             const ImVec2 min = flow_view_to_screen(view, ln->min);
             const ImVec2 max = flow_view_to_screen(view, ln->max);
@@ -634,11 +634,11 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     size_t num_rlabels = 0;
 
     for (size_t i = 0; i < num_ribbons; ++i) {
-        const md_flow_layout_ribbon_t* r = layout->ribbons + i;
-        if (r->flags & MD_FLOW_RIBBON_FLAG_SELF) continue;     // drawn with the nodes
-        const md_flow_link_t* link = cut->links + r->link_idx;
-        const md_flow_node_t* src = md_flow_cut_node(cut, graph, link->src);
-        const md_flow_node_t* dst = md_flow_cut_node(cut, graph, link->dst);
+        const flow_layout_ribbon_t* r = layout->ribbons + i;
+        if (r->flags & FLOW_RIBBON_FLAG_SELF) continue;     // drawn with the nodes
+        const flow_link_t* link = cut->links + r->link_idx;
+        const flow_node_t* src = flow_cut_node(cut, graph, link->src);
+        const flow_node_t* dst = flow_cut_node(cut, graph, link->dst);
         if (!src || !dst) continue;
 
         const ImVec2 p0 = flow_view_to_screen(view, r->p0);
@@ -702,8 +702,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     // holds its fragments the way a fragment holds its share. ----
     const size_t num_bands = md_array_size(layout->bands);
     for (size_t i = 0; i < num_bands; ++i) {
-        const md_flow_layout_band_t* b = layout->bands + i;
-        const md_flow_node_t* node = graph->nodes + b->node;
+        const flow_layout_band_t* b = layout->bands + i;
+        const flow_node_t* node = graph->nodes + b->node;
         const int side = flow_column_side(b->column, num_columns);
         if (side == 0) continue;     // a middle column has no free side
 
@@ -757,8 +757,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
 
     // ---- nodes ----
     for (size_t i = 0; i < num_nodes; ++i) {
-        const md_flow_layout_node_t* ln = layout->nodes + i;
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, ln->cut_idx);
+        const flow_layout_node_t* ln = layout->nodes + i;
+        const flow_node_t* node = flow_cut_node(cut, graph, ln->cut_idx);
         if (!node) continue;
         const ImVec2 min = flow_view_to_screen(view, ln->min);
         const ImVec2 max = flow_view_to_screen(view, ln->max);
@@ -776,9 +776,9 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
 
         // The node's self flow, solid over its stub: the part that stays put
         for (size_t j = 0; j < num_ribbons; ++j) {
-            const md_flow_layout_ribbon_t* r = layout->ribbons + j;
-            if (!(r->flags & MD_FLOW_RIBBON_FLAG_SELF)) continue;
-            const md_flow_link_t* link = cut->links + r->link_idx;
+            const flow_layout_ribbon_t* r = layout->ribbons + j;
+            if (!(r->flags & FLOW_RIBBON_FLAG_SELF)) continue;
+            const flow_link_t* link = cut->links + r->link_idx;
             md_float2_t a, b;
             if      (link->src == ln->cut_idx) { a = r->p0; b = r->p1; }
             else if (link->dst == ln->cut_idx) { a = r->q0; b = r->q1; }
@@ -851,7 +851,7 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         size_t num_placed = 0;
         for (size_t i = 0; i < num_rlabels; ++i) {
             const RibbonLabel& rl = rlabels[i];
-            const md_flow_link_t* link = cut->links + rl.link;
+            const flow_link_t* link = cut->links + rl.link;
             char main[32], sub[64] = "";
             snprintf(main, sizeof(main), "%.1f%%", link->weight * 100.0f);
             if (rl.thick >= style.ribbon_sublabel_min_px && stripes && stripes->offset && rl.link < stripes->num_links) {
@@ -884,8 +884,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
         bool col_found[3] = { false, false, false };
         float top = 1.0e30f, bottom = -1.0e30f, left = 1.0e30f;
         for (size_t i = 0; i < num_nodes; ++i) {
-            const md_flow_layout_node_t* ln = layout->nodes + i;
-            const md_flow_node_t* node = md_flow_cut_node(cut, graph, ln->cut_idx);
+            const flow_layout_node_t* ln = layout->nodes + i;
+            const flow_node_t* node = flow_cut_node(cut, graph, ln->cut_idx);
             if (!node) continue;
             const ImVec2 min = flow_view_to_screen(view, ln->min);
             const ImVec2 max = flow_view_to_screen(view, ln->max);
@@ -930,8 +930,8 @@ static FlowHit flow_draw_common(const FlowCanvas& cv, const FlowView& view, cons
     return hit;
 }
 
-FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_flow_graph_t* graph,
-                        const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const flow_graph_t* graph,
+                        const flow_cut_t* cut, const flow_layout_t* layout,
                         const FlowDrawStyle& style, const FlowEmphasis& emphasis,
                         const FlowStripes* stripes, const FlowAnnotations* notes)
 {
@@ -943,8 +943,8 @@ FlowHit flow_draw_imgui(ImDrawList* draw_list, const FlowView& view, const md_fl
     return flow_draw_common(cv, view, graph, cut, layout, style, emphasis, stripes, notes, &mouse);
 }
 
-void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_graph_t* graph,
-                  const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+void flow_draw_vg(vg_scene_t* scene, const FlowView& view, const flow_graph_t* graph,
+                  const flow_cut_t* cut, const flow_layout_t* layout,
                   const FlowDrawStyle& style, const FlowStripes* stripes, const FlowAnnotations* notes)
 {
     if (!scene) return;
@@ -954,8 +954,8 @@ void flow_draw_vg(md_vg_scene_t* scene, const FlowView& view, const md_flow_grap
     flow_draw_common(cv, view, graph, cut, layout, style, FlowEmphasis{}, stripes, notes, nullptr);
 }
 
-static FlowMargins flow_measure_common(const FlowCanvas& cv, const md_flow_graph_t* graph, const md_flow_cut_t* cut,
-                                       const md_flow_layout_t* layout, const FlowDrawStyle& style, const FlowAnnotations* notes)
+static FlowMargins flow_measure_common(const FlowCanvas& cv, const flow_graph_t* graph, const flow_cut_t* cut,
+                                       const flow_layout_t* layout, const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     FlowMargins m = {};
     if (!graph || !cut || !layout) return m;
@@ -971,7 +971,7 @@ static FlowMargins flow_measure_common(const FlowCanvas& cv, const md_flow_graph
     float label_w[3] = { 0, 0, 0 };
     for (size_t i = 0; i < md_array_size(layout->nodes); ++i) {
         const uint32_t c = layout->nodes[i].cut_idx;
-        const md_flow_node_t* node = md_flow_cut_node(cut, graph, c);
+        const flow_node_t* node = flow_cut_node(cut, graph, c);
         if (!node) continue;
         const int side = flow_column_side(node->column, graph->num_columns);
         char count[FLOW_LABEL_CAP] = "";
@@ -990,7 +990,7 @@ static FlowMargins flow_measure_common(const FlowCanvas& cv, const md_flow_graph
     if (notes) {
         bool middle = false;
         for (size_t i = 0; i < md_array_size(layout->nodes) && !middle; ++i) {
-            const md_flow_node_t* node = md_flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
+            const flow_node_t* node = flow_cut_node(cut, graph, layout->nodes[i].cut_idx);
             middle = node && flow_column_side(node->column, graph->num_columns) == 0;
         }
         const bool any_caption = notes->caption[0] || notes->caption[1] || notes->caption[2];
@@ -1002,7 +1002,7 @@ static FlowMargins flow_measure_common(const FlowCanvas& cv, const md_flow_graph
     return m;
 }
 
-FlowMargins flow_measure_margins(const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowMargins flow_measure_margins(const flow_graph_t* graph, const flow_cut_t* cut, const flow_layout_t* layout,
                                  const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     const float base = ImGui::GetFontSize();
@@ -1011,7 +1011,7 @@ FlowMargins flow_measure_margins(const md_flow_graph_t* graph, const md_flow_cut
     return flow_measure_common(cv, graph, cut, layout, style, notes);
 }
 
-FlowMargins flow_measure_margins_vg(const md_flow_graph_t* graph, const md_flow_cut_t* cut, const md_flow_layout_t* layout,
+FlowMargins flow_measure_margins_vg(const flow_graph_t* graph, const flow_cut_t* cut, const flow_layout_t* layout,
                                     const FlowDrawStyle& style, const FlowAnnotations* notes)
 {
     const float base = FLOW_VG_TEXT_SIZE;
