@@ -12,7 +12,6 @@
 #include <md_infer.h>
 #include <md_element.h>
 #include <core/md_spatial_acc.h>
-#include <core/md_coord_stream.h>
 #include <core/md_geom.h>
 #include <md_gl.h>
 #include <md_system.h>
@@ -114,19 +113,20 @@ static void mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* sta
         if (viable_count > 0) {
             md_spatial_acc_t acc = {};
             acc.alloc = temp_arena;
-            md_coord_stream_t stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), viable_indices, viable_count);
             md_spatial_acc_desc_t desc = {};
-            desc.coords = &stream;
+            desc.xyz = (const float*)state->xyz;
+            desc.idx = viable_indices;
+            desc.count = viable_count;
             desc.cutoff = radius;
             desc.unitcell = &state->unitcell;
-            desc.flags = MD_SPATIAL_ACC_FLAG_USE_COORD_STREAM_IDX;
+            // Without an index the points are all the atoms, and their positions are their atom indices already
+            desc.flags = viable_indices ? MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX : MD_SPATIAL_ACC_FLAG_NONE;
             md_spatial_acc_init(&acc, &desc);
 
-            md_coord_stream_t ext_stream = md_coord_stream_from_aos((const float*)state->xyz, sizeof(md_float3_t), indices, num_indices);
             auto set_bits = [](const uint32_t*, const uint32_t* j_idx, const float*, size_t num_pairs, void* user) {
                 md_bitmask_set_indices((md_bitmask_t*)user, j_idx, num_pairs);
             };
-            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, &ext_stream, radius, set_bits, mask, MD_SPATIAL_ACC_FLAG_NONE);
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)state->xyz, 0, indices, num_indices, radius, set_bits, mask, MD_SPATIAL_ACC_FLAG_NONE);
         }
     }
     md_temp_end(temp);
