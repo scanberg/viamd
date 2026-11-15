@@ -1316,9 +1316,8 @@ inline constexpr uint32_t GPU_PLANE_DIM = 2048;
 // system at a time: a load cancels the inference of the system before it.
 struct SystemInference {
     task_system::Job    job;
-    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred in arena
-    md_allocator_i*     arena = nullptr;
-    md_array(md_allocator_i*) kept = nullptr;   // The arenas of what was published: arrays of the system now
+    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred on the heap
+    md_allocator_i*     arena = nullptr;        // The rest of the work: its copies of the types of the atoms
     md_infer_flags_t    flags = MD_SYSTEM_INFER_NONE;
     std::atomic<bool>   done{false};            // The work is inferred: not cancelled half way
     bool                pending = false;        // The system shows its core: inference is under way, or to be started again

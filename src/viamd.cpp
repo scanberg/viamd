@@ -1790,10 +1790,14 @@ void free_system_data(ApplicationState* data) {
     // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
     // next load reuses it.
     md_allocator_i* sys_alloc = data->mold.sys.alloc;
+    md_allocator_i* derived_alloc = data->mold.sys.derived_alloc;
+    // What was inferred is on the heap, which the arena's rewind does not give back
+    md_system_derived_free(&data->mold.sys);
     md_arena_allocator_reset(sys_alloc);
     md_memset(&data->mold.sys, 0, sizeof(data->mold.sys));
     md_memset(&data->mold.state, 0, sizeof(data->mold.state));
     data->mold.sys.alloc   = sys_alloc;
+    data->mold.sys.derived_alloc = derived_alloc;
     data->mold.state.alloc = sys_alloc;
 
     md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
@@ -1878,12 +1882,14 @@ LoadResult load_data_from_file(ApplicationState* state, md_str_t filepath, const
 //
 // The work (md_system_infer_prepare) shares the core of the system, which nothing writes until it is published or
 // discarded, and has of its own what inference writes and the coordinates shown when it was made, which become the
-// system's reference state. It is inferred on a worker with its loops on the pool. Published, its arrays become the
-// system's (its arena is kept with the system, freed with it); the system keeps its core, its attribute table and its
-// force field. The work of a topology which changed meanwhile (a supplement, an edit) is dropped and made again.
+// system's reference state: on the heap, the system's allocator of the derived. It is inferred on a worker with its
+// loops on the pool. Published, its arrays become the system's and those they replace are freed; the system keeps its
+// core, its attribute table and its force field. What is left of the work in its arena (its copies of the types of the
+// atoms) goes with it. The work of a topology which changed meanwhile (a supplement, an edit) is dropped and made again.
 
 static void inference_discard_work(SystemInference& inf) {
     if (inf.arena) {
+        md_system_infer_discard(&inf.work);
         md_arena_allocator_destroy(inf.arena);
         inf.arena = nullptr;
     }
@@ -1993,7 +1999,8 @@ static bool inference_publish(ApplicationState* app) {
     // A version of its own: what was derived from the core is stale
     if (!md_system_infer_publish(&sys, &inf.work)) return false;
 
-    md_array_push(inf.kept, inf.arena, app->allocator.persistent);
+    // Its arrays are the system's now, those they replaced freed: the arena has nothing of the system
+    md_arena_allocator_destroy(inf.arena);
     inf.arena = nullptr;
     inf.work = {};
     inf.pending = false;
@@ -2051,8 +2058,6 @@ static void system_inference_free(ApplicationState* app) {
     SystemInference& inf = app->mold.inference;
     inf.job.cancel_and_wait();
     inference_discard_work(inf);
-    for (size_t i = 0; i < md_array_size(inf.kept); ++i) md_arena_allocator_destroy(inf.kept[i]);
-    md_array_shrink(inf.kept, 0);
     inf.pending = false;
     inf.restart = false;
     inf.defaults_pending = false;
@@ -6696,12 +6701,12 @@ void system_bonds_changed(ApplicationState* app, bool graph_edited) {
         // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
         // are what they were, and a bond added by hand has none.
         md_molecule_data_t molecules = {};
-        md_molecule_infer(&molecules, &sys, sys.alloc);
-        md_molecule_data_free(&sys.molecule, sys.alloc);
+        md_molecule_infer(&molecules, &sys, md_system_derived_alloc(&sys));
+        md_molecule_data_free(&sys.molecule, md_system_derived_alloc(&sys));
         sys.molecule = molecules;
         md_ring_data_t rings = {};
-        md_ring_infer(&rings, &sys, sys.alloc);
-        md_ring_data_free(&sys.ring, sys.alloc);
+        md_ring_infer(&rings, &sys, md_system_derived_alloc(&sys));
+        md_ring_data_free(&sys.ring, md_system_derived_alloc(&sys));
         sys.ring = rings;
         // And so are its fragments, which the molecules' inference clears
         md_system_infer_fragments(&sys);

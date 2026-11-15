@@ -781,6 +781,10 @@ int main(int argc, char** argv) {
     // rather than destroyed between loads, so this handle is set once and never reassigned.
     state.mold.sys.alloc   = md_arena_allocator_create(persistent_alloc, MD_MEGABYTES(1));
     state.mold.state.alloc = state.mold.sys.alloc;
+    // What is inferred of the system (its bonds, molecules, rings, chemistry, ...) is replaced whenever it is inferred
+    // again or its bonds are changed: on the heap, which gives back what is replaced, where the arena would keep it
+    // (md_system_t, ALLOCATORS). Freed with the system in free_system_data.
+    state.mold.sys.derived_alloc = md_get_heap_allocator();
 
     md_temp_arena_system_init();
 
