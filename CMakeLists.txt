@@ -208,6 +208,8 @@ set(SRC_FILES
     src/plane.cpp
     src/transfer_function.cpp
     src/transfer_function_widget.cpp
+    src/window_menu.cpp
+    src/window_menu_draw.cpp
 
     src/app_settings.h
     src/cartoon_glyphs.h
@@ -238,6 +240,7 @@ set(SRC_FILES
     src/timeline_periods_ui.h
     src/viamd.h
     src/viamd_event.h
+    src/window_menu.h
 )
 
 set(APP_FILES

@@ -4,6 +4,7 @@
 #include <core/md_vec_math.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <representation.h>
@@ -1947,8 +1948,8 @@ struct DensityVolume : viamd::EventHandler {
                 draw(state);
                 break;
             }
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Density Volume", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Density Volume", &show_window, {.order = 40});
                 break;
             default:
                 break;

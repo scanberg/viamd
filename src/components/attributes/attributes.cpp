@@ -10,6 +10,7 @@
 // Opened with KEY_SHOW_ATTRIBUTE_WINDOW (Ctrl+Shift+A) from anywhere, or from the Windows menu.
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <event.h>
 #include <plot_series.h>
@@ -21,6 +22,7 @@
 #include <md_system.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>  // GetKeyChordName
 #include <imgui_widgets.h>
 #include <implot.h>
 #include <app/IconsFontAwesome6.h>
@@ -152,10 +154,9 @@ struct Attributes : viamd::EventHandler {
                 draw(state);
                 break;
             }
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Attributes", &show_window);
-                ImGui::SameLine();
-                ImGui::TextDisabled("Ctrl+Shift+A");
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Data/Attributes", &show_window,
+                    {.order = 20, .shortcut = ImGui::GetKeyChordName(KEY_SHOW_ATTRIBUTE_WINDOW)});
                 break;
             default:
                 break;

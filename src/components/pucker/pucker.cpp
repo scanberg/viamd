@@ -20,6 +20,7 @@
 #include <md_pucker.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <event.h>
 #include <serialization_utils.h>
@@ -176,8 +177,8 @@ struct Pucker : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
                 break;
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Ring Pucker", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Conformation/Ring Pucker", &show_window, {.order = 70});
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:

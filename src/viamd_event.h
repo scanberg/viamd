@@ -20,7 +20,9 @@ enum : EventType {
 	// view is made again when the key changes, and else shown as it was made (lazy rendering).
 	EventType_ViamdRenderKey				= HASH_STR_LIT("VIAMD Render Key"),
 
-	EventType_ViamdWindowDrawMenu			= HASH_STR_LIT("VIAMD Draw Window Menu"),		// Draw the menu
+	// While the Windows menu is open, every frame: a component adds its windows to the request (payload
+	// WindowMenuRequest) with window_menu_add. Where each is listed is its path, see window_menu.h
+	EventType_ViamdWindowMenuRequest		= HASH_STR_LIT("VIAMD Window Menu Request"),
 
 	// Workspace. Serialize: write your sections. Loading a workspace is three steps (see #workspace in
 	// viamd.cpp): DeserializeBegin - reset what you keep in a workspace to its defaults, since a
@@ -77,6 +79,7 @@ enum : EventPayloadType {
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
 	EventPayloadType_TaskProgressRequest		= HASH_STR_LIT("Payload Task Progress Request"),
+	EventPayloadType_WindowMenuRequest			= HASH_STR_LIT("Payload Window Menu Request"),
 };
 
 }

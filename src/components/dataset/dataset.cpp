@@ -1,4 +1,5 @@
 ﻿#include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <representation.h>
 #include <color_utils.h>
@@ -840,8 +841,8 @@ struct Dataset : viamd::EventHandler {
                 draw(state);
                 break;
             }
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("System", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Data/System", &show_window, {.order = 10});
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;

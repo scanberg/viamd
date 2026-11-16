@@ -2,6 +2,7 @@
 
 #include <event.h>
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <representation.h>
 #include <task_system.h>
@@ -2111,22 +2112,29 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 break;
             }
-            case viamd::EventType_ViamdWindowDrawMenu:
-                if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
-                    if (ImGui::BeginMenu("Quantum Chemistry")) {
-                        ImGui::Checkbox("Summary", &summary.show_window);
-                        ImGui::Checkbox("Critical Points", &critical_points.show_window);
-                        ImGui::Checkbox("Response", &rsp.show_window);
-                        ImGui::Checkbox("Orbital Grid", &orb.show_window);
-                        if (num_excited > 0) {
-                            ImGui::Checkbox("Transition Analysis", &nto.show_window);
-                            ImGui::Checkbox("Charge Transfer Analysis", &flow.show_window);
-                        }
-                        ImGui::Checkbox("Export", &export_state.show_window);
-                        ImGui::EndMenu();
-                    }
-                }
+            case viamd::EventType_ViamdWindowMenuRequest: {
+                // Listed with or without a calculation, disabled without one, so that the module can be found.
+                // Its windows are drawn only with one (FrameTick).
+                const bool  has_orbitals = num_qm_atoms > 0 && num_molecular_orbitals() > 0;
+                const bool  has_excited  = has_orbitals && num_excited > 0;
+                const char* no_orbitals  = "No calculation with molecular orbitals is loaded";
+                const char* no_excited   = has_orbitals ? "The calculation has no excited states" : no_orbitals;
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Summary", &summary.show_window,
+                    {.order = 100, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Critical Points", &critical_points.show_window,
+                    {.order = 110, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Response", &rsp.show_window,
+                    {.order = 120, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Orbital Grid", &orb.show_window,
+                    {.order = 130, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Transition Analysis", &nto.show_window,
+                    {.order = 140, .enabled = has_excited, .disabled_reason = no_excited});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Charge Transfer Analysis", &flow.show_window,
+                    {.order = 150, .enabled = has_excited, .disabled_reason = no_excited});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Export", &export_state.show_window,
+                    {.order = 160, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 break;
+            }
             case viamd::EventType_ViamdRenderTransparent: {
                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
 				const ApplicationState& state = *(ApplicationState*)e.payload;

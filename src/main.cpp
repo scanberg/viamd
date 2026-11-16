@@ -80,6 +80,7 @@
 #include <script_reference.h>
 #include <script_suggestions.h>
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <event.h>
 
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
@@ -2355,17 +2356,20 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
-            ImGui::Checkbox("Animation", &data->animation.show_window);
-            ImGui::Checkbox("Representations", &data->representation.show_window);
-            ImGui::Checkbox("Script Editor", &data->show_script_window);
-            ImGui::Checkbox("Script Reference", &data->show_script_reference_window);
-            ImGui::Checkbox("Timelines", &data->timeline.show_window);
-            ImGui::Checkbox("Distributions", &data->distributions.show_window);
-            ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
-            ImGui::Checkbox("Profiler", &data->show_profiler_window);
+            // Where a window is listed is its path, and the order given with it (window_menu.h): the windows of the
+            // application are added here, those of the components in answer to the request
+            viamd::WindowMenuRequest windows;
+            viamd::window_menu_add(&windows, "View/Representations",       &data->representation.show_window,   {.order = 10});
+            viamd::window_menu_add(&windows, "View/Animation",             &data->animation.show_window,        {.order = 20});
+            viamd::window_menu_add(&windows, "Analysis/Timelines",         &data->timeline.show_window,         {.order = 10});
+            viamd::window_menu_add(&windows, "Analysis/Distributions",     &data->distributions.show_window,    {.order = 20});
+            viamd::window_menu_add(&windows, "Scripting/Script Editor",    &data->show_script_window,           {.order = 10});
+            viamd::window_menu_add(&windows, "Scripting/Script Reference", &data->show_script_reference_window, {.order = 20});
+            viamd::window_menu_add(&windows, "Output/Structure Export",    &data->structure_export.show_window, {.order = 10});
+            viamd::window_menu_add(&windows, "Developer/Profiler",         &data->show_profiler_window);
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowMenuRequest, viamd::EventPayloadType_WindowMenuRequest, &windows);
 
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
-
+            viamd::window_menu_draw(&windows);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {

@@ -39,6 +39,7 @@
 #include <md_system.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <timeline_periods_ui.h>
@@ -422,8 +423,8 @@ struct Ramachandran : viamd::EventHandler {
                 update();
                 draw();
                 break;
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Ramachandran", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Conformation/Ramachandran", &show_window, {.order = 60});
                 break;
             default:
                 break;

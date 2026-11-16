@@ -26,6 +26,7 @@
 #include <md_nonbonded.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <event.h>
 #include <task_system.h>
@@ -153,8 +154,8 @@ struct Contacts : viamd::EventHandler {
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
                 break;
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Contacts", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Contacts", &show_window, {.order = 30});
                 break;
             case viamd::EventType_ViamdSystemInit:
                 // A new system: whatever was computed or loaded belongs to the old one

@@ -38,6 +38,7 @@
 #include <core/md_geom.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <event.h>
 
@@ -349,8 +350,8 @@ struct Shapespace : viamd::EventHandler {
                 update();
                 draw();
                 break;
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Shapespace", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Shapespace", &show_window, {.order = 50});
                 break;
             case viamd::EventType_ViamdSystemInit:
                 system_generation += 1;
