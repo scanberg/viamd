@@ -2119,12 +2119,14 @@ struct QuantumChemistry : viamd::EventHandler {
                 const bool  has_excited  = has_orbitals && num_excited > 0;
                 const char* no_orbitals  = "No calculation with molecular orbitals is loaded";
                 const char* no_excited   = has_orbitals ? "The calculation has no excited states" : no_orbitals;
+                const bool  has_rsp      = has_orbitals && app && rsp_has_content(app->mold.sys);
+                const char* no_rsp       = has_orbitals ? "The calculation has no response, vibrational or XPS results" : no_orbitals;
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Summary", &summary.show_window,
                     {.order = 100, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Critical Points", &critical_points.show_window,
                     {.order = 110, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Response", &rsp.show_window,
-                    {.order = 120, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                    {.order = 120, .enabled = has_rsp, .disabled_reason = no_rsp});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Orbital Grid", &orb.show_window,
                     {.order = 130, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Transition Analysis", &nto.show_window,
@@ -6661,6 +6663,18 @@ struct QuantumChemistry : viamd::EventHandler {
         }
     }
 
+    // Whether the Response window has anything to show: a response spectrum, a vibrational one, or XPS. XPS is a
+    // delta-SCF property and can be the only thing in the file, so it has to be able to keep the window alive on
+    // its own. The window and its entry in the Windows menu both ask this, so the entry is disabled exactly when
+    // the window would draw nothing.
+    static bool rsp_has_content(const md_system_t& sys) {
+        size_t num_frequencies = 0;
+        const bool has_rsp = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency")) && num_frequencies > 0;
+        const bool has_vib = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency")) > 0;
+        const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
+        return has_rsp || has_vib || has_xps;
+    }
+
     void draw_rsp_window(ApplicationState& state) {
         md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
         MD_DEFER { md_temp_end(temp); };
@@ -6680,12 +6694,11 @@ struct QuantumChemistry : viamd::EventHandler {
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
-        // XPS is a delta-SCF property and can be the only thing in the file, so it has to be able to
-        // keep this window alive on its own. Its ionization energies are the column everything else
-        // in that section is indexed against, so their presence is the question.
+        // XPS: its ionization energies are the column everything else in that section is indexed
+        // against, so their presence is the question
         const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
 
-        if (num_frequencies == 0 && num_normal_modes == 0 && !has_xps) return;
+        if (!rsp_has_content(sys)) return;
 
         double x_freq_au_min = DBL_MAX;
         double x_freq_au_max = -DBL_MAX;
@@ -9126,8 +9139,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_nto_window(ApplicationState& state) {
         if (!nto.show_window) return;
 
-        // Excited states carrying NTOs, from the weight table's leading axis. Cached at load
-        // because the menu handler has no system to read it from.
+        // Excited states carrying NTOs, from the weight table's leading axis, cached at load
         const size_t num_excited_states = num_excited;
         if (num_excited_states == 0) return;
 
