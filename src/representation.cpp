@@ -30,6 +30,8 @@
 
 #include <algorithm>
 
+#define DEFAULT_REP_DIPOLE_MIN_LENGTH 1e-2f
+
 // ---------------------------------------------------------------------------------------------------------
 // The tree, as representation_tree.h sees it
 // ---------------------------------------------------------------------------------------------------------
@@ -1919,7 +1921,7 @@ done:
 
             md_float3_t vec = {0, 0, 0};
             if (!dipole_moment_read(&vec, nullptr, state->mold.sys, groups[i].key, 0)) continue;
-            if (md_float3_length(vec) <= 1e-3f) continue;
+            if (md_float3_length(vec) <= DEFAULT_REP_DIPOLE_MIN_LENGTH) continue;
 
             Representation* dipole_rep = create_representation(state, RepresentationType::DipoleMoment);
             dipole_rep->dipole.dipole_key   = groups[i].key;
