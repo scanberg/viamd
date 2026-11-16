@@ -5724,13 +5724,30 @@ static void draw_distribution_window(ApplicationState* data) {
                                     fit_subplot[i] = true;
                                 }
                                 ImGui::SetItemTooltip("A kernel density estimate rather than the histogram: a Gaussian about every value, as\n"
-                                                      "wide as Silverman's rule of thumb makes it%s",
+                                                      "wide as Silverman's rule of thumb makes it over every frame of the property%s.\n"
+                                                      "The same over every period, so that their curves compare. Near the ends of the\n"
+                                                      "range, divided by the part of the Gaussian within it.",
                                                       series_periodic_valid(v.periodic) ? ", wrapped around the period" : "");
                                 if (smooth) {
                                     ImGui::SameLine();
                                     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
                                     ImGui::SliderFloat("Bandwidth", &s.smoothing, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
                                     ImGui::SetItemTooltip("Of Silverman's rule of thumb, which oversmooths what has several peaks:\nless than 1 to see them apart");
+                                    // What to report beside a figure of it
+                                    if (resolved[j] && v.bandwidth_max > 0.0) {
+                                        const char* unit = v.x_unit_str;
+                                        if (v.bandwidth_max <= v.bandwidth_min * 1.0005) {
+                                            ImGui::TextDisabled("Gaussian kernel, standard deviation %.3g %s", v.bandwidth_max, unit);
+                                        } else {
+                                            ImGui::TextDisabled("Gaussian kernel, standard deviation %.3g to %.3g %s (by member)", v.bandwidth_min, v.bandwidth_max, unit);
+                                        }
+                                        // gaussian_smooth leaves what is narrower than a quarter of a bin as it is
+                                        const double quarter = 0.25 * series_histogram_bin_width(v);
+                                        if (v.bandwidth_min < quarter) {
+                                            ImGui::SameLine();
+                                            ImGui::TextDisabled(v.bandwidth_max < quarter ? "(under a quarter bin: not smoothed)" : "(some under a quarter bin: not smoothed)");
+                                        }
+                                    }
                                 }
                             }
 

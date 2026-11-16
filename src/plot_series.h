@@ -337,6 +337,8 @@ struct SeriesHistogramView {
     SeriesPeriodic periodic = {};   // of periodic values, in the display unit
     double y_scale = 1.0;           // bins -> display unit
     double y_min = 0, y_max = 0;    // in the display unit
+    double bandwidth_min = 0;       // of a kernel density estimate, the standard deviation of its Gaussian in the display
+    double bandwidth_max = 0;       // unit, over the members (the same over periods); 0 when not smoothed
 
     char  label[96] = "";                       // with the state appended (series_state_suffix)
     char  plot_id[SERIES_PATH_CAP + 104] = "";

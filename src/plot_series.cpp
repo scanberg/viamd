@@ -358,7 +358,20 @@ struct HistogramEntry {
     int                    dim = 0;
     double                 x_min = 0, x_max = 0;    // stored unit
     float                  y_min = 0, y_max = 0;
+    double                 bandwidth_min = 0, bandwidth_max = 0;    // of the members' kernels, stored unit; 0 unsmoothed
     md_array(float)        bins = nullptr;
+    int                    last_used = 0;
+};
+
+// The bandwidths a property is smoothed with, one per member (or one of the members pooled): Silverman's rule of
+// thumb over every frame the evaluation holds, of its values binned as every curve of it is. Every curve of the
+// property, over whichever period, is smoothed with these (times the series' smoothing), so that its curves compare: a
+// period's own bandwidth would widen as the period shortens, and lower its peaks by itself.
+struct BandwidthEntry {
+    uint64_t               key = 0;
+    const md_attributes_t* table = nullptr;
+    uint64_t               version = 0;     // of the values, and of which frames the evaluation holds
+    md_array(double)       h = nullptr;     // stored unit
     int                    last_used = 0;
 };
 
@@ -376,6 +389,7 @@ struct SlotEntry {
 
 static md_array(ConvertEntry)   convert_cache = nullptr;
 static md_array(HistogramEntry) histogram_cache = nullptr;
+static md_array(BandwidthEntry) bandwidth_cache = nullptr;
 static md_array(SlotEntry)      slot_cache = nullptr;
 
 // A converted copy of the whole attribute as floats in dst_unit (as stored for md_unit_none())
@@ -489,6 +503,14 @@ void series_cache_gc(ApplicationState* app) {
             ++i;
         }
     }
+    for (size_t i = 0; i < md_array_size(bandwidth_cache);) {
+        if (frame - bandwidth_cache[i].last_used > 600) {
+            md_array_free(bandwidth_cache[i].h, app->allocator.persistent);
+            md_array_swap_back_and_pop(bandwidth_cache, i);
+        } else {
+            ++i;
+        }
+    }
     for (size_t i = 0; i < md_array_size(slot_cache);) {
         if (frame - slot_cache[i].last_used > 600) {
             if (app->script.eval) {
@@ -516,6 +538,12 @@ void series_cache_free(ApplicationState* app) {
     }
     md_array_free(histogram_cache, app->allocator.persistent);
     histogram_cache = nullptr;
+
+    for (size_t i = 0; i < md_array_size(bandwidth_cache); ++i) {
+        md_array_free(bandwidth_cache[i].h, app->allocator.persistent);
+    }
+    md_array_free(bandwidth_cache, app->allocator.persistent);
+    bandwidth_cache = nullptr;
 
     for (size_t i = 0; i < md_array_size(slot_cache); ++i) {
         md_array_free(slot_cache[i].values,  app->allocator.persistent);
@@ -796,8 +824,10 @@ static double kde_bandwidth(const float* bins, int num_bins, double lo, double h
     return 0.9 * spread * pow((double)n, -0.2);
 }
 
-// Convolves the bins with a Gaussian of standard deviation sigma bins, normalized over the bins it covers: around the
-// period for periodic values, which then lose nothing over the ends
+// Convolves the bins with a Gaussian of standard deviation sigma bins. Around the period for periodic values, which then
+// lose nothing over the ends. Otherwise each bin is divided by the part of the kernel which falls within the range (the
+// cut-and-normalize correction): without it the density falls off towards the ends of the range, where the kernel
+// reaches out past them over values there are none of.
 static void gaussian_smooth(float* bins, int num_bins, double sigma, bool periodic) {
     if (sigma < 0.25 || num_bins < 2) return;
     const int r = MD_MIN((int)ceil(4.0 * sigma), num_bins);
@@ -813,6 +843,7 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
     md_memcpy(src, bins, sizeof(float) * num_bins);
     for (int b = 0; b < num_bins; ++b) {
         double acc = 0.0;
+        double within = 0.0;
         for (int i = -r; i <= r; ++i) {
             int s = b + i;
             if (periodic) {
@@ -822,23 +853,21 @@ static void gaussian_smooth(float* bins, int num_bins, double sigma, bool period
                 continue;
             }
             acc += kernel[i + r] * src[s];
+            within += kernel[i + r];
         }
-        bins[b] = (float)acc;
+        bins[b] = (float)(periodic ? acc : (within > 0.0 ? acc / within : 0.0));
     }
     md_temp_end(temp);
 }
 
 // Density of values[f * stride + k] over the frames f in mask (all num_frames without one), per
-// member k or over all of them at once. Values outside [lo, hi] are not counted; periodic values in
-// [lo, hi[, the period, are all counted, moved into it by whole periods. A smoothing above 0 makes it
-// a kernel density estimate of that bandwidth in Silverman's (kde_bandwidth).
-static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride,
-                         const md_bitset_t* mask, bool periodic, float smoothing) {
+// member k or over all of them at once, and how many values each counts (count, dim_out). Values outside
+// [lo, hi] are not counted; periodic values in [lo, hi[, the period, are all counted, moved into it by
+// whole periods. Not smoothed (smooth_temporal).
+static void bin_temporal(float* bins, size_t* count, int num_bins, int dim_out, double lo, double hi, const float* values, size_t num_frames, size_t stride,
+                         const md_bitset_t* mask, bool periodic) {
     const bool aggregate = dim_out == 1 && stride > 1;
     md_memset(bins, 0, sizeof(float) * (size_t)num_bins * dim_out);
-
-    md_temp_scope_t temp = md_temp_begin();
-    size_t* count = md_temp_alloc_array(temp, size_t, dim_out);
     md_memset(count, 0, sizeof(size_t) * dim_out);
 
     const double inv_range = hi > lo ? 1.0 / (hi - lo) : 0.0;
@@ -880,13 +909,51 @@ static void bin_temporal(float* bins, int num_bins, int dim_out, double lo, doub
         for (int b = 0; b < num_bins; ++b) {
             bins[d * num_bins + b] *= scl;
         }
-        if (smoothing > 0.0f) {
-            float* member = bins + (size_t)d * num_bins;
-            const double h = smoothing * kde_bandwidth(member, num_bins, lo, hi, count[d], periodic);
-            gaussian_smooth(member, num_bins, h / width, periodic);
+    }
+}
+
+// The binned densities (bin_temporal) made kernel density estimates: member d smoothed with a Gaussian of standard
+// deviation h[d], in the unit of [lo, hi]
+static void smooth_temporal(float* bins, int num_bins, int dim_out, double lo, double hi, const double* h, bool periodic) {
+    const double width = (hi - lo) / num_bins;
+    if (width <= 0.0) return;
+    for (int d = 0; d < dim_out; ++d) {
+        if (h[d] > 0.0) gaussian_smooth(bins + (size_t)d * num_bins, num_bins, h[d] / width, periodic);
+    }
+}
+
+// The bandwidths of a property (BandwidthEntry), binned as its curves are: over [lo, hi] in num_bins, of the frames in
+// mask (all without one), dim of them. key names the property and how it is binned, version its values and the frames.
+static const double* reference_bandwidths(ApplicationState* app, uint64_t key, const md_attributes_t* table, uint64_t version, int num_bins, int dim,
+                                          double lo, double hi, const float* values, size_t num_frames, size_t stride, const md_bitset_t* mask, bool periodic) {
+    BandwidthEntry* e = nullptr;
+    for (size_t i = 0; i < md_array_size(bandwidth_cache); ++i) {
+        if (bandwidth_cache[i].key == key && bandwidth_cache[i].table == table) {
+            e = &bandwidth_cache[i];
+            break;
         }
     }
-    md_temp_end(temp);
+    if (!e) {
+        md_array_push(bandwidth_cache, BandwidthEntry{}, app->allocator.persistent);
+        e = &bandwidth_cache[md_array_size(bandwidth_cache) - 1];
+        e->key = key;
+        e->table = table;
+        e->version = ~version;
+    }
+    e->last_used = ImGui::GetFrameCount();
+    if (e->version != version || md_array_size(e->h) != (size_t)dim) {
+        e->version = version;
+        md_array_resize(e->h, (size_t)dim, app->allocator.persistent);
+        md_temp_scope_t temp = md_temp_begin();
+        float*  bins  = md_temp_alloc_array(temp, float, (size_t)num_bins * dim);
+        size_t* count = md_temp_alloc_array(temp, size_t, (size_t)dim);
+        bin_temporal(bins, count, num_bins, dim, lo, hi, values, num_frames, stride, mask, periodic);
+        for (int d = 0; d < dim; ++d) {
+            e->h[d] = kde_bandwidth(bins + (size_t)d * num_bins, num_bins, lo, hi, count[d], periodic);
+        }
+        md_temp_end(temp);
+    }
+    return e->h;
 }
 
 // A distribution evaluated at num_src bins, averaged down to num_dst (a divisor of it): each
@@ -1014,11 +1081,15 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     // a distribution as published, or over the period's frames as its slot holds it. A period's slot is asked for here,
     // for the frames the period covers now: moved, the period takes its slot along.
     md_bitset_t frames = md_bitset_empty_set();
+    md_bitset_t held = md_bitset_empty_set();
     const md_bitset_t* mask = nullptr;
+    const md_bitset_t* held_mask = nullptr;     // every frame the evaluation holds, which the bandwidth is of
     if (temporal) {
         SeriesKey over = key;
         over.period = 0;
         if (series_frame_mask(&frames, app, over, app->allocator.frame)) {
+            held = frames;
+            held_mask = &held;
             if (period != 0) frames = md_bitset_and(frames, md_bitset_range(period_beg, period_end), app->allocator.frame);
             mask = &frames;
         }
@@ -1040,12 +1111,17 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     // ### Cached bins
     uint64_t hkey = md_hash64_str(path, (uint64_t)key.source * 31 + key.variant);
     hkey = md_hash64(&num_bins, sizeof(num_bins), hkey);
+    hkey = md_hash64(&periodic, sizeof(periodic), hkey);
+    // The property binned so, whichever period: what its bandwidths are of
+    const uint64_t bw_key = hkey;
     hkey = md_hash64(&period, sizeof(period), hkey);
     hkey = md_hash64(&smoothing, sizeof(smoothing), hkey);
-    hkey = md_hash64(&periodic, sizeof(periodic), hkey);
     // Of what is binned: the values and weights, and which frames count
     uint64_t version = slot ? slot->version : attr->version + (weight ? weight->version << 1 : 0);
+    const uint64_t bw_version = held_mask ? md_bitset_hash64(*held_mask, attr->version) : attr->version;
     if (mask) version = md_bitset_hash64(*mask, version);
+    // Smoothed, also of every frame held: the bandwidth is of those
+    if (smoothing > 0.0f) version = md_hash64(&bw_version, sizeof(bw_version), version);
 
     const int frame = ImGui::GetFrameCount();
     HistogramEntry* entry = nullptr;
@@ -1093,7 +1169,25 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
                     range[0] = lo;
                     range[1] = hi;
                 }
-                bin_temporal(entry->bins, num_bins, dim, range[0], range[1], values, n, stride, mask, is_periodic, smoothing);
+                md_temp_scope_t temp = md_temp_begin();
+                size_t* count = md_temp_alloc_array(temp, size_t, (size_t)dim);
+                bin_temporal(entry->bins, count, num_bins, dim, range[0], range[1], values, n, stride, mask, is_periodic);
+                md_temp_end(temp);
+                entry->bandwidth_min = entry->bandwidth_max = 0.0;
+                if (smoothing > 0.0f) {
+                    const double* ref = reference_bandwidths(app, bw_key, table, bw_version, num_bins, dim, range[0], range[1], values, n, stride, held_mask, is_periodic);
+                    double h[PLOT_MAX_POPULATION];
+                    double h_min = DBL_MAX, h_max = 0.0;
+                    for (int d = 0; d < dim; ++d) {
+                        h[d] = smoothing * ref[d];
+                        if (h[d] > 0.0) { h_min = MD_MIN(h_min, h[d]); h_max = MD_MAX(h_max, h[d]); }
+                    }
+                    smooth_temporal(entry->bins, num_bins, dim, range[0], range[1], h, is_periodic);
+                    if (h_max > 0.0) {
+                        entry->bandwidth_min = h_min;
+                        entry->bandwidth_max = h_max;
+                    }
+                }
                 entry->valid = true;
             } else if (has_range) {
                 const float* w = slot ? slot->weights : weight ? attribute_floats(app, table, weight) : nullptr;
@@ -1147,6 +1241,8 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     out->y_scale = y_scl;
     out->y_min = entry->y_min * y_scl;
     out->y_max = entry->y_max * y_scl;
+    out->bandwidth_min = entry->bandwidth_min * x_scl;
+    out->bandwidth_max = entry->bandwidth_max * x_scl;
     return true;
 }
 
