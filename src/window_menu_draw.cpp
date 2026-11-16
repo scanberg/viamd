@@ -1,4 +1,5 @@
 #include <window_menu.h>
+#include <property_grid.h>
 
 #include <imgui.h>
 
@@ -47,7 +48,7 @@ static void draw_children(const WindowMenuTree& tree, const WindowMenuRequest& r
                 ImGui::SetItemTooltip("%s", item.opts.disabled_reason);
             }
         } else if (depth == 0) {
-            ImGui::SeparatorText(label);
+            prop::heading(label);  // as the sections of Visuals look, but not folding
             draw_children(tree, req, c, depth + 1);
         } else {
             // How many of its windows are open is shown on a submenu, so that none is out of sight. It is left out

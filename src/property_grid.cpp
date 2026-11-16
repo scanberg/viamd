@@ -75,6 +75,19 @@ float control_width_before(const char* text) {
     return MD_MAX(control_width() - w, 1.0f);
 }
 
+// The rule after the name of a header, through its middle, from x0 to x1 (screen). A section's header and a heading
+// share it, and the dimmed text, so that they look the same wherever they are.
+static void header_rule(float x0, const ImVec2& mn, const ImVec2& mx, float x1) {
+    const float y = IM_ROUND((mn.y + mx.y) * 0.5f);
+    if (x0 < x1) {
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(x0, y), ImVec2(x1, y), ImGui::GetColorU32(ImGuiCol_Separator));
+    }
+}
+
+static float header_rule_gap() {
+    return ImGui::GetStyle().ItemInnerSpacing.x * 2.0f;
+}
+
 // The header of a section: dimmed, unframed, with a rule from its name to the right edge - a divider that folds,
 // beneath the rows of whatever the grid is the properties of. With 'enabled', the name is a checkbox that turns
 // what the section is about on and off ('mixed': shown as neither, for what is on in part). As high as a row, so that
@@ -90,7 +103,7 @@ static bool header(const char* name, bool default_open, bool* enabled, bool* tog
     const bool open = ImGui::TreeNodeEx("##section", flags, "%s", enabled ? "" : name);
     const ImVec2 mn = ImGui::GetItemRectMin();
     const ImVec2 mx = ImGui::GetItemRectMax();
-    float x0 = mn.x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(name).x + style.ItemInnerSpacing.x * 2.0f;
+    float x0 = mn.x + ImGui::GetTreeNodeToLabelSpacing() + ImGui::CalcTextSize(name).x + header_rule_gap();
     if (enabled) {
         ImGui::SameLine();
         ImGui::SetCursorScreenPos(ImVec2(mn.x + ImGui::GetTreeNodeToLabelSpacing(), mn.y));
@@ -99,16 +112,21 @@ static bool header(const char* name, bool default_open, bool* enabled, bool* tog
         if (mixed) ImGui::PopItemFlag();
         if (toggled) *toggled = t;
         if (tooltip && tooltip[0]) ImGui::SetItemTooltip("%s", tooltip);
-        x0 = ImGui::GetItemRectMax().x + style.ItemInnerSpacing.x * 2.0f;
+        x0 = ImGui::GetItemRectMax().x + header_rule_gap();
     }
     ImGui::PopStyleColor();
 
-    const float x1 = ImGui::GetWindowPos().x - ImGui::GetScrollX() + g.right_x;
-    const float y  = IM_ROUND((mn.y + mx.y) * 0.5f);
-    if (x0 < x1) {
-        ImGui::GetWindowDrawList()->AddLine(ImVec2(x0, y), ImVec2(x1, y), ImGui::GetColorU32(ImGuiCol_Separator));
-    }
+    header_rule(x0, mn, mx, ImGui::GetWindowPos().x - ImGui::GetScrollX() + g.right_x);
     return open;
+}
+
+void heading(const char* name) {
+    // Where the row ends, taken before the text moves the cursor on: the grid's edge in one, else the window's
+    const float x1 = g.active ? ImGui::GetWindowPos().x - ImGui::GetScrollX() + g.right_x
+                              : ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", name);
+    header_rule(ImGui::GetItemRectMax().x + header_rule_gap(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), x1);
 }
 
 static void section_open() {
