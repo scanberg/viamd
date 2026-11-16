@@ -1218,7 +1218,7 @@ void flow_layout_compute(flow_layout_t* layout, const flow_graph_t* graph, const
 
             const flow_layout_ribbon_t ribbon = {
                 .link_idx = l,
-                .flags = self ? FLOW_RIBBON_FLAG_SELF : FLOW_RIBBON_FLAG_NONE,
+                .flags = (uint32_t)(self ? FLOW_RIBBON_FLAG_SELF : FLOW_RIBBON_FLAG_NONE),
                 .p0 = { src_x, out_span_min[l] },
                 .p1 = { src_x, out_span_max[l] },
                 .q0 = { dst_x, in_cur[d] },
