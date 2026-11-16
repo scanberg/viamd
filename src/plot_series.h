@@ -39,6 +39,8 @@
 #define PLOT_MAX_SERIES_PER_SUBPLOT  32
 #define PLOT_MAX_POPULATION          256
 #define PLOT_MAX_PERIODS             8
+#define PLOT_LINE_WEIGHT_MIN         0.5f
+#define PLOT_LINE_WEIGHT_MAX         8.0f
 #define SERIES_PATH_CAP              192
 
 // ImGui drag and drop payload types, all carrying a SeriesDragPayload
@@ -178,9 +180,11 @@ struct PlotSeries {
     ImPlotMarker    marker = ImPlotMarker_Square;
     float           marker_size = 1.0f;
     float           bar_width = 1.0f;           // of a bin, for bars
+    float           line_weight = 1.0f;         // of a line, in pixels, for a distribution drawn as one
     int             num_bins = 128;             // for a distribution
-    float           smoothing = 0.0f;           // for a distribution of values: the bandwidth of a kernel density estimate
-                                                // in Silverman's, 0 for none (series_resolve_histogram)
+    float           smoothing = 1.0f;           // for a distribution of values: the bandwidth of a kernel density estimate
+                                                // in Silverman's, 0 for none (series_resolve_histogram). On by default: a
+                                                // histogram of a short period, of few frames, is mostly noise
 
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};

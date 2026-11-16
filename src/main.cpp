@@ -5041,7 +5041,7 @@ static void histogram_draw_range(long long* u0, int* count, const SeriesHistogra
 }
 
 // A polyline drawn dashed, carrying the dashes on across its corners and from one call to the next through phase
-static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase) {
+static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase, float thickness = 1.5f) {
     const float dash = 6.0f, gap = 4.0f;
     for (int i = 1; i < count; ++i) {
         const ImVec2 prev = pts[i - 1];
@@ -5053,7 +5053,7 @@ static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 
         while (t < len) {
             const float in_cycle = fmodf(*phase + t, dash + gap);
             const float step = in_cycle < dash ? MD_MIN(dash - in_cycle, len - t) : MD_MIN(dash + gap - in_cycle, len - t);
-            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
+            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, thickness);
             t += MD_MAX(step, 0.01f);
         }
         *phase = fmodf(*phase + len, dash + gap);
@@ -5116,7 +5116,9 @@ static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 c
             }
             dl->Flags = flags;
         }
-        dashed_polyline(dl, pts, count, line_col, &phase);
+        // As thick as the series' own line, and no thinner than the dashes were
+        const float thickness = s.plot_type == PlotType_Line ? MD_MAX(1.5f, 1.5f * s.line_weight) : 1.5f;
+        dashed_polyline(dl, pts, count, line_col, &phase, thickness);
         md_temp_end(temp);
     }
     ImPlot::PopPlotClipRect();
@@ -5257,6 +5259,112 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     plot_system_series_menu(data, DISTRIBUTION_SERIES_DND, first);
 }
 
+// The density axis of a Distributions subplot. Fitted to what it shows every frame, it jumps about as a period is
+// dragged or follows the current frame: a short period has peaks of its own, far above those of the rest. So it grows
+// at once, never cutting a curve off, but shrinks only when what it shows has stayed well below it for a while, or a
+// period dragged is let go, and then eases down.
+struct DistributionYRange {
+    double lo = 0.0, hi = 1.0;              // shown
+    double goal_lo = 0.0, goal_hi = 1.0;    // eased towards when shrinking
+    double loose_since = -1.0;              // since when it has been loose, -1 when it is not
+    bool   valid = false;
+};
+
+#define DIST_Y_HEADROOM     1.1     // above the highest peak (below the lowest value, when there are negative ones)
+#define DIST_Y_LOOSE        0.5     // loose when what it shows takes less than this of it
+#define DIST_Y_SHRINK_DELAY 0.75    // seconds loose before it shrinks
+#define DIST_Y_EASE_RATE    12.0    // per second, of what is left to shrink
+
+// What the subplot draws, from lo to hi (y, in the display unit): of every series shown and resolved, the members
+// it draws. False when it draws nothing. Within a plot (ImPlot::BeginPlot), for which series are hidden in its legend.
+static bool distribution_y_extent(double* out_lo, double* out_hi, const PlotSubplot& sp, const SeriesHistogramView* views, const bool* resolved) {
+    double lo = DBL_MAX, hi = -DBL_MAX;
+    for (int j = 0; j < sp.count; ++j) {
+        const SeriesHistogramView& v = views[j];
+        if (!resolved[j] || v.num_bins <= 0 || !v.bins) continue;
+        if (const ImPlotItem* item = ImPlot::GetItem(v.plot_id); item && !item->Show) continue;
+        const PlotSeries& s = sp.series[j];
+        const int population_size = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+        bool every_member = v.num_periods > 0 || population_size == 1;
+        if (!every_member) {
+            every_member = true;
+            for (int k = 0; k < population_size; ++k) {
+                if (!s.population_mask.test(k)) { every_member = false; break; }
+            }
+        }
+        if (every_member) {
+            // Over every member, or every valid period: what the view says
+            if (v.y_max < v.y_min) continue;
+            lo = MD_MIN(lo, v.y_min);
+            hi = MD_MAX(hi, v.y_max);
+            continue;
+        }
+        for (int k = 0; k < population_size; ++k) {
+            if (!s.population_mask.test(k)) continue;
+            const float* bins = v.bins + (size_t)k * v.num_bins;
+            for (int b = 0; b < v.num_bins; ++b) {
+                const double y = bins[b] * v.y_scale;
+                lo = MD_MIN(lo, y);
+                hi = MD_MAX(hi, y);
+            }
+        }
+    }
+    if (hi < lo) return false;
+    *out_lo = lo;
+    *out_hi = hi;
+    return true;
+}
+
+// The range to show in the plot this frame. snap: to what it draws at once, as when a series was added.
+static void distribution_y_update(DistributionYRange* r, double lo, double hi, bool drawn, bool snap, bool dragging, bool released) {
+    // A density from zero, and as far below as values go below it
+    double fit_lo = lo < 0.0 ? lo * DIST_Y_HEADROOM : 0.0;
+    double fit_hi = hi > 0.0 ? hi * DIST_Y_HEADROOM : 0.0;
+    if (!drawn) {
+        // Nothing to show: as it was
+        if (r->valid && !snap) return;
+        fit_lo = 0.0;
+        fit_hi = 1.0;
+    }
+    if (fit_hi - fit_lo <= 0.0) fit_hi = fit_lo + 1.0;
+
+    if (!r->valid || snap) {
+        r->lo = r->goal_lo = fit_lo;
+        r->hi = r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+        r->valid = true;
+        return;
+    }
+
+    // Grows at once
+    if (hi > r->hi) r->hi = r->goal_hi = fit_hi;
+    if (lo < r->lo) r->lo = r->goal_lo = fit_lo;
+
+    // Shrinks later
+    const double span = r->goal_hi - r->goal_lo;
+    const bool loose = (fit_hi - fit_lo) < span * DIST_Y_LOOSE;
+    const double now = ImGui::GetTime();
+    if (released) {
+        r->goal_lo = fit_lo;
+        r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+    } else if (dragging || !loose) {
+        r->loose_since = -1.0;
+    } else if (r->loose_since < 0.0) {
+        r->loose_since = now;
+    } else if (now - r->loose_since >= DIST_Y_SHRINK_DELAY) {
+        r->goal_lo = fit_lo;
+        r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+    }
+
+    const double a = 1.0 - exp(-(double)ImGui::GetIO().DeltaTime * DIST_Y_EASE_RATE);
+    r->lo += (r->goal_lo - r->lo) * a;
+    r->hi += (r->goal_hi - r->hi) * a;
+    if (fabs(r->hi - r->goal_hi) < 1.0e-3 * span) r->hi = r->goal_hi;
+    if (fabs(r->lo - r->goal_lo) < 1.0e-3 * span) r->lo = r->goal_lo;
+}
+
 static void draw_distribution_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
@@ -5265,6 +5373,13 @@ static void draw_distribution_window(ApplicationState* data) {
 
         // Refit a subplot's axes to what it holds, after it gained a series or its binning changed
         static bool fit_subplot[PLOT_MAX_SUBPLOTS] = {};
+        // The density axes, which follow what they show at a pace of their own (DistributionYRange)
+        static DistributionYRange y_range[PLOT_MAX_SUBPLOTS];
+        // A period dragged in the timeline, and whether it was let go this frame
+        static bool was_dragging = false;
+        const bool dragging = timeline_periods_dragging();
+        const bool released = was_dragging && !dragging;
+        was_dragging = dragging;
 
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Properties")) {
@@ -5287,7 +5402,8 @@ static void draw_distribution_window(ApplicationState* data) {
         // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
         const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight | ImPlot::InsetAxisFlags;
         const ImPlotAxisFlags axis_flags_x = axis_flags;
-        const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
+        // Not fitted by ImPlot: set every frame from what is shown (distribution_y_update)
+        const ImPlotAxisFlags axis_flags_y = axis_flags;
         const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
         if (ImPlot::BeginSubplots("##distribution_plots", num_subplots, 1, ImVec2(-1,-1))) {
@@ -5340,10 +5456,10 @@ static void draw_distribution_window(ApplicationState* data) {
 
                 int remove_idx = -1;
 
+                // An axis of a period shows it as it is cut: only the densities are fitted, and those are fitted here
+                const bool snap_y = fit_subplot[i];
                 if (fit_subplot[i]) {
-                    // An axis of a period shows it as it is cut: only the densities are fitted
-                    if (axis_view) ImPlot::SetNextAxisToFit(ImAxis_Y1);
-                    else           ImPlot::SetNextAxesToFit();
+                    if (!axis_view) ImPlot::SetNextAxisToFit(ImAxis_X1);
                     fit_subplot[i] = false;
                 }
 
@@ -5370,6 +5486,13 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
                     }
                     ImPlot::SetupAxis(ImAxis_Y1, y_label, axis_flags_y);
+                    {
+                        double y_lo = 0.0, y_hi = 0.0;
+                        const bool drawn = distribution_y_extent(&y_lo, &y_hi, sp, views, resolved);
+                        DistributionYRange& yr = y_range[i];
+                        distribution_y_update(&yr, y_lo, y_hi, drawn, snap_y, dragging, released);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, yr.lo, yr.hi, ImPlotCond_Always);
+                    }
                     ImPlot::SetupFinish();
 
                     if (axis_view && periodic_axis_popup(ImAxis_X1, axis_view)) {
@@ -5575,6 +5698,8 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (s.plot_type == PlotType_Bars) {
                                 ImGui::SliderFloat("Bar Width", &s.bar_width, 0.01f, 1.0f, "%.3f");
+                            } else if (s.plot_type == PlotType_Line) {
+                                ImGui::SliderFloat("Line Width", &s.line_weight, PLOT_LINE_WEIGHT_MIN, PLOT_LINE_WEIGHT_MAX, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
                             }
 
                             // Powers of two: a script distribution only divides into those
@@ -5596,6 +5721,7 @@ static void draw_distribution_window(ApplicationState* data) {
                                 bool smooth = s.smoothing > 0.0f;
                                 if (ImGui::Checkbox("Smooth", &smooth)) {
                                     s.smoothing = smooth ? 1.0f : 0.0f;
+                                    fit_subplot[i] = true;
                                 }
                                 ImGui::SetItemTooltip("A kernel density estimate rather than the histogram: a Gaussian about every value, as\n"
                                                       "wide as Silverman's rule of thumb makes it%s",
@@ -5632,14 +5758,14 @@ static void draw_distribution_window(ApplicationState* data) {
                                     color.w *= 0.35f;
                                 }
                                 float  fill_alpha = 1.0f;
-                                float  weight = 1.0f;
+                                float  weight = s.line_weight;
                                 if (hovered_idx == j) {
                                     if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
                                         color = plot_highlight(color);
                                         fill_alpha = 1.25f;
                                     }
                                     if (hovered_pop_idx == k) {
-                                        weight = 2.0f;
+                                        weight *= 2.0f;
                                     }
                                 }
 

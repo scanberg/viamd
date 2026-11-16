@@ -1537,10 +1537,10 @@ void plot_layout_serialize(viamd::serialization_state_t& state, md_str_t section
             viamd::write_int (state, MD_STR_LIT("Marker"),  (int)s.marker);
             viamd::write_flt (state, MD_STR_LIT("MarkerSize"), s.marker_size);
             viamd::write_flt (state, MD_STR_LIT("BarWidth"), s.bar_width);
+            viamd::write_flt (state, MD_STR_LIT("LineWeight"), s.line_weight);
             viamd::write_int (state, MD_STR_LIT("NumBins"), s.num_bins);
-            if (s.smoothing > 0.0f) {
-                viamd::write_flt(state, MD_STR_LIT("Smoothing"), s.smoothing);
-            }
+            // Written also when off (0): off is no longer the default
+            viamd::write_flt (state, MD_STR_LIT("Smoothing"), s.smoothing);
             viamd::write_bool(state, MD_STR_LIT("UseColormap"), s.use_colormap);
             viamd::write_int (state, MD_STR_LIT("Colormap"), (int)s.colormap);
             viamd::write_flt (state, MD_STR_LIT("ColormapAlpha"), s.colormap_alpha);
@@ -1604,6 +1604,9 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, md_str_t sec
                 viamd::extract_flt(s.marker_size, arg);
             } else if (md_str_eq_cstr(ident, "BarWidth")) {
                 viamd::extract_flt(s.bar_width, arg);
+            } else if (md_str_eq_cstr(ident, "LineWeight")) {
+                viamd::extract_flt(s.line_weight, arg);
+                s.line_weight = MD_CLAMP(s.line_weight, PLOT_LINE_WEIGHT_MIN, PLOT_LINE_WEIGHT_MAX);
             } else if (md_str_eq_cstr(ident, "NumBins") && viamd::extract_int(i, arg)) {
                 s.num_bins = MD_CLAMP(i, 2, 4096);
             } else if (md_str_eq_cstr(ident, "Smoothing")) {
