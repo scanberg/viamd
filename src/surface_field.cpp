@@ -136,7 +136,7 @@ static bool extract_atom_column(double* dst, const md_system_t& sys, md_str_t pa
         return false;
     }
     const size_t n = num_atoms * components;
-    return md_attribute_extract_f64(dst, n, attr, md_attribute_slice_all(), unit) == n;
+    return md_attribute_extract_f64(dst, n, &sys.attributes, attr, md_attribute_slice_all(), unit) == n;
 }
 
 // The dipoles a polarizable embedding induced on the environment's sites, over the system's atoms
@@ -198,7 +198,7 @@ static bool build_embedding_charges(md_gto_int_charges_t* out, const SurfaceFiel
     MD_DEFER { md_temp_end(temp); };
 
     double* q = (double*)md_temp_alloc(temp, sizeof(double) * num_atoms);
-    if (md_attribute_extract_f64(q, num_atoms, attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_atoms) {
+    if (md_attribute_extract_f64(q, num_atoms, &sys.attributes, attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_atoms) {
         return false;
     }
     double* mu = (double*)md_temp_alloc(temp, sizeof(double) * 3 * num_atoms);
@@ -286,7 +286,7 @@ static void esp_check_net_charge(const md_gto_int_charges_t* q, const md_system_
     double stated = 0.0;
     bool has_stated = false;
     if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, ESP_MOLECULAR_CHARGE_PATH)) {
-        has_stated = md_attribute_extract_f64(&stated, 1, attr, md_attribute_slice_all(), md_unit_none()) == 1 && is_finite_f64(stated);
+        has_stated = md_attribute_extract_f64(&stated, 1, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) == 1 && is_finite_f64(stated);
     }
 
     // Said once per distinct mismatch, not on every frame of a trajectory (main thread only)
@@ -339,7 +339,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     }
     const size_t num_d = num_ao * num_ao;
     double* D = (double*)md_temp_alloc(temp, sizeof(double) * num_d);
-    if (!D || md_attribute_extract_f64(D, num_d, d_attr, md_attribute_slice_all(), md_unit_none()) != num_d) {
+    if (!D || md_attribute_extract_f64(D, num_d, &sys.attributes, d_attr, md_attribute_slice_all(), md_unit_none()) != num_d) {
         MD_LOG_ERROR("Electrostatic potential: could not read '" MD_STR_FMT "'", MD_STR_ARG(d_attr->path));
         return false;
     }
@@ -352,7 +352,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
         return false;
     }
     double* Z = (double*)md_temp_alloc(temp, sizeof(double) * num_z);
-    if (!Z || md_attribute_extract_f64(Z, num_z, z_attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_z) {
+    if (!Z || md_attribute_extract_f64(Z, num_z, &sys.attributes, z_attr, md_attribute_slice_all(), md_unit_elementary_charge()) != num_z) {
         return false;
     }
 

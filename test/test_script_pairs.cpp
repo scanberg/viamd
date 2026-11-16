@@ -157,12 +157,12 @@ const md_attribute_t* output_attr(const md_attributes_t* attrs, const std::strin
     return md_attributes_find(attrs, md_str_t{path.c_str(), path.size()});
 }
 
-std::vector<double> values_of(const md_attribute_t* a, md_unit_t unit) {
+std::vector<double> values_of(const md_attributes_t* attrs, const md_attribute_t* a, md_unit_t unit) {
     size_t n = 1;
     for (uint32_t i = 0; i < a->format.rank; ++i) n *= a->format.shape[i];
     n *= a->format.components ? a->format.components : 1;
     std::vector<double> v(n);
-    const size_t got = md_attribute_extract_f64(v.data(), n, a, md_attribute_slice_all(), unit);
+    const size_t got = md_attribute_extract_f64(v.data(), n, attrs, a, md_attribute_slice_all(), unit);
     v.resize(got);
     return v;
 }
@@ -189,7 +189,7 @@ bool compare_outputs(const std::string& pair, const script::Program* p1, const s
         // In v1's unit; where either has none (v1 drops the unit of some arithmetic), each in its own
         const bool unitless = md_unit_is_none(x->unit) || md_unit_is_none(y->unit);
         const md_unit_t unit = x->unit;
-        const std::vector<double> u = values_of(x, x->unit), v = values_of(y, unitless ? y->unit : unit);
+        const std::vector<double> u = values_of(a1, x, x->unit), v = values_of(a2, y, unitless ? y->unit : unit);
         ++compared;
         if (u.size() != v.size()) {
             printf("  %s: %s has %zu values in v1 and %zu in VIAL\n", pair.c_str(), name.c_str(), u.size(), v.size());
@@ -199,7 +199,7 @@ bool compare_outputs(const std::string& pair, const script::Program* p1, const s
         // Around its circle where it is periodic
         double period = 0;
         if (const md_attribute_t* per = output_attr(a2, name, "/period")) {
-            const std::vector<double> pr = values_of(per, unit);
+            const std::vector<double> pr = values_of(a2, per, unit);
             if (pr.size() == 2) period = pr[1] - pr[0];
         }
         size_t bad = 0;

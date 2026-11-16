@@ -407,7 +407,7 @@ static const float* cache_convert(ApplicationState* app, const md_attributes_t* 
     entry->last_used = frame;
     const size_t count = md_attribute_element_count(&attr->format);
     md_array_resize(entry->data, count, app->allocator.persistent);
-    entry->valid = md_attribute_extract_f32(entry->data, count, attr, md_attribute_slice_all(), dst_unit) == count;
+    entry->valid = md_attribute_extract_f32(entry->data, count, table, attr, md_attribute_slice_all(), dst_unit) == count;
     if (!entry->valid) {
         md_array_free(entry->data, app->allocator.persistent);
         entry->data = nullptr;
@@ -907,10 +907,10 @@ static void downsample_bins(float* dst, int num_dst, const float* src, const flo
 }
 
 // A (min, max) pair: rank 0 with two components, as the script publishes it, or two values of any shape
-static bool read_range(double out[2], const md_attribute_t* range) {
+static bool read_range(double out[2], const md_attributes_t* table, const md_attribute_t* range) {
     if (!range || !range->data || range->format.type == MD_ATTRIBUTE_TYPE_NONE || range->format.type == MD_ATTRIBUTE_TYPE_STR) return false;
     if (md_attribute_element_count(&range->format) != 2) return false;
-    return md_attribute_extract_f64(out, 2, range, md_attribute_slice_all(), md_unit_none()) == 2 && out[1] > out[0];
+    return md_attribute_extract_f64(out, 2, table, range, md_attribute_slice_all(), md_unit_none()) == 2 && out[1] > out[0];
 }
 
 // ## Periodic values
@@ -924,11 +924,11 @@ bool series_periodic_equal(const SeriesPeriodic& a, const SeriesPeriodic& b) {
 static bool read_periodic(SeriesPeriodic* out, const md_attributes_t* table, md_str_t path) {
     *out = SeriesPeriodic{};
     double range[2];
-    if (!table || !read_range(range, md_attributes_find_in(table, path, MD_STR_LIT("period")))) return false;
+    if (!table || !read_range(range, table, md_attributes_find_in(table, path, MD_STR_LIT("period")))) return false;
     double seam = range[0];
     const md_attribute_t* s = md_attributes_find_in(table, path, MD_STR_LIT("seam"));
     if (s && s->data && md_attribute_type_is_numeric(s->format.type) && md_attribute_element_count(&s->format) == 1) {
-        md_attribute_extract_f64(&seam, 1, s, md_attribute_slice_all(), md_unit_none());
+        md_attribute_extract_f64(&seam, 1, table, s, md_attribute_slice_all(), md_unit_none());
     }
     out->beg  = range[0];
     out->end  = range[1];
@@ -1074,7 +1074,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
         const float* values = slot ? slot->values : attribute_floats(app, table, attr);
         if (values) {
             double range[2] = {0, 0};
-            bool has_range = read_range(range, md_attributes_find_in(table, path, MD_STR_LIT("range")));
+            bool has_range = read_range(range, table, md_attributes_find_in(table, path, MD_STR_LIT("range")));
             if (is_periodic) {
                 range[0] = periodic.beg;
                 range[1] = periodic.end;
@@ -1313,15 +1313,15 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     const md_attribute_t* ao = md_attributes_find(table, md_str_from_cstr(path));
     snprintf(path, sizeof(path), "%s/basis", key.path);
     const md_attribute_t* ab = md_attributes_find(table, md_str_from_cstr(path));
-    if (ao && ab && md_attribute_extract_f64(o, 3, ao, md_attribute_slice_all(), ao->unit) == 3 &&
-        md_attribute_extract_f64(b, 9, ab, md_attribute_slice_all(), ab->unit) == 9) {
+    if (ao && ab && md_attribute_extract_f64(o, 3, table, ao, md_attribute_slice_all(), ao->unit) == 3 &&
+        md_attribute_extract_f64(b, 9, table, ab, md_attribute_slice_all(), ab->unit) == 9) {
         out->placed = true;
         out->origin = md_float3_t{(float)o[0], (float)o[1], (float)o[2]};
         for (int a = 0; a < 3; ++a) out->basis[a] = md_float3_t{(float)b[3 * a], (float)b[3 * a + 1], (float)b[3 * a + 2]};
     }
     snprintf(path, sizeof(path), "%s/bulk", key.path);
     const md_attribute_t* ak = md_attributes_find(table, md_str_from_cstr(path));
-    if (ak && md_attribute_extract_f64(&bulk, 1, ak, md_attribute_slice_all(), ak->unit) == 1) out->bulk = bulk;
+    if (ak && md_attribute_extract_f64(&bulk, 1, table, ak, md_attribute_slice_all(), ak->unit) == 1) out->bulk = bulk;
     return true;
 }
 

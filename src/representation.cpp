@@ -795,7 +795,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             // and takes no indices at all.
             const uint32_t variant = (uint32_t)MD_CLAMP(coloring.variant_idx, 0, MD_MAX(atom_attribute_variant_count(attr) - 1, 0));
             const md_attribute_slice_t slice = attr->format.rank > 1 ? md_attribute_slice_1(variant) : md_attribute_slice_all();
-            num_extracted = md_attribute_extract_f32(values, num_atoms, attr, slice, md_unit_none());
+            num_extracted = md_attribute_extract_f32(values, num_atoms, &sys.attributes, attr, slice, md_unit_none());
         }
 
         if (num_extracted == num_atoms) {
@@ -806,7 +806,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
             span_hash = md_hash64(&version, sizeof(version), span_hash);
             span_hash = shown ? md_bitset_hash64(*shown, span_hash) : md_hash64(&num_atoms, sizeof(num_atoms), span_hash);
             if (span_hash != coloring.span_hash) {
-                coloring.span = atom_attribute_span(attr, shown);
+                coloring.span = atom_attribute_span(&sys.attributes, attr, shown);
                 coloring.span_hash = span_hash;
             }
             color_scale_update_range(&coloring.scale, coloring.span);

@@ -2683,10 +2683,11 @@ md_str_t atom_attribute_label(const md_attribute_t* attr);
 int atom_attribute_variant_count(const md_attribute_t* attr);
 
 // Span of the values, over EVERY variant so a colour ramp does not jump as the variant changes, and
-// over the atoms of 'mask' (all of them when NULL). Derived rather than stored: it belongs to whoever
-// is drawing the ramp, not to the table. Scans the whole attribute, so not something to call per
-// frame without a reason. Atoms without a value play no part; invalid when there are none with one.
-ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitset_t* mask);
+// over the atoms of 'mask' (all of them when NULL). attr is read from table, the one it was found in.
+// Derived rather than stored: it belongs to whoever is drawing the ramp, not to the table. Scans the
+// whole attribute, so not something to call per frame without a reason. Atoms without a value play
+// no part; invalid when there are none with one.
+ColorScaleSpan atom_attribute_span(const md_attributes_t* table, const md_attribute_t* attr, const md_bitset_t* mask);
 
 // What a legend calls it: the label, and which variant when there are several ("Charge [2/5]")
 void atom_attribute_legend_label(char* buf, size_t cap, const md_attribute_t* attr, int variant_idx);

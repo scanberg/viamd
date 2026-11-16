@@ -1262,7 +1262,7 @@ struct Dataset : viamd::EventHandler {
         if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"))) {
             if (attr->format.rank == 1 && md_attribute_element_count(&attr->format) == sys.atom.count) {
                 charge = md_temp_alloc_array(temp, float, sys.atom.count + 1);
-                c.has_charge = md_attribute_extract_f32(charge, sys.atom.count, attr, md_attribute_slice_all(), md_unit_none()) == sys.atom.count;
+                c.has_charge = md_attribute_extract_f32(charge, sys.atom.count, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) == sys.atom.count;
                 if (!c.has_charge) charge = nullptr;
             }
         }
@@ -2089,7 +2089,7 @@ struct Dataset : viamd::EventHandler {
         if (cell && cell->data && md_attribute_element_count(&cell->format) == n * 9 && n > 0) {
             md_temp_scope_t temp = md_temp_begin();
             float* m = md_temp_alloc_array(temp, float, n * 9);
-            if (md_attribute_extract_f32(m, n * 9, cell, md_attribute_slice_all(), md_unit_none()) == n * 9) {
+            if (md_attribute_extract_f32(m, n * 9, &data.mold.sys.attributes, cell, md_attribute_slice_all(), md_unit_none()) == n * 9) {
                 traj.vol_min = DBL_MAX;
                 traj.vol_max = 0;
                 for (size_t f = 0; f < n; ++f) {
@@ -2187,8 +2187,8 @@ struct Dataset : viamd::EventHandler {
             }
             const size_t m = axis->format.shape[0];
             double ends[2] = {0, 0};
-            md_attribute_extract_f64(&ends[0], 1, axis, md_attribute_slice_1(0),                  run_time_unit(&data));
-            md_attribute_extract_f64(&ends[1], 1, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(&data));
+            md_attribute_extract_f64(&ends[0], 1, &data.mold.sys.attributes, axis, md_attribute_slice_1(0),                  run_time_unit(&data));
+            md_attribute_extract_f64(&ends[1], 1, &data.mold.sys.attributes, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(&data));
             const double every = m > 1 ? (ends[1] - ends[0]) / (double)(m - 1) : 0.0;
             const bool covers = traj.has_time && ends[0] <= traj.t0 + 1e-6 * fabs(traj.t1 - traj.t0) && ends[1] >= traj.t1 - 1e-6 * fabs(traj.t1 - traj.t0);
             ImGui::TextDisabled("%s: every %.4g %s, %s", label, every * ts, tu,
@@ -2396,8 +2396,8 @@ struct Dataset : viamd::EventHandler {
                     const md_attribute_slice_t first = md_attribute_slice_1(0);
                     const md_attribute_slice_t last  = md_attribute_slice_1(n - 1);
                     if (axis && axis->format.shape[0] == n &&
-                        md_attribute_extract_f64(&t[0], 1, axis, first, md_unit_none()) == 1 &&
-                        md_attribute_extract_f64(&t[1], 1, axis, last,  md_unit_none()) == 1)
+                        md_attribute_extract_f64(&t[0], 1, table, axis, first, md_unit_none()) == 1 &&
+                        md_attribute_extract_f64(&t[1], 1, table, axis, last,  md_unit_none()) == 1)
                     {
                         char unit_buf[32] = "";
                         const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), axis->unit);

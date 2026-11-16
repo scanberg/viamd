@@ -506,7 +506,7 @@ static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const Ap
         const md_attribute_slice_t slice = variant >= 0 ? md_attribute_slice_2((uint32_t)variant, atom_idx) : md_attribute_slice_1(atom_idx);
 
         float value = 0.0f;
-        if (md_attribute_extract_f32(&value, 1, attr, slice, md_unit_none()) != 1 || atom_attribute_value_absent(value)) continue;
+        if (md_attribute_extract_f32(&value, 1, &sys.attributes, attr, slice, md_unit_none()) != 1 || atom_attribute_value_absent(value)) continue;
 
         md_str_t key = atom_attribute_label(attr);
         if (variant >= 0) {
@@ -3240,8 +3240,8 @@ bool dipole_moment_read(md_float3_t* out_vec, md_float3_t* out_origin, const md_
     // system space, and extraction refuses if it is not.
     float v[3] = {0, 0, 0};
     float o[3] = {0, 0, 0};
-    md_attribute_extract_f32(v, MD_COUNTOF(v), vec, vec_slice, md_unit_none());
-    md_attribute_extract_f32(o, MD_COUNTOF(o), org, org_slice, md_unit_angstrom());
+    md_attribute_extract_f32(v, MD_COUNTOF(v), &sys.attributes, vec, vec_slice, md_unit_none());
+    md_attribute_extract_f32(o, MD_COUNTOF(o), &sys.attributes, org, org_slice, md_unit_angstrom());
 
     if (out_vec)    *out_vec    = md_float3_set(v[0], v[1], v[2]);
     if (out_origin) *out_origin = md_float3_set(o[0], o[1], o[2]);
@@ -3284,7 +3284,7 @@ int atom_attribute_variant_count(const md_attribute_t* attr) {
     return attr->format.rank > 1 ? (int)attr->format.shape[0] : 1;
 }
 
-ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitset_t* mask) {
+ColorScaleSpan atom_attribute_span(const md_attributes_t* table, const md_attribute_t* attr, const md_bitset_t* mask) {
     ColorScaleSpan span;
     if (!attr) return span;
 
@@ -3297,7 +3297,7 @@ ColorScaleSpan atom_attribute_span(const md_attribute_t* attr, const md_bitset_t
 
     // Deliberately the whole attribute and not one variant: a span measured per variant would make
     // the colours shift as the index slider moves, which reads as the data changing.
-    if (values && md_attribute_extract_f32(values, num_values, attr, md_attribute_slice_all(), md_unit_none()) == num_values) {
+    if (values && md_attribute_extract_f32(values, num_values, table, attr, md_attribute_slice_all(), md_unit_none()) == num_values) {
         float value_min =  FLT_MAX;
         float value_max = -FLT_MAX;
         size_t num_present = 0;
@@ -3336,7 +3336,7 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
     coloring->span_hash = 0;    // measured again, over the representation's atoms, with its colours
 
     // Started out from the values of every atom: the representation's own are not at hand here
-    const ColorScaleSpan span = atom_attribute_span(md_attributes_get(&sys.attributes, key), nullptr);
+    const ColorScaleSpan span = atom_attribute_span(&sys.attributes, md_attributes_get(&sys.attributes, key), nullptr);
     const bool signed_values = color_scale_span_signed(span);
 
     ColorScale& scale = coloring->scale;
@@ -3501,7 +3501,7 @@ double* orbital_coefficients_extract(size_t* out_num_ao, md_temp_scope_t temp, c
 
     // f64, because that is what md_gto takes: the coefficients are double at this boundary to keep
     // the QM code's precision, and extracting them through floats would spend it here.
-    if (md_attribute_extract_f64(dst, num_ao, attr, slice, md_unit_none()) != num_ao) {
+    if (md_attribute_extract_f64(dst, num_ao, &sys.attributes, attr, slice, md_unit_none()) != num_ao) {
         return nullptr;
     }
 
@@ -3680,7 +3680,7 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
                 const size_t n = md_attribute_slice_count(a, slice);
                 md_temp_scope_t temp = md_temp_begin();
                 double* values = (double*)md_temp_alloc(temp, sizeof(double) * (n ? n : 1));
-                if (values) md_attribute_extract_f64(values, n, a, slice, md_unit_none());
+                if (values) md_attribute_extract_f64(values, n, &sys_ptr->attributes, a, slice, md_unit_none());
                 md_temp_end(temp);
             }
             // done whether or not it could be read: where it is read next, it fails as loudly as it would have
@@ -3726,7 +3726,7 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     double* values = (double*)md_temp_alloc(temp, sizeof(double) * row);
-    if (!values || md_attribute_extract_f64(values, row, attr, slice, md_unit_none()) != row) {
+    if (!values || md_attribute_extract_f64(values, row, &sys.attributes, attr, slice, md_unit_none()) != row) {
         return 0;
     }
 
@@ -4230,13 +4230,13 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 
     // Square or packed, stored or computed on demand: md_qm reads either, and says why when the
     // slice does not narrow it to one symmetric matrix
-    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, attr, slice, nullptr);
+    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, &sys.attributes, attr, slice, nullptr);
     if (dim == 0) {
         return nullptr;
     }
     double* dst = (double*)md_temp_alloc(temp, sizeof(double) * dim * dim);
     DensityIo io;
-    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, attr, slice, io.io) != dim) {
+    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, &sys.attributes, attr, slice, io.io) != dim) {
         return nullptr;
     }
 
@@ -5362,7 +5362,7 @@ static bool density_pack_prepare(ApplicationState* state, md_str_t density_path,
     const uint64_t key = density_pack_key(sys, *attr, s);
     if ((state->mold.gpu_dpack && key == state->mold.gpu_dpack_key) || key == state->mold.gpu_dpack_failed_key) return true;
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    if (md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s, nullptr) != num_cgtos) {
+    if (md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr) != num_cgtos) {
         return true;    // the evaluation fails as it would have, and says why
     }
 
@@ -5386,7 +5386,7 @@ static bool density_pack_prepare(ApplicationState* state, md_str_t density_path,
             float* dst = b->buf ? (float*)md_gpu_upload_begin(b->stream, b->buf, sizeof(float) * len) : nullptr;
             if (dst) {
                 DensityIo io;
-                const bool extracted = md_qm_extract_packed_symmetric_f32(dst, len, a, b->slice, io.io) == b->num_cgtos;
+                const bool extracted = md_qm_extract_packed_symmetric_f32(dst, len, &b->sys->attributes, a, b->slice, io.io) == b->num_cgtos;
                 b->ok = md_gpu_upload_end(b->stream) && extracted;
             }
         }
@@ -5466,7 +5466,7 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     }
 
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, attr, s, nullptr);
+    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr);
     if (dim == 0) {
         return false;
     }
@@ -5499,7 +5499,7 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
         return false;
     }
     DensityIo io;
-    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, attr, s, io.io) == dim;
+    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, &sys.attributes, attr, s, io.io) == dim;
     md_gpu_upload_end(state->gpu_stream);
     if (!extracted) {
         return false;

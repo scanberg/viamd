@@ -876,8 +876,8 @@ static LowdinJob* lowdin_job_start(const md_system_t& sys, const md_gto_basis_t&
     job->ao_atom  = (uint32_t*)md_alloc(heap, sizeof(uint32_t) * num_ao);
     const bool read =
         job->C && job->C_lowdin && job->S && job->ao_atom &&
-        md_attribute_extract_f64(job->C, num_mo * num_ao, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao &&
-        md_attribute_extract_f64(job->S, num_ao * num_ao, ovl,   md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao &&
+        md_attribute_extract_f64(job->C, num_mo * num_ao, &sys.attributes, coeff, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao &&
+        md_attribute_extract_f64(job->S, num_ao * num_ao, &sys.attributes, ovl,   md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao &&
         md_gto_basis_ao_to_atom(job->ao_atom, &basis) == num_ao;
     if (!read) {
         MD_LOG_ERROR("Charge transfer: could not read the orbitals and the overlap");
@@ -969,9 +969,9 @@ static bool nto_pairs_read(NtoPairs* out, const md_system_t& sys, size_t A, int3
     double* lam  = md_temp_alloc_array(temp, double, L);
     double* hole = md_temp_alloc_array(temp, double, L * A);
     double* part = md_temp_alloc_array(temp, double, L * A);
-    if (md_attribute_extract_f64(lam,  L,     lambda_attr, slice, md_unit_none()) < L ||
-        md_attribute_extract_f64(hole, L * A, hole_attr,   slice, md_unit_none()) < L * A ||
-        md_attribute_extract_f64(part, L * A, part_attr,   slice, md_unit_none()) < L * A) {
+    if (md_attribute_extract_f64(lam,  L,     &sys.attributes, lambda_attr, slice, md_unit_none()) < L ||
+        md_attribute_extract_f64(hole, L * A, &sys.attributes, hole_attr,   slice, md_unit_none()) < L * A ||
+        md_attribute_extract_f64(part, L * A, &sys.attributes, part_attr,   slice, md_unit_none()) < L * A) {
         return false;
     }
 
@@ -5328,7 +5328,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, MD_STR_LIT("dipole/ground_state/vector"));
         if (!attr) return {0, 0, 0};
         double v[3] = {0, 0, 0};
-        if (md_attribute_extract_f64(v, MD_COUNTOF(v), attr, md_attribute_slice_all(), md_unit_none()) != MD_COUNTOF(v)) {
+        if (md_attribute_extract_f64(v, MD_COUNTOF(v), &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) != MD_COUNTOF(v)) {
             return {0, 0, 0};
         }
         return {v[0], v[1], v[2]};
@@ -5343,7 +5343,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         const size_t count = md_attribute_element_count(&attr->format);
         double* v = md_temp_alloc_array(temp, double, count);
-        if (!v || md_attribute_extract_f64(v, count, attr, md_attribute_slice_all(), md_unit_none()) != count) {
+        if (!v || md_attribute_extract_f64(v, count, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) != count) {
             return 0.0;
         }
         double max_len = 0.0;
@@ -5388,7 +5388,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
         if (!attr) return fallback;
         double value = 0.0;
-        if (md_attribute_extract_f64(&value, 1, attr, md_attribute_slice_all(), md_unit_none()) != 1) return fallback;
+        if (md_attribute_extract_f64(&value, 1, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) != 1) return fallback;
         return value;
     }
 
@@ -10381,7 +10381,7 @@ struct QuantumChemistry : viamd::EventHandler {
             if (attr->format.rank == 2 && attr->format.components == 1 &&
                 attr->format.shape[0] == num_ao && attr->format.shape[1] == num_ao) {
                 double* S = md_temp_alloc_array(temp, double, num_ao * num_ao);
-                if (md_attribute_extract_f64(S, num_ao * num_ao, attr, md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao) {
+                if (md_attribute_extract_f64(S, num_ao * num_ao, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) == num_ao * num_ao) {
                     out->S = S;
                 }
             }
@@ -10389,7 +10389,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient)) {
             double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
-            if (md_attribute_extract_f64(C, num_mo * num_ao, attr, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao) {
+            if (md_attribute_extract_f64(C, num_mo * num_ao, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao) {
                 out->C_mo = C;
             }
         }
@@ -10431,9 +10431,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     double* hole   = md_temp_alloc_array(temp, double, block);
                     double* part   = md_temp_alloc_array(temp, double, block);
 
-                    if (md_attribute_extract_f64(lambda, num_nto, lambda_attr, slice, md_unit_none()) >= num_nto &&
-                        md_attribute_extract_f64(hole,   block,  hole_attr,   slice, md_unit_none()) >= block &&
-                        md_attribute_extract_f64(part,   block,  part_attr,   slice, md_unit_none()) >= block) {
+                    if (md_attribute_extract_f64(lambda, num_nto, &sys.attributes, lambda_attr, slice, md_unit_none()) >= num_nto &&
+                        md_attribute_extract_f64(hole,   block,  &sys.attributes, hole_attr,   slice, md_unit_none()) >= block &&
+                        md_attribute_extract_f64(part,   block,  &sys.attributes, part_attr,   slice, md_unit_none()) >= block) {
                         out->num_nto    = num_nto;
                         out->nto_lambda = lambda;
                         out->C_nto_hole = hole;
@@ -11740,7 +11740,7 @@ struct QuantumChemistry : viamd::EventHandler {
             const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto);
             const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
             double lambda = 0.0;
-            if (lam && md_attribute_extract_f64(&lambda, 1, lam, slice, md_unit_none()) == 1) {
+            if (lam && md_attribute_extract_f64(&lambda, 1, &state.mold.sys.attributes, lam, slice, md_unit_none()) == 1) {
                 snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
             }
             e.field[0] = iso_field_create_orbital(&state, es_path::nto_hole, &slice);
