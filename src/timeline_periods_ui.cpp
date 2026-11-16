@@ -739,6 +739,86 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     }
 }
 
+// The runs of a set of frames, as spans of x in pixels: from halfway to the frame before to halfway to the one after, at
+// least a pixel wide, merged when they touch
+template <typename F>
+static void for_each_frame_span(md_bitset_t frames, const TimelinePeriodAxis& axis, float x_min, float x_max, F&& f) {
+    if (md_bitset_empty(frames) || axis.num_frames <= 0) return;
+    auto px = [&](double frame) { return ImPlot::PlotToPixels(frame_time(axis, frame), 0.0).x; };
+    const uint32_t nf = (uint32_t)axis.num_frames;
+    float span_a = 0.0f, span_b = -1.0f;
+    bool open = false;
+    md_bitset_iter_t it = md_bitset_iter_range(frames, 0, nf);
+    uint32_t run_beg = 0, run_end = 0;      // [run_beg, run_end)
+    bool in_run = false;
+    auto flush = [&](uint32_t b, uint32_t e) {
+        float xa = px(b > 0 ? b - 0.5 : 0.0);
+        float xb = px(e < nf ? e - 0.5 : (double)(nf - 1));
+        if (xb - xa < 1.0f) xb = xa + 1.0f;
+        if (xb < x_min || xa > x_max) return;
+        if (open && xa <= span_b + 1.0f) {
+            span_b = MD_MAX(span_b, xb);
+            return;
+        }
+        if (open) f(span_a, span_b);
+        span_a = xa;
+        span_b = xb;
+        open = true;
+    };
+    while (md_bitset_iter_next(&it)) {
+        const uint32_t i = it.idx;
+        if (in_run && i == run_end) {
+            run_end += 1;
+            continue;
+        }
+        if (in_run) flush(run_beg, run_end);
+        run_beg = i;
+        run_end = i + 1;
+        in_run = true;
+    }
+    if (in_run) flush(run_beg, run_end);
+    if (open) f(span_a, span_b);
+}
+
+void timeline_frames_plot(const md_bitmask_t* selected, const md_bitmask_t* highlighted, const TimelinePeriodAxis& axis, uint32_t selected_color, uint32_t highlight_color) {
+    if (axis.num_frames <= 0 || !axis.frame_times) return;
+    const bool any_sel = selected && !md_bitmask_empty(selected);
+    const bool any_hl = highlighted && !md_bitmask_empty(highlighted);
+    if (!any_sel && !any_hl) return;
+
+    const ImVec2 plot_pos  = ImPlot::GetPlotPos();
+    const ImVec2 plot_size = ImPlot::GetPlotSize();
+    const float x0 = plot_pos.x, x1 = plot_pos.x + plot_size.x;
+    const float y0 = plot_pos.y, y1 = plot_pos.y + plot_size.y;
+    const float band = MD_MIN(4.0f, plot_size.y * 0.25f);
+
+    auto with_alpha = [](ImU32 c, float a) {
+        ImVec4 v = ImGui::ColorConvertU32ToFloat4(c);
+        v.w *= a;
+        return ImGui::ColorConvertFloat4ToU32(v);
+    };
+
+    ImPlot::PushPlotClipRect();
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    if (any_sel) {
+        const ImU32 fill = with_alpha(selected_color, 0.10f);
+        const ImU32 edge = with_alpha(selected_color, 0.85f);
+        for_each_frame_span(md_bitmask_view(selected), axis, x0, x1, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill);
+            dl->AddRectFilled(ImVec2(xa, y1 - band), ImVec2(xb, y1), edge);
+        });
+    }
+    if (any_hl) {
+        const ImU32 fill = with_alpha(highlight_color, 0.16f);
+        const ImU32 edge = with_alpha(highlight_color, 0.95f);
+        for_each_frame_span(md_bitmask_view(highlighted), axis, x0, x1, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill);
+            dl->AddRectFilled(ImVec2(xa, y1 - band), ImVec2(xb, y1), edge);
+        });
+    }
+    ImPlot::PopPlotClipRect();
+}
+
 void timeline_periods_menu(TimelinePeriods* rs) {
     ImGui::SeparatorText("Lanes");
     int layout = (int)rs->layout;

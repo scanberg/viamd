@@ -1948,6 +1948,8 @@ void free_system_data(ApplicationState* data) {
 
     md_bitmask_clear(&data->selection.selection_mask);
     md_bitmask_clear(&data->selection.highlight_mask);
+    frame_selection_clear(data);
+    md_bitmask_clear(&data->selection.frame_highlight_mask);
     // Computed for this system
     script_vis_reset(data);
 
@@ -2330,6 +2332,12 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
         system_gpu_data_update(state, DEFAULT_GTO_CUTOFF_VALUE);
 #endif
 
+        // The frames selected were of the run there was
+        if (load_state.flags & (LoaderFlag_System | LoaderFlag_Trajectory)) {
+            frame_selection_clear(state);
+            md_bitmask_clear(&state->selection.frame_highlight_mask);
+        }
+
         LoadDataPayload data = {
             .app_state = state,
             .loader_state = load_state,
@@ -2474,6 +2482,10 @@ struct WorkspacePending {
     bool has_selection_mask;
     md_bitset_t selection_mask;
 
+    // The frames selected, of the run
+    bool has_frame_mask;
+    md_bitset_t frame_mask;
+
     bool has_recenter_target;
     md_bitset_t recenter_target;
 
@@ -2603,6 +2615,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     // ## 2. Read
     WorkspacePending pending = {};
     pending.selection_mask = md_bitset_empty_set();
+    pending.frame_mask = md_bitset_empty_set();
     pending.recenter_target = md_bitset_empty_set();
 
     md_str_t folder = md_path_folder(filename);
@@ -2832,6 +2845,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     viamd::extract_enum(data->selection.granularity, arg, (int)SelectionGranularity::Count);
                 } else if (md_str_eq(ident, MD_STR_LIT("Mask"))) {
                     pending.has_selection_mask = deserialize_mask(&pending.selection_mask, arg, temp_alloc);
+                } else if (md_str_eq(ident, MD_STR_LIT("Frames"))) {
+                    pending.has_frame_mask = deserialize_mask(&pending.frame_mask, arg, temp_alloc);
                 }
             }
         } else if (md_str_eq(section, MD_STR_LIT("Windows"))) {
@@ -3015,6 +3030,10 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     if (pending.has_selection_mask && mask_fits(&pending.selection_mask)) {
         md_bitmask_assign(&data->selection.selection_mask, pending.selection_mask);
     }
+    // Frames that are not there (another run, or a shorter one) are dropped likewise
+    if (pending.has_frame_mask && frames_as_saved && (md_bitset_empty(pending.frame_mask) || pending.frame_mask.end <= (uint32_t)num_frames)) {
+        frame_selection_modify(data, pending.frame_mask, SelectionOperator::Set);
+    }
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitset_assign(&data->operations.selection_mask, pending.recenter_target, data->allocator.persistent);
         recenter_update_target_data(data);
@@ -3194,6 +3213,10 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     const md_bitset_t selection = md_bitmask_view(&app_state->selection.selection_mask);
     if (!md_bitset_empty(selection)) {
         viamd::write_bitset(state, MD_STR_LIT("Mask"), &selection);
+    }
+    const md_bitset_t frames = md_bitmask_view(&app_state->selection.frame_mask);
+    if (!md_bitset_empty(frames)) {
+        viamd::write_bitset(state, MD_STR_LIT("Frames"), &frames);
     }
 
     // The user's edits of the bonds (md_system_t::bond_edit), whether the system is inferred of them yet or not: the

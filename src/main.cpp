@@ -749,6 +749,8 @@ int main(int argc, char** argv) {
     // system's atoms needs no resizing when another is loaded.
     md_bitmask_init(&state.selection.selection_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.frame_mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.frame_highlight_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.query.mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
@@ -4281,6 +4283,27 @@ static void draw_timeline_window(ApplicationState* data) {
                 timeline_periods_menu(&data->timeline.periods);
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Frames")) {
+                // The frames selected: a temporal selection, made where a view selects frames (the Shapespace)
+                const uint64_t num_selected = md_bitmask_count(&data->selection.frame_mask);
+                const uint32_t num_frames = (uint32_t)run_num_frames(data);
+                if (num_selected > 0) ImGui::TextDisabled("%llu of %u frames selected", (unsigned long long)num_selected, num_frames);
+                else                  ImGui::TextDisabled("No frames selected");
+                if (ImGui::MenuItem("Clear selection", nullptr, false, num_selected > 0)) {
+                    frame_selection_clear(data);
+                }
+                if (ImGui::MenuItem("Invert selection", nullptr, false, num_frames > 0)) {
+                    md_bitmask_invert_range(&data->selection.frame_mask, 0, num_frames);
+                    data->selection.frame_generation += 1;
+                }
+                if (ImGui::MenuItem("Select current frame", nullptr, false, num_frames > 0)) {
+                    const uint32_t f = (uint32_t)MD_CLAMP((int)(data->animation.frame + 0.5), 0, (int)num_frames - 1);
+                    frame_selection_modify(data, md_bitset_range(f, f + 1), SelectionOperator::Or);
+                }
+                ImGui::Separator();
+                ImGui::TextDisabled("Select frames in the Shapespace: shift-drag over\nits points selects the frames they are of.");
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("Subplots")) {
                 ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
@@ -4415,6 +4438,10 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     // The periods shaded below the series, and shift-press marking a new one
                     timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.frame);
+                    // The frames selected (a temporal selection, as the Shapespace makes) and highlighted
+                    timeline_frames_plot(&data->selection.frame_mask, &data->selection.frame_highlight_mask, range_axis,
+                        ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.selection.outline)),
+                        ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.highlight.outline)));
 
                     // The entry, and the member of its population, under the mouse
                     int  hovered_idx      = -1;
