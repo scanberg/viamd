@@ -178,7 +178,7 @@ struct Pucker : viamd::EventHandler {
                 draw_window();
                 break;
             case viamd::EventType_ViamdWindowMenuRequest:
-                viamd::window_menu_add(e, "Analysis/Conformation/Ring Pucker", &show_window, {.order = 70});
+                viamd::window_menu_add(e, "Analysis/Ring Pucker", &show_window, {.order = 70});
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:

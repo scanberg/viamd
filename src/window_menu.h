@@ -7,7 +7,7 @@
 
 // The Windows menu.
 //
-// A window says where it goes with a path, "Analysis/Conformation/Ramachandran": the last part is its label,
+// A window says where it goes with a path, "Analysis/Quantum Chemistry/Summary": the last part is its label,
 // the first is the section it is listed under (a header in the menu), and any parts in between are submenus.
 // It is added while the menu is drawn, in answer to EventType_ViamdWindowMenuRequest:
 //

@@ -424,7 +424,7 @@ struct Ramachandran : viamd::EventHandler {
                 draw();
                 break;
             case viamd::EventType_ViamdWindowMenuRequest:
-                viamd::window_menu_add(e, "Analysis/Conformation/Ramachandran", &show_window, {.order = 60});
+                viamd::window_menu_add(e, "Analysis/Ramachandran", &show_window, {.order = 60});
                 break;
             default:
                 break;
