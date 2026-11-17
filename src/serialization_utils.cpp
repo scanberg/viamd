@@ -596,9 +596,9 @@ bool Visitor::list(const char* key, float* elem, int& count, int cap, int arity)
 	}
 	md_str_t after;
 	if (!enter(key, &after)) return false;
-	taken = true;
 	if (md_str_empty(after)) {
 		// The whole list
+		taken = true;
 		float tmp[64];
 		MD_ASSERT((size_t)(cap * arity) <= MD_COUNTOF(tmp));
 		size_t n = 0;
@@ -611,7 +611,13 @@ bool Visitor::list(const char* key, float* elem, int& count, int cap, int arity)
 	md_str_t step;
 	path_next(step, after);
 	const int i = md_str_empty(after) ? item_index(step, cap) : -1;
-	if (i < 0 || !extract_flt_vec(elem + (size_t)i * (size_t)arity, (size_t)arity, arg)) return false;
+	if (i < 0) {
+		// Within the list, but no item of it
+		finished = true;
+		return false;
+	}
+	taken = true;
+	if (!extract_flt_vec(elem + (size_t)i * (size_t)arity, (size_t)arity, arg)) return false;
 	count = MD_MAX(count, i + 1);
 	return true;
 }
@@ -667,8 +673,9 @@ bool Visitor::each(const char* key, int& i, int& count, int cap) {
 	}
 
 	if (after_item) {
-		// The entry was in that item: nothing after it can be it
+		// The entry was in that item: nothing after it can be it. An item is there once one of its fields is read.
 		depth -= 1;
+		if (taken) count = MD_MAX(count, frames[depth].index + 1);
 		finished = true;
 		return false;
 	}
@@ -690,7 +697,6 @@ bool Visitor::each(const char* key, int& i, int& count, int cap) {
 		return false;
 	}
 	rest = after;
-	count = MD_MAX(count, idx + 1);
 	push(Frame_Each, key, idx);
 	i = idx;
 	return true;

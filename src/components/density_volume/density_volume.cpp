@@ -570,7 +570,7 @@ struct DensityVolume : viamd::EventHandler {
         if (v.block("Iso")) {
             v.field("Enabled", iso.enabled);
             int count = (int)iso.count;
-            for (int i; v.each("Level", i, count, (int)MD_COUNTOF(iso.values)); ) {
+            for (int i = 0; v.each("Level", i, count, (int)MD_COUNTOF(iso.values)); ) {
                 v.field("Value", iso.values[i]);
                 v.field("Color", iso.colors[i]);
             }

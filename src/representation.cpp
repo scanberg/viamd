@@ -2103,7 +2103,7 @@ static void visit_electronic_structure(viamd::Visitor& v, ElectronicStructureRep
 
     v.field("Display", es.display, viamd::enum_names(es_display_names));
     // The cuts of the volume display
-    for (int i; v.each("Cut", i, es.cuts.count, ES_MAX_PLANES); ) {
+    for (int i = 0; v.each("Cut", i, es.cuts.count, ES_MAX_PLANES); ) {
         ElectronicStructurePlane& cut = es.cuts.items[i];
         visit_plane(v, "Plane", cut.plane);
         v.field("Enabled", cut.enabled);
@@ -2111,7 +2111,7 @@ static void visit_electronic_structure(viamd::Visitor& v, ElectronicStructureRep
     // The slices of the planes display, each with its rectangle once it has one (one without: the rectangle around
     // where it cuts the box, es_slices_conform)
     v.field("PlaneDetail", es.plane_detail, viamd::enum_names(plane_detail_names));
-    for (int i; v.each("Slice", i, es.slices.count, ES_MAX_PLANES); ) {
+    for (int i = 0; v.each("Slice", i, es.slices.count, ES_MAX_PLANES); ) {
         ElectronicStructurePlane& slice = es.slices.items[i];
         visit_plane(v, "Plane", slice.plane);
         v.field("Enabled", slice.enabled);
@@ -2146,7 +2146,7 @@ static void visit_electronic_structure(viamd::Visitor& v, ElectronicStructureRep
     const bool has_property = prop || es.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
     if (v.when(has_property) && v.block("DensityProperty")) {
         visit_attribute_path(v, "Path", es.density_property_key, prop);
-        for (int i; v.each("Iso", i, es.density_property.num_isos, (int)MD_COUNTOF(es.density_property.values)); ) {
+        for (int i = 0; v.each("Iso", i, es.density_property.num_isos, (int)MD_COUNTOF(es.density_property.values)); ) {
             v.field("Value", es.density_property.values[i]);
             v.field("Color", es.density_property.colors[i]);
         }
@@ -2349,10 +2349,14 @@ static bool representation_read_legacy(Representation* rep, md_str_t key, md_str
         if (viamd::extract_flt(thickness, arg) && thickness == 0.0f) rep->box.thickness = 0.0f;
     } else if (md_str_eq(key, MD_STR_LIT("ElectronicStructureType"))) {
         int type;
-        if (viamd::extract_int(type, arg)) electronic_structure_set_legacy_type(&es, type);
+        if (viamd::extract_int(type, arg) && 0 <= type && type < (int)ElectronicStructureLegacyType::Count) {
+            electronic_structure_set_legacy_type(&es, type);
+        }
     } else if (md_str_eq(key, MD_STR_LIT("ElectronicStructureField"))) {
         int field;
-        if (viamd::extract_int(field, arg)) electronic_structure_set_legacy_field(&es, field);
+        if (viamd::extract_int(field, arg) && 0 <= field && field < (int)ElectronicStructureField::Count) {
+            electronic_structure_set_legacy_field(&es, field);
+        }
     } else if (md_str_eq(key, MD_STR_LIT("ElectronicStructureDensityPropertyIdx"))) {
         // A position in a list that only existed while a particular file was open; there is nothing to resolve it
         // against. Workspaces written before the path was stored fall back to the first property available.

@@ -86,7 +86,7 @@ void visit(viamd::Visitor& v, Thing& t) {
     }
     v.list("Values", t.values, t.num_values, 8);
     v.list("Curve", t.curve, t.num_curve, 4, 2);
-    for (int i; v.each("Item", i, t.num_items, 4); ) {
+    for (int i = 0; v.each("Item", i, t.num_items, 4); ) {
         Item& it = t.items[i];
         v.field("Pos", it.pos);
         v.field("On", it.on);
@@ -330,6 +330,14 @@ UTEST(viamd_serialization_visitor, arrays) {
     visit(e, t);
     EXPECT_FALSE(e.consumed());
 
+    // A field an item does not have makes no item
+    viamd::Visitor h = viamd::Visitor::reader(MD_STR_LIT("Item"), MD_STR_LIT("1"));
+    visit(h, t);
+    viamd::Visitor k = viamd::Visitor::reader(MD_STR_LIT("Item.2.Bogus"), MD_STR_LIT("1"));
+    visit(k, t);
+    EXPECT_FALSE(k.consumed());
+    EXPECT_EQ(1, t.num_items);
+
     // A count is kept within the capacity
     viamd::Visitor f = viamd::Visitor::reader(MD_STR_LIT("Item"), MD_STR_LIT("99"));
     visit(f, t);
@@ -358,6 +366,12 @@ UTEST(viamd_serialization_visitor, lists) {
     visit(c, t);
     EXPECT_EQ(3, t.num_curve);
     EXPECT_EQ(0.75f, t.curve[4]);
+
+    // Not an item of it: not the list's
+    viamd::Visitor g = viamd::Visitor::reader(MD_STR_LIT("Curve.x"), MD_STR_LIT("1,1"));
+    visit(g, t);
+    EXPECT_FALSE(g.consumed());
+    EXPECT_EQ(3, t.num_curve);
 
     // Too many, or not numbers: as it was
     viamd::Visitor d = viamd::Visitor::reader(MD_STR_LIT("Values"), MD_STR_LIT("1,2,3,4,5,6,7,8,9"));

@@ -173,7 +173,7 @@ static inline md_str_t path_alias(char* buf, size_t cap, md_str_t key, const Pat
 //             visit(v, t.field_scale);                 // Field.Colormap, Field.Range, ...
 //             v.end();
 //         }
-//         for (int i; v.each("Slice", i, t.num_slices, MAX_SLICES); ) {
+//         for (int i = 0; v.each("Slice", i, t.num_slices, MAX_SLICES); ) {
 //             v.field("Opacity", t.slices[i].opacity); // Slice.0.Opacity, ...
 //         }
 //     }
@@ -254,9 +254,9 @@ struct Visitor {
 	// A block in a section of its own ([section.key]), for one with many fields. It comes after every other field of
 	// the object, which would otherwise be written into it. Then end().
 	bool section(const char* key);
-	// Each item of an array of blocks (key.<i>.field), i its index: for (int i; v.each("Slice", i, count, cap); ) {}.
+	// Each item of an array of blocks (key.<i>.field), i its index: for (int i = 0; v.each("Slice", i, count, cap); ) {}.
 	// The count is written first (key=<count>), so an array is what it says even where it starts with items of its
-	// own; reading an item makes the count at least its index + 1.
+	// own; a field read of an item makes the count at least its index + 1.
 	bool each(const char* key, int& i, int& count, int cap);
 	void end();
 
