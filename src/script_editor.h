@@ -46,11 +46,11 @@ std::string word_at_cursor(const TextEditor& editor);
 std::string word_at_mouse(const TextEditor& editor, ImVec2 mouse_pos);
 
 // Appends text as a new line at the end of the document. The cursor moves to the end of it.
-void append_line(TextEditor& editor, str_t line);
+void append_line(TextEditor& editor, md_str_t line);
 
 // Inserts code at the current cursor as whole lines: a line break is added in front if the cursor is not at the start
 // of a line. Does nothing in read-only mode.
-void insert_lines_at_cursor(TextEditor& editor, str_t code);
+void insert_lines_at_cursor(TextEditor& editor, md_str_t code);
 
 // True if the editor has keyboard focus. Call right after TextEditor::Render(), while its child window is the last item.
 bool has_focus_after_render();
@@ -66,7 +66,7 @@ bool attr_expression(char* buf, size_t cap, script::Language lang, const md_attr
 // its child window is the target, with the type of the payload and the text it stands for. While it is dragged, a
 // caret shows where the text would go and the tooltip what it is. Once dropped, the text is inserted as one edit
 // (undone as one) with the cursor after it, and the editor takes the focus: true on that frame. Not in read-only mode.
-bool accept_drop(TextEditor& editor, const char* payload_type, str_t text);
+bool accept_drop(TextEditor& editor, const char* payload_type, md_str_t text);
 
 // Turns on autocompletion for the script in lang. What can be written at the cursor comes from script::complete:
 // variables, procedures, constants and keywords, the parameters of the procedure being called, and the values that
@@ -98,7 +98,7 @@ struct Marker {
     MarkerType type;
     int prio;                               // where markers overlap, the one with the highest priority is hovered
     TextEditor::DocPos beg, end;            // [beg, end)
-    str_t text;                             // tooltip, zero terminated
+    md_str_t text;                             // tooltip, zero terminated
     const md_bitset_t* atoms;             // errors and warnings: the atoms the message is about (a copy), may be NULL
     script::Ref vis_ref;                    // visualization tokens: resolves in the script IR the markers came from
 };
@@ -107,7 +107,7 @@ struct Markers {
     md_allocator_i* arena = nullptr;    // everything below, reset when the markers are cleared
     Marker*   list = nullptr;           // md_array
     uint32_t* line_offsets = nullptr;   // md_array, byte offset of every line in the source
-    str_t     source = {};              // the text that the byte ranges given to markers_add() refer to
+    md_str_t     source = {};              // the text that the byte ranges given to markers_add() refer to
     int  hovered = -1;
     int  shown_hovered = -1;            // hovered marker that the squiggles currently show
     bool dirty = false;                 // squiggles do not match the list
@@ -119,17 +119,17 @@ void markers_clear(Markers* markers);
 // Clears the markers and sets the source text that the byte ranges of markers_add() calls refer to: the text that was
 // compiled, i.e. what TextEditor::GetText() returned. A copy is kept, so markers can be added after it is gone, as the
 // evaluation finds what fails.
-void markers_set_source(Markers* markers, str_t source);
+void markers_set_source(Markers* markers, md_str_t source);
 
 // The number of markers, and the markers past the first count dropped: those added after a point, such as the
 // evaluation's, replaced when it finds something else
 size_t markers_count(const Markers* markers);
 void   markers_truncate(Markers* markers, size_t count);
 // Replaces the text of the marker at index, as the display units change
-void   markers_set_text(Markers* markers, size_t index, str_t text);
+void   markers_set_text(Markers* markers, size_t index, md_str_t text);
 
 // Adds a marker for the byte range [beg, end) of the source. text and atoms are copied.
-void markers_add(Markers* markers, MarkerType type, int prio, script::Range range, str_t text,
+void markers_add(Markers* markers, MarkerType type, int prio, script::Range range, md_str_t text,
                  const md_bitset_t* atoms = nullptr, script::Ref vis_ref = {});
 
 // Call after TextEditor::Render(). Finds the marker under the mouse and updates the squiggles.

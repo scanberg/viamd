@@ -113,7 +113,7 @@ Array<const vec3> extract_positions(Structure structure, Array<const vec3> atom_
 
 template <typename Callback>
 void for_each_filtered_property_structure_in_frame(Property* prop, i32 frame_idx, Callback cb) {
-    ASSERT(prop);
+    MD_ASSERT(prop);
     for (i32 inst_idx = 0; inst_idx < prop->instance_data.count; inst_idx++) {
         const float v = prop->instance_data[inst_idx].data[frame_idx];
         if (prop->filter.beg <= v && v <= prop->filter.end) {
@@ -198,7 +198,7 @@ void compute_density_volume(Volume* vol, const MoleculeTrajectory& traj, Range<i
 
 template <typename TransformWorldToVolumeFunc>
 void compute_density_volume_with_basis(Volume* vol, const MoleculeTrajectory& traj, Range<i32> frame_range, TransformWorldToVolumeFunc func) {
-    ASSERT(vol);
+    MD_ASSERT(vol);
     if (vol->dim.x == 0 || vol->dim.y == 0 || vol->dim.z == 0) {
         LOG_ERROR("One or more volume dimension are zero...");
         return;

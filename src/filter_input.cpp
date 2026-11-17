@@ -15,17 +15,17 @@
 #include <vector>
 
 bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
-    filter->result = script::filter(lang, atoms, str_from_cstr(filter->text), ctx, alloc);
+    filter->result = script::filter(lang, atoms, md_str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
 bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
-    filter->result = script::filter_sets(lang, sets, str_from_cstr(filter->text), ctx, alloc);
+    filter->result = script::filter_sets(lang, sets, md_str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
 bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
-    filter->result = script::filter_bonds(lang, bonds, str_from_cstr(filter->text), ctx, alloc);
+    filter->result = script::filter_bonds(lang, bonds, md_str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 
@@ -78,7 +78,7 @@ const char* kind_name(script::CompletionKind kind) {
 void suggest(const char* text, int len, int cursor, script::Language lang, const script::FilterCtx& ctx, bool asked) {
     comp.items.clear();
     md_temp_scope_t temp = md_temp_begin();
-    const script::Completions c = script::filter_complete(lang, str_t{text, (size_t)len}, cursor, ctx, md_temp_allocator(temp));
+    const script::Completions c = script::filter_complete(lang, md_str_t{text, (size_t)len}, cursor, ctx, md_temp_allocator(temp));
     const std::string_view typed(c.prefix.ptr, c.prefix.len);
 
     struct Match {
@@ -323,7 +323,7 @@ bool filter_input(const char* label, AtomFilter* filter, script::Language lang, 
             const int beg = ImClamp(comp.range_beg, 0, (int)text.size());
             const int end = ImClamp(comp.range_end, beg, (int)text.size());
             text.replace((size_t)beg, (size_t)(end - beg), s.text);
-            str_copy_to_char_buf(filter->text, sizeof(filter->text), str_t{text.data(), text.size()});
+            md_str_copy_to_char_buf(filter->text, sizeof(filter->text), md_str_t{text.data(), text.size()});
             comp.open = false;
             comp.refocus = true;
             comp.cursor = ImMin(beg + (int)s.text.size(), (int)strlen(filter->text));

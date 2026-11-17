@@ -47,6 +47,11 @@ bool section_toggle(const char* name, bool* enabled, bool* toggled = nullptr, bo
 // is to follow, when it is open. 'toggled' (optional) says whether the checkbox was clicked this frame.
 bool section_toggle_all(const char* name, bool* const* enabled, int count, bool* toggled = nullptr, bool default_open = true, const char* tooltip = nullptr);
 
+// A header that does not fold: the name, dimmed, and a rule from it to the right edge, as a section's header looks.
+// For what is divided but not hidden (the sections of the Windows menu). Needs no prop::begin: in a grid the rule
+// ends at the grid's edge, outside one at the window's.
+void heading(const char* name);
+
 // A row: the label, and the control column for what follows. The tooltip, if any, is the label's.
 void row(const char* label, const char* tooltip = nullptr);
 

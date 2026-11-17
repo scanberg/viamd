@@ -83,7 +83,7 @@ void file_list_free (FileList* list, struct md_allocator_i* alloc);
 void file_list_clear(FileList* list);
 
 // The entry a file loaded with load_state takes
-FileEntry file_entry_from(str_t path, const loader::LoaderState& load_state);
+FileEntry file_entry_from(md_str_t path, const loader::LoaderState& load_state);
 
 // The role of entry i, from its place: first of the system, later in the system, first of its run, later in it
 FileRole file_list_role(const FileList* list, size_t i);
@@ -130,7 +130,7 @@ struct WorkspaceFiles {
 
 // Reads the section the state is at if it is one of [System], [Run], [Input], or [Files] (a workspace written
 // before version 2), and returns whether it was. A relative path is resolved against folder, the workspace's.
-bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t& state, str_t folder, struct md_allocator_i* alloc);
+bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t& state, md_str_t folder, struct md_allocator_i* alloc);
 
 // One system as it loads: its files in order with the role each is read in
 struct SystemPlan {

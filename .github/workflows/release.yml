@@ -41,13 +41,15 @@ jobs:
             -DVCPKG_MANIFEST_MODE=OFF \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
+            -DVIAMD_UNITTEST=OFF
             -DVIAMD_ENABLE_QM=ON \
+            -DMD_ENABLE_GPU=ON \
+            -DMD_ENABLE_HDF5=ON \
             -DMD_BENCHMARK=OFF \
             -DMD_UNITTEST=OFF \
-            -DVIAMD_UNITTEST=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel 4
@@ -96,13 +98,15 @@ jobs:
             -DVCPKG_MANIFEST_MODE=OFF \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
+            -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
             -DVIAMD_ENABLE_QM=ON \
+            -DVIAMD_UNITTEST=OFF \
+            -DMD_ENABLE_GPU=ON \
+            -DMD_ENABLE_HDF5=ON \
             -DMD_BENCHMARK=OFF \
             -DMD_UNITTEST=OFF \
-            -DVIAMD_UNITTEST=OFF \
             -DMD_ENABLE_AVX=ON \
             -DMD_ENABLE_AVX2=ON \
             -DMD_ENABLE_AVX512=OFF \
@@ -157,9 +161,11 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_STATIC_LIBS=ON `
             -DVIAMD_ENABLE_QM=ON `
+            -DVIAMD_UNITTEST=OFF `
+            -DMD_ENABLE_GPU=ON `
+            -DMD_ENABLE_HDF5=ON `
             -DMD_BENCHMARK=OFF `
             -DMD_UNITTEST=OFF `
-            -DVIAMD_UNITTEST=OFF `
             -DMD_ENABLE_AVX=ON `
             -DMD_ENABLE_AVX2=ON `
             -DMD_ENABLE_AVX512=OFF `
@@ -222,13 +228,15 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF `
             -DBUILD_STATIC_LIBS=ON `
             -DVIAMD_ENABLE_QM=ON `
-            -DMD_BENCHMARK=OFF `
-            -DMD_UNITTEST=OFF `
             -DVIAMD_UNITTEST=OFF `
             -DHAVE_AVX_EXTENSIONS=OFF `
             -DHAVE_AVX2_EXTENSIONS=OFF `
             -DHAVE_AVX512_EXTENSIONS=OFF `
             -DHAVE_FMA_EXTENSIONS=OFF `
+            -DMD_BENCHMARK=OFF `
+            -DMD_UNITTEST=OFF `
+            -DMD_ENABLE_GPU=ON `
+            -DMD_ENABLE_HDF5=ON `
             -DMD_ENABLE_AVX=OFF `
             -DMD_ENABLE_AVX2=OFF `
             -DMD_ENABLE_AVX512=OFF `

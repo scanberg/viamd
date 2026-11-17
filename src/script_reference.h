@@ -25,10 +25,10 @@ void set_language(script::Language lang);
 
 // Shows the entry for a procedure name, alias or heading anchor (case-insensitive).
 // Returns false if there is no such entry, in which case nothing changes.
-bool show(str_t topic);
+bool show(md_str_t topic);
 
 // Puts the query in the search box and lists the matches in the sidebar.
-void search(str_t query);
+void search(md_str_t query);
 
 // Moves keyboard focus to the search box the next time the window is drawn.
 void focus_search();
@@ -39,7 +39,7 @@ void reveal(bool take_focus);
 
 // What the user asked the host to do while the window was drawn.
 struct Action {
-    str_t insert_code = {};  // "Insert" was pressed on an example. Zero terminated, ends with a newline, valid until the next draw_window().
+    md_str_t insert_code = {};  // "Insert" was pressed on an example. Zero terminated, ends with a newline, valid until the next draw_window().
 };
 
 // Draws the viewer as a window named "Script Reference".

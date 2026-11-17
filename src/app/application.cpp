@@ -8,6 +8,9 @@
 #include <core/md_common.h>
 #include <core/md_platform.h>
 #include <core/md_str.h>
+#include <core/md_os.h>
+#include <core/md_format.h>
+#include <core/md_path.h>
 #include <core/md_allocator.h>
 
 #include <gfx/gl.h>
@@ -140,7 +143,7 @@ static struct {
 static void gl_debug_group_path(char* buf, size_t cap) {
     size_t off = 0;
     buf[0] = '\0';
-    int depth = MIN(gl_debug_state.depth, GL_DEBUG_GROUP_STACK_SIZE);
+    int depth = MD_MIN(gl_debug_state.depth, GL_DEBUG_GROUP_STACK_SIZE);
     for (int i = 0; i < depth; ++i) {
         int n = snprintf(buf + off, cap - off, "%s%s", (i > 0) ? " > " : "", gl_debug_state.group[i]);
         if (n < 0 || (size_t)n >= cap - off) break;
@@ -226,11 +229,11 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 
     if (severity == GL_DEBUG_SEVERITY_HIGH) {
-        ASSERT(false);
+        MD_ASSERT(false);
     }
 }
 
-bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
+bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
     if (!glfwInit()) {
         // TODO Throw critical error
         MD_LOG_ERROR("Error while initializing glfw.");
@@ -257,8 +260,8 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 #endif
     // Zero terminated
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
-    str_t ztitle = str_copy(title, md_temp_allocator(temp));
+    MD_DEFER { md_temp_end(temp); };
+    md_str_t ztitle = md_alloc_str(md_temp_allocator(temp), title);
     GLFWwindow* window = glfwCreateWindow((int)width, (int)height, ztitle.ptr, NULL, NULL);
     if (!window) {
         MD_LOG_ERROR("Could not create glfw window.");
@@ -335,7 +338,8 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
     // Greek and Coptik:            0x0370 - 0x03FF
     // General punctuation (dashes, quotes, ...): 0x2010 - 0x2027
     // Superscripts and Subscripts: 0x2070 - 0x209F
-    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2010, 0x2027, 0x2070, 0x209F, 0};
+    // Nabla:                       0x2207
+    const ImWchar ranges_characters[] = {0x0020, 0x00FF, 0x0370, 0x03FF, 0x2010, 0x2027, 0x2070, 0x209F, 0x2207, 0x2207, 0};
     const ImWchar ranges_icons[] = {ICON_MIN_FA, ICON_MAX_FA, 0};
     const float font_size = 18.0f;
     const char* font_name = "Dejavu Sans Mono";
@@ -385,16 +389,16 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
 
     GLFWdropfun drop_cb = [](GLFWwindow* window, int num_files, const char** paths) {
         Context* ctx = (Context*)glfwGetWindowUserPointer(window);
-        ASSERT(ctx);
+        MD_ASSERT(ctx);
         
         for (int i = 0; i < num_files; ++i) {
             MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
         }
 
         md_temp_scope_t temp = md_temp_begin();
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
-        str_t* str_paths = md_temp_alloc_array(temp, str_t, num_files);
+        md_str_t* str_paths = md_temp_alloc_array(temp, md_str_t, num_files);
         for (int i = 0; i < num_files; ++i) {
             str_paths[i] = {paths[i], strlen(paths[i])};
         }
@@ -426,7 +430,7 @@ bool initialize(Context* ctx, size_t width, size_t height, str_t title) {
         MD_LOG_ERROR("Failed to initialize NativeFileDialog: %s", NFD_GetError());
     }
 
-    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    md_memcpy(ctx, &data.internal_ctx, sizeof(Context));
 
     return true;
 }
@@ -441,7 +445,7 @@ void shutdown(Context* ctx) {
     ImGui::DestroyContext();
     glfwTerminate();
 
-    MEMSET(ctx, 0, sizeof(Context));
+    md_memset(ctx, 0, sizeof(Context));
 }
 
 void update(Context* ctx) {
@@ -485,7 +489,7 @@ void update(Context* ctx) {
     data.internal_ctx.timing.delta_s = (t - data.internal_ctx.timing.total_s);
     data.internal_ctx.timing.total_s = t;
 
-    MEMCPY(ctx, &data.internal_ctx, sizeof(Context));
+    md_memcpy(ctx, &data.internal_ctx, sizeof(Context));
 }
 
 void render_imgui(Context* ctx) {
@@ -507,10 +511,10 @@ void render_imgui(Context* ctx) {
 
 void swap_buffers(Context* ctx) { glfwSwapBuffers((GLFWwindow*)ctx->window.ptr); }
 
-bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filter) {    
+bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, md_str_t filter) {    
     md_temp_scope_t temp = md_temp_begin();
     nfdu8char_t* out_path = NULL;
-    defer {
+    MD_DEFER {
         md_temp_end(temp);
         if (out_path) NFD_FreePathU8(out_path);
     };
@@ -518,7 +522,7 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
     nfdresult_t result = NFD_ERROR;
 
     // Zero terminated variant
-    str_t zfilt = str_copy(filter, md_temp_allocator(temp));
+    md_str_t zfilt = md_alloc_str(md_temp_allocator(temp), filter);
 
     // NFD(e)'s filter spec is a comma-separated list of extensions without the leading dot
     // (e.g. "png,jpg,jpeg"), which is exactly the format callers already pass as `filter` here.
@@ -554,18 +558,17 @@ bool file_dialog(char* str_buf, size_t str_cap, FileDialogFlag flags, str_t filt
         if (flags & FileDialogFlag_Save) {
             // If the user is saving through the dialogue and there is no extension
             // In such case we append the first extension found in the filter (if supplied)
-            str_t ext;
-            str_t path = str_from_cstr(out_path);
-            if (!extract_ext(&ext, path) && filter) {
+            md_str_t path = md_str_from_cstr(out_path);
+            md_str_t ext = md_path_ext(path);
+            if (md_str_empty(ext) && filter) {
                 // get ext from supplied filter (first match)
-                ext = filter;
-                str_find_char(&ext.len, ext, ',');
-                len += snprintf(str_buf + len, str_cap - len, "." STR_FMT, STR_ARG(ext));
+                md_str_cut(&ext, NULL, filter, md_str_find_char(filter, ','));
+                len += snprintf(str_buf + len, str_cap - len, "." MD_STR_FMT, MD_STR_ARG(ext));
             }
         }
         
         if (0 < len && len < (int)str_cap) {
-            replace_char(str_buf, len, '\\', '/');
+            md_chars_replace(str_buf, len, '\\', '/');
             return true;
         }
 

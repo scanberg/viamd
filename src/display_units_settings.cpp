@@ -17,7 +17,7 @@ void register_settings() {
     for (int i = 0; i < Quantity_Count; ++i) {
         size_t cap = 0;
         char* buf = ini_buffer((Quantity)i, &cap);
-        app_settings::bind(str_from_cstr(ini_key((Quantity)i)), buf, cap);
+        app_settings::bind(md_str_from_cstr(ini_key((Quantity)i)), buf, cap);
     }
     app_settings::on_apply(adopt, nullptr);
 }

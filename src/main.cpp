@@ -9,10 +9,13 @@
 
 #define IMGUI_DEFINE_MATH_OPERATORS
 
-#include <md_util.h>
+#include <md_infer.h>
+#include <md_element.h>
+#include <core/md_spatial_acc.h>
+#include <core/md_geom.h>
 #include <md_gl.h>
-#include <md_gfx.h>
 #include <md_system.h>
+#include <md_run.h>
 #include <md_xvg.h>
 #include <md_csv.h>
 #include <md_lammps.h>
@@ -22,17 +25,20 @@
 #include <core/md_log.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
-#include <core/md_intrinsics.h>
+#include <core/md_common.h>
 #include <core/md_allocator.h>
 #include <core/md_arena_allocator.h>
 #include <core/md_ring_allocator.h>
 #include <core/md_tracking_allocator.h>
 #include <core/md_simd.h>
 #include <core/md_os.h>
+#include <core/md_file.h>
+#include <core/md_path.h>
 #include <core/md_unit.h>
 #include <core/md_writer.h>
 #include <core/md_parse.h>
 #include <core/md_hash.h>
+#include <core/md_vec_math.h>
 
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -43,6 +49,7 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <es_planes.h>
 #include <surface_field.h>
 #include <md_gto_iso.h>
 
@@ -74,9 +81,9 @@
 #include <script_reference.h>
 #include <script_suggestions.h>
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <event.h>
 
-#define EXPERIMENTAL_GFX_API 0
 #define COMPILATION_TIME_DELAY_IN_SECONDS 1.0
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
@@ -84,17 +91,61 @@
 #define VIS_FLAGS (script::DRAW_ATOMS | script::DRAW_GEOMETRY | script::DRAW_TEXT)
 
 // Global data for application
+// Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
+static void mask_grow_by_radius(md_bitmask_t* mask, const md_system_state_t* state, double radius, const md_bitset_t* viable_mask) {
+    MD_ASSERT(mask);
+    MD_ASSERT(state);
+    if (radius <= 0.0) return;
+    md_temp_scope_t temp = md_temp_begin_avoid(mask->alloc);
+    md_allocator_i* temp_arena = md_temp_allocator(temp);
+
+    size_t num_indices = md_bitmask_count(mask);
+    if (num_indices > 0) {
+        int32_t* indices = (int32_t*)md_temp_alloc(temp, num_indices * sizeof(int32_t));
+        num_indices = md_bitset_iter_extract_indices(indices, num_indices, md_bitmask_iter(mask));
+
+        int32_t* viable_indices = 0;
+        size_t viable_count = state->num_atoms;
+        if (viable_mask) {
+            md_bitset_t temp_mask = md_bitset_andnot(*viable_mask, md_bitmask_view(mask), temp_arena);
+            const size_t count = md_bitset_count(temp_mask);
+            viable_indices = (int32_t*)md_temp_alloc(temp, count * sizeof(int32_t));
+            viable_count = md_bitset_iter_extract_indices(viable_indices, count, md_bitset_iter(temp_mask));
+        }
+        if (viable_count > 0) {
+            md_spatial_acc_t acc = {};
+            acc.alloc = temp_arena;
+            md_spatial_acc_desc_t desc = {};
+            desc.xyz      = (const float*)state->xyz;
+            desc.stride   = sizeof(md_float3_t);
+            desc.idx      = viable_indices;
+            desc.count    = viable_count;
+            desc.cutoff   = radius;
+            desc.unitcell = &state->unitcell;
+            // The points by atom index: through the index where there is one; without one they are all the atoms,
+            // whose positions are their atom indices already (and the flag without an index is an error)
+            desc.flags = viable_indices ? MD_SPATIAL_ACC_FLAG_USE_SOURCE_IDX : MD_SPATIAL_ACC_FLAG_NONE;
+            md_spatial_acc_init(&acc, &desc);
+
+            auto set_bits = [](const uint32_t*, const uint32_t* j_idx, const float*, size_t num_pairs, void* user) {
+                md_bitmask_set_indices((md_bitmask_t*)user, j_idx, num_pairs);
+            };
+            md_spatial_acc_for_each_external_vs_internal_pair_within_cutoff(&acc, (const float*)state->xyz, sizeof(md_float3_t), indices, num_indices, radius, set_bits, mask, MD_SPATIAL_ACC_FLAG_NONE);
+        }
+    }
+    md_temp_end(temp);
+}
+
 static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data which only is valid for the frame and then is reset
 static md_allocator_i* persistent_alloc = 0;
 
-static bool use_gfx = false;
 
 // The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames, and whether it has
 // converged (the view is made until it has)
 static isomesh::Target iso_mesh_target;
 static bool iso_mesh_converged = true;
 
-constexpr str_t shader_output_snippet = STR_LIT(R"(
+constexpr md_str_t shader_output_snippet = MD_STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_velocity;
@@ -138,8 +189,8 @@ void write_fragment(vec3 view_coord, vec3 view_vel, vec3 view_normal, vec4 color
 
 // The G-buffer's snippet as the shaders are made of it: with the saturation of the dimmed atoms in it
 static_assert(AtomBit_Dimmed == 16u, "The G-buffer's snippet tests the flags by this bit");
-static str_t output_snippet(const ApplicationState& state) {
-    return str_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", CLAMP(state.selection.color.saturation, 0.0f, 1.0f), STR_ARG(shader_output_snippet));
+static md_str_t output_snippet(const ApplicationState& state) {
+    return md_alloc_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", MD_CLAMP(state.selection.color.saturation, 0.0f, 1.0f), MD_STR_ARG(shader_output_snippet));
 }
 
 // The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
@@ -151,7 +202,7 @@ static str_t output_snippet(const ApplicationState& state) {
 // depth: about two pixels' worth of its slope.
 static_assert(AtomBit_Highlighted == 1u && AtomBit_Selected == 2u && AtomBit_GroupShift == 5 && HIGHLIGHT_GROUP_COLORS == 8,
               "The marks snippet tests the flags by these bits");
-constexpr str_t shader_output_snippet_marks = STR_LIT(R"(
+constexpr md_str_t shader_output_snippet_marks = MD_STR_LIT(R"(
 layout(location = 0) out vec4 out_marks;
 layout(location = 1) out vec4 out_group;
 uniform sampler2D md_user_texture_0;
@@ -195,7 +246,7 @@ struct ScriptPlan {
     bool same = false;          // the editor's script is the one evaluated
     bool changes = false;       // Evaluate would change which properties there are, or what they are called
     const script::Plan* props = nullptr;            // one per property of the editor's script
-    const str_t* names = nullptr;
+    const md_str_t* names = nullptr;
     size_t   num_props = 0;
     uint32_t num_frames = 0;
     uint32_t num_pending = 0;   // the frames Evaluate would evaluate
@@ -206,13 +257,13 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
     const script::Program* ir = state.script.ir;
     plan.num_frames = (uint32_t)run_num_frames(state.system_context);
     plan.valid = script::valid(ir) && plan.num_frames > 0;
-    plan.running = task_system::task_is_running(state.tasks.evaluate);
+    plan.running = state.tasks.evaluate.running();
     if (!plan.valid) return plan;
 
     plan.same = state.script.eval && ir == state.script.eval_ir;
     plan.num_props = script::num_outputs(ir);
     plan.names = script::output_names(ir);
-    script::Plan* props = (script::Plan*)md_alloc(alloc, MAX(plan.num_props, 1) * sizeof(script::Plan));
+    script::Plan* props = (script::Plan*)md_alloc(alloc, MD_MAX(plan.num_props, 1) * sizeof(script::Plan));
     md_bitset_t pending = md_bitset_empty_set();
     if (!script::plan(props, plan.num_props, &pending, state.script.eval, ir, plan.num_frames, alloc)) {
         plan.valid = false;
@@ -225,7 +276,7 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
     const size_t num_evaluated = state.script.eval ? script::eval_num_outputs(state.script.eval) : 0;
     plan.changes = num_evaluated != plan.num_props;
     for (size_t i = 0; i < plan.num_props; ++i) {
-        plan.changes |= props[i].status != script::Status::Held || !str_eq(props[i].from, plan.names[i]);
+        plan.changes |= props[i].status != script::Status::Held || !md_str_eq(props[i].from, plan.names[i]);
     }
     return plan;
 }
@@ -233,23 +284,23 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
 // How property i of the plan stands, as a line of text
 static void script_plan_describe(char* buf, size_t cap, const ScriptPlan& plan, size_t i) {
     const script::Plan& p = plan.props[i];
-    const str_t name = plan.names[i];
+    const md_str_t name = plan.names[i];
     switch (p.status) {
     case script::Status::New:
-        snprintf(buf, cap, STR_FMT ": not evaluated yet, %u frames to evaluate", STR_ARG(name), p.num_pending);
+        snprintf(buf, cap, MD_STR_FMT ": not evaluated yet, %u frames to evaluate", MD_STR_ARG(name), p.num_pending);
         break;
     case script::Status::Changed:
-        snprintf(buf, cap, STR_FMT ": changed since it was evaluated, %u frames to evaluate", STR_ARG(name), p.num_pending);
+        snprintf(buf, cap, MD_STR_FMT ": changed since it was evaluated, %u frames to evaluate", MD_STR_ARG(name), p.num_pending);
         break;
     case script::Status::Held: {
         char from[96] = "";
-        if (!str_eq(p.from, name)) snprintf(from, sizeof(from), ", computed as " STR_FMT " was", STR_ARG(p.from));
+        if (!md_str_eq(p.from, name)) snprintf(from, sizeof(from), ", computed as " MD_STR_FMT " was", MD_STR_ARG(p.from));
         if (p.num_pending == 0) {
-            snprintf(buf, cap, STR_FMT ": up to date%s", STR_ARG(name), from);
+            snprintf(buf, cap, MD_STR_FMT ": up to date%s", MD_STR_ARG(name), from);
         } else if (p.num_frames < plan.num_frames) {
-            snprintf(buf, cap, STR_FMT ": %u of %u frames evaluated%s", STR_ARG(name), p.num_frames, plan.num_frames, from);
+            snprintf(buf, cap, MD_STR_FMT ": %u of %u frames evaluated%s", MD_STR_ARG(name), p.num_frames, plan.num_frames, from);
         } else {
-            snprintf(buf, cap, STR_FMT ": %u frames to add or take out over periods%s", STR_ARG(name), p.num_pending, from);
+            snprintf(buf, cap, MD_STR_FMT ": %u frames to add or take out over periods%s", MD_STR_ARG(name), p.num_pending, from);
         }
         break;
     }
@@ -315,7 +366,7 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
     if (dnd_type && ImGui::BeginDragDropSource()) {
         char path[SERIES_PATH_CAP];
         snprintf(path, sizeof(path), "script/%s", m.ident);
-        const SeriesKey key = series_key(SeriesSource_Script, str_from_cstr(path));
+        const SeriesKey key = series_key(SeriesSource_Script, md_str_from_cstr(path));
         char label[96];
         series_label(label, sizeof(label), app, key);
         series_set_drag_payload(dnd_type, key, -1, label, series_default_color(app, key));
@@ -327,10 +378,10 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
 
 static double frame_to_time(double frame, const ApplicationState& data) {
     const int64_t num_frames = md_array_size(data.timeline.x_values);
-    ASSERT(num_frames);
-    const int64_t f0 = CLAMP((int64_t)frame + 0, 0, num_frames - 1);
-    const int64_t f1 = CLAMP((int64_t)frame + 1, 0, num_frames - 1);
-    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], fract(frame));
+    MD_ASSERT(num_frames);
+    const int64_t f0 = MD_CLAMP((int64_t)frame + 0, 0, num_frames - 1);
+    const int64_t f1 = MD_CLAMP((int64_t)frame + 1, 0, num_frames - 1);
+    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], md_f64_fract(frame));
 }
 
 // Try to map time t back into frame
@@ -340,13 +391,13 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
     const double beg = frame_times[0];
     const double end = frame_times[num_frames - 1];
-    time = CLAMP(time, beg, end);
+    time = MD_CLAMP(time, beg, end);
 
     // Estimate the frame
-    const double frame_est = CLAMP(((time - beg) / (end-beg)) * (num_frames - 1), 0, num_frames - 1);
+    const double frame_est = MD_CLAMP(((time - beg) / (end-beg)) * (num_frames - 1), 0, num_frames - 1);
 
-    int64_t prev_frame_idx = CLAMP((int64_t)frame_est,     0, num_frames - 1);
-    int64_t next_frame_idx = CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
+    int64_t prev_frame_idx = MD_CLAMP((int64_t)frame_est,     0, num_frames - 1);
+    int64_t next_frame_idx = MD_CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
 
     if (time < (double)frame_times[prev_frame_idx]) {
         // Linear search down
@@ -367,7 +418,7 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
     // Compute true fraction between timestamps
     double t = (time - (double)frame_times[prev_frame_idx]) / ((double)frame_times[next_frame_idx] - (double)frame_times[prev_frame_idx]);
-    t = CLAMP(t, 0.0, 1.0);
+    t = MD_CLAMP(t, 0.0, 1.0);
 
     // Compose frame value (base + fraction)
     return (double)prev_frame_idx + t;
@@ -375,7 +426,7 @@ static double time_to_frame(double time, const md_array(float) frame_times) {
 
 static void update_view_param(ApplicationState* state);
 // The transforms of the copies of the scene the periodic images show (view.periodic_transforms)
-static void compute_periodic_transforms(md_array(mat4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc);
+static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc);
 
 // The lowest render scale offered: below half, too little of the detail is left to rebuild
 static constexpr float RENDER_SCALE_MIN = 0.5f;
@@ -386,9 +437,9 @@ static constexpr float SHADOW_SOFTNESS_MAX = 20.0f;
 
 // The G-buffer's size for an image shown of out_w x out_h: the render scale of each side, at least a pixel
 static void render_size(const ApplicationState* state, uint32_t out_w, uint32_t out_h, uint32_t* w, uint32_t* h) {
-    const float s = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
-    *w = MAX((uint32_t)(out_w * s + 0.5f), 1U);
-    *h = MAX((uint32_t)(out_h * s + 0.5f), 1U);
+    const float s = MD_CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
+    *w = MD_MAX((uint32_t)(out_w * s + 0.5f), 1U);
+    *h = MD_MAX((uint32_t)(out_h * s + 0.5f), 1U);
 }
 
 // The lengths of the jitter offered (Visuals > Anti-Aliasing): powers of two, so that each divides the isosurface
@@ -403,7 +454,7 @@ static_assert(isomesh::MAX_FRAMES % JITTER_SEQUENCE_MAX == 0, "Each length divid
 // The option nearest to n (a file can hold anything), by its index
 static int jitter_samples_index(int n) {
     int best = 0;
-    for (int i = 1; i < (int)ARRAY_SIZE(jitter_samples_options); ++i) {
+    for (int i = 1; i < (int)MD_COUNTOF(jitter_samples_options); ++i) {
         if (abs(jitter_samples_options[i] - n) < abs(jitter_samples_options[best] - n)) best = i;
     }
     return best;
@@ -414,12 +465,12 @@ static int jitter_samples_index(int n) {
 // JITTER_SEQUENCE_MAX
 static uint32_t jitter_count(const ApplicationState* state) {
     const uint32_t base = (uint32_t)jitter_samples_options[jitter_samples_index(state->visuals.temporal_aa.jitter_samples)];
-    const float sx = (float)state->gbuffer.width  / (float)MAX(state->gbuffer.out_width, 1U);
-    const float sy = (float)state->gbuffer.height / (float)MAX(state->gbuffer.out_height, 1U);
-    const float n  = (float)base / MAX(sx * sy, 1.0e-3f);
+    const float sx = (float)state->gbuffer.width  / (float)MD_MAX(state->gbuffer.out_width, 1U);
+    const float sy = (float)state->gbuffer.height / (float)MD_MAX(state->gbuffer.out_height, 1U);
+    const float n  = (float)base / MD_MAX(sx * sy, 1.0e-3f);
     uint32_t count = base;
     while ((float)count < n && count < JITTER_SEQUENCE_MAX) count *= 2;
-    return MIN(count, (uint32_t)JITTER_SEQUENCE_MAX);
+    return MD_MIN(count, (uint32_t)JITTER_SEQUENCE_MAX);
 }
 
 // Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
@@ -446,16 +497,25 @@ static inline bool occlusion_temporal_active(const ApplicationState* state) {
 // is shown; without, the image alone at the screenshot's size (the window's or another), the view not moved over for
 // the windows. Either way it is made as the view is, frame by frame, until it has settled.
 static inline bool screenshot_pending(const ApplicationState* state) {
-    return !str_empty(state->screenshot.path_to_file);
+    return !md_str_empty(state->screenshot.path_to_file);
 }
 static inline bool screenshot_offscreen(const ApplicationState* state) {
     return screenshot_pending(state) && state->screenshot.hide_gui;
 }
 
+// The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
+// picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
+// gizmo is); faint for a hidden one
+static md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
+    if (screenshot_offscreen(state)) return md_float4_set(0, 0, 0, 0);
+    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return md_float4_set(0, 0, 0, 0);
+    return enabled ? md_float4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_float4_set(0.78f, 0.78f, 0.78f, 0.4f);
+}
+
 // Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
 // in a screenshot without the windows, which shows it in the middle.
-static inline vec2_t view_shift(const ApplicationState* state) {
-    return screenshot_offscreen(state) ? vec2_t{0, 0} : state->view.shift;
+static inline md_float2_t view_shift(const ApplicationState* state) {
+    return screenshot_offscreen(state) ? md_float2_t{0, 0} : state->view.shift;
 }
 
 static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
@@ -509,12 +569,12 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
     md_array(md_gl_draw_op_t) group = 0;
     for (size_t i = 0; i < count; ++i) {
         const uint32_t type = (uint32_t)ops[i].type;
-        if (type < ARRAY_SIZE(done) && done[type]) continue;
+        if (type < MD_COUNTOF(done) && done[type]) continue;
         md_array_shrink(group, 0);
         for (size_t k = i; k < count; ++k) {
             if (ops[k].type == ops[i].type) md_array_push(group, ops[k], alloc);
         }
-        if (type < ARRAY_SIZE(done)) done[type] = true;
+        if (type < MD_COUNTOF(done)) done[type] = true;
         args.draw_operations = { .count = (uint32_t)md_array_size(group), .ops = group };
         PUSH_GPU_SECTION(geometry_stage_name[geometry_stage(ops[i].type, glyphs)]);
         md_gl_draw(&args);
@@ -540,7 +600,7 @@ static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
-static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus = true);
+static void open_script_reference(ApplicationState* state, md_str_t topic, bool take_focus = true);
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
 
 static void draw_debug_window(ApplicationState* state);
@@ -551,10 +611,10 @@ static void draw_notifications_window();
 
 static void update_md_buffers(ApplicationState* state);
 
-static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
-static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename);
+static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename);
+static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename);
 
-static void create_screenshot(str_t path);
+static void create_screenshot(md_str_t path);
 
 // The sizes offered in the Settings menu. The stored setting is the size itself, not an
 // index into this table, so the table can change without invalidating anyone's .ini.
@@ -564,7 +624,7 @@ static const char* font_size_names[] = { "10", "12", "14", "16", "18", "20", "24
 static int nearest_font_size_index(float size) {
     int   best_idx  = 0;
     float best_dist = FLT_MAX;
-    for (int i = 0; i < (int)ARRAY_SIZE(font_sizes); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(font_sizes); ++i) {
         const float dist = fabsf(font_sizes[i] - size);
         if (dist < best_dist) {
             best_dist = dist;
@@ -608,8 +668,8 @@ static void apply_visual_settings(void* user_data) {
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
     if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
     v.temporal_aa.jitter_samples = jitter_samples_options[jitter_samples_index(v.temporal_aa.jitter_samples)];
-    state->settings.render_scale = CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
-    v.shadows.softness = CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
+    state->settings.render_scale = MD_CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
+    v.shadows.softness = MD_CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
     if (!(0 <= (int)look.shading.mode && (int)look.shading.mode < postprocess_pipeline::ShadingMode_Count)) look.shading.mode = factory.shading.mode;
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
@@ -621,7 +681,7 @@ static void apply_visual_settings(void* user_data) {
 // rather than compounding factors, and the visible range is moved by the ratio so the user keeps
 // looking at the same stretch of trajectory.
 static void update_timeline_time_unit(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
 
     if (state->timeline.units_version == display_units::version()) {
         return;
@@ -650,31 +710,19 @@ static void update_timeline_time_unit(ApplicationState* state) {
 }
 
 static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
-    ASSERT(state);
+    MD_ASSERT(state);
     modify_field(&state->system_context.selection.selection_mask, atom_mask, op);
 }
 
-// What an evaluation spreads frames over (script::EvalDesc::parallel_for): viamd's pool. Called from a pool task, which
-// works on the range while it waits for it.
-static void pool_parallel_for(void* user, size_t count, void (*fn)(void* arg, size_t i), void* arg) {
-    (void)user;
-    if (count == 0) return;
-    const task_system::ID id = task_system::create_pool_task(STR_LIT("##Evaluate frames"), (uint32_t)count, [fn, arg](uint32_t beg, uint32_t end, uint32_t) {
-        for (uint32_t i = beg; i < end; ++i) fn(arg, i);
-    });
-    task_system::enqueue_task(id);
-    task_system::task_wait_for(id);
-}
-
 int main(int argc, char** argv) {
-#if DEBUG
+#if MD_DEBUG
     persistent_alloc = md_tracking_allocator_create(md_get_heap_allocator());
-#elif RELEASE
+#elif MD_RELEASE
     persistent_alloc = md_get_heap_allocator();
 #else
 #error "Must define DEBUG or RELEASE"
 #endif
-    frame_alloc = md_vm_arena_create(GIGABYTES(4));
+    frame_alloc = md_vm_arena_create(MD_GIGABYTES(4));
 
     struct NotificationState {
         md_mutex_t lock;
@@ -731,7 +779,7 @@ int main(int argc, char** argv) {
 
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
-    state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MEGABYTES(1)), MEGABYTES(1));
+    state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MD_MEGABYTES(1)), MD_MEGABYTES(1));
     // The first system, which is held in place: its arena and its masks
     system_context_init(&state.system_context, &state);
 
@@ -743,55 +791,55 @@ int main(int argc, char** argv) {
 
     // Init platform
     VIAMD_LOG_DEBUG("Initializing GL...");
-    if (!application::initialize(&state.app, 0, 0, STR_LIT("VIAMD"))) {
+    if (!application::initialize(&state.app, 0, 0, MD_STR_LIT("VIAMD"))) {
         VIAMD_LOG_ERROR("Could not initialize application...\n");
         return -1;
     }
 
     // Application settings live in the ImGui .ini. Bind first, then initialize: that call
     // reads the file, so the bound values are current by the time the loop starts.
-    app_settings::bind(STR_LIT("keep_representations"), &state.settings.keep_representations);
-    app_settings::bind(STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
-    app_settings::bind(STR_LIT("isosurface_rendering"), &state.settings.isosurface_rendering);
-    app_settings::bind(STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
-    app_settings::bind(STR_LIT("font_size"), &state.settings.font_size);
+    app_settings::bind(MD_STR_LIT("keep_representations"), &state.settings.keep_representations);
+    app_settings::bind(MD_STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
+    app_settings::bind(MD_STR_LIT("isosurface_rendering"), &state.settings.isosurface_rendering);
+    app_settings::bind(MD_STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
+    app_settings::bind(MD_STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
     // What the computer can handle, not what a figure looks like: kept per user as it is, never in a workspace
     state.app.window.vsync = true;
-    app_settings::bind(STR_LIT("vsync"), &state.app.window.vsync);
-    app_settings::bind(STR_LIT("render_scale"), &state.settings.render_scale);
-    app_settings::bind(STR_LIT("lazy_rendering"), &state.settings.lazy_rendering);
-    app_settings::bind(STR_LIT("shadows"), &state.visuals.shadows.enabled);
-    app_settings::bind(STR_LIT("shadows_softness"), &state.visuals.shadows.softness);
-    app_settings::bind(STR_LIT("ssao"), &state.visuals.ssao.enabled);
-    app_settings::bind_enum(STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
-    app_settings::bind(STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
-    app_settings::bind(STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
-    app_settings::bind(STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
-    app_settings::bind_enum(STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
-    app_settings::bind(STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
-    app_settings::bind(STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
-    app_settings::bind(STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
-    app_settings::bind(STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
-    app_settings::bind(STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
-    app_settings::bind(STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
-    app_settings::bind(STR_LIT("sharpen_strength"), &state.visuals.sharpen.weight);
+    app_settings::bind(MD_STR_LIT("vsync"), &state.app.window.vsync);
+    app_settings::bind(MD_STR_LIT("render_scale"), &state.settings.render_scale);
+    app_settings::bind(MD_STR_LIT("lazy_rendering"), &state.settings.lazy_rendering);
+    app_settings::bind(MD_STR_LIT("shadows"), &state.visuals.shadows.enabled);
+    app_settings::bind(MD_STR_LIT("shadows_softness"), &state.visuals.shadows.softness);
+    app_settings::bind(MD_STR_LIT("ssao"), &state.visuals.ssao.enabled);
+    app_settings::bind_enum(MD_STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
+    app_settings::bind(MD_STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
+    app_settings::bind(MD_STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
+    app_settings::bind(MD_STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
+    app_settings::bind_enum(MD_STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
+    app_settings::bind(MD_STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
+    app_settings::bind(MD_STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
+    app_settings::bind(MD_STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
+    app_settings::bind(MD_STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
+    app_settings::bind(MD_STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
+    app_settings::bind(MD_STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
+    app_settings::bind(MD_STR_LIT("sharpen_strength"), &state.visuals.sharpen.weight);
     // The look a session starts with (Visuals > Save as Default)
     {
         auto& look = state.settings.look;
-        app_settings::bind(STR_LIT("look_background"), look.background.color.elem, 3);
-        app_settings::bind_enum(STR_LIT("look_shading"), &look.shading.mode);
-        app_settings::bind_enum(STR_LIT("look_colors"), &look.shading.colors);
-        app_settings::bind(STR_LIT("look_light"), &look.shading.light);
-        app_settings::bind(STR_LIT("look_environment"), &look.shading.environment);
-        app_settings::bind(STR_LIT("look_ambient"), &look.shading.ambient);
-        app_settings::bind(STR_LIT("look_specular"), &look.shading.specular);
-        app_settings::bind(STR_LIT("look_tonemapping"), &look.tonemapping.enabled);
-        app_settings::bind_enum(STR_LIT("look_tonemapper"), &look.tonemapping.tonemapper);
-        app_settings::bind(STR_LIT("look_exposure"), &look.tonemapping.exposure);
-        app_settings::bind(STR_LIT("look_gamma"), &look.tonemapping.gamma);
-        app_settings::bind(STR_LIT("look_dof"), &look.dof.enabled);
-        app_settings::bind(STR_LIT("look_dof_strength"), &look.dof.aperture);
+        app_settings::bind(MD_STR_LIT("look_background"), look.background.color.elem, 3);
+        app_settings::bind_enum(MD_STR_LIT("look_shading"), &look.shading.mode);
+        app_settings::bind_enum(MD_STR_LIT("look_colors"), &look.shading.colors);
+        app_settings::bind(MD_STR_LIT("look_light"), &look.shading.light);
+        app_settings::bind(MD_STR_LIT("look_environment"), &look.shading.environment);
+        app_settings::bind(MD_STR_LIT("look_ambient"), &look.shading.ambient);
+        app_settings::bind(MD_STR_LIT("look_specular"), &look.shading.specular);
+        app_settings::bind(MD_STR_LIT("look_tonemapping"), &look.tonemapping.enabled);
+        app_settings::bind_enum(MD_STR_LIT("look_tonemapper"), &look.tonemapping.tonemapper);
+        app_settings::bind(MD_STR_LIT("look_exposure"), &look.tonemapping.exposure);
+        app_settings::bind(MD_STR_LIT("look_gamma"), &look.tonemapping.gamma);
+        app_settings::bind(MD_STR_LIT("look_dof"), &look.dof.enabled);
+        app_settings::bind(MD_STR_LIT("look_dof_strength"), &look.dof.aperture);
     }
     app_settings::on_apply(apply_visual_settings, &state);
     display_units::register_settings();
@@ -821,6 +869,15 @@ int main(int argc, char** argv) {
         if (!state.gpu_volume) {
             VIAMD_LOG_ERROR("Failed to create the GPU evaluation volume: %s", md_gpu_last_error());
         }
+        md_gpu_texture_desc_t plane_desc = vol_desc;
+        plane_desc.width = GPU_PLANE_DIM;
+        plane_desc.height = GPU_PLANE_DIM;
+        plane_desc.depth_or_layers = 1;
+        plane_desc.label = "Evaluation plane";
+        state.gpu_plane = md_gpu_texture_create(state.gpu_stream, &plane_desc);
+        if (!state.gpu_plane) {
+            VIAMD_LOG_ERROR("Failed to create the GPU evaluation plane: %s", md_gpu_last_error());
+        }
 
         // Potentials (surface fields). Kernels are made on first use, so this costs nothing until a
         // surface is coloured by one.
@@ -831,9 +888,9 @@ int main(int argc, char** argv) {
 #endif
 
     state.app.file_drop.user_data = &state;
-    state.app.file_drop.callback = [](size_t num_files, const str_t file_paths[], void* user_data) {
+    state.app.file_drop.callback = [](size_t num_files, const md_str_t file_paths[], void* user_data) {
         ApplicationState* state = (ApplicationState*)user_data;
-        ASSERT(state);
+        MD_ASSERT(state);
 
         for (size_t i = 0; i < num_files; ++i) {
             file_queue_push(&state->file_queue, file_paths[i], FileFlags_None);
@@ -844,7 +901,7 @@ int main(int argc, char** argv) {
     gbuffer_init(&state.gbuffer, state.app.framebuffer.width, state.app.framebuffer.height);
     picking_surface_init(&state.picking_surface, interaction_surface_main);
 
-    for (int i = 0; i < (int)ARRAY_SIZE(state.view.jitter.sequence); ++i) {
+    for (int i = 0; i < (int)MD_COUNTOF(state.view.jitter.sequence); ++i) {
         state.view.jitter.sequence[i].x = md_halton(i + 1, 2);
         state.view.jitter.sequence[i].y = md_halton(i + 1, 3);
     }
@@ -868,8 +925,8 @@ int main(int argc, char** argv) {
 	md_os_sys_info_query(&sys_info);
 
     int num_threads = VIAMD_NUM_WORKER_THREADS == 0 ? sys_info.num_physical_cores : VIAMD_NUM_WORKER_THREADS;
-	num_threads = CLAMP(num_threads, 2, sys_info.num_physical_cores);
-    task_system::initialize((size_t)num_threads);
+	num_threads = MD_CLAMP(num_threads, 2, sys_info.num_physical_cores);
+    task_system::initialize((uint32_t)num_threads);
 
     md_gl_initialize();
     state.gl.shaders                = md_gl_shaders_create(output_snippet(state));
@@ -885,9 +942,6 @@ int main(int argc, char** argv) {
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
-#if EXPERIMENTAL_GFX_API
-    md_gfx_initialize(state.gbuffer.width, state.gbuffer.height, 0);
-#endif
 
     ImGui::init_theme();
 
@@ -904,7 +958,7 @@ int main(int argc, char** argv) {
         // So anything here which is a file path is assumed to be a file to load
         size_t num_files = 0;
         for (int i = 1; i < argc; ++i) {
-            str_t path = str_from_cstr(argv[i]);
+            md_str_t path = md_str_from_cstr(argv[i]);
             if (md_path_is_valid(path)) {
                 file_queue_push(&state.file_queue, path);
                 num_files += 1;
@@ -915,7 +969,7 @@ int main(int argc, char** argv) {
         // first of them replaces at once, or - a workspace goes first - replace the workspace's system itself.
         if (num_files == 0) {
             md_str_writer_t sb = md_str_writer_create(frame_alloc);
-            str_t path = viamd::resource_path(&sb, STR_LIT(VIAMD_DEFAULT_DATASET));
+            md_str_t path = viamd::resource_path(&sb, MD_STR_LIT(VIAMD_DEFAULT_DATASET));
             if (md_path_is_valid(path)) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
@@ -949,11 +1003,12 @@ int main(int argc, char** argv) {
 
         // The longest run's: each system shows its own frame at the time, the last of a shorter run past its end
         size_t num_frames = 0;
-        for (size_t i = 0; i < state.num_systems; ++i) num_frames = MAX(num_frames, run_num_frames(*state.systems[i]));
+        for (size_t i = 0; i < state.num_systems; ++i) num_frames = MD_MAX(num_frames, run_num_frames(*state.systems[i]));
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
         const double   max_frame = (double)last_frame;
 
         file_queue_process(&state);
+        for (size_t i = 0; i < state.num_systems; ++i) system_inference_update(*state.systems[i]);
 
         script_vis_begin_frame(&state);
 
@@ -973,6 +1028,8 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
+        // and what the ELF and LOL evaluations left (es_jobs_collect)
+        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1009,11 +1066,17 @@ int main(int argc, char** argv) {
         ImGui::BeginCanvas("Main interaction window", true);
         const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
         ImVec2 view_size = ImGui::GetContentRegionAvail();
+        // The planes of the representations first (es_planes.h): while the mouse is theirs, the view neither turns nor picks
+        // (over the whole viewport, as the scene is drawn: the canvas's content starts under its menu bar)
+        const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+        const bool planes_capture = es_planes_gizmo(&state, vec_cast(main_viewport->Pos), vec_cast(main_viewport->Size));
+        if (planes_capture) ImGui::BeginDisabled();
         InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
+        if (planes_capture) ImGui::EndDisabled();
         ImGui::EndCanvas();
 
-        const mat4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
-        const mat4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
+        const md_float4x4_t clip_to_world = camera_view_to_world_matrix(state.view.camera) * state.view.param.matrix.inv.proj;
+        const md_float4x4_t world_to_clip = state.view.param.matrix.curr.proj * state.view.param.matrix.curr.view;
 
         PickingHit hit = {};
 
@@ -1025,7 +1088,7 @@ int main(int argc, char** argv) {
                 .width = state.gbuffer.width,
                 .height = state.gbuffer.height,
                 .clip_to_world = clip_to_world,
-                .pixel_scale = (float)state.gbuffer.width / (float)MAX(state.app.framebuffer.width, 1),
+                .pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(state.app.framebuffer.width, 1),
             };
 
             interaction_surface_hit_extract(&hit, surface_state, args);
@@ -1035,6 +1098,14 @@ int main(int argc, char** argv) {
 
             event.clip_to_world = clip_to_world;
             event.world_to_clip = world_to_clip;
+
+            // A click on nothing (no outline or handle of a plane, which would have taken the mouse, and nothing of the
+            // scene: the background) lets go of the plane picked for the gizmo, as a click on its outline picks it
+            if (surface_state.deactivated && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
+                hit.raw_idx == INVALID_PICKING_IDX && hit.depth >= 1.0f) {
+                state.representation.gizmo.plane = -1;
+            }
 
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
                 // In every system shown: its atoms in the region, as it is drawn in the frame of the world
@@ -1098,7 +1169,7 @@ int main(int argc, char** argv) {
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
                 reset_transform.orientation = state.view.camera.orientation;
-                reset_transform.position = hit.world_pos + state.view.camera.orientation * vec3_set(0, 0, state.view.target.distance);
+                reset_transform.position = hit.world_pos + state.view.camera.orientation * md_float3_set(0, 0, state.view.target.distance);
             } else {
                 reset_view_scene(&reset_transform, state, state.view.camera.fov_y, state.view.region);
             }
@@ -1120,7 +1191,7 @@ int main(int argc, char** argv) {
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
-            script_set_hovered_property(&state,  STR_LIT(""));
+            script_set_hovered_property(&state,  MD_STR_LIT(""));
         }
         POP_GPU_SECTION();
 
@@ -1159,7 +1230,7 @@ int main(int argc, char** argv) {
                         }
                         break;
                     default:
-                        ASSERT(false);
+                        MD_ASSERT(false);
                 }
 
             }
@@ -1167,14 +1238,14 @@ int main(int argc, char** argv) {
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
                 double step = ImGui::IsKeyDown(ImGuiMod_Ctrl) ? 10.0 : 1.0;
                 if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME)) step = -step;
-                state.animation.frame = CLAMP(state.animation.frame + step, 0.0, max_frame);
+                state.animation.frame = MD_CLAMP(state.animation.frame + step, 0.0, max_frame);
             }
         }
 
         // Not while a screenshot is pending: it is of the frame shown, made until it has settled
         if (state.animation.mode == PlaybackMode::Playing && !screenshot_pending(&state)) {
             state.animation.frame += state.app.timing.delta_s * state.animation.fps;
-            state.animation.frame = CLAMP(state.animation.frame, 0.0, max_frame);
+            state.animation.frame = MD_CLAMP(state.animation.frame, 0.0, max_frame);
             if (state.animation.frame >= max_frame) {
                 state.animation.mode = PlaybackMode::Stopped;
                 state.animation.frame = max_frame;
@@ -1254,7 +1325,7 @@ int main(int argc, char** argv) {
             const script::Mark* vis_tokens = script::marks(state.script.ir);
             for (size_t i = 0; i < num_tokens; ++i) {
                 char text_buf[256];
-                const str_t text = script::mark_text(text_buf, sizeof(text_buf), vis_tokens[i]);
+                const md_str_t text = script::mark_text(text_buf, sizeof(text_buf), vis_tokens[i]);
                 script_editor::markers_set_text(&state.editor_markers, state.script.first_mark_marker + i, text);
             }
         }
@@ -1271,7 +1342,7 @@ int main(int argc, char** argv) {
 
                 // Try aquire all semaphores
                 {
-                    defer {
+                    MD_DEFER {
                         flag_all_representations_as_dirty(&state);
                     };
 
@@ -1280,36 +1351,36 @@ int main(int argc, char** argv) {
                     state.script.time_since_last_change = 0;
 
                     std::string src = state.editor.GetText();
-                    str_t src_str {src.data(), src.length()};
+                    md_str_t src_str {src.data(), src.length()};
 
                     char buf[1024];
                     size_t len = md_path_write_cwd(buf, sizeof(buf));
-                    str_t old_cwd = {buf, len};
-                    defer {
+                    md_str_t old_cwd = {buf, len};
+                    MD_DEFER {
                         md_path_set_cwd(old_cwd);
                     };
                     
-                    str_t cwd = {};
+                    md_str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
-                        extract_folder_path(&cwd, str_from_cstr(state.files.workspace));
+                        cwd = md_path_folder(md_str_from_cstr(state.files.workspace));
                     } else if (const FileEntry* run_file = file_list_run_file(&state.file_list)) {
                         // The trajectory's folder, else the structure's
-                        extract_folder_path(&cwd, str_from_cstr(run_file->path));
+                        cwd = md_path_folder(md_str_from_cstr(run_file->path));
                     }
-                    if (!str_empty(cwd)) {
+                    if (!md_str_empty(cwd)) {
                         md_path_set_cwd(cwd);
                     }
 
                     const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
-                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MAX(num_stored_selections, 1) * sizeof(script::NamedSet));
+                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(num_stored_selections, 1) * sizeof(script::NamedSet));
                     for (size_t i = 0; i < num_stored_selections; ++i) {
-                        sets[i].name  = str_from_cstr(state.selection.stored_selections[i].name);
+                        sets[i].name  = md_str_from_cstr(state.selection.stored_selections[i].name);
                         sets[i].atoms = state.selection.stored_selections[i].atom_mask;
                     }
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
                     // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, str_from_cstr(state.run.path)});
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, md_str_from_cstr(state.run.path)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -1337,7 +1408,7 @@ int main(int argc, char** argv) {
                         for (size_t i = 0; i < num_tokens; ++i) {
                             const script::Mark& tok = vis_tokens[i];
                             char text_buf[256];
-                            const str_t text = script::mark_text(text_buf, sizeof(text_buf), tok);
+                            const md_str_t text = script::mark_text(text_buf, sizeof(text_buf), tok);
                             script_editor::markers_add(markers, script_editor::MarkerType_Visualization, tok.depth, tok.range, text, nullptr, tok.ref);
                         }
                         // What evaluating finds to fail is added after these (below), and replaced as it changes
@@ -1360,7 +1431,7 @@ int main(int argc, char** argv) {
         // A script whose every property the evaluation holds as it is, moved to other lines or edited around them,
         // takes the evaluation over at once: nothing is computed, and its hover and marks follow the new text
         if (state.script.eval && state.script.ir && state.script.eval_ir != state.script.ir && !state.script.eval_init &&
-            state.script.language == script::Language::V2 && !task_system::task_is_running(state.tasks.evaluate)) {
+            state.script.language == script::Language::V2 && !state.tasks.evaluate.running()) {
             const ScriptPlan p = script_plan(state, frame_alloc);
             if (p.valid && !p.changes && p.num_pending == 0) state.script.eval_init = true;
         }
@@ -1371,7 +1442,7 @@ int main(int argc, char** argv) {
 
         if (num_frames > 0) {
             if (state.script.eval_init) {
-                if (task_system::task_is_running(state.tasks.evaluate)) {
+                if (state.tasks.evaluate.running()) {
                     script::eval_interrupt(state.script.eval);
                 } else {
                     state.script.eval_init = false;
@@ -1385,8 +1456,8 @@ int main(int argc, char** argv) {
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = str_from_cstr(state.run.path),
-                                                        .num_threads = task_system::pool_num_threads(), .parallel_for = pool_parallel_for };
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = md_str_from_cstr(state.run.path),
+                                                        .executor = task_system::executor() };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
                     }
 
@@ -1410,7 +1481,7 @@ int main(int argc, char** argv) {
                 // Nothing is evaluated for them until Evaluate is pressed: what needs evaluation only starts when
                 // asked to. A distribution needs none, it is kept per frame.
                 if (state.script.evaluate) {
-                    if (task_system::task_is_running(state.tasks.evaluate)) {
+                    if (state.tasks.evaluate.running()) {
                         // Started again once it has stopped, over the frames which remain then. Nothing it has
                         // done is lost.
                         script::eval_interrupt(state.script.eval);
@@ -1435,33 +1506,26 @@ int main(int argc, char** argv) {
                             script::program_retain(ir);
                             script::Eval* eval = state.script.eval;
                             const uint32_t* frames = state.script.eval_frames;
+                            // Once it has ended, run or cancelled: the IR it held goes
+#if MEASURE_EVALUATION_TIME
+                            const uint64_t t0 = (uint64_t)md_tick_now();
+                            auto on_main = [ir, t0, n](task_system::Status) {
+                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
+                                script::program_release(ir);
+                            };
+#else
+                            auto on_main = [ir](task_system::Status) { script::program_release(ir); };
+#endif
                             if (script::eval_whole(eval)) {
                                 // v2: one call evaluates every pending frame, spreading them over the pool itself
-                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), [&state, ir, eval]() {
-                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.run.path), nullptr, 0);
-                                });
+                                state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval]() {
+                                    script::eval_frames(eval, ir, &state.mold.sys, md_str_from_cstr(state.run.path), nullptr, 0);
+                                }, on_main);
                             } else {
-                                state.tasks.evaluate = task_system::create_pool_task(STR_LIT("Evaluate script"), (uint32_t)n, [&state, ir, eval, frames](uint32_t beg, uint32_t end, uint32_t thread_num) {
-                                    (void)thread_num;
-                                    script::eval_frames(eval, ir, &state.mold.sys, str_from_cstr(state.run.path), frames + beg, end - beg);
-                                });
+                                state.tasks.evaluate.start_for(MD_STR_LIT("Evaluate script"), (uint32_t)n, 1, [&state, ir, eval, frames](uint32_t beg, uint32_t end) {
+                                    script::eval_frames(eval, ir, &state.mold.sys, md_str_from_cstr(state.run.path), frames + beg, end - beg);
+                                }, on_main);
                             }
-
-                            // Once every part of it has finished
-                            task_system::ID release = task_system::create_pool_task(STR_LIT("##Release script IR"), [ir]() {
-                                script::program_release(ir);
-                            });
-                            task_system::set_task_dependency(release, state.tasks.evaluate);
-#if MEASURE_EVALUATION_TIME
-                            uint64_t time = (uint64_t)md_tick_now();
-                            task_system::ID time_task = task_system::create_pool_task(STR_LIT("##Time Eval"), [t0 = time, n]() {
-                                uint64_t t1 = md_tick_now();
-                                double s = md_tick_to_seconds(t1 - t0);
-                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, s);
-                            });
-                            task_system::set_task_dependency(time_task, state.tasks.evaluate);
-#endif
-                            task_system::enqueue_task(state.tasks.evaluate);
                         }
                     }
                 }
@@ -1508,10 +1572,10 @@ int main(int argc, char** argv) {
             ImGuiWindow* window = ImGui::FindWindowByName("Main interaction window");
             if (window) {
                 ImDrawList* dl = window->DrawList;
-                ASSERT(dl);
+                MD_ASSERT(dl);
 
-                const vec2_t res = { (float)state.app.window.width, (float)state.app.window.height };
-                const mat4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
+                const md_float2_t res = { (float)state.app.window.width, (float)state.app.window.height };
+                const md_float4x4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
 
                 // Script text
                 const ImU32 text_color = convert_color(state.script.text_color);
@@ -1524,21 +1588,21 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < num_text; ++i) {
                     const script::Text& vis_text = texts[i];
 
-                    const vec4_t p = mat4_mul_vec4(mvp, vec4_from_vec3(vis_text.pos, 1.0f));
-                    const vec4_t c = p / p.w;
+                    const md_float4_t p = md_float4x4_mul_float4(mvp, md_float4_from_float3(vis_text.pos, 1.0f));
+                    const md_float4_t c = p / p.w;
 
                     // A label carrying a unit is a quantity, so it is shown in the same unit as the
                     // plots and re-formatted here rather than taken as mdlib spelled it. Anything
                     // else is drawn as it came.
                     char buf[64];
-                    str_t str = vis_text.str;
+                    md_str_t str = vis_text.str;
                     if (!md_unit_is_none(vis_text.unit)) {
                         char unit_buf[32];
                         const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), vis_text.unit);
                         // The degree sign hugs the number the way the convention has it, everything else takes a space.
                         const char* sep = strcmp(unit_buf, "\xC2\xB0") == 0 ? "" : " ";
                         const int len = snprintf(buf, sizeof(buf), "%.2f%s%s", vis_text.value * scl, sep, unit_buf);
-                        str = {buf, (size_t)CLAMP(len, 0, (int)sizeof(buf) - 1)};
+                        str = {buf, (size_t)MD_CLAMP(len, 0, (int)sizeof(buf) - 1)};
                     }
 
                     const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
@@ -1579,34 +1643,34 @@ int main(int argc, char** argv) {
             size_t count = md_array_size(fit_request.xyzw);
             if (count > 0) {
                 // Extract OBB from returned pointcloud
-                vec3_t com = md_util_com_compute_vec4(fit_request.xyzw, 0, count, 0);
-                mat3_t cov = mat3_covariance_matrix_vec4(fit_request.xyzw, 0, count, com);
-                mat3_eigen_t eigen = mat3_eigen(cov);
-                mat3_t PCA = mat3_orthonormalize(mat3_extract_rotation(eigen.vectors));
+                md_float3_t com = md_geom_com((const float*)fit_request.xyzw, sizeof(md_float4_t), (const float*)fit_request.xyzw + 3, sizeof(md_float4_t), 0, count, 0);
+                md_float3x3_t cov = md_float3x3_covariance_matrix_float4(fit_request.xyzw, 0, count, com);
+                md_float3x3_eigen_t eigen = md_float3x3_eigen(cov);
+                md_float3x3_t PCA = md_float3x3_orthonormalize(md_float3x3_extract_rotation(eigen.vectors));
 
                 // Compute min and maximum extent along the PCA axes
-                mat3_t basis = mat3_transpose(PCA);
-                vec3_t min_obb = vec3_set1(FLT_MAX);
-                vec3_t max_obb = vec3_set1(-FLT_MAX);
+                md_float3x3_t basis = md_float3x3_transpose(PCA);
+                md_float3_t min_obb = md_float3_set1(FLT_MAX);
+                md_float3_t max_obb = md_float3_set1(-FLT_MAX);
 
                 // Transform the gto (x,y,z,cutoff) into the PCA frame to find the min and max extend within it
                 for (size_t i = 0; i < count; ++i) {
-                    vec3_t xyz = vec3_from_vec4(fit_request.xyzw[i]);
-                    xyz = mat3_mul_vec3(PCA, xyz);
-                    min_obb = vec3_min(min_obb, xyz);
-                    max_obb = vec3_max(max_obb, xyz);
+                    md_float3_t xyz = md_float3_from_float4(fit_request.xyzw[i]);
+                    xyz = md_float3x3_mul_float3(PCA, xyz);
+                    min_obb = md_float3_min(min_obb, xyz);
+                    max_obb = md_float3_max(max_obb, xyz);
                 }
 
-				vec3_t ext = max_obb - min_obb;
-				float max_ext = MAX(ext.x, MAX(ext.y, ext.z));
+				md_float3_t ext = max_obb - min_obb;
+				float max_ext = MD_MAX(ext.x, MD_MAX(ext.y, ext.z));
 
                 if (max_ext > 3.0f) {
-                    vec3_t half_ext = (max_obb - min_obb) * 0.5f;
+                    md_float3_t half_ext = (max_obb - min_obb) * 0.5f;
                     state.view.target = compute_optimal_view(com, half_ext, basis);
                 } else {
-                    state.view.target.position = com + state.view.target.orientation * vec3_set(0, 0, state.view.target.distance);
+                    state.view.target.position = com + state.view.target.orientation * md_float3_set(0, 0, state.view.target.distance);
                 }
-                state.view.target.position = mat4_mul_vec3(scene_frame_system(state).data.unitcell_transform, state.view.target.position, 1.0f);
+                state.view.target.position = md_float4x4_mul_float3(scene_frame_system(state).data.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
                 reset_view_scene(&state.view.target, state, state.view.camera.fov_y, state.view.region);
@@ -1651,7 +1715,7 @@ int main(int argc, char** argv) {
                 const Representation& rep = sc.representation.reps[i];
                 const uint32_t kind[3] = { (uint32_t)rep.type, (uint32_t)rep.color_mapping, (uint32_t)representation_shown(sc, rep) };
                 r_hash = md_hash64(kind, sizeof(kind), r_hash);
-                const str_t filt = str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
+                const md_str_t filt = md_str_from_cstrn(rep.filter.text, sizeof(rep.filter.text));
                 r_hash = md_hash64(filt.ptr, filt.len, r_hash);
                 r_hash = md_bitset_hash64(rep.atom_mask, r_hash);
             }
@@ -1709,7 +1773,7 @@ int main(int argc, char** argv) {
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Main thread tasks");
-        task_system::execute_main_task_queue();
+        task_system::run_main_queue();
         POP_GPU_SECTION();
         profiler::frame_end();
 
@@ -1731,6 +1795,7 @@ int main(int argc, char** argv) {
     immediate::queue_destroy(state.gfx.world);
     immediate::queue_destroy(state.gfx.overlay);
     immediate::shutdown();
+    es_planes_shutdown();
 
     state.gfx.world = nullptr;
     state.gfx.overlay = nullptr;
@@ -1747,6 +1812,7 @@ int main(int argc, char** argv) {
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
+    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
@@ -1763,6 +1829,8 @@ int main(int argc, char** argv) {
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
+        if (state.gpu_plane) md_gpu_texture_destroy(state.gpu_plane);
+        state.gpu_plane = nullptr;
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
         state.gpu_volume = nullptr;
@@ -1789,8 +1857,8 @@ static void update_view_param(ApplicationState* data) {
         sc.scene.placement_prev = sc.scene.placement_curr;
         sc.scene.placement_curr = sc.scene.placement;
         // Its periodic images, as of this frame and the last: as many as before, or they did not move
-        md_array(mat4_t)& curr = sc.scene.periodic_transforms;
-        md_array(mat4_t)& prev = sc.scene.periodic_transforms_prev;
+        md_array(md_float4x4_t)& curr = sc.scene.periodic_transforms;
+        md_array(md_float4x4_t)& prev = sc.scene.periodic_transforms_prev;
         md_array_shrink(prev, 0);
         md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
         compute_periodic_transforms(&curr, sc, persistent_alloc);
@@ -1813,9 +1881,9 @@ static void update_view_param(ApplicationState* data) {
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
     // The world is in the frame of the first system's cell, which every system is drawn in (scene_frame_system)
-    const mat4_t& frame = scene_frame_system(*data).data.unitcell_transform;
+    const md_float4x4_t& frame = scene_frame_system(*data).data.unitcell_transform;
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera) * frame;
-    param.matrix.inv.view  = mat4_inverse(frame) * camera_view_to_world_matrix(data->view.camera);
+    param.matrix.inv.view  = md_float4x4_inverse(frame) * camera_view_to_world_matrix(data->view.camera);
 
     const float n = data->view.camera.near_plane;
     const float f = data->view.camera.far_plane;
@@ -1826,15 +1894,15 @@ static void update_view_param(ApplicationState* data) {
         i = (i+1) % jitter_count(data);
         param.jitter.curr = data->view.jitter.sequence[i] - 0.5f;
         if (data->view.mode == CameraMode::Perspective) {
-            const vec2_t j = param.jitter.curr;
+            const md_float2_t j = param.jitter.curr;
             param.matrix.curr.proj = camera_view_to_clip_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.inv.proj  = camera_clip_to_view_matrix_persp(data->view.camera, data->gbuffer.width, data->gbuffer.height, j.x, j.y);
             param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_persp(data->view.camera, aspect_ratio);
         } else {
             const float h = data->view.camera.distance * tanf(data->view.camera.fov_y * 0.5f);
             const float w = aspect_ratio * h;
-            const vec2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
-            const vec2_t j = param.jitter.curr * scl;
+            const md_float2_t scl = {w / data->gbuffer.width * 2.0f, h / data->gbuffer.height * 2.0f};
+            const md_float2_t j = param.jitter.curr * scl;
             param.matrix.curr.proj = camera_view_to_clip_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.inv.proj  = camera_clip_to_view_matrix_ortho(-w + j.x, w + j.x, -h + j.y, h + j.y, n, f);
             param.matrix.curr.proj_no_jitter = camera_view_to_clip_matrix_ortho(-w, w, -h, h, n, f);
@@ -1855,16 +1923,16 @@ static void update_view_param(ApplicationState* data) {
     }
 
     // What the view is focused on is seen where the windows leave it uncovered (view_shift)
-    const vec2_t shift = view_shift(data);
-    if (shift != vec2_t{0, 0}) {
-        const mat4_t to_shifted   = mat4_translate( shift.x,  shift.y, 0.0f);
-        const mat4_t from_shifted = mat4_translate(-shift.x, -shift.y, 0.0f);
+    const md_float2_t shift = view_shift(data);
+    if (shift != md_float2_t{0, 0}) {
+        const md_float4x4_t to_shifted   = md_float4x4_translate( shift.x,  shift.y, 0.0f);
+        const md_float4x4_t from_shifted = md_float4x4_translate(-shift.x, -shift.y, 0.0f);
         param.matrix.curr.proj           = to_shifted * param.matrix.curr.proj;
         param.matrix.curr.proj_no_jitter = to_shifted * param.matrix.curr.proj_no_jitter;
         param.matrix.inv.proj            = param.matrix.inv.proj * from_shifted;
     }
 
-    param.matrix.curr.norm = mat4_transpose(param.matrix.inv.view);
+    param.matrix.curr.norm = md_float4x4_transpose(param.matrix.inv.view);
 }
 
 // The part of the main view that the windows leave in view, as a region of it: the main view is drawn over all of
@@ -1890,7 +1958,7 @@ static ViewRegion main_view_uncovered_region(const ApplicationState& state, cons
 
 // ### DRAW WINDOWS ###
 static void draw_main_menu(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     bool new_clicked = false;
     char path_buf[2048] = "";
 
@@ -1898,20 +1966,20 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open File...", "CTRL+L")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open)) {
-                    file_queue_push(&data->file_queue, str_from_cstr(path_buf), FileFlags_ShowDialogue);
+                    file_queue_push(&data->file_queue, md_str_from_cstr(path_buf), FileFlags_ShowDialogue);
                 }
             }
             ImGui::SetItemTooltip("Open a file into the system loaded (a structure replaces it, a trajectory becomes its run),\nor into a new system");
             const bool room = system_count(*data) < SYSTEM_MAX;
             if (ImGui::MenuItem("Add as New System...", nullptr, false, room)) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open)) {
-                    file_queue_push(&data->file_queue, str_from_cstr(path_buf), FileFlags_ShowDialogue | FileFlags_NewSystem);
+                    file_queue_push(&data->file_queue, md_str_from_cstr(path_buf), FileFlags_ShowDialogue | FileFlags_NewSystem);
                 }
             }
             ImGui::SetItemTooltip(room ? "Open a structure as a system of its own, beside those loaded" : "At most %zu systems are loaded at once", SYSTEM_MAX);
             if (ImGui::MenuItem("Open Workspace...", "CTRL+O")) {
                 if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, WORKSPACE_FILE_EXTENSION)) {
-                    load_workspace(data, str_from_cstr(path_buf));
+                    load_workspace(data, md_str_from_cstr(path_buf));
                 }
             }
             if (ImGui::MenuItem("Save Workspace", "CTRL+S")) {
@@ -1920,7 +1988,7 @@ static void draw_main_menu(ApplicationState* data) {
                         save_workspace(data, {path_buf, strnlen(path_buf, sizeof(path_buf))});
                     }
                 } else {
-                    save_workspace(data, str_from_cstr(data->files.workspace));
+                    save_workspace(data, md_str_from_cstr(data->files.workspace));
                 }
             }
             if (ImGui::MenuItem("Save Workspace As...")) {
@@ -1982,7 +2050,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::SetNextItemWidth(prop::control_width_before(size_text));
                 float percent = data->settings.render_scale * 100.0f;
                 if (ImGui::SliderFloat("##resolution", &percent, RENDER_SCALE_MIN * 100.0f, 100.0f, "%.0f %%")) {
-                    data->settings.render_scale = CLAMP(roundf(percent / 5.0f) * 0.05f, RENDER_SCALE_MIN, 1.0f);
+                    data->settings.render_scale = MD_CLAMP(roundf(percent / 5.0f) * 0.05f, RENDER_SCALE_MIN, 1.0f);
                     machine_dirty = true;
                 }
                 ImGui::SameLine(0.0f, 2.0f * gap);
@@ -1999,7 +2067,7 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::row("camera");
                 const char* reset_label = "reset";
                 const float reset_w = ImGui::CalcTextSize(reset_label).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-                ImGui::SetNextItemWidth(MAX(prop::control_width() - reset_w - gap, 1.0f));
+                ImGui::SetNextItemWidth(MD_MAX(prop::control_width() - reset_w - gap, 1.0f));
                 ImGui::Combo("##camera", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 ImGui::SameLine(0.0f, gap);
                 if (ImGui::Button(reset_label)) {
@@ -2007,10 +2075,10 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 ImGui::SetItemTooltip("Frame what is shown again, from the default direction");
                 if (data->view.mode == CameraMode::Perspective) {
-                    float fov = RAD_TO_DEG(data->view.camera.fov_y);
+                    float fov = MD_RAD_TO_DEG(data->view.camera.fov_y);
                     prop::row("field of view");
                     if (ImGui::SliderFloat("##fov", &fov, 12.5f, 80.0f, (const char*)u8"%.1f°")) {
-                        data->view.camera.fov_y = DEG_TO_RAD(fov);
+                        data->view.camera.fov_y = MD_DEG_TO_RAD(fov);
                     }
                 }
                 if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&data->mold.state.unitcell) != 0) {
@@ -2148,8 +2216,8 @@ static void draw_main_menu(ApplicationState* data) {
                     postprocess_pipeline::Tonemapper_Passthrough,
                 };
                 static const char* tonemapper_names[] = {"ACES", "Neutral", "Filmic", "None"};
-                int idx = (int)ARRAY_SIZE(tonemappers) - 1;
-                for (int i = 0; i < (int)ARRAY_SIZE(tonemappers); ++i) {
+                int idx = (int)MD_COUNTOF(tonemappers) - 1;
+                for (int i = 0; i < (int)MD_COUNTOF(tonemappers); ++i) {
                     if (tonemappers[i] == data->visuals.tonemapping.tonemapper) idx = i;
                 }
                 prop::row("curve", "ACES: a filmic curve with more contrast, which shifts and desaturates the colors.\n"
@@ -2221,7 +2289,7 @@ static void draw_main_menu(ApplicationState* data) {
             machine_dirty |= aa_toggled;
 
             if (prop::section("Isosurfaces", false)) {
-                int rendering = CLAMP(data->settings.isosurface_rendering, 0, 1);
+                int rendering = MD_CLAMP(data->settings.isosurface_rendering, 0, 1);
                 prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
                                        "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
                                        "field itself rather than from the volume, at a spacing set by the representation's resolution,\n"
@@ -2278,22 +2346,32 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Windows")) {
-            ImGui::Checkbox("Animation", &data->animation.show_window);
-            ImGui::Checkbox("Scene", &data->show_representation_window);
-            ImGui::Checkbox("Script Editor", &data->show_script_window);
-            ImGui::Checkbox("Script Reference", &data->show_script_reference_window);
-            ImGui::Checkbox("Timelines", &data->timeline.show_window);
-            ImGui::Checkbox("Distributions", &data->distributions.show_window);
-            ImGui::Checkbox("Structure Export", &data->structure_export.show_window);
-            ImGui::Checkbox("Profiler", &data->show_profiler_window);
+            // Where a window is listed is its path, and the order given with it (window_menu.h): the windows of the
+            // application are added here, those of the components in answer to the request
+            viamd::WindowMenuRequest windows;
+            viamd::window_menu_add(&windows, "View/Scene",                 &data->show_representation_window,   {.order = 10});
+            viamd::window_menu_add(&windows, "View/Animation",             &data->animation.show_window,        {.order = 20});
+            viamd::window_menu_add(&windows, "Analysis/Timelines",         &data->timeline.show_window,         {.order = 10});
+            viamd::window_menu_add(&windows, "Analysis/Distributions",     &data->distributions.show_window,    {.order = 20});
+            viamd::window_menu_add(&windows, "Scripting/Script Editor",    &data->show_script_window,           {.order = 10});
+            viamd::window_menu_add(&windows, "Scripting/Script Reference", &data->show_script_reference_window, {.order = 20});
+            viamd::window_menu_add(&windows, "Output/Structure Export",    &data->structure_export.show_window, {.order = 10});
+            viamd::window_menu_add(&windows, "Developer/Profiler",         &data->show_profiler_window);
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowMenuRequest, viamd::EventPayloadType_WindowMenuRequest, &windows);
 
-            viamd::event_system_broadcast_event(viamd::EventType_ViamdWindowDrawMenu);
-
+            viamd::window_menu_draw(&windows);
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
-            ImGui::Combo("Select by", (int*)(&data->selection.granularity), selection_granularity_str, (int)SelectionGranularity::Count);
-            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms, whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
+            if (ImGui::BeginCombo("Select by", selection_granularity_str[(int)data->selection.granularity])) {
+                for (SelectionGranularity g : selection_granularity_order) {
+                    const bool current = g == data->selection.granularity;
+                    if (ImGui::Selectable(selection_granularity_str[(int)g], current)) data->selection.granularity = g;
+                    if (current) ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("What a click or a dragged region in the viewport selects: single atoms,\nwhole fragments (a ring system, a functional group, a backbone, an alkyl chain), whole residues,\nwhole parts (a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand),\nwhole chains (all that the file gives the chain id, or the molecule where it gives none),\nor whole molecules (atoms joined by bonds, with their residues and polymer chains)");
             // Of every system: what is selected spans them
             size_t num_selected_atoms = 0;
             for (size_t k = 0; k < data->num_systems; ++k) num_selected_atoms += md_bitmask_count(&data->systems[k]->selection.selection_mask);
@@ -2331,7 +2409,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Text("Stored Selections");
                 for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
                     auto& sel = data->selection.stored_selections[i];
-                    const str_t name_str = str_from_cstr(sel.name);
+                    const md_str_t name_str = md_str_from_cstr(sel.name);
                     bool is_valid = script::name_valid(data->script.language, name_str);
                     char error[64] = "";
                     if (!is_valid) {
@@ -2339,7 +2417,7 @@ static void draw_main_menu(ApplicationState* data) {
                     }
 
                     for (int j = 0; j < i; ++j) {
-                        if (str_eq_cstr(name_str, data->selection.stored_selections[j].name)) {
+                        if (md_str_eq_cstr(name_str, data->selection.stored_selections[j].name)) {
                             is_valid = false;
                             snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name);
                             break;
@@ -2375,7 +2453,7 @@ static void draw_main_menu(ApplicationState* data) {
                 if (ImGui::Button("Create New")) {
                     char name_buf[64];
                     snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, str_from_cstr(name_buf), md_bitmask_view(&data->system_context.selection.selection_mask));
+                    create_selection(data, md_str_from_cstr(name_buf), md_bitmask_view(&data->system_context.selection.selection_mask));
                 }
 
                 //ImGui::PopItemFlag();
@@ -2385,7 +2463,7 @@ static void draw_main_menu(ApplicationState* data) {
         if (ImGui::BeginMenu("Screenshot")) {
             ImGui::Checkbox("Hide GUI", &data->screenshot.hide_gui);
             if (data->screenshot.hide_gui) {
-                data->screenshot.resolution = (ScreenshotResolution)MIN((int)data->screenshot.resolution, (int)ScreenshotResolution::Count - 1);
+                data->screenshot.resolution = (ScreenshotResolution)MD_MIN((int)data->screenshot.resolution, (int)ScreenshotResolution::Count - 1);
                 if (ImGui::BeginCombo("Resolution", screenshot_resolution_str[(int)data->screenshot.resolution])) {
                     for (int i = 0; i < (int)ScreenshotResolution::Count; ++i) {
                         if (ImGui::Selectable(screenshot_resolution_str[i], (i == (int)data->screenshot.resolution))) {
@@ -2420,26 +2498,26 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::InputInt("Res X", &data->screenshot.res_x);
                     ImGui::InputInt("Res Y", &data->screenshot.res_y);
 
-                    data->screenshot.res_x = CLAMP(data->screenshot.res_x, 640, 16384);
-                    data->screenshot.res_y = CLAMP(data->screenshot.res_y, 480, 16384);
+                    data->screenshot.res_x = MD_CLAMP(data->screenshot.res_x, 640, 16384);
+                    data->screenshot.res_y = MD_CLAMP(data->screenshot.res_y, 480, 16384);
                     break;
                 default:
-                    ASSERT(false);
+                    MD_ASSERT(false);
                 }
             } else {
                 data->screenshot.res_x = data->app.framebuffer.width;
                 data->screenshot.res_y = data->app.framebuffer.height;
             }
             if (ImGui::MenuItem("Take Screenshot")) {
-                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("jpg,jpeg,png,bmp"))) {
+                if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("jpg,jpeg,png,bmp"))) {
                     size_t path_len = strnlen(path_buf, sizeof(path_buf));
-                    str_t ext;
-                    if (!extract_ext(&ext, {path_buf, path_len})) {
+                    md_str_t ext = md_path_ext({path_buf, path_len});
+                    if (md_str_empty(ext)) {
                         path_len += snprintf(path_buf + path_len, sizeof(path_buf) - path_len, ".jpg");
-                        ext = STR_LIT("jpg");
+                        ext = MD_STR_LIT("jpg");
                     }
                     if (image_format_from_ext(ext) != ImageFormat_Unknown) {
-                        data->screenshot.path_to_file = str_copy({path_buf, path_len}, persistent_alloc);
+                        data->screenshot.path_to_file = md_alloc_str(persistent_alloc, {path_buf, path_len});
                     }
                     else {
                         VIAMD_LOG_ERROR("Supplied image extension is not supported");
@@ -2466,7 +2544,7 @@ static void draw_main_menu(ApplicationState* data) {
 
             // Font
             int font_size_idx = nearest_font_size_index(data->settings.font_size);
-            if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)ARRAY_SIZE(font_size_names))) {
+            if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)MD_COUNTOF(font_size_names))) {
                 data->settings.font_size = font_sizes[font_size_idx];
                 apply_font_size(data);
                 app_settings::mark_dirty();
@@ -2496,7 +2574,7 @@ static void draw_main_menu(ApplicationState* data) {
             }
 
             char fps_buf[64];
-            snprintf(fps_buf, ARRAY_SIZE(fps_buf), "%.2f ms (%.1f fps)", avg_ms, 1000.f / avg_ms);
+            snprintf(fps_buf, MD_COUNTOF(fps_buf), "%.2f ms (%.1f fps)", avg_ms, 1000.f / avg_ms);
             const float w = ImGui::CalcTextSize(fps_buf).x;
             ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - w);
             ImGui::Text("%s", fps_buf);
@@ -2556,7 +2634,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
         }
 
-        str_t path = str_from_cstr(state.path_buf);
+        md_str_t path = md_str_from_cstr(state.path_buf);
 
         if (state.path_changed) {
             state.path_changed = false;
@@ -2604,6 +2682,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 
         if (ImGui::BeginCombo("Loader", loader::type_name(state.loader_idx).ptr)) {
             for (int i = 1; i < loader_count; ++i) {
+                if (!loader::type_available(i)) continue;
                 const char* str = loader::type_name(i).ptr;
                 if (!str) continue;
                 if (ImGui::Selectable(str, state.loader_idx == i)) {
@@ -2632,7 +2711,7 @@ void draw_load_dataset_window(ApplicationState* data) {
 				const char* format_str = atom_format_strings[format];
                 snprintf(state.atom_format_buf, sizeof(state.atom_format_buf), "%s", format_str);
             }
-            state.atom_format_idx = CLAMP(state.atom_format_idx, 0, MD_LAMMPS_ATOM_FORMAT_COUNT - 1);
+            state.atom_format_idx = MD_CLAMP(state.atom_format_idx, 0, MD_LAMMPS_ATOM_FORMAT_COUNT - 1);
 
             if (ImGui::BeginCombo("Atom Format", state.atom_format_idx > 0 ? atom_format_names[state.atom_format_idx] : "user defined")) {
                 for (int i = 0; i < MD_LAMMPS_ATOM_FORMAT_COUNT; ++i) {
@@ -2731,17 +2810,17 @@ void clear_atom_elem_mappings(ApplicationState* data) {
     md_array_shrink(data->dataset.atom_element_remappings, 0);
 }
 
-AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, str_t lbl, md_element_t elem) {
+AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, md_str_t lbl, md_atomic_number_t elem) {
     // Check if we already have a mapping for the label -> overwrite
     size_t i = 0;
     for (; i < md_array_size(data->dataset.atom_element_remappings); ++i) {
-        if (str_eq_cstr(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
+        if (md_str_eq_cstr(lbl, data->dataset.atom_element_remappings[i].lbl)) break;
     }
     if (i == md_array_size(data->dataset.atom_element_remappings)) {
         AtomElementMapping mapping = {
             .elem = elem,
         };
-        str_copy_to_char_buf(mapping.lbl, sizeof(mapping.lbl), lbl);
+        md_str_copy_to_char_buf(mapping.lbl, sizeof(mapping.lbl), lbl);
         md_array_push(data->dataset.atom_element_remappings, mapping, persistent_alloc);
         return md_array_last(data->dataset.atom_element_remappings);
     } else {
@@ -2756,13 +2835,13 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     }
 
     for (size_t j = 0; j < md_array_size(data->dataset.atom_element_remappings); ++j) {
-        str_t lbl = str_from_cstr(data->dataset.atom_element_remappings[j].lbl);
-        md_element_t elem = data->dataset.atom_element_remappings[j].elem;
-        float radius = md_util_element_vdw_radius(elem);
-        float mass = md_util_element_atomic_mass(elem);
+        md_str_t lbl = md_str_from_cstr(data->dataset.atom_element_remappings[j].lbl);
+        md_atomic_number_t elem = data->dataset.atom_element_remappings[j].elem;
+        float radius = md_atomic_number_vdw_radius(elem);
+        float mass = md_atomic_number_mass(elem);
 
         for (size_t i = 0; i < data->mold.sys.atom.count; ++i) {
-            if (str_eq(lbl, data->mold.sys.atom.type[i])) {
+            if (md_str_eq(lbl, data->mold.sys.atom.type[i])) {
                 data->mold.sys.atom.element[i] = elem;
                 data->mold.sys.atom.radius[i] = radius;
                 data->mold.sys.atom.mass[i] = mass;
@@ -2783,34 +2862,34 @@ void apply_atom_elem_mappings(ApplicationState* data) {
     md_ring_data_free(&mol->ring, data->mold.sys.alloc);
     
     md_system_state_t mol_state = {0};
-    md_util_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_UTIL_INFER_BOND_BIT | MD_UTIL_INFER_MOLECULE_BIT);
+    md_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT, NULL);
     data->mold.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
 }
 */
 
-static int64_t find_identifier(const script::Program* ir, str_t ident) {
+static int64_t find_identifier(const script::Program* ir, md_str_t ident) {
     const int64_t num_ident = script::num_identifiers(ir);
-    const str_t* idents = script::identifiers(ir);
+    const md_str_t* idents = script::identifiers(ir);
     for (int64_t i = 0; i < num_ident; ++i) {
-        if (str_eq(ident, idents[i])) return i;
+        if (md_str_eq(ident, idents[i])) return i;
     }
     return -1;
 }
 
-str_t create_unique_identifier(const script::Program* ir, str_t base, md_allocator_i* alloc) {
+md_str_t create_unique_identifier(const script::Program* ir, md_str_t base, md_allocator_i* alloc) {
     char buf[128];
     for (int64_t i = 1; i < 1000; ++i) {
         int res = snprintf(buf, sizeof(buf), "%.*s%i", (int)base.len, base.ptr, (int)i);
         if (res > 0) {
-            str_t ident = {buf, (size_t)res};
+            md_str_t ident = {buf, (size_t)res};
             if (find_identifier(ir, ident) == -1) {
-                return str_copy(ident, alloc);
+                return md_alloc_str(alloc, ident);
             }
         }
     }
-    return str_t();
+    return md_str_t();
 }
 
 // The lines the Script menu offers (script_suggestions.h): the measurement of the atoms picked one by one, and the
@@ -2865,7 +2944,7 @@ struct ScriptSuggestions {
     md_allocator_i* arena = nullptr;
     md_array(ScriptSuggestion) measure = 0;
     md_array(ScriptSuggestion) select = 0;
-    str_t smiles = {};      // The canonical SMILES of the selection's heavy atoms
+    md_str_t smiles = {};      // The canonical SMILES of the selection's heavy atoms
 };
 
 static const ScriptSuggestions& script_suggestions_get(SystemContext& sc, bool reset) {
@@ -2898,7 +2977,7 @@ static const ScriptSuggestions& script_suggestions_get(SystemContext& sc, bool r
         bool picks = num_picked == num_selected;
         for (size_t i = 0; i < num_picked && picks; ++i) picks = md_bitset_test(sel, (uint32_t)seq.idx[i]);
         if (picks) {
-            MEMCPY(atoms, seq.idx, num_picked * sizeof(int32_t));
+            md_memcpy(atoms, seq.idx, num_picked * sizeof(int32_t));
             num_atoms = num_picked;
         } else if (num_selected == 2) {
             md_bitset_iter_extract_indices(atoms, 2, md_bitset_iter(sel));
@@ -2916,7 +2995,7 @@ static const ScriptSuggestions& script_suggestions_get(SystemContext& sc, bool r
     key = md_hash64_combine(key, script::fingerprint(state->script.ir));
 
     if (reset || key != cache.key || !cache.arena) {
-        if (!cache.arena) cache.arena = md_arena_allocator_create(md_get_heap_allocator(), KILOBYTES(64));
+        if (!cache.arena) cache.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
         md_arena_allocator_reset(cache.arena);
         cache.measure = 0;
         cache.select = 0;
@@ -2924,12 +3003,12 @@ static const ScriptSuggestions& script_suggestions_get(SystemContext& sc, bool r
         cache.key = key;
 
         if (num_atoms) {
-            static const str_t base[5] = {{}, {}, STR_INIT("dist"), STR_INIT("ang"), STR_INIT("dih")};
-            const str_t ident = create_unique_identifier(state->script.ir, base[num_atoms], cache.arena);
+            static const md_str_t base[5] = {{}, {}, MD_STR_INIT("dist"), MD_STR_INIT("ang"), MD_STR_INIT("dih")};
+            const md_str_t ident = create_unique_identifier(state->script.ir, base[num_atoms], cache.arena);
             cache.measure = script_suggest_measurement(state->script.language, ident, atoms, num_atoms, sys, cache.arena);
         }
         if (num_selected) {
-            const str_t ident = create_unique_identifier(state->script.ir, STR_LIT("sel"), cache.arena);
+            const md_str_t ident = create_unique_identifier(state->script.ir, MD_STR_LIT("sel"), cache.arena);
             cache.select = script_suggest_selection(state->script.language, ident, sel, sys, cache.arena);
             if (sys.bond.count) cache.smiles = script_selection_smiles(sel, sys, cache.arena);
         }
@@ -2943,7 +3022,7 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     char label[max_label_len + 8];
     const bool cut = s.text.len > (size_t)max_label_len;
     if (cut) snprintf(label, sizeof(label), "%.*s...", max_label_len - 3, s.text.ptr);
-    else snprintf(label, sizeof(label), STR_FMT, STR_ARG(s.text));
+    else snprintf(label, sizeof(label), MD_STR_FMT, MD_STR_ARG(s.text));
 
     if (ImGui::MenuItem(label)) {
         script_editor::append_line(state->editor, s.text);
@@ -2952,16 +3031,16 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     if (ImGui::IsItemHovered()) {
         // What the line picks or measures is shown in the viewport
         script_visualize_str(state, s.text, VIS_FLAGS);
-        if (cut || !str_empty(s.hint)) {
+        if (cut || !md_str_empty(s.hint)) {
             ImGui::BeginTooltip();
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
             if (cut) {
                 constexpr size_t max_tooltip_len = 1024;
-                const size_t len = MIN(s.text.len, max_tooltip_len);
+                const size_t len = MD_MIN(s.text.len, max_tooltip_len);
                 ImGui::TextUnformatted(s.text.ptr, s.text.ptr + len);
                 if (len < s.text.len) ImGui::TextDisabled("... (%zu characters)", s.text.len);
             }
-            if (!str_empty(s.hint)) ImGui::TextDisabled(STR_FMT, STR_ARG(s.hint));
+            if (!md_str_empty(s.hint)) ImGui::TextDisabled(MD_STR_FMT, MD_STR_ARG(s.hint));
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
         }
@@ -3005,7 +3084,7 @@ static void draw_new_representation_menu(SystemContext& sys, const Representatio
 // # context_menu
 static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
     ApplicationState* state = sc.app;
-    ASSERT(state);
+    MD_ASSERT(state);
 
     if (!sc.data.sys.atom.count) return;
 
@@ -3028,8 +3107,9 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::BeginMenu(buf)) {
-                    // Of the bond graph, or a non-covalent bond: those are drawn dashed, and are not followed by the
-                    // structures, the rings or the bonds tracked. A kind chosen is kept as given.
+                    // Of the bond graph, or a non-covalent bond: those are not followed by the structures, the rings or the
+                    // bonds tracked. Each kind but covalent is drawn dashed, in a style of its own. A kind chosen is kept
+                    // as given.
                     struct BondKind {
                         const char* label;
                         md_bond_flags_t flags;
@@ -3037,18 +3117,18 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                     };
                     static const BondKind kinds[] = {
                         {"Bond",          MD_BOND_FLAG_NONE,
-                         "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal.\nIt joins the molecules of its atoms."},
+                         "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal\n(drawn dashed, thick with long dashes). It joins the molecules of its atoms."},
                         {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
-                         "Non-covalent, drawn dashed. bond(kind='hydrogen') in the script."},
+                         "Non-covalent, drawn with even dashes. bond(kind='hydrogen') in the script."},
                         {"Interaction",   md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION),
-                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn dashed.\nbond(kind='interaction') in the script."},
+                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn with\nshort, sparse dashes. bond(kind='interaction') in the script."},
                     };
-                    for (size_t k = 0; k < ARRAY_SIZE(kinds); ++k) {
+                    for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
                             const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
                             system_bonds_edit_begin(sc);
                             md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
-                            if (graph) md_util_system_infer_coordination(&sys);
+                            if (graph) md_system_infer_coordination(&sys);
                             system_bonds_changed(sc, graph);
                             ImGui::CloseCurrentPopup();
                         }
@@ -3106,24 +3186,24 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
         if (num_atoms_selected >= 1 && run_num_frames(sc) > 0) {
             // The bond changes of the selection, written as the scope of the tracking: "x = <expression>;" of the
             // suggestions of the script. Written when it is asked for, it can take long for a large selection.
-            auto selection_scope = [state, &sc]() -> str_t {
+            auto selection_scope = [state, &sc]() -> md_str_t {
                 const md_bitset_t sel = md_bitmask_view(&sc.selection.selection_mask);
-                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(state->script.language, STR_LIT("x"), sel, sc.data.sys, frame_alloc);
+                const md_array(ScriptSuggestion) suggestions = script_suggest_selection(state->script.language, MD_STR_LIT("x"), sel, sc.data.sys, frame_alloc);
                 for (size_t i = 0; i < md_array_size(suggestions); ++i) {
-                    str_t expr = suggestions[i].text;
-                    if (!str_begins_with(expr, STR_LIT("x = "))) continue;
-                    expr = str_trim(str_substr(expr, 4));
-                    if (str_ends_with(expr, STR_LIT(";"))) expr = str_trim(str_substr(expr, 0, expr.len - 1));
-                    if (!str_empty(expr) && expr.len < sizeof(sc.scene.operations.bond_tracking.scope.text)) return expr;
+                    md_str_t expr = suggestions[i].text;
+                    if (!md_str_begins_with(expr, MD_STR_LIT("x = "))) continue;
+                    expr = md_str_trim(md_str_substr(expr, 4));
+                    if (md_str_ends_with(expr, MD_STR_LIT(";"))) expr = md_str_trim(md_str_substr(expr, 0, expr.len - 1));
+                    if (!md_str_empty(expr) && expr.len < sizeof(sc.scene.operations.bond_tracking.scope.text)) return expr;
                 }
                 return {};
             };
             if (ImGui::MenuItem("Track Bond Changes Here")) {
-                const str_t scope = selection_scope();
-                if (!str_empty(scope)) {
+                const md_str_t scope = selection_scope();
+                if (!md_str_empty(scope)) {
                     auto& tracking = sc.scene.operations.bond_tracking;
                     tracking.enabled = true;
-                    str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
+                    md_str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
                     tracking.scope_dirty = true;
                 } else {
                     VIAMD_LOG_INFO("The selection is too scattered to write as the scope of the bond changes tracked; write one under the system (Scene, Track bond changes)");
@@ -3148,7 +3228,7 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                 draw_script_suggestion(state, sug.select[i]);
                 ImGui::PopID();
             }
-            if (!str_empty(sug.smiles)) {
+            if (!md_str_empty(sug.smiles)) {
                 ImGui::Separator();
                 if (ImGui::MenuItem("Copy SMILES")) {
                     ImGui::SetClipboardText(sug.smiles.ptr);    // zero terminated
@@ -3156,7 +3236,7 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                 }
                 if (ImGui::BeginItemTooltip()) {
                     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
-                    ImGui::TextUnformatted(sug.smiles.ptr, sug.smiles.ptr + MIN(sug.smiles.len, (size_t)2048));
+                    ImGui::TextUnformatted(sug.smiles.ptr, sug.smiles.ptr + MD_MIN(sug.smiles.len, (size_t)2048));
                     ImGui::TextDisabled("The canonical SMILES of the selection's heavy atoms, the same whatever their order in the file:\n"
                                         "smiles('...') finds every place with this chemistry");
                     ImGui::PopTextWrapPos();
@@ -3175,23 +3255,23 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
             int idx = data->selection.atom_idx.right_click;
             if (0 <= idx && idx < (int)data->mold.sys.atom.count) {
                 char label[64] = "";
-                str_t type = data->mold.sys.atom.type[idx];
+                md_str_t type = data->mold.sys.atom.type[idx];
                 snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)type.len, type.ptr);
                 if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
-                    md_element_t elem = data->mold.sys.atom.element[idx];
-                    str_t name = md_util_element_name(elem);
-                    str_t sym  = md_util_element_symbol(elem);
+                    md_atomic_number_t elem = data->mold.sys.atom.element[idx];
+                    md_str_t name = md_atomic_number_name(elem);
+                    md_str_t sym  = md_atomic_number_symbol(elem);
 
                     ImGui::Text("Current Element: %.*s (%.*s)", (int)name.len, name.ptr, (int)sym.len, sym.ptr);
 
-                    str_t elem_str = {input_buf, strnlen(input_buf, sizeof(input_buf))};
-                    md_element_t new_elem = md_util_element_lookup(elem_str);
+                    md_str_t elem_str = {input_buf, strnlen(input_buf, sizeof(input_buf))};
+                    md_atomic_number_t new_elem = md_atomic_number_from_symbol(elem_str);
                     const bool is_valid = new_elem != 0;
 
                     ImGui::InputQuery("##Symbol", input_buf, sizeof(input_buf), is_valid, "Cannot recognize Element symbol");
-                    str_t new_name = md_util_element_name(new_elem);
-                    str_t new_sym  = md_util_element_symbol(new_elem);
+                    md_str_t new_name = md_atomic_number_name(new_elem);
+                    md_str_t new_sym  = md_atomic_number_symbol(new_elem);
                     ImGui::Text("New Element: %.*s (%.*s)", (int)new_name.len, new_name.ptr, (int)new_sym.len, new_sym.ptr);
                     if (!is_valid) ImGui::PushDisabled();
                     if (ImGui::Button("Apply") && is_valid) {
@@ -3296,14 +3376,14 @@ static void draw_selection_grow_window(ApplicationState* data) {
 
             switch (data->selection.grow.mode) {
             case SelectionGrowthMode::CovalentBond:
-                md_util_mask_grow_by_bonds(grow, &data->mold.sys, (int)data->selection.grow.extent, &viable);
+                md_bond_mask_grow(grow, &data->mold.sys.bond, data->mold.sys.atom.count, (size_t)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                md_util_mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
+                mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
                 break;
             }
             default:
-                ASSERT(false);
+                MD_ASSERT(false);
             }
 
             grow_mask_by_selection_granularity(grow, data->selection.granularity, data->mold.sys);
@@ -3382,12 +3462,12 @@ static void draw_selection_query_window(ApplicationState* data) {
 }
 
 static void draw_animation_window(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     size_t num_frames = run_num_frames(data->system_context);
     if (num_frames == 0) return;
 
-    ASSERT(data->timeline.x_values);
-    ASSERT(md_array_size(data->timeline.x_values) == num_frames);
+    MD_ASSERT(data->timeline.x_values);
+    MD_ASSERT(md_array_size(data->timeline.x_values) == num_frames);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
@@ -3405,7 +3485,7 @@ static void draw_animation_window(ApplicationState* data) {
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
         const float w = ImGui::CalcTextSize("Time (ps)").x;
-        const float item_width = MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
+        const float item_width = MD_MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
         if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
             static const char* mode_tooltip[(int)InterpolationMode::Count] = {
@@ -3441,10 +3521,10 @@ static void draw_animation_window(ApplicationState* data) {
             // Not called keyframes: that name is kept for the keyframes of animations to come.
             // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
             // typed in (Ctrl+click): only the lower bound is enforced.
-            const int max_stride = (int)CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
+            const int max_stride = (int)MD_CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
             const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
             ImGui::SliderInt("Stride", &data->animation.stride, 1, max_stride, fmt);
-            data->animation.stride = MAX(1, data->animation.stride);
+            data->animation.stride = MD_MAX(1, data->animation.stride);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
                                   "at the expense of the frames in between (and the usual interpolation artifacts).\n"
@@ -3470,7 +3550,7 @@ static void draw_animation_window(ApplicationState* data) {
                 }
                 break;
             default:
-                ASSERT(false);
+                MD_ASSERT(false);
         }
         ImGui::SameLine();
         if (ImGui::Button((const char*)ICON_FA_STOP)) {
@@ -3486,19 +3566,19 @@ static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
 
-    task_system::ID tasks[256];
-    size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
-    bool any_task_label_visible = false;
-    for (size_t i = 0; i < num_tasks; i++) {
-        str_t label = task_system::task_label(tasks[i]);
-        if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
-        any_task_label_visible = true;
-    }
+    // The jobs with a label (task_system activities)
+    task_system::ActivityInfo activities[8];
+    const size_t num_activities = task_system::activity_list(activities, MD_COUNTOF(activities));
+    bool any_task_label_visible = num_activities > 0;
     // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
     float iso_fraction[8];
-    const size_t num_iso = iso_meshes_progress(iso_fraction, ARRAY_SIZE(iso_fraction));
+    const size_t num_iso = iso_meshes_progress(iso_fraction, MD_COUNTOF(iso_fraction));
     any_task_label_visible |= num_iso > 0;
-    // the SCF density matrix a volume waits for, made on a worker thread
+    // the density volumes evaluated on the GPU over frames
+    float vol_fraction[8];
+    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, MD_COUNTOF(vol_fraction));
+    any_task_label_visible |= num_vol > 0;
+    // the density matrix a volume waits for, made on a worker thread
     double dmat_seconds = 0.0;
     const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
     any_task_label_visible |= dmat_preparing;
@@ -3508,7 +3588,7 @@ static void draw_async_task_window(ApplicationState* data) {
     any_task_label_visible |= nto_warming;
     // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
     SurfaceFieldProgress field_progress[8];
-    const size_t num_field = surface_field_progress(field_progress, ARRAY_SIZE(field_progress));
+    const size_t num_field = surface_field_progress(field_progress, MD_COUNTOF(field_progress));
     any_task_label_visible |= num_field > 0;
     // and what the components have under way that the task system does not show, such as the analytic critical
     // point search of the QM module: asked for through an event, as a component may not be built
@@ -3530,23 +3610,30 @@ static void draw_async_task_window(ApplicationState* data) {
         const float size = ImGui::GetFontSize() + pad * 2;
 
         char buf[64];
-        for (size_t i = 0; i < MIN(num_tasks, 8); i++) {
-            const auto id = tasks[i];
-            str_t label = task_system::task_label(id);
-            float fract = task_system::task_fraction_complete(id);
+        for (size_t i = 0; i < num_activities; i++) {
+            const task_system::ActivityInfo& a = activities[i];
+            const bool is_evaluate = a.id == data->tasks.evaluate.activity_id();
+            float fract = a.progress;
             // One task over every frame (v2): the evaluation says how far it is
-            if (id == data->tasks.evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
+            if (is_evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
-            if (!label || label[0] == '\0' || (label[0] == '#' && label[1] == '#')) continue;
-
-            snprintf(buf, sizeof(buf), "%.*s %.1f%%", (int)label.len, label.ptr, fract * 100.f);
-            ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad),0), buf);
-            ImGui::SameLine();
-            if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
-                task_system::task_interrupt(id);
-                if (id == data->tasks.evaluate) {
-                    script::eval_interrupt(data->script.eval);
+            if (fract < 0.0f) {
+                // no fraction to show: an indeterminate bar, to say it is not stuck
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), a.label);
+            } else {
+                snprintf(buf, sizeof(buf), "%s %.1f%%", a.label, fract * 100.f);
+                ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+            }
+            if (a.cancellable) {
+                ImGui::SameLine();
+                ImGui::PushID((int)i);
+                if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
+                    task_system::activity_cancel(a.id);
+                    if (is_evaluate) {
+                        script::eval_interrupt(data->script.eval);
+                    }
                 }
+                ImGui::PopID();
             }
         }
         for (size_t i = 0; i < num_iso; i++) {
@@ -3560,6 +3647,10 @@ static void draw_async_task_window(ApplicationState* data) {
         }
         if (dmat_preparing) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
+        }
+        for (size_t i = 0; i < num_vol; i++) {
+            snprintf(buf, sizeof(buf), "Density volume %.0f%%", vol_fraction[i] * 100.f);
+            ImGui::ProgressBar(vol_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
         }
         if (nto_warming) {
             ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Natural transition orbitals: computing");
@@ -3612,7 +3703,7 @@ struct TimelineArgs {
 
         float min_y;
         float max_y;
-        str_t unit;
+        md_str_t unit;
     } values;
 
     struct {
@@ -3667,7 +3758,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
     
     const float pad_x = ImPlot::GetStyle().PlotPadding.x;
     ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(pad_x, 0));
-    defer { ImPlot::PopStyleVar(1); };
+    MD_DEFER { ImPlot::PopStyleVar(1); };
 
     if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
         ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.beg, args.view_range.end);
@@ -3694,19 +3785,19 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             if (!args.filter.enabled) ImGui::PushDisabled();
             ImPlot::DragRangeX("Time Filter", args.filter.beg, args.filter.end, args.filter.min, args.filter.max);
             if (!args.filter.enabled) ImGui::PopDisabled();
-            *args.filter.beg = CLAMP(*args.filter.beg, args.filter.min, args.filter.max);
-            *args.filter.end = CLAMP(*args.filter.end, args.filter.min, args.filter.max);
+            *args.filter.beg = MD_CLAMP(*args.filter.beg, args.filter.min, args.filter.max);
+            *args.filter.end = MD_CLAMP(*args.filter.end, args.filter.min, args.filter.max);
         }
 
         ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
         ImPlot::SetNextLineStyle(line_col);
 
         if (args.values.count > 0) {
-            ASSERT(args.values.x);
-            ASSERT(args.values.y);
+            MD_ASSERT(args.values.x);
+            MD_ASSERT(args.values.y);
             if (args.values.y_var) {
-                ASSERT(args.values.y_min);
-                ASSERT(args.values.y_max);
+                MD_ASSERT(args.values.y_min);
+                MD_ASSERT(args.values.y_max);
                 char lbl[32];
 
                 snprintf(lbl, sizeof(lbl), "%s", args.lbl);
@@ -3764,7 +3855,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             *args.time = ImPlot::GetPlotMousePos().x;
         }
         else if (*args.input.is_selecting) {
-            *args.filter.end = MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
+            *args.filter.end = MD_MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
         }
         else if (ImPlot::IsPlotHovered()) {
             if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {           
@@ -3784,7 +3875,7 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
         }
         
         if (ImPlot::DragLineX(0, args.time, ImVec4(1,1,0,1))) {
-            *args.time = CLAMP(*args.time, args.filter.min, args.filter.max);
+            *args.time = MD_CLAMP(*args.time, args.filter.min, args.filter.max);
         }
         if (ImGui::IsItemHovered()) {
             print_timeline_tooltip = true;
@@ -3803,32 +3894,32 @@ bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& ar
             int len = 0;
 
             double time = plot_pos.x;
-            int frame_idx = CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
-            len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
+            int frame_idx = MD_CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
+            len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
 
             md_unit_t time_unit = data.timeline.time_unit;
             if (!md_unit_is_none(time_unit)) {
                 char unit_buf[32];
                 md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-                len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
+                len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
             }
 
             if (0 <= frame_idx && frame_idx < args.values.count) {
                 const char* value_lbl = args.values.y_var ? "mean" : "value";
                 if (args.values.y) {
-                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
+                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
                 }
                 if (args.values.y_var) {
-                    ASSERT(args.values.y_min);
-                    ASSERT(args.values.y_max);
-                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
+                    MD_ASSERT(args.values.y_min);
+                    MD_ASSERT(args.values.y_max);
+                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
                         args.values.y_var[frame_idx],
                         args.values.y_min[frame_idx],
                         args.values.y_max[frame_idx]);
                 }
 
-                if (!str_empty(args.values.unit)) {
-                    len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
+                if (!md_str_empty(args.values.unit)) {
+                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
                 }
             }
             ImGui::SetTooltip("%.*s", len, buf);
@@ -3927,20 +4018,20 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
 
         const float sz = ImGui::GetFontSize() * 1.5f;
         ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
-        for (int k = 0; k < MIN(dim, PLOT_MAX_POPULATION); ++k) {
+        for (int k = 0; k < MD_MIN(dim, PLOT_MAX_POPULATION); ++k) {
             char lbl[32];
             snprintf(lbl, sizeof(lbl), "%d", k+1);
             if (ImGui::Selectable(lbl, s.population_mask.test(k), ImGuiSelectableFlags_DontClosePopups, ImVec2(sz, sz))) {
                 s.population_mask.flip(k);
             }
-            const str_t member = series_member_label(data, s.key, k);
-            if (!str_empty(member)) {
-                ImGui::SetItemTooltip(STR_FMT, STR_ARG(member));
+            const md_str_t member = series_member_label(data, s.key, k);
+            if (!md_str_empty(member)) {
+                ImGui::SetItemTooltip(MD_STR_FMT, MD_STR_ARG(member));
             }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
                     script_visualize_ref(data, vis_ref, k, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
-                    script_set_hovered_property(data, str_from_cstr(script_ident), k);
+                    script_set_hovered_property(data, md_str_from_cstr(script_ident), k);
                 }
                 *hovered_pop_idx = k;
             }
@@ -3971,8 +4062,8 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
         }
     }
     if (ImGui::IsItemHovered()) {
-        const str_t ident = series_script_ident(key);
-        if (!str_empty(ident)) {
+        const md_str_t ident = series_script_ident(key);
+        if (!md_str_empty(ident)) {
             script_visualize_ref(data, script::output_ref(data->script.eval_ir, ident), -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
             script_set_hovered_property(data, ident);
         } else {
@@ -3989,13 +4080,13 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
 
 // The series loaded along the run, one submenu per file
 static void plot_system_series_menu(ApplicationState* data, const char* dnd_type, PlotSubplot& first) {
-    str_t groups[64];
-    const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data->system_context), ARRAY_SIZE(groups));
+    md_str_t groups[64];
+    const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data->system_context), MD_COUNTOF(groups));
     size_t num_listed = 0;
     for (size_t g = 0; g < num_groups; ++g) {
         md_temp_scope_t temp = md_temp_begin();
         const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
-        str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+        md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
         system_series_members(paths, num, data->system_context, groups[g]);
         if (num > 0) {
             char group_label[256];
@@ -4017,8 +4108,8 @@ static void plot_system_series_menu(ApplicationState* data, const char* dnd_type
 
 // The members of a script property's population, if it has one: the extent of its value axis
 static size_t script_property_population(const ApplicationState* data, const SeriesKey& key) {
-    const md_attributes_t* table = series_table(data, key.source, str_from_cstr(key.path));
-    const md_attribute_t* attr = table ? md_attributes_find(table, str_from_cstr(key.path)) : nullptr;
+    const md_attributes_t* table = series_table(data, key.source, md_str_from_cstr(key.path));
+    const md_attribute_t* attr = table ? md_attributes_find(table, md_str_from_cstr(key.path)) : nullptr;
     if (!attr || attr->format.rank < 1 || attr->format.shape[0] == 0) return 0;
     return md_attribute_element_count(&attr->format) / attr->format.shape[0];
 }
@@ -4133,7 +4224,7 @@ static void periodic_cut_least_populated(PeriodicView* view, const SeriesHistogr
         for (int k = 0; k < members; ++k) {
             if (h.num_periods > 0 && !h.periods[k].valid) continue;
             for (int b = 0; b < nb; ++b) {
-                const int src = MIN((int)((b + 0.5) * h.num_bins / nb), h.num_bins - 1);
+                const int src = MD_MIN((int)((b + 0.5) * h.num_bins / nb), h.num_bins - 1);
                 density[b] += h.bins[(size_t)k * h.num_bins + src];
             }
             any = true;
@@ -4167,7 +4258,7 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
         char mean_path[SERIES_PATH_CAP + 8];
         const int len = snprintf(mean_path, sizeof(mean_path), "%s/mean", key.path);
         const md_attributes_t* table = series_table(data, key.source);
-        if (table && len > 0 && md_attributes_find(table, str_t{mean_path, (size_t)len})) {
+        if (table && len > 0 && md_attributes_find(table, md_str_t{mean_path, (size_t)len})) {
             ImGui::Indent();
             const SeriesVariant variants[] = { SeriesVariant_Mean, SeriesVariant_Sigma, SeriesVariant_Extent };
             for (SeriesVariant v : variants) {
@@ -4187,12 +4278,12 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
 }
 
 static void draw_timeline_window(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
 
     if (ImGui::Begin("Timelines", &data->timeline.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         int& num_subplots = data->timeline.num_subplots;
-        num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
+        num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
         const float* x_values   = data->timeline.x_values;
         const int num_x_values  = (int)md_array_size(data->timeline.x_values);
@@ -4200,7 +4291,7 @@ static void draw_timeline_window(ApplicationState* data) {
         const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
 
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
-        defer { ImPlot::PopStyleVar(); };
+        MD_DEFER { ImPlot::PopStyleVar(); };
 
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Properties")) {
@@ -4214,7 +4305,7 @@ static void draw_timeline_window(ApplicationState* data) {
             if (ImGui::BeginMenu("Subplots")) {
                 ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
+                    num_subplots = MD_CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
                 }
                 if (ImGui::Button("Clear All")) {
                     plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
@@ -4314,7 +4405,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     for (int j = 0; j < sp.count; ++j) {
                         if (!resolved[j]) continue;
                         if (y_unit_str[0] == '\0') {
-                            str_copy_to_char_buf(y_unit_str, sizeof(y_unit_str), str_from_cstr(views[j].unit_str));
+                            md_str_copy_to_char_buf(y_unit_str, sizeof(y_unit_str), md_str_from_cstr(views[j].unit_str));
                         } else if (strcmp(y_unit_str, views[j].unit_str) != 0) {
                             y_unit_str[0] = '\0';
                             break;
@@ -4351,7 +4442,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     if (ImPlot::IsPlotHovered()) {
                         md_bitmask_clear(&data->system_context.selection.highlight_mask);
-                        script_set_hovered_property(data,  STR_LIT(""));
+                        script_set_hovered_property(data,  MD_STR_LIT(""));
 
                         print_timeline_tooltip = true;
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
@@ -4374,15 +4465,15 @@ static void draw_timeline_window(ApplicationState* data) {
                             // Each series has an axis of its own, so the samples around the mouse are its own
                             const int n = v.num_samples;
                             const double fi = series_temporal_index_at(v, mouse_pos.x);
-                            const int fn = CLAMP((int)(fi + 0.5), 0, n - 1);  // Nearest index
+                            const int fn = MD_CLAMP((int)(fi + 0.5), 0, n - 1);  // Nearest index
                             const int f[4] = {
-                                CLAMP((int)fi - 1, 0, n - 1),
-                                CLAMP((int)fi,     0, n - 1),
-                                CLAMP((int)fi + 1, 0, n - 1),
-                                CLAMP((int)fi + 2, 0, n - 1),
+                                MD_CLAMP((int)fi - 1, 0, n - 1),
+                                MD_CLAMP((int)fi,     0, n - 1),
+                                MD_CLAMP((int)fi + 1, 0, n - 1),
+                                MD_CLAMP((int)fi + 2, 0, n - 1),
                             };
 
-                            const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            const int dim = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             for (int k = 0; k < dim; ++k) {
                                 if (dim > 1 && !s.population_mask.test(k)) {
                                     continue;
@@ -4407,18 +4498,18 @@ static void draw_timeline_window(ApplicationState* data) {
                                     // Each segment forms a trapezoid with its left and right sides parallel to the y axis:
                                     // clamp the mouse to it and measure the distance to the clamped point
                                     for (int l = 0; l < 2; ++l) {
-                                        const float x_min = MIN(p_min[l].x, p_min[l+1].x);
-                                        const float x_max = MAX(p_min[l].x, p_min[l+1].x);
-                                        const float t = (x_max > x_min) ? CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
+                                        const float x_min = MD_MIN(p_min[l].x, p_min[l+1].x);
+                                        const float x_max = MD_MAX(p_min[l].x, p_min[l+1].x);
+                                        const float t = (x_max > x_min) ? MD_CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
                                         const float y[2] = {
                                             lerp(p_min[l].y, p_min[l+1].y, t),
                                             lerp(p_max[l].y, p_max[l+1].y, t)
                                         };
                                         const ImVec2 p = {
-                                            CLAMP(mouse_coord.x, x_min, x_max),
-                                            CLAMP(mouse_coord.y, MIN(y[0], y[1]), MAX(y[0], y[1]))
+                                            MD_CLAMP(mouse_coord.x, x_min, x_max),
+                                            MD_CLAMP(mouse_coord.y, MD_MIN(y[0], y[1]), MD_MAX(y[0], y[1]))
                                         };
-                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
+                                        d = MD_MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
                                     }
                                     d += area_dist;
                                 } else if (s.plot_type == PlotType_Scatter) {
@@ -4434,8 +4525,8 @@ static void draw_timeline_window(ApplicationState* data) {
                                         ImPlot::PlotToPixels(temporal_getter_line(f[3], &payload)),
                                     };
                                     d = distance_to_linesegment(p[0], p[1], mouse_coord);
-                                    d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
-                                    d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
+                                    d = MD_MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
+                                    d = MD_MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
                                 }
 
                                 if (d < min_dist) {
@@ -4445,9 +4536,9 @@ static void draw_timeline_window(ApplicationState* data) {
 
                                     hovered_idx = j;
                                     hovered_pop_idx = k;
-                                    const str_t member = v.dim > 1 ? series_member_label(data, s.key, k) : str_t{};
-                                    if (!str_empty(member)) {
-                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" STR_FMT "): %s %s", v.label, k + 1, STR_ARG(member), value_buf, v.unit_str);
+                                    const md_str_t member = v.dim > 1 ? series_member_label(data, s.key, k) : md_str_t{};
+                                    if (!md_str_empty(member)) {
+                                        snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" MD_STR_FMT "): %s %s", v.label, k + 1, MD_STR_ARG(member), value_buf, v.unit_str);
                                     } else if (v.dim > 1) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %s %s", v.label, k + 1, value_buf, v.unit_str);
                                     } else {
@@ -4458,7 +4549,10 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
 
                         if (hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
-                            script_set_hovered_property(data, str_from_cstr(views[hovered_idx].script_ident), hovered_pop_idx);
+                            script_set_hovered_property(data, md_str_from_cstr(views[hovered_idx].script_ident), hovered_pop_idx);
+                        } else if (hovered_idx != -1 && sp.series[hovered_idx].key.source == SeriesSource_System) {
+                            // The curve of an energy term of groups: the groups
+                            highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
                         }
                     } else if (data->hovered_property_label[0] != '\0') {
                         // Hovered in another view of it (the other plot window, a list): light up its values here
@@ -4485,7 +4579,10 @@ static void draw_timeline_window(ApplicationState* data) {
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
                                 script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
-                                script_set_hovered_property(data, str_from_cstr(v.script_ident));
+                                script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
+                            } else if (s.key.source == SeriesSource_System) {
+                                // An energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to plot at '%s' right now", s.key.path);
@@ -4537,7 +4634,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             // Still in the legend, so it can be seen and removed
                             ImPlot::PlotDummy(v.plot_id);
                         } else {
-                            const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            const int population_size = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
                                 ImVec4 color = plot_series_member_color(s, k, population_size);
                                 if (v.state.status >= SeriesStatus_Outdated) {
@@ -4606,19 +4703,19 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     if (ImPlot::DragLineX(0, &time, ImVec4(1,1,0,1), 1.0f, ImPlotDragToolFlags_NoFit)) {
-                        time = CLAMP(time, min_x_value, max_x_value);
+                        time = MD_CLAMP(time, min_x_value, max_x_value);
                     }
 
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
                         script_visualize_ref(data, v.vis_ref, pop_idx, ~script::DRAW_SDF);
-                        script_set_hovered_property(data, str_from_cstr(v.script_ident), hovered_pop_idx);
+                        script_set_hovered_property(data, md_str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
                     if (ImPlot::BeginDragDropTargetPlot()) {
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
-                            ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
+                            MD_ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
                             const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
                             if (dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
                                 // Out of one plot and into another moves it, keeping its style
@@ -4642,7 +4739,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         double t = plot_pos.x;
                         if (md_unit_is_none(x_unit)) {
-                            int32_t frame_idx = CLAMP((int)(time_to_frame(t, x_values) + 0.5), 0, num_x_values-1);
+                            int32_t frame_idx = MD_CLAMP((int)(time_to_frame(t, x_values) + 0.5), 0, num_x_values-1);
                             ImGui::SetTooltip("Frame: %i\n%s", frame_idx, hovered_label);
                         } else {
                             ImGui::SetTooltip("Time: %.2f (%s)\n%s", t, x_unit_str, hovered_label);
@@ -4662,7 +4759,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
             ImPlot::EndSubplots();
 
-            time = CLAMP(time, (double)min_x_value, (double)max_x_value);
+            time = MD_CLAMP(time, (double)min_x_value, (double)max_x_value);
             data->animation.frame = time_to_frame(time, data->timeline.x_values);
 
             ImPlot::GetInputMap() = old_map;
@@ -4718,7 +4815,7 @@ static void histogram_draw_range(long long* u0, int* count, const SeriesHistogra
         const long long a = (long long)floor((x_min - v.x_min) / w - 0.5) - 1;
         const long long b = (long long)ceil ((x_max - v.x_min) / w - 0.5) + 1;
         *u0 = a;
-        *count = (int)MIN(b - a + 1, (long long)v.num_bins * 4);
+        *count = (int)MD_MIN(b - a + 1, (long long)v.num_bins * 4);
     } else {
         *u0 = (long long)ceil((x_min - v.x_min) / w - 0.5);
         *count = v.num_bins + 1;
@@ -4726,7 +4823,7 @@ static void histogram_draw_range(long long* u0, int* count, const SeriesHistogra
 }
 
 // A polyline drawn dashed, carrying the dashes on across its corners and from one call to the next through phase
-static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase) {
+static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 col, float* phase, float thickness = 1.5f) {
     const float dash = 6.0f, gap = 4.0f;
     for (int i = 1; i < count; ++i) {
         const ImVec2 prev = pts[i - 1];
@@ -4737,9 +4834,9 @@ static void dashed_polyline(ImDrawList* dl, const ImVec2* pts, int count, ImU32 
         float t = 0.0f;
         while (t < len) {
             const float in_cycle = fmodf(*phase + t, dash + gap);
-            const float step = in_cycle < dash ? MIN(dash - in_cycle, len - t) : MIN(dash + gap - in_cycle, len - t);
-            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, 1.5f);
-            t += MAX(step, 0.01f);
+            const float step = in_cycle < dash ? MD_MIN(dash - in_cycle, len - t) : MD_MIN(dash + gap - in_cycle, len - t);
+            if (in_cycle < dash) dl->AddLine(prev + u * t, prev + u * (t + step), col, thickness);
+            t += MD_MAX(step, 0.01f);
         }
         *phase = fmodf(*phase + len, dash + gap);
     }
@@ -4769,7 +4866,7 @@ static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 c
             const ImPlotPoint p = series_histogram_point_at(v, k, u0 + i);
             const ImVec2 a = ImPlot::PlotToPixels(p.x - half, 0.0);
             const ImVec2 b = ImPlot::PlotToPixels(p.x + half, p.y);
-            dl->AddRectFilled(ImVec2(MIN(a.x, b.x), MIN(a.y, b.y)), ImVec2(MAX(a.x, b.x), MAX(a.y, b.y)), fill_col);
+            dl->AddRectFilled(ImVec2(MD_MIN(a.x, b.x), MD_MIN(a.y, b.y)), ImVec2(MD_MAX(a.x, b.x), MD_MAX(a.y, b.y)), fill_col);
             if (joined) {
                 if (n == 0) outline[n++] = a;
                 outline[n++] = ImVec2(a.x, b.y);
@@ -4801,7 +4898,9 @@ static void plot_histogram_preview(const SeriesHistogramView& v, int k, ImVec4 c
             }
             dl->Flags = flags;
         }
-        dashed_polyline(dl, pts, count, line_col, &phase);
+        // As thick as the series' own line, and no thinner than the dashes were
+        const float thickness = s.plot_type == PlotType_Line ? MD_MAX(1.5f, 1.5f * s.line_weight) : 1.5f;
+        dashed_polyline(dl, pts, count, line_col, &phase, thickness);
         md_temp_end(temp);
     }
     ImPlot::PopPlotClipRect();
@@ -4942,14 +5041,127 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     plot_system_series_menu(data, DISTRIBUTION_SERIES_DND, first);
 }
 
+// The density axis of a Distributions subplot. Fitted to what it shows every frame, it jumps about as a period is
+// dragged or follows the current frame: a short period has peaks of its own, far above those of the rest. So it grows
+// at once, never cutting a curve off, but shrinks only when what it shows has stayed well below it for a while, or a
+// period dragged is let go, and then eases down.
+struct DistributionYRange {
+    double lo = 0.0, hi = 1.0;              // shown
+    double goal_lo = 0.0, goal_hi = 1.0;    // eased towards when shrinking
+    double loose_since = -1.0;              // since when it has been loose, -1 when it is not
+    bool   valid = false;
+};
+
+#define DIST_Y_HEADROOM     1.1     // above the highest peak (below the lowest value, when there are negative ones)
+#define DIST_Y_LOOSE        0.5     // loose when what it shows takes less than this of it
+#define DIST_Y_SHRINK_DELAY 0.75    // seconds loose before it shrinks
+#define DIST_Y_EASE_RATE    12.0    // per second, of what is left to shrink
+
+// What the subplot draws, from lo to hi (y, in the display unit): of every series shown and resolved, the members
+// it draws. False when it draws nothing. Within a plot (ImPlot::BeginPlot), for which series are hidden in its legend.
+static bool distribution_y_extent(double* out_lo, double* out_hi, const PlotSubplot& sp, const SeriesHistogramView* views, const bool* resolved) {
+    double lo = DBL_MAX, hi = -DBL_MAX;
+    for (int j = 0; j < sp.count; ++j) {
+        const SeriesHistogramView& v = views[j];
+        if (!resolved[j] || v.num_bins <= 0 || !v.bins) continue;
+        if (const ImPlotItem* item = ImPlot::GetItem(v.plot_id); item && !item->Show) continue;
+        const PlotSeries& s = sp.series[j];
+        const int population_size = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+        bool every_member = v.num_periods > 0 || population_size == 1;
+        if (!every_member) {
+            every_member = true;
+            for (int k = 0; k < population_size; ++k) {
+                if (!s.population_mask.test(k)) { every_member = false; break; }
+            }
+        }
+        if (every_member) {
+            // Over every member, or every valid period: what the view says
+            if (v.y_max < v.y_min) continue;
+            lo = MD_MIN(lo, v.y_min);
+            hi = MD_MAX(hi, v.y_max);
+            continue;
+        }
+        for (int k = 0; k < population_size; ++k) {
+            if (!s.population_mask.test(k)) continue;
+            const float* bins = v.bins + (size_t)k * v.num_bins;
+            for (int b = 0; b < v.num_bins; ++b) {
+                const double y = bins[b] * v.y_scale;
+                lo = MD_MIN(lo, y);
+                hi = MD_MAX(hi, y);
+            }
+        }
+    }
+    if (hi < lo) return false;
+    *out_lo = lo;
+    *out_hi = hi;
+    return true;
+}
+
+// The range to show in the plot this frame. snap: to what it draws at once, as when a series was added.
+static void distribution_y_update(DistributionYRange* r, double lo, double hi, bool drawn, bool snap, bool dragging, bool released) {
+    // A density from zero, and as far below as values go below it
+    double fit_lo = lo < 0.0 ? lo * DIST_Y_HEADROOM : 0.0;
+    double fit_hi = hi > 0.0 ? hi * DIST_Y_HEADROOM : 0.0;
+    if (!drawn) {
+        // Nothing to show: as it was
+        if (r->valid && !snap) return;
+        fit_lo = 0.0;
+        fit_hi = 1.0;
+    }
+    if (fit_hi - fit_lo <= 0.0) fit_hi = fit_lo + 1.0;
+
+    if (!r->valid || snap) {
+        r->lo = r->goal_lo = fit_lo;
+        r->hi = r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+        r->valid = true;
+        return;
+    }
+
+    // Grows at once
+    if (hi > r->hi) r->hi = r->goal_hi = fit_hi;
+    if (lo < r->lo) r->lo = r->goal_lo = fit_lo;
+
+    // Shrinks later
+    const double span = r->goal_hi - r->goal_lo;
+    const bool loose = (fit_hi - fit_lo) < span * DIST_Y_LOOSE;
+    const double now = ImGui::GetTime();
+    if (released) {
+        r->goal_lo = fit_lo;
+        r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+    } else if (dragging || !loose) {
+        r->loose_since = -1.0;
+    } else if (r->loose_since < 0.0) {
+        r->loose_since = now;
+    } else if (now - r->loose_since >= DIST_Y_SHRINK_DELAY) {
+        r->goal_lo = fit_lo;
+        r->goal_hi = fit_hi;
+        r->loose_since = -1.0;
+    }
+
+    const double a = 1.0 - exp(-(double)ImGui::GetIO().DeltaTime * DIST_Y_EASE_RATE);
+    r->lo += (r->goal_lo - r->lo) * a;
+    r->hi += (r->goal_hi - r->hi) * a;
+    if (fabs(r->hi - r->goal_hi) < 1.0e-3 * span) r->hi = r->goal_hi;
+    if (fabs(r->lo - r->goal_lo) < 1.0e-3 * span) r->lo = r->goal_lo;
+}
+
 static void draw_distribution_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(200, 300), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Distributions", &data->distributions.show_window, ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_MenuBar)) {
         int& num_subplots = data->distributions.num_subplots;
-        num_subplots = CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
+        num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
         // Refit a subplot's axes to what it holds, after it gained a series or its binning changed
         static bool fit_subplot[PLOT_MAX_SUBPLOTS] = {};
+        // The density axes, which follow what they show at a pace of their own (DistributionYRange)
+        static DistributionYRange y_range[PLOT_MAX_SUBPLOTS];
+        // A period dragged in the timeline, and whether it was let go this frame
+        static bool was_dragging = false;
+        const bool dragging = timeline_periods_dragging();
+        const bool released = was_dragging && !dragging;
+        was_dragging = dragging;
 
         if (ImGui::BeginMenuBar()) {
             if (ImGui::BeginMenu("Properties")) {
@@ -4959,7 +5171,7 @@ static void draw_distribution_window(ApplicationState* data) {
             if (ImGui::BeginMenu("Subplots")) {
                 ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
-                    num_subplots = CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
+                    num_subplots = MD_CLAMP(num_subplots + 1, 1, PLOT_MAX_SUBPLOTS);
                 }
                 if (ImGui::Button("Clear All")) {
                     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
@@ -4972,7 +5184,8 @@ static void draw_distribution_window(ApplicationState* data) {
         // The labels of the axes are drawn within the plots (DrawInsetAxes): the plots take all of the width and height
         const ImPlotAxisFlags axis_flags   = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight | ImPlot::InsetAxisFlags;
         const ImPlotAxisFlags axis_flags_x = axis_flags;
-        const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit;
+        // Not fitted by ImPlot: set every frame from what is shown (distribution_y_update)
+        const ImPlotAxisFlags axis_flags_y = axis_flags;
         const ImPlotFlags     plot_flags   = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
 
         if (ImPlot::BeginSubplots("##distribution_plots", num_subplots, 1, ImVec2(-1,-1))) {
@@ -5025,10 +5238,10 @@ static void draw_distribution_window(ApplicationState* data) {
 
                 int remove_idx = -1;
 
+                // An axis of a period shows it as it is cut: only the densities are fitted, and those are fitted here
+                const bool snap_y = fit_subplot[i];
                 if (fit_subplot[i]) {
-                    // An axis of a period shows it as it is cut: only the densities are fitted
-                    if (axis_view) ImPlot::SetNextAxisToFit(ImAxis_Y1);
-                    else           ImPlot::SetNextAxesToFit();
+                    if (!axis_view) ImPlot::SetNextAxisToFit(ImAxis_X1);
                     fit_subplot[i] = false;
                 }
 
@@ -5040,8 +5253,8 @@ static void draw_distribution_window(ApplicationState* data) {
                     for (int j = 0; j < sp.count; ++j) {
                         if (!resolved[j]) continue;
                         if (first_label) {
-                            str_copy_to_char_buf(x_label, sizeof(x_label), str_from_cstr(views[j].x_unit_str));
-                            str_copy_to_char_buf(y_label, sizeof(y_label), str_from_cstr(views[j].y_unit_str));
+                            md_str_copy_to_char_buf(x_label, sizeof(x_label), md_str_from_cstr(views[j].x_unit_str));
+                            md_str_copy_to_char_buf(y_label, sizeof(y_label), md_str_from_cstr(views[j].y_unit_str));
                             first_label = false;
                         } else {
                             if (strcmp(x_label, views[j].x_unit_str) != 0) x_label[0] = '\0';
@@ -5055,6 +5268,13 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
                     }
                     ImPlot::SetupAxis(ImAxis_Y1, y_label, axis_flags_y);
+                    {
+                        double y_lo = 0.0, y_hi = 0.0;
+                        const bool drawn = distribution_y_extent(&y_lo, &y_hi, sp, views, resolved);
+                        DistributionYRange& yr = y_range[i];
+                        distribution_y_update(&yr, y_lo, y_hi, drawn, snap_y, dragging, released);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, yr.lo, yr.hi, ImPlotCond_Always);
+                    }
                     ImPlot::SetupFinish();
 
                     if (axis_view && periodic_axis_popup(ImAxis_X1, axis_view)) {
@@ -5081,7 +5301,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     char hovered_label[192] = "";
 
                     if (ImPlot::IsPlotHovered()) {
-                        script_set_hovered_property(data, STR_LIT(""));
+                        script_set_hovered_property(data, MD_STR_LIT(""));
 
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
                         const ImVec2 mouse_coord = ImPlot::PlotToPixels(mouse_pos);
@@ -5103,16 +5323,16 @@ static void draw_distribution_window(ApplicationState* data) {
                             const int nb = draw_count[j];
                             if (nb <= 0) continue;
                             const double x = (mouse_pos.x - v.x_min) / series_histogram_bin_width(v) - 0.5 - (double)draw_u0[j];
-                            const int xn = CLAMP((int)floor(x + 0.5), 0, nb - 1);
+                            const int xn = MD_CLAMP((int)floor(x + 0.5), 0, nb - 1);
                             const int xf = (int)floor(x);
                             const int xi[4] = {
-                                CLAMP(xf - 1, 0, nb - 1),
-                                CLAMP(xf,     0, nb - 1),
-                                CLAMP(xf + 1, 0, nb - 1),
-                                CLAMP(xf + 2, 0, nb - 1),
+                                MD_CLAMP(xf - 1, 0, nb - 1),
+                                MD_CLAMP(xf,     0, nb - 1),
+                                MD_CLAMP(xf + 1, 0, nb - 1),
+                                MD_CLAMP(xf + 2, 0, nb - 1),
                             };
 
-                            const int dim = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            const int dim = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             for (int k = 0; k < dim; ++k) {
                                 if (v.num_periods > 0 ? !v.periods[k].valid : (dim > 1 && !s.population_mask.test(k))) continue;
                                 HistogramGetterPayload payload = { &v, k, draw_u0[j] };
@@ -5129,7 +5349,7 @@ static void draw_distribution_window(ApplicationState* data) {
                                         const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(top.x + half_width, top.y));
                                         const ImVec2 ll = ImMin(p0, p1);
                                         const ImVec2 ur = ImMax(p0, p1);
-                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - ImClamp(mouse_coord, ll, ur))));
+                                        d = MD_MIN(d, sqrt(ImLengthSqr(mouse_coord - ImClamp(mouse_coord, ll, ur))));
                                     }
                                     d += area_dist + layer_dist;
                                 } else if (s.plot_type == PlotType_Area) {
@@ -5137,15 +5357,15 @@ static void draw_distribution_window(ApplicationState* data) {
                                         const ImVec2 a = ImPlot::PlotToPixels(histogram_getter(xi[l], &payload));
                                         const ImVec2 b = ImPlot::PlotToPixels(histogram_getter(xi[l + 1], &payload));
                                         const ImVec2 z = ImPlot::PlotToPixels(histogram_getter_zero(xi[l], &payload));
-                                        const float x_min = MIN(a.x, b.x);
-                                        const float x_max = MAX(a.x, b.x);
-                                        const float t = (x_max > x_min) ? CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
+                                        const float x_min = MD_MIN(a.x, b.x);
+                                        const float x_max = MD_MAX(a.x, b.x);
+                                        const float t = (x_max > x_min) ? MD_CLAMP((mouse_coord.x - x_min) / (x_max - x_min), 0.0f, 1.0f) : 0.0f;
                                         const float y_top = lerp(a.y, b.y, t);
                                         const ImVec2 p = {
-                                            CLAMP(mouse_coord.x, x_min, x_max),
-                                            CLAMP(mouse_coord.y, MIN(y_top, z.y), MAX(y_top, z.y))
+                                            MD_CLAMP(mouse_coord.x, x_min, x_max),
+                                            MD_CLAMP(mouse_coord.y, MD_MIN(y_top, z.y), MD_MAX(y_top, z.y))
                                         };
-                                        d = MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
+                                        d = MD_MIN(d, sqrt(ImLengthSqr(mouse_coord - p)));
                                     }
                                     d += area_dist + layer_dist;
                                 } else {
@@ -5156,8 +5376,8 @@ static void draw_distribution_window(ApplicationState* data) {
                                         ImPlot::PlotToPixels(histogram_getter(xi[3], &payload)),
                                     };
                                     d = distance_to_linesegment(p[0], p[1], mouse_coord);
-                                    d = MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
-                                    d = MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
+                                    d = MD_MIN(distance_to_linesegment(p[1], p[2], mouse_coord), d);
+                                    d = MD_MIN(distance_to_linesegment(p[2], p[3], mouse_coord), d);
                                     d += layer_dist;
                                 }
 
@@ -5174,9 +5394,9 @@ static void draw_distribution_window(ApplicationState* data) {
                                     if (v.num_periods > 0) {
                                         snprintf(hovered_label, sizeof(hovered_label), "%s, %s: %.4g at %.4g %s", v.label, v.periods[k].name, pt.y, pt.x, v.x_unit_str);
                                     } else if (dim > 1) {
-                                        const str_t member = series_member_label(data, s.key, k);
-                                        if (!str_empty(member)) {
-                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" STR_FMT "): %.4g at %.4g %s", v.label, k + 1, STR_ARG(member), pt.y, pt.x, v.x_unit_str);
+                                        const md_str_t member = series_member_label(data, s.key, k);
+                                        if (!md_str_empty(member)) {
+                                            snprintf(hovered_label, sizeof(hovered_label), "%s[%i] (" MD_STR_FMT "): %.4g at %.4g %s", v.label, k + 1, MD_STR_ARG(member), pt.y, pt.x, v.x_unit_str);
                                         } else {
                                             snprintf(hovered_label, sizeof(hovered_label), "%s[%i]: %.4g at %.4g %s", v.label, k + 1, pt.y, pt.x, v.x_unit_str);
                                         }
@@ -5191,8 +5411,12 @@ static void draw_distribution_window(ApplicationState* data) {
                             const SeriesHistogramView& v = views[hovered_idx];
                             // A period is not a member of a population: the property as a whole is what is shown
                             const int member = v.num_periods > 0 ? -1 : hovered_pop_idx;
+                            if (v.script_ident[0] == '\0' && sp.series[hovered_idx].key.source == SeriesSource_System) {
+                                // The bars of an energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
+                            }
                             if (v.script_ident[0] != '\0') {
-                                script_set_hovered_property(data, str_from_cstr(v.script_ident), member);
+                                script_set_hovered_property(data, md_str_from_cstr(v.script_ident), member);
                                 script_visualize_ref(data, v.vis_ref, member, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
                             }
                             if (v.num_periods > 0 && hovered_bin >= 0) {
@@ -5223,7 +5447,10 @@ static void draw_distribution_window(ApplicationState* data) {
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
                                 script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
-                                script_set_hovered_property(data, str_from_cstr(v.script_ident));
+                                script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
+                            } else if (s.key.source == SeriesSource_System) {
+                                // An energy term of groups: the groups
+                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to show for '%s' right now", s.key.path);
@@ -5253,10 +5480,12 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (s.plot_type == PlotType_Bars) {
                                 ImGui::SliderFloat("Bar Width", &s.bar_width, 0.01f, 1.0f, "%.3f");
+                            } else if (s.plot_type == PlotType_Line) {
+                                ImGui::SliderFloat("Line Width", &s.line_weight, PLOT_LINE_WEIGHT_MIN, PLOT_LINE_WEIGHT_MAX, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
                             }
 
                             // Powers of two: a script distribution only divides into those
-                            int bins_exp = (int)log2((double)MAX(s.num_bins, 2));
+                            int bins_exp = (int)log2((double)MD_MAX(s.num_bins, 2));
                             char bins_fmt[32];
                             snprintf(bins_fmt, sizeof(bins_fmt), "%d", 1 << bins_exp);
                             if (ImGui::SliderInt("Num Bins", &bins_exp, 5, 10, bins_fmt)) {
@@ -5274,15 +5503,33 @@ static void draw_distribution_window(ApplicationState* data) {
                                 bool smooth = s.smoothing > 0.0f;
                                 if (ImGui::Checkbox("Smooth", &smooth)) {
                                     s.smoothing = smooth ? 1.0f : 0.0f;
+                                    fit_subplot[i] = true;
                                 }
                                 ImGui::SetItemTooltip("A kernel density estimate rather than the histogram: a Gaussian about every value, as\n"
-                                                      "wide as Silverman's rule of thumb makes it%s",
+                                                      "wide as Silverman's rule of thumb makes it over every frame of the property%s.\n"
+                                                      "The same over every period, so that their curves compare. Near the ends of the\n"
+                                                      "range, divided by the part of the Gaussian within it.",
                                                       series_periodic_valid(v.periodic) ? ", wrapped around the period" : "");
                                 if (smooth) {
                                     ImGui::SameLine();
                                     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
                                     ImGui::SliderFloat("Bandwidth", &s.smoothing, 0.25f, 4.0f, "%.2fx", ImGuiSliderFlags_Logarithmic);
                                     ImGui::SetItemTooltip("Of Silverman's rule of thumb, which oversmooths what has several peaks:\nless than 1 to see them apart");
+                                    // What to report beside a figure of it
+                                    if (resolved[j] && v.bandwidth_max > 0.0) {
+                                        const char* unit = v.x_unit_str;
+                                        if (v.bandwidth_max <= v.bandwidth_min * 1.0005) {
+                                            ImGui::TextDisabled("Gaussian kernel, standard deviation %.3g %s", v.bandwidth_max, unit);
+                                        } else {
+                                            ImGui::TextDisabled("Gaussian kernel, standard deviation %.3g to %.3g %s (by member)", v.bandwidth_min, v.bandwidth_max, unit);
+                                        }
+                                        // gaussian_smooth leaves what is narrower than a quarter of a bin as it is
+                                        const double quarter = 0.25 * series_histogram_bin_width(v);
+                                        if (v.bandwidth_min < quarter) {
+                                            ImGui::SameLine();
+                                            ImGui::TextDisabled(v.bandwidth_max < quarter ? "(under a quarter bin: not smoothed)" : "(some under a quarter bin: not smoothed)");
+                                        }
+                                    }
                                 }
                             }
 
@@ -5301,7 +5548,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         if (!resolved[j] || v.num_bins <= 0) {
                             ImPlot::PlotDummy(v.plot_id);
                         } else {
-                            const int population_size = CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
+                            const int population_size = MD_CLAMP(v.dim, 1, PLOT_MAX_POPULATION);
                             auto plot = [&](int k) {
                                 // A period in its own colour, so that it reads with the timeline
                                 ImVec4 color = v.num_periods > 0 && v.periods[k].own_color ? v.periods[k].color : plot_series_member_color(s, k, population_size);
@@ -5310,14 +5557,14 @@ static void draw_distribution_window(ApplicationState* data) {
                                     color.w *= 0.35f;
                                 }
                                 float  fill_alpha = 1.0f;
-                                float  weight = 1.0f;
+                                float  weight = s.line_weight;
                                 if (hovered_idx == j) {
                                     if (hovered_pop_idx == -1 || hovered_pop_idx == k) {
                                         color = plot_highlight(color);
                                         fill_alpha = 1.25f;
                                     }
                                     if (hovered_pop_idx == k) {
-                                        weight = 2.0f;
+                                        weight *= 2.0f;
                                     }
                                 }
 
@@ -5357,7 +5604,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         if (preview_range && v.script_ident[0] != '\0' && !plot_series_has_period(s, preview_id)) {
                             SeriesHistogramView pv;
                             if (series_resolve_histogram_periods(&pv, data, s.key, s.num_bins, &preview_id, 1, s.smoothing) && pv.num_bins > 0 && pv.periods[0].valid) {
-                                const vec4_t rc = preview_range->color;
+                                const md_float4_t rc = preview_range->color;
                                 long long pu0 = 0;
                                 int pcount = 0;
                                 draw_range(&pu0, &pcount, pv, pviews[j]);
@@ -5375,7 +5622,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     // A period pulled out of the timeline, dropped on a legend entry: that series over it too
                     if (ImPlot::BeginDragDropTargetLegend()) {
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
-                            ASSERT(payload->DataSize == sizeof(uint32_t));
+                            MD_ASSERT(payload->DataSize == sizeof(uint32_t));
                             const uint32_t id = *(const uint32_t*)payload->Data;
                             for (int j = 0; j < sp.count; ++j) {
                                 if (ImPlot::IsLegendEntryHovered(views[j].plot_id) && views[j].script_ident[0] != '\0') {
@@ -5388,7 +5635,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                     if (ImPlot::BeginDragDropTargetPlot()) {
                         if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(DISTRIBUTION_SERIES_DND)) {
-                            ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
+                            MD_ASSERT(payload->DataSize == sizeof(SeriesDragPayload));
                             const SeriesDragPayload* dnd = (const SeriesDragPayload*)(payload->Data);
                             if (dnd->src_subplot >= 0 && dnd->src_subplot < PLOT_MAX_SUBPLOTS) {
                                 plot_move_series(data, data->distributions.subplots[dnd->src_subplot], sp, dnd->key);
@@ -5398,7 +5645,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             fit_subplot[i] = true;
                         } else if (const ImGuiPayload* range_payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
                             // A period pulled out of the timeline: every script series here over it too
-                            ASSERT(range_payload->DataSize == sizeof(uint32_t));
+                            MD_ASSERT(range_payload->DataSize == sizeof(uint32_t));
                             const uint32_t id = *(const uint32_t*)range_payload->Data;
                             for (int j = 0; j < sp.count; ++j) {
                                 if (views[j].script_ident[0] != '\0') {
@@ -5408,7 +5655,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         } else if (const ImGuiPayload* tl_payload = ImGui::AcceptDragDropPayload(TIMELINE_SERIES_DND)) {
                             // Something plotted over time, dropped here: the distribution of its
                             // values, whichever view of them (a mean, a spread) was dragged
-                            ASSERT(tl_payload->DataSize == sizeof(SeriesDragPayload));
+                            MD_ASSERT(tl_payload->DataSize == sizeof(SeriesDragPayload));
                             SeriesKey key = ((const SeriesDragPayload*)tl_payload->Data)->key;
                             key.variant = SeriesVariant_Values;
                             plot_add_series(data, sp, key);
@@ -5473,14 +5720,14 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
 }
 
 // The profiler's times (profiler::write_csv) as a CSV file
-static void profiler_export_csv(const ApplicationState* state, str_t path) {
+static void profiler_export_csv(const ApplicationState* state, md_str_t path) {
     md_file_t file = {};
     if (!md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        VIAMD_LOG_ERROR("Failed to open '" STR_FMT "' to write the profiler's times", STR_ARG(path));
+        VIAMD_LOG_ERROR("Failed to open '" MD_STR_FMT "' to write the profiler's times", MD_STR_ARG(path));
         return;
     }
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     md_str_writer_t info = md_str_writer_create(md_temp_allocator(temp));
     profiler_export_info(&info, state);
 
@@ -5489,9 +5736,9 @@ static void profiler_export_csv(const ApplicationState* state, str_t path) {
     const bool ok = md_file_writer_close(&fw);
     md_file_close(&file);
     if (ok) {
-        VIAMD_LOG_INFO("Exported the profiler's times to '" STR_FMT "'", STR_ARG(path));
+        VIAMD_LOG_INFO("Exported the profiler's times to '" MD_STR_FMT "'", MD_STR_ARG(path));
     } else {
-        VIAMD_LOG_ERROR("Failed to write the profiler's times to '" STR_FMT "'", STR_ARG(path));
+        VIAMD_LOG_ERROR("Failed to write the profiler's times to '" MD_STR_FMT "'", MD_STR_ARG(path));
     }
 }
 
@@ -5502,7 +5749,7 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextDisabled("Per frame, averaged over 30 frames. GPU: the work a section issued; CPU: from its start to its "
                             "end. The wait for vsync is outside the frame.");
-        const int made = (int)popcnt64(data->render.history);
+        const int made = (int)md_popcnt64(data->render.history);
         ImGui::TextDisabled("The scene was made in %d of the last 64 frames%s.", made,
                             data->settings.lazy_rendering ? "; shown again as it was in the others" : " (lazy rendering is off)");
         ImGui::PopTextWrapPos();
@@ -5511,8 +5758,8 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::BeginDisabled(profiler::frame_cpu_ms() <= 0.0f);
         if (ImGui::Button("Export...")) {
             char path_buf[2048] = {};
-            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("csv"))) {
-                profiler_export_csv(data, str_from_cstr(path_buf));
+            if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("csv"))) {
+                profiler_export_csv(data, md_str_from_cstr(path_buf));
             }
         }
         ImGui::SetItemTooltip("The times as CSV, with the renderer and the sizes they were measured at");
@@ -5539,17 +5786,16 @@ static void draw_profiler_window(ApplicationState* data) {
 }
 
 static void draw_debug_window(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Debug", &data->show_debug_window)) {       
-        task_system::ID tasks[256]; 
-        size_t num_tasks = task_system::pool_running_tasks(tasks, ARRAY_SIZE(tasks));
-        if (num_tasks > 0) {
-            ImGui::Text("Running Pool Tasks:");
-            for (size_t i = 0; i < num_tasks; ++i) {
-                str_t lbl = task_system::task_label(tasks[i]);
-                ImGui::Text("[%i]: %.*s", (int)i, (int)lbl.len, lbl.ptr);
+        task_system::ActivityInfo activities[64];
+        const size_t num_activities = task_system::activity_list(activities, MD_COUNTOF(activities));
+        if (num_activities > 0) {
+            ImGui::Text("Running Jobs:");
+            for (size_t i = 0; i < num_activities; ++i) {
+                ImGui::Text("[%i]: %s", (int)i, activities[i].label);
             }
         }
 
@@ -5561,7 +5807,7 @@ static void draw_debug_window(ApplicationState* data) {
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
 
-        mat4_t P = data->view.param.matrix.curr.proj;
+        md_float4x4_t P = data->view.param.matrix.curr.proj;
         ImGui::Text("proj_matrix:");
         ImGui::Text("[%g %g %g %g]", P.col[0].x, P.col[0].y, P.col[0].z, P.col[0].w);
         ImGui::Text("[%g %g %g %g]", P.col[1].x, P.col[1].y, P.col[1].z, P.col[1].w);
@@ -5574,10 +5820,10 @@ static void draw_debug_window(ApplicationState* data) {
 // Opens the script reference at topic (a procedure name, alias or heading anchor). Anything else is searched for,
 // and an empty topic puts the focus in the search box (which always takes the focus). Without take_focus the keyboard
 // focus stays where it is, so lookups from the script editor keep its caret.
-static void open_script_reference(ApplicationState* state, str_t topic, bool take_focus) {
-    ASSERT(state);
+static void open_script_reference(ApplicationState* state, md_str_t topic, bool take_focus) {
+    MD_ASSERT(state);
     script_reference::set_language(state->script.language);     // the reference of what the script is written in
-    if (str_empty(topic)) {
+    if (md_str_empty(topic)) {
         script_reference::focus_search();
         take_focus = true;
     } else if (!script_reference::show(topic)) {
@@ -5588,10 +5834,10 @@ static void open_script_reference(ApplicationState* state, str_t topic, bool tak
 }
 
 static void draw_script_reference_window(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
     script_reference::set_language(state->script.language);
     const script_reference::Action action = script_reference::draw_window(&state->show_script_reference_window);
-    if (!str_empty(action.insert_code)) {
+    if (!md_str_empty(action.insert_code)) {
         // Examples go in as whole lines at the cursor of the script editor
         script_editor::insert_lines_at_cursor(state->editor, action.insert_code);
         state->show_script_window = true;
@@ -5602,9 +5848,9 @@ static void draw_script_reference_window(ApplicationState* state) {
 // of the system dragged as a series (from the Attributes or System window, a plot's legend, ...) goes in as the
 // expression that reads it, attr("edr/potential"), text for the script as it is.
 static bool script_drop_text(char* buf, size_t cap, const ApplicationState* state, const ImGuiPayload* payload) {
-    ASSERT(buf && cap > 0);
-    ASSERT(state);
-    ASSERT(payload);
+    MD_ASSERT(buf && cap > 0);
+    MD_ASSERT(state);
+    MD_ASSERT(payload);
     buf[0] = '\0';
 
     if (payload->IsDataType(SCRIPT_TEXT_DND)) {
@@ -5620,7 +5866,7 @@ static bool script_drop_text(char* buf, size_t cap, const ApplicationState* stat
         // The values themselves: a summary of them (mean, extent) is not what attr() reads
         const SeriesKey& key = ((const SeriesDragPayload*)payload->Data)->key;
         if (key.source != SeriesSource_System || key.variant != SeriesVariant_Values) return false;
-        const str_t path = str_from_cstr(key.path);
+        const md_str_t path = md_str_from_cstr(key.path);
         const md_attributes_t* table = series_table(state, SeriesSource_System, path);
         const md_attribute_t* attr = table ? md_attributes_find(table, path) : nullptr;
         return attr && script_editor::attr_expression(buf, cap, state->script.language, table, attr);
@@ -5630,7 +5876,7 @@ static bool script_drop_text(char* buf, size_t cap, const ApplicationState* stat
 }
 
 static void draw_script_editor_window(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Script Editor", &state->show_script_window, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
@@ -5640,16 +5886,16 @@ static void draw_script_editor_window(ApplicationState* state) {
             if (ImGui::BeginMenu("File")) {
                 char path_buf[1024] = "";
                 if (ImGui::MenuItem("Load")) {
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, STR_LIT("txt"))) {
-                        str_t txt = load_textfile(str_from_cstr(path_buf), frame_alloc);
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Open, MD_STR_LIT("txt"))) {
+                        md_str_t txt = md_load_textfile(md_str_from_cstr(path_buf), frame_alloc);
                         std::string str(txt.ptr, txt.len);
                         state->editor.SetText(str);
                     }
                 }
                 if (ImGui::MenuItem("Save")) {
                     auto textToSave = state->editor.GetText();
-                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, STR_LIT("txt"))) {
-                        str_t path = str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
+                    if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, MD_STR_LIT("txt"))) {
+                        md_str_t path = md_str_t{path_buf, strnlen(path_buf, sizeof(path_buf))};
                         md_file_t file = {0};
                         if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                             md_file_write(file, textToSave.c_str(), textToSave.length());
@@ -5772,7 +6018,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 const script::Plan& p = plan.props[i];
                 ScriptGutterMark mark = { (int)lo, p.status, 0.0f, "", "", 0 };
-                str_copy_to_char_buf(mark.ident, sizeof(mark.ident), plan.names[i]);
+                md_str_copy_to_char_buf(mark.ident, sizeof(mark.ident), plan.names[i]);
                 mark.kinds = (uint32_t)script::output_flags(state->script.ir, plan.names[i]);
                 const uint32_t needed = p.num_frames + p.num_pending;
                 mark.done = p.num_pending == 0 ? 1.0f : needed ? (float)p.num_frames / (float)needed : 0.0f;
@@ -5821,7 +6067,7 @@ static void draw_script_editor_window(ApplicationState* state) {
             const ImGuiPayload* payload = ImGui::GetDragDropPayload();
             char text[512];
             if (payload && script_drop_text(text, sizeof(text), state, payload)) {
-                script_editor::accept_drop(state->editor, payload->DataType, str_from_cstr(text));
+                script_editor::accept_drop(state->editor, payload->DataType, md_str_from_cstr(text));
             }
             ImGui::EndDragDropTarget();
         }
@@ -5859,13 +6105,13 @@ static void draw_script_editor_window(ApplicationState* state) {
             }
             // What is shown which the script no longer has
             if (state->script.eval_ir && !plan.same) {
-                const str_t* evaluated = script::output_names(state->script.eval_ir);
+                const md_str_t* evaluated = script::output_names(state->script.eval_ir);
                 for (size_t j = 0; j < script::num_outputs(state->script.eval_ir); ++j) {
                     bool kept = false;
                     for (size_t i = 0; i < plan.num_props && !kept; ++i) {
-                        kept = str_eq(plan.names[i], evaluated[j]) || (plan.props[i].status == script::Status::Held && str_eq(plan.props[i].from, evaluated[j]));
+                        kept = md_str_eq(plan.names[i], evaluated[j]) || (plan.props[i].status == script::Status::Held && md_str_eq(plan.props[i].from, evaluated[j]));
                     }
-                    if (!kept) ImGui::TextDisabled(STR_FMT ": no longer in the script", STR_ARG(evaluated[j]));
+                    if (!kept) ImGui::TextDisabled(MD_STR_FMT ": no longer in the script", MD_STR_ARG(evaluated[j]));
                 }
             }
             ImGui::EndTooltip();
@@ -5893,12 +6139,12 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
-                    script_set_hovered_property(state, STR_LIT(""));
+                    script_set_hovered_property(state, MD_STR_LIT(""));
                     // The markers come from the IR last compiled. One which did not compile is gone, and its
                     // markers resolve in nothing
                     const script::Ref ref = hovered_marker->vis_ref;
                     if (const script::Program* ir = script_ir_of(state, ref)) {
-                        str_t ref_ident = script::ref_name(ir, ref);
+                        md_str_t ref_ident = script::ref_name(ir, ref);
                         int ref_dim  = script::ref_dim(ir, ref);
 
                         if (ref_dim > 1) {
@@ -5907,7 +6153,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                                 delta *= 10;
                             }
                             state->script.sub_idx += delta;
-                            state->script.sub_idx = CLAMP(state->script.sub_idx, -1, (int)ref_dim - 1);
+                            state->script.sub_idx = MD_CLAMP(state->script.sub_idx, -1, (int)ref_dim - 1);
                         }
 
                         script_visualize_ref(state, ref, state->script.sub_idx, 0);
@@ -5924,18 +6170,18 @@ static void draw_script_editor_window(ApplicationState* state) {
             }
 
             // After the visualization is set: the value is computed with it
-            if (!str_empty(hovered_marker->text)) {
+            if (!md_str_empty(hovered_marker->text)) {
                 ImGui::BeginTooltip();
-                ImGui::Text(STR_FMT, STR_ARG(hovered_marker->text));
+                ImGui::Text(MD_STR_FMT, MD_STR_ARG(hovered_marker->text));
                 if (hovered_marker->type == script_editor::MarkerType_Visualization) {
-                    const str_t value = script_vis_value_text(state);
+                    const md_str_t value = script_vis_value_text(state);
                     // A value known since the compilation is in the text already, unless it was too long to keep there
-                    const bool dynamic = str_find_str(NULL, hovered_marker->text, STR_LIT("[d]"));
-                    const bool has_value = str_find_char(NULL, hovered_marker->text, '\n');
-                    if (!str_empty(value) && (dynamic || !has_value || state->script.sub_idx != -1)) {
+                    const bool dynamic = md_str_contains_str(hovered_marker->text, MD_STR_LIT("[d]"));
+                    const bool has_value = md_str_contains_char(hovered_marker->text, '\n');
+                    if (!md_str_empty(value) && (dynamic || !has_value || state->script.sub_idx != -1)) {
                         ImGui::Separator();
                         if (dynamic) ImGui::TextDisabled("At the frame shown");
-                        ImGui::Text(STR_FMT, STR_ARG(value));
+                        ImGui::Text(MD_STR_FMT, MD_STR_ARG(value));
                     }
                 }
                 if (state->script.sub_idx != -1) {
@@ -5950,13 +6196,13 @@ static void draw_script_editor_window(ApplicationState* state) {
     ImGui::End();
 }
 
-static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename) {
-    ASSERT(column_data);
-    ASSERT(column_labels);
+static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename) {
+    MD_ASSERT(column_data);
+    MD_ASSERT(column_labels);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
-        VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' to write data.", STR_ARG(filename));
+        VIAMD_LOG_ERROR("Failed to open file '" MD_STR_FMT "' to write data.", MD_STR_ARG(filename));
         return false;
     }    
 
@@ -5997,9 +6243,9 @@ static bool export_xvg(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, str_t filename) {
-    ASSERT(column_data);
-    ASSERT(column_labels);
+static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename) {
+    MD_ASSERT(column_data);
+    MD_ASSERT(column_labels);
 
     md_file_t file = {0};
     if (!md_file_open(&file, filename, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
@@ -6024,7 +6270,7 @@ static bool export_csv(const float* column_data[], const char* column_labels[], 
     return true;
 }
 
-static bool export_cube(const ApplicationState& data, const SeriesVolumeView& volume, str_t filename) {
+static bool export_cube(const ApplicationState& data, const SeriesVolumeView& volume, md_str_t filename) {
     // @NOTE: First we need to extract some meta data for the cube format, we need the atom indices/bits for any SDF
     // And the origin + extent of the volume in spatial coordinates (Ångström)
 
@@ -6041,7 +6287,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
     }
 
 	md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-	defer { md_temp_end(temp); };
+	MD_DEFER { md_temp_end(temp); };
 
     const md_system_t& sys = data.mold.sys;
     // Frame 0, with room for its coordinates: an extract fills what has storage and allocates none
@@ -6063,7 +6309,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             .sys = &data.mold.sys,
             .state = volume.placed ? &state : &data.mold.state,
             .eval = data.script.eval,
-            .run = str_from_cstr(data.run.path),
+            .run = md_str_from_cstr(data.run.path),
         };
         // The structures of the volume exported: of an array, those of its member
         result = script::draw_ref(&vis, vis_ref, (int)volume.member, ctx, script::DRAW_ATOMS | script::DRAW_SDF);
@@ -6092,20 +6338,20 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             const md_bitset_t* bf = md_array_size(vis.sdf.structures) > 0 ? &vis.sdf.structures[0] : nullptr;
             const int num_atoms = bf ? (int)md_bitset_count(*bf) : 0;
             // A cube's origin is its first point, the centre of voxel [0][0][0]; the script's is that voxel's corner
-            vec3_t first = volume.origin;
-            for (int a = 0; a < 3; ++a) first = vec3_add(first, vec3_mul1(volume.basis[a], 0.5f));
+            md_float3_t first = volume.origin;
+            for (int a = 0; a < 3; ++a) first = md_float3_add(first, md_float3_mul1(volume.basis[a], 0.5f));
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", num_atoms, first.x * to_bohr, first.y * to_bohr, first.z * to_bohr);
             for (int a = 0; a < 3; ++a) {
-                const vec3_t b = volume.basis[a];
+                const md_float3_t b = volume.basis[a];
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[a], b.x * to_bohr, b.y * to_bohr, b.z * to_bohr);
             }
             if (bf) {
                 const float scl = (float)to_bohr;
-                const mat4_t M = mat4_mul(mat4_scale(scl, scl, scl), vis.sdf.matrices[0]);
+                const md_float4x4_t M = md_float4x4_mul(md_float4x4_scale(scl, scl, scl), vis.sdf.matrices[0]);
                 md_bitset_iter_t it = md_bitset_iter(*bf);
                 while (md_bitset_iter_next(&it)) {
                     const size_t i = it.idx;
-                    const vec3_t coord = mat4_mul_vec3(M, md_state_coord(&state, i), 1.0f);
+                    const md_float3_t coord = md_float4x4_mul_float3(M, md_state_coord(&state, i), 1.0f);
                     const int anum = md_atom_atomic_number(&sys.atom, i);
                     md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, (float)anum, coord.x, coord.y, coord.z);
                 }
@@ -6120,7 +6366,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             const float angstrom_to_bohr = (float)(1.0 / 0.529177210903);
 
             // transformation matrix from world to volume
-            mat4_t M = vis.sdf.matrices[0];
+            md_float4x4_t M = vis.sdf.matrices[0];
             const md_bitset_t* bf = &vis.sdf.structures[0];
             const int num_atoms = (int)md_bitset_count(*bf);
             const int vol_dim[3] = {(int)volume.dim[0], (int)volume.dim[1], (int)volume.dim[2]};
@@ -6140,13 +6386,13 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
             md_file_printf(file, "%5i %12.6f %12.6f %12.6f\n", vol_dim[2], 0.0, 0.0, voxel_ext[2]);
 
             const float scl = angstrom_to_bohr;
-            M = mat4_mul(mat4_scale(scl, scl, scl), M);
+            M = md_float4x4_mul(md_float4x4_scale(scl, scl, scl), M);
 
             md_bitset_iter_t it = md_bitset_iter(*bf);
             while (md_bitset_iter_next(&it)) {
                 size_t i = it.idx;
-                vec3_t coord = md_state_coord(&state, i);
-                coord = mat4_mul_vec3(M, coord, 1.0f);
+                md_float3_t coord = md_state_coord(&state, i);
+                coord = md_float4x4_mul_float3(M, coord, 1.0f);
                 int anum     = md_atom_atomic_number(&sys.atom, i);
                 float charge = (float)anum;
                 md_file_printf(file, "%5i %12.6f %12.6f %12.6f %12.6f\n", anum, charge, coord.x, coord.y, coord.z);
@@ -6178,23 +6424,23 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
     return true;
 }
 
-#define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
+#define APPEND_BUF(buf, len, fmt, ...) (len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), fmt, ##__VA_ARGS__) + 1)
 
 static void draw_property_export_window(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     struct ExportFormat {
-        str_t lbl;
-        str_t ext;
+        md_str_t lbl;
+        md_str_t ext;
     };
 
     ExportFormat table_formats[] {
-        {STR_INIT("XVG"), STR_INIT("xvg")},
-        {STR_INIT("CSV"), STR_INIT("csv")}
+        {MD_STR_INIT("XVG"), MD_STR_INIT("xvg")},
+        {MD_STR_INIT("CSV"), MD_STR_INIT("csv")}
     };
 
     ExportFormat volume_formats[] {
-        {STR_INIT("Gaussian Cube"), STR_INIT("cube")},
+        {MD_STR_INIT("Gaussian Cube"), MD_STR_INIT("cube")},
     };
 
     enum ExportKind {
@@ -6211,14 +6457,14 @@ static void draw_property_export_window(ApplicationState* data) {
         static int volume_member = 0;   // of an array of volumes; -1 for each of them, in a file of its own
         static int bins_exp      = 7;   // 128 bins
 
-        if (task_system::task_is_running(data->tasks.evaluate)) {
+        if (data->tasks.evaluate.running()) {
             ImGui::Text("The properties are currently being evaluated, please wait...");
             ImGui::End();
             return;
         }
 
         md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
         md_allocator_i* alloc = md_temp_allocator(temp);
 
         // What there is to export of the chosen kind: the same series the plots offer
@@ -6249,11 +6495,11 @@ static void draw_property_export_window(ApplicationState* data) {
                 }
             }
             if (kind != ExportKind_Volume) {
-                str_t groups[64];
-                const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), data->system_context), ARRAY_SIZE(groups));
+                md_str_t groups[64];
+                const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data->system_context), MD_COUNTOF(groups));
                 for (size_t g = 0; g < num_groups; ++g) {
                     const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
-                    str_t* paths = md_temp_alloc_array(temp, str_t, num + 1);
+                    md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
                     system_series_members(paths, num, data->system_context, groups[g]);
                     for (size_t i = 0; i < num; ++i) {
                         md_array_push(candidates, series_key(SeriesSource_System, paths[i]), alloc);
@@ -6304,10 +6550,10 @@ static void draw_property_export_window(ApplicationState* data) {
             ImGui::SliderInt("Num Bins", &bins_exp, 5, 10, bins_fmt);
         }
 
-        str_t file_extension = {};
+        md_str_t file_extension = {};
         if (kind == ExportKind_Volume) {
             if (ImGui::BeginCombo("File Format", volume_formats[volume_format].lbl.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(volume_formats); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(volume_formats); ++i) {
                     if (ImGui::Selectable(volume_formats[i].lbl.ptr, volume_format == i)) {
                         volume_format = i;
                     }
@@ -6320,13 +6566,13 @@ static void draw_property_export_window(ApplicationState* data) {
             // own: each volume is about its own reference structures, which go along in the file
             const uint32_t count = selected_valid ? series_volume_count(data, selected) : 0;
             if (count > 1) {
-                const str_t ident = series_script_ident(selected);
-                volume_member = CLAMP(volume_member, -1, (int)count - 1);
+                const md_str_t ident = series_script_ident(selected);
+                volume_member = MD_CLAMP(volume_member, -1, (int)count - 1);
                 char preview[96];
                 if (volume_member < 0) {
                     snprintf(preview, sizeof(preview), "All, one file each");
                 } else {
-                    snprintf(preview, sizeof(preview), STR_FMT "[%d]", STR_ARG(ident), volume_member + 1);
+                    snprintf(preview, sizeof(preview), MD_STR_FMT "[%d]", MD_STR_ARG(ident), volume_member + 1);
                 }
                 if (ImGui::BeginCombo("Volume", preview)) {
                     if (ImGui::Selectable("All, one file each", volume_member < 0)) {
@@ -6337,7 +6583,7 @@ static void draw_property_export_window(ApplicationState* data) {
                     }
                     for (uint32_t m = 0; m < count; ++m) {
                         char item[96];
-                        snprintf(item, sizeof(item), STR_FMT "[%u]", STR_ARG(ident), m + 1);
+                        snprintf(item, sizeof(item), MD_STR_FMT "[%u]", MD_STR_ARG(ident), m + 1);
                         if (ImGui::Selectable(item, volume_member == (int)m)) {
                             volume_member = (int)m;
                         }
@@ -6350,7 +6596,7 @@ static void draw_property_export_window(ApplicationState* data) {
             }
         } else {
             if (ImGui::BeginCombo("File Format", table_formats[table_format].lbl.ptr)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(table_formats); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(table_formats); ++i) {
                     if (ImGui::Selectable(table_formats[i].lbl.ptr, table_format == i)) {
                         table_format = i;
                     }
@@ -6367,7 +6613,7 @@ static void draw_property_export_window(ApplicationState* data) {
 
         char path_buf[1024];
         if (export_clicked && application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, file_extension)) {
-            const str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
+            const md_str_t path = {path_buf, strnlen(path_buf, sizeof(path_buf))};
             char label[96];
             series_label(label, sizeof(label), data, selected);
 
@@ -6375,35 +6621,34 @@ static void draw_property_export_window(ApplicationState* data) {
                 // One volume, or of an array each to a file of its own: 'name.cube' as 'name_1.cube', 'name_2.cube', ...
                 const uint32_t count = series_volume_count(data, selected);
                 const bool each = count > 1 && volume_member < 0;
-                const uint32_t beg = each ? 0 : (uint32_t)MAX(volume_member, 0);
+                const uint32_t beg = each ? 0 : (uint32_t)MD_MAX(volume_member, 0);
                 const uint32_t end = each ? count : beg + 1;
-                str_t stem = path;
-                str_t ext  = file_extension;
-                size_t sep;
-                if (each && extract_ext(&ext, path) && !str_find_char(&sep, ext, '/') && !str_find_char(&sep, ext, '\\')) {
-                    extract_file_path_without_ext(&stem, path);
-                } else {
-                    ext = file_extension;
+                const md_str_t path_ext = md_path_ext(path);
+                md_str_t stem = path;
+                md_str_t ext  = file_extension;
+                if (each && !md_str_empty(path_ext)) {
+                    stem = md_path_without_ext(path);
+                    ext  = path_ext;
                 }
                 for (uint32_t m = beg; m < end; ++m) {
                     SeriesVolumeView view;
-                    const str_t file = each ? str_printf(alloc, STR_FMT "_%u." STR_FMT, STR_ARG(stem), m + 1, STR_ARG(ext)) : path;
+                    const md_str_t file = each ? md_alloc_printf(alloc, MD_STR_FMT "_%u." MD_STR_FMT, MD_STR_ARG(stem), m + 1, MD_STR_ARG(ext)) : path;
                     if (!series_resolve_volume(&view, data, selected, m)) {
                         VIAMD_LOG_ERROR("'%s' has no volume to export", label);
                         break;
                     }
-                    if (!str_eq(file_extension, STR_LIT("cube")) || !export_cube(*data, view, file)) {
+                    if (!md_str_eq(file_extension, MD_STR_LIT("cube")) || !export_cube(*data, view, file)) {
                         break;
                     }
-                    VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", view.label, STR_ARG(file));
+                    VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" MD_STR_FMT "'", view.label, MD_STR_ARG(file));
                 }
             } else {
                 // Columns in the units the plots show them in, so a column and its axis label agree
                 md_array(const float*) column_data   = 0;
-                md_array(str_t)        column_labels = 0;
-                md_array(str_t)        legends       = 0;
-                str_t x_label = {};
-                str_t y_label = str_from_cstr(label);
+                md_array(md_str_t)        column_labels = 0;
+                md_array(md_str_t)        legends       = 0;
+                md_str_t x_label = {};
+                md_str_t y_label = md_str_from_cstr(label);
                 size_t num_rows = 0;
                 bool ok = false;
 
@@ -6415,9 +6660,9 @@ static void draw_property_export_window(ApplicationState* data) {
                         }
                         md_array_push(column_data, col, alloc);
                         if (dim > 1) {
-                            const str_t member = series_member_label(data, selected, k);
-                            const str_t legend = str_empty(member) ? str_printf(alloc, "%s[%i]", label, k + 1)
-                                                                   : str_printf(alloc, "%s[%i] " STR_FMT, label, k + 1, STR_ARG(member));
+                            const md_str_t member = series_member_label(data, selected, k);
+                            const md_str_t legend = md_str_empty(member) ? md_alloc_printf(alloc, "%s[%i]", label, k + 1)
+                                                                   : md_alloc_printf(alloc, "%s[%i] " MD_STR_FMT, label, k + 1, MD_STR_ARG(member));
                             md_array_push(legends, legend, alloc);
                             md_array_push(column_labels, legend, alloc);
                         } else {
@@ -6432,11 +6677,11 @@ static void draw_property_export_window(ApplicationState* data) {
                         num_rows = (size_t)view.num_samples;
                         char time_unit_str[32] = "";
                         md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
-                        x_label = md_unit_is_none(data->timeline.time_unit) ? STR_LIT("Frame") : str_printf(alloc, "Time (%s)", time_unit_str);
-                        if (view.unit_str[0]) y_label = str_printf(alloc, "%s (%s)", label, view.unit_str);
+                        x_label = md_unit_is_none(data->timeline.time_unit) ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
+                        if (view.unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.unit_str);
 
                         float* x = md_temp_alloc_array(temp, float, num_rows);
-                        MEMCPY(x, view.x, num_rows * sizeof(float));
+                        md_memcpy(x, view.x, num_rows * sizeof(float));
                         md_array_push(column_data, x, alloc);
                         md_array_push(column_labels, x_label, alloc);
                         push_columns(view.dim, [&](size_t r, int k) { return (float)series_temporal_point(view, (int)r, k).y; });
@@ -6446,8 +6691,8 @@ static void draw_property_export_window(ApplicationState* data) {
                     SeriesHistogramView view;
                     if (series_resolve_histogram(&view, data, selected, 1 << bins_exp)) {
                         num_rows = (size_t)view.num_bins;
-                        x_label = str_copy(str_from_cstr(view.x_unit_str), alloc);
-                        if (view.y_unit_str[0]) y_label = str_printf(alloc, "%s (%s)", label, view.y_unit_str);
+                        x_label = md_alloc_str(alloc, md_str_from_cstr(view.x_unit_str));
+                        if (view.y_unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.y_unit_str);
 
                         // The centre of each bin, where the plot draws it
                         float* x = md_temp_alloc_array(temp, float, num_rows);
@@ -6464,20 +6709,20 @@ static void draw_property_export_window(ApplicationState* data) {
                 if (!ok) {
                     VIAMD_LOG_ERROR("'%s' has nothing to export right now", label);
                 } else {
-                    str_t out_str = {};
-                    if (str_eq(file_extension, STR_LIT("xvg"))) {
-                        str_t header = md_xvg_format_header(str_from_cstr(label), x_label, y_label, md_array_size(legends), legends, alloc);
+                    md_str_t out_str = {};
+                    if (md_str_eq(file_extension, MD_STR_LIT("xvg"))) {
+                        md_str_t header = md_xvg_format_header(md_str_from_cstr(label), x_label, y_label, md_array_size(legends), legends, alloc);
                         out_str = md_xvg_format(header, md_array_size(column_data), num_rows, column_data, alloc);
-                    } else if (str_eq(file_extension, STR_LIT("csv"))) {
+                    } else if (md_str_eq(file_extension, MD_STR_LIT("csv"))) {
                         out_str = md_csv_write_to_str(column_data, column_labels, md_array_size(column_data), num_rows, alloc);
                     }
                     md_file_t file = {0};
-                    if (!str_empty(out_str) && md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
+                    if (!md_str_empty(out_str) && md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                         md_file_write(file, out_str.ptr, out_str.len);
                         md_file_close(&file);
-                        VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" STR_FMT "'", label, STR_ARG(path));
+                        VIAMD_LOG_SUCCESS("Successfully exported property '%s' to '" MD_STR_FMT "'", label, MD_STR_ARG(path));
                     } else {
-                        VIAMD_LOG_ERROR("Failed to write '" STR_FMT "'", STR_ARG(path));
+                        VIAMD_LOG_ERROR("Failed to write '" MD_STR_FMT "'", MD_STR_ARG(path));
                     }
                 }
             }
@@ -6503,11 +6748,11 @@ static void xyz_write_frame(md_file_t file, const int* atomic_nr, const md_syste
 }
 
 void draw_structure_export_window(ApplicationState* data) {
-    ASSERT(data);
+    MD_ASSERT(data);
 
     if (ImGui::Begin("Structure Export", &data->structure_export.show_window)) {
         md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
-        defer { md_temp_end(temp); };
+        MD_DEFER { md_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
         const md_system_state_t* state = &data->mold.state;
@@ -6533,8 +6778,8 @@ void draw_structure_export_window(ApplicationState* data) {
 
         //ImGui::PushItemWidth(200);
 
-        struct_exp.selected_atom_filter = CLAMP(struct_exp.selected_atom_filter, 0, (int)ARRAY_SIZE(atom_mask_options) - 1);
-        ImGui::Combo("Atoms to Export", &struct_exp.selected_atom_filter, atom_mask_options, (int)ARRAY_SIZE(atom_mask_options));
+        struct_exp.selected_atom_filter = MD_CLAMP(struct_exp.selected_atom_filter, 0, (int)MD_COUNTOF(atom_mask_options) - 1);
+        ImGui::Combo("Atoms to Export", &struct_exp.selected_atom_filter, atom_mask_options, (int)MD_COUNTOF(atom_mask_options));
 
         if (struct_exp.selected_atom_filter == 2) { // Query
             auto& query = struct_exp.query;
@@ -6558,12 +6803,12 @@ void draw_structure_export_window(ApplicationState* data) {
 
         // Every frame, the current one, or those of a timeline period
         const TimelinePeriod* traj_period = timeline_periods_find(&data->timeline.periods, struct_exp.selected_traj_period);
-        struct_exp.selected_traj_filter = CLAMP(struct_exp.selected_traj_filter, 0, 2);
+        struct_exp.selected_traj_filter = MD_CLAMP(struct_exp.selected_traj_filter, 0, 2);
         if (struct_exp.selected_traj_filter == 2 && !traj_period) struct_exp.selected_traj_filter = 0;
         if (traj) {
             const char* preview = struct_exp.selected_traj_filter == 2 ? traj_period->name : frame_mask_options[struct_exp.selected_traj_filter];
             if (ImGui::BeginCombo("Frames to Export", preview)) {
-                for (int i = 0; i < (int)ARRAY_SIZE(frame_mask_options); ++i) {
+                for (int i = 0; i < (int)MD_COUNTOF(frame_mask_options); ++i) {
                     if (ImGui::Selectable(frame_mask_options[i], struct_exp.selected_traj_filter == i)) struct_exp.selected_traj_filter = i;
                 }
                 const TimelinePeriods& rs = data->timeline.periods;
@@ -6582,8 +6827,8 @@ void draw_structure_export_window(ApplicationState* data) {
             }
         }
 
-        struct_exp.selected_file_format = CLAMP(struct_exp.selected_file_format, 0, (int)ARRAY_SIZE(file_formats) - 1);
-        ImGui::Combo("File Format", &struct_exp.selected_file_format, file_formats, (int)ARRAY_SIZE(file_formats));
+        struct_exp.selected_file_format = MD_CLAMP(struct_exp.selected_file_format, 0, (int)MD_COUNTOF(file_formats) - 1);
+        ImGui::Combo("File Format", &struct_exp.selected_file_format, file_formats, (int)MD_COUNTOF(file_formats));
 
         //ImGui::PopItemWidth();
 
@@ -6655,9 +6900,9 @@ void draw_structure_export_window(ApplicationState* data) {
             }
 
             char path_buf[1024] = { 0 };
-            str_t ext = str_from_cstr(file_formats[struct_exp.selected_file_format]);
+            md_str_t ext = md_str_from_cstr(file_formats[struct_exp.selected_file_format]);
             if (application::file_dialog(path_buf, sizeof(path_buf), application::FileDialogFlag_Save, ext)) {
-                str_t path = str_from_cstrn(path_buf, sizeof(path_buf));
+                md_str_t path = md_str_from_cstrn(path_buf, sizeof(path_buf));
                 md_file_t file = {0};
                 if (md_file_open(&file, path, MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE)) {
                     // Write header for file format
@@ -6689,7 +6934,7 @@ void draw_structure_export_window(ApplicationState* data) {
                             }
                         } break;
                         default: {
-                            VIAMD_LOG_ERROR("Unsupported export format: '" STR_FMT "'", STR_ARG(ext));
+                            VIAMD_LOG_ERROR("Unsupported export format: '" MD_STR_FMT "'", MD_STR_ARG(ext));
                         } break;
                     }
 
@@ -6708,9 +6953,9 @@ void draw_structure_export_window(ApplicationState* data) {
                         md_system_state_init(&frame_state, sys->atom.count);
 
                         // Many frames: one context for all of them, so the run's files stay open.
-                        const str_t paths[] = { STR_INIT("atom/position"), STR_INIT("unitcell") };
-                        md_system_extract_t* ex = md_system_extract_begin(sys, str_from_cstr(data->run.path), paths, ARRAY_SIZE(paths), md_get_heap_allocator());
-                        defer { md_system_extract_end(ex); };
+                        const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
+                        md_system_extract_t* ex = md_system_extract_begin(sys, md_str_from_cstr(data->run.path), paths, MD_COUNTOF(paths), md_get_heap_allocator());
+                        MD_DEFER { md_system_extract_end(ex); };
 
                         for (size_t f = 0; f < num_frames; ++f) {
                             int frame_idx = frame_indices[f];
@@ -6740,10 +6985,10 @@ void draw_structure_export_window(ApplicationState* data) {
                         }
                     }
 
-                    VIAMD_LOG_INFO("Successfully exported structure to: '" STR_FMT "'", STR_ARG(path));
+                    VIAMD_LOG_INFO("Successfully exported structure to: '" MD_STR_FMT "'", MD_STR_ARG(path));
                     md_file_close(&file);
                 } else {
-                    VIAMD_LOG_ERROR("Failed to open file '" STR_FMT "' for writing.", STR_ARG(path));
+                    VIAMD_LOG_ERROR("Failed to open file '" MD_STR_FMT "' for writing.", MD_STR_ARG(path));
                 }
             }
         }
@@ -6753,7 +6998,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
 static void update_md_buffers(SystemContext& sc) {
     ApplicationState* data = sc.app;
-    ASSERT(data);
+    MD_ASSERT(data);
     const md_system_t& sys = sc.data.sys;
 	const md_system_state_t& state = sc.data.state;
 
@@ -6772,18 +7017,12 @@ static void update_md_buffers(SystemContext& sc) {
     }
 
     if (sc.data.dirty_gpu_buffers & MolBit_DirtyPosition) {
-        vec3_t pbc_ext = { 0 };
+        md_float3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
         md_gl_mol_set_atom_position(sc.data.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
         if (!(sc.data.dirty_gpu_buffers & MolBit_ClearVelocity)) {
             md_gl_mol_compute_velocity(sc.data.gl_mol, pbc_ext.elem);
         }
-#if EXPERIMENTAL_GFX_API
-        vec3_t aabb_min, aabb_max;
-        md_util_aabb_compute(aabb_min.elem, aabb_max.elem, state.xyz, nullptr, nullptr, state.num_atoms);
-        md_gfx_structure_set_atom_position(sc.data.gfx_structure, state.xyz, (uint32_t)state.num_atoms, 0);
-        md_gfx_structure_set_aabb(sc.data.gfx_structure, &aabb_min, &aabb_max);
-#endif
     }
 
     if (sc.data.dirty_gpu_buffers & MolBit_ClearVelocity) {
@@ -6799,23 +7038,20 @@ static void update_md_buffers(SystemContext& sc) {
 
     if (sc.data.dirty_gpu_buffers & MolBit_DirtyRadius) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
-        defer { md_temp_end(tmp); };
+        MD_DEFER { md_temp_end(tmp); };
 
         float* radii = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
         md_atom_extract_radii(radii, 0, sys.atom.count, &sys.atom);
 
         md_gl_mol_set_atom_radius(sc.data.gl_mol, 0, (uint32_t)sys.atom.count, radii, 0);
-#if EXPERIMENTAL_GFX_API
-        md_gfx_structure_set_atom_radius(sc.data.gfx_structure, 0, (uint32_t)sys.atom.count, sys.atom.radius, 0);
-#endif
     }
 
     if (sc.data.dirty_gpu_buffers & MolBit_DirtyFlags) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
-        defer { md_temp_end(tmp); };
+        MD_DEFER { md_temp_end(tmp); };
 
         uint8_t* flags = (uint8_t*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(uint8_t));
-        MEMSET(flags, 0, sys.atom.count * sizeof(uint8_t));
+        md_memset(flags, 0, sys.atom.count * sizeof(uint8_t));
 
         {
             md_bitset_iter_t it = md_bitmask_iter(&sc.selection.highlight_mask);
@@ -6870,12 +7106,12 @@ static void update_md_buffers(SystemContext& sc) {
         if (delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken))) {
             const size_t count = sys.bond.count + delta->num_formed;
             md_atom_pair_t* pairs = (md_atom_pair_t*)md_vm_arena_push(data->allocator.frame, sizeof(md_atom_pair_t) * count);
-            if (sys.bond.count) MEMCPY(pairs, sys.bond.pairs, sizeof(md_atom_pair_t) * sys.bond.count);
+            if (sys.bond.count) md_memcpy(pairs, sys.bond.pairs, sizeof(md_atom_pair_t) * sys.bond.count);
             md_bitset_iter_t it = md_bitset_iter(delta->broken);
             while (md_bitset_iter_next(&it)) {
                 if (it.idx < sys.bond.count) pairs[it.idx].idx[1] = pairs[it.idx].idx[0];
             }
-            if (delta->num_formed) MEMCPY(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
+            if (delta->num_formed) md_memcpy(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
             md_gl_mol_set_bonds(sc.data.gl_mol, 0, (uint32_t)count, pairs, sizeof(md_atom_pair_t));
         } else {
             md_gl_mol_set_bonds(sc.data.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
@@ -6910,9 +7146,9 @@ static void update_md_buffers(ApplicationState* state) {
     for (size_t i = 0; i < state->num_systems; ++i) update_md_buffers(*state->systems[i]);
 }
 
-void create_screenshot(str_t path) {
+void create_screenshot(md_str_t path) {
     md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
-    defer { md_temp_end(tmp); };
+    MD_DEFER { md_temp_end(tmp); };
 
     int viewport[4] = {};
     int fbo = 0;
@@ -6924,7 +7160,7 @@ void create_screenshot(str_t path) {
 
     size_t bytes = width * height * sizeof(uint32_t);
     uint32_t* rgba = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
-    defer { md_vm_arena_pop(frame_alloc, bytes); };
+    MD_DEFER { md_vm_arena_pop(frame_alloc, bytes); };
 
     GLenum read_buffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK;
 
@@ -6938,20 +7174,19 @@ void create_screenshot(str_t path) {
         // @NOTE: Swap Rows to flip image with respect to y-axis
         const uint32_t row_byte_size = width * sizeof(uint32_t);
         uint32_t* row_t = (uint32_t*)md_alloc(frame_alloc, row_byte_size);
-        defer { md_free(frame_alloc, row_t, row_byte_size); };
+        MD_DEFER { md_free(frame_alloc, row_t, row_byte_size); };
         for (uint32_t i = 0; i < (uint32_t)height / 2; ++i) {
             uint32_t* row_a = rgba + i * width;
             uint32_t* row_b = rgba + (height - 1 - i) * width;
             if (row_a != row_b) {
-                MEMCPY(row_t, row_a, row_byte_size);  // tmp = a;
-                MEMCPY(row_a, row_b, row_byte_size);  // a = b;
-                MEMCPY(row_b, row_t, row_byte_size);  // b = tmp;
+                md_memcpy(row_t, row_a, row_byte_size);  // tmp = a;
+                md_memcpy(row_a, row_b, row_byte_size);  // a = b;
+                md_memcpy(row_b, row_t, row_byte_size);  // b = tmp;
             }
         }
     }
 
-    str_t ext = {};
-    extract_ext(&ext, path);
+    md_str_t ext = md_path_ext(path);
 
     bool written = false;
     switch (image_format_from_ext(ext)) {
@@ -6967,16 +7202,16 @@ void create_screenshot(str_t path) {
         written = image_write_bmp(path, rgba, width, height);
         break;
     default:
-        VIAMD_LOG_ERROR("Non supported file-extension '" STR_FMT "' when saving screenshot", STR_ARG(ext));
+        VIAMD_LOG_ERROR("Non supported file-extension '" MD_STR_FMT "' when saving screenshot", MD_STR_ARG(ext));
         return;
     }
 
     if (!written) {
-        VIAMD_LOG_ERROR("Failed to save screenshot to: '" STR_FMT "'", STR_ARG(path));
+        VIAMD_LOG_ERROR("Failed to save screenshot to: '" MD_STR_FMT "'", MD_STR_ARG(path));
         return;
     }
 
-    VIAMD_LOG_SUCCESS("Screenshot saved to: '" STR_FMT "'", STR_ARG(path));
+    VIAMD_LOG_SUCCESS("Screenshot saved to: '" MD_STR_FMT "'", MD_STR_ARG(path));
 }
 
 static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current) {
@@ -6992,7 +7227,7 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 
     // Scale down backround color to only show a faint outline
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) * ImVec4(1.0f, 1.0f ,1.0f ,0.1f));
-    defer { ImGui::PopStyleColor(); };
+    MD_DEFER { ImGui::PopStyleColor(); };
 
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
 
@@ -7002,10 +7237,10 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     }
 
     if (ImGui::Begin("Coordinate Widget", nullptr, window_flags)) {
-        quat_t out_orientation = target->orientation;
+        md_quat_t out_orientation = target->orientation;
         if (ImGui::CoordinateSystemWidget(&out_orientation, current.orientation, ImGui::GetContentRegionAvail())) {
-            const vec3_t look_at = camera_get_look_at(*target);
-            target->orientation = quat_normalize(out_orientation);
+            const md_float3_t look_at = camera_get_look_at(*target);
+            target->orientation = md_quat_normalize(out_orientation);
             target->position = camera_position_from_look_at(look_at, target->orientation, target->distance);
         }
     }
@@ -7035,14 +7270,14 @@ static bool input_activity() {
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
-        const double feedback = CLAMP((double)state->visuals.temporal_aa.feedback_max, 0.5, 0.99);
+        const double feedback = MD_CLAMP((double)state->visuals.temporal_aa.feedback_max, 0.5, 0.99);
         n = (uint32_t)ceil(log(0.01) / log(feedback));
-        n = MAX(n, 2 * jitter_count(state));
+        n = MD_MAX(n, 2 * jitter_count(state));
     }
     if (occlusion_temporal_active(state)) {
-        n = MAX(n, OCCLUSION_SETTLE_FRAMES);
+        n = MD_MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
-    return CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
+    return MD_CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
 }
 
 // What the image of the scene is made from (render_scene), but for the marks, and for what input changes (input_activity):
@@ -7059,9 +7294,9 @@ static uint64_t scene_key(const ApplicationState* state) {
                               c.distance, c.near_plane, c.far_plane, c.fov_y};
     h = md_hash64(camera, sizeof(camera), h);
     h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
-    const vec2_t shift = view_shift(state);
+    const md_float2_t shift = view_shift(state);
     h = md_hash64(&shift, sizeof(shift), h);
-    h = md_hash64(&scene_frame_system(*state).data.unitcell_transform, sizeof(mat4_t), h);
+    h = md_hash64(&scene_frame_system(*state).data.unitcell_transform, sizeof(md_float4x4_t), h);
 
     // How it looks
     h = md_hash64(&state->visuals, sizeof(state->visuals), h);
@@ -7075,10 +7310,9 @@ static uint64_t scene_key(const ApplicationState* state) {
     h = md_hash64(&volumes, sizeof(volumes), h);
     const uint64_t vis = script_vis_shown_key(state);
     h = md_hash64(&vis, sizeof(vis), h);
-    const vec4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
+    const md_float4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
     h = md_hash64(vis_colors, sizeof(vis_colors), h);
     h = md_hash64(&state->render.version, sizeof(state->render.version), h);
-    h = md_hash64(&use_gfx, sizeof(use_gfx), h);
 
     RenderKey rk = {state, h};
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderKey, viamd::EventPayloadType_RenderKey, &rk);
@@ -7103,7 +7337,7 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
 
     // Enable all draw buffers
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
+    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
 
     PUSH_GPU_SECTION("G-Buffer fill")
 
@@ -7131,40 +7365,38 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
 
         const size_t num_matrices = md_array_size(vis.sdf.matrices);
         const size_t num_structures = md_array_size(vis.sdf.structures);
-        const size_t num_sdf_items = MIN(MIN(num_matrices, num_structures), 100);
+        const size_t num_sdf_items = MD_MIN(MD_MIN(num_matrices, num_structures), 100);
 
         if (num_matrices != num_structures) {
             VIAMD_LOG_DEBUG("SDF visualization returned mismatched matrix and structure counts (%zu, %zu)", num_matrices, num_structures);
         }
         if (num_sdf_items > 0) {
-            const vec4_t col_x = { 1, 0, 0, 0.7f };
-            const vec4_t col_y = { 0, 1, 0, 0.7f };
-            const vec4_t col_z = { 0, 0, 1, 0.7f };
+            const md_float4_t col_x = { 1, 0, 0, 0.7f };
+            const md_float4_t col_y = { 0, 1, 0, 0.7f };
+            const md_float4_t col_z = { 0, 0, 1, 0.7f };
             const float ext = vis.sdf.extent * 0.25f;
-            const vec3_t box_ext = vec3_set1(vis.sdf.extent);
+            const md_float3_t box_ext = md_float3_set1(vis.sdf.extent);
             for (size_t i = 0; i < num_sdf_items; ++i) {
-                const mat4_t model_matrix = mat4_inverse(vis.sdf.matrices[i]);
+                const md_float4x4_t model_matrix = md_float4x4_inverse(vis.sdf.matrices[i]);
                 immediate::basis(vis_scope, model_matrix, ext, col_x, col_y, col_z);
                 immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrix);
             }
         }
     }
 
-    if (!use_gfx) {
-        // DRAW VELOCITY OF STATIC OBJECTS
-        PUSH_GPU_SECTION("Blit Static Velocity")
-        glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
-        glDepthMask(0);
-        postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
-        glDepthMask(1);
-        POP_GPU_SECTION()
-    }
+    // DRAW VELOCITY OF STATIC OBJECTS
+    PUSH_GPU_SECTION("Blit Static Velocity")
+    glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
+    glDepthMask(0);
+    postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
+    glDepthMask(1);
+    POP_GPU_SECTION()
     glDepthMask(1);
     glColorMask(1, 1, 1, 1);
 
     // DRAW REPRESENTATIONS
     PUSH_GPU_SECTION("Draw Opaque")
-    glDrawBuffers((int)ARRAY_SIZE(draw_buffers_opaque), draw_buffers_opaque);
+    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
     draw_representations_opaque(state);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
@@ -7193,7 +7425,7 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
 
     const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };
-	glDrawBuffers(ARRAY_SIZE(draw_buffers_transparent), draw_buffers_transparent);
+	glDrawBuffers(MD_COUNTOF(draw_buffers_transparent), draw_buffers_transparent);
 
     glDisable(GL_CULL_FACE);
 
@@ -7298,7 +7530,7 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
 // Saves the screenshot from the framebuffer bound (create_screenshot), and it is no longer pending
 static void screenshot_save(ApplicationState* state) {
     create_screenshot(state->screenshot.path_to_file);
-    str_free(state->screenshot.path_to_file, state->allocator.persistent);
+    md_free_str(state->allocator.persistent, state->screenshot.path_to_file);
     state->screenshot.path_to_file = {};
 }
 
@@ -7362,7 +7594,7 @@ static void render(ApplicationState* state) {
         selection_empty &= md_bitmask_empty(&state->systems[i]->selection.selection_mask);
         highlight_empty &= md_bitmask_empty(&state->systems[i]->selection.highlight_mask);
     }
-    const bool draw_marks = !use_gfx && (!selection_empty || !highlight_empty);
+    const bool draw_marks = !selection_empty || !highlight_empty;
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
@@ -7387,8 +7619,8 @@ static void render(ApplicationState* state) {
         if (draw_marks) {
             // The highlight fades in, the outline is as wide on a display of more pixels per point
             constexpr double HIGHLIGHT_FADE_IN_S = 0.12;
-            const float t = (float)CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
-            const int outline_step = MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
+            const float t = (float)MD_CLAMP((ImGui::GetTime() - state->selection.highlight_time) / HIGHLIGHT_FADE_IN_S, 0.0, 1.0);
+            const int outline_step = MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
             marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
         }
         postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings);
@@ -7411,15 +7643,18 @@ static void render(ApplicationState* state) {
     glClear(GL_COLOR_BUFFER_BIT);
     if (!offscreen) {
         present();
+        // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
+        es_planes_draw_outlines(state->gbuffer.tex.depth, state->gbuffer.width, state->gbuffer.height,
+                                state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
     } else {
-        const uint32_t total = MAX(settle_frames(state), 1u);
+        const uint32_t total = MD_MAX(settle_frames(state), 1u);
         float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
-        if (!meshes_settled) fraction = MIN(fraction, (float)iso_mesh_target.frame / (float)isomesh::MAX_FRAMES);
+        if (!meshes_settled) fraction = MD_MIN(fraction, (float)iso_mesh_target.frame / (float)isomesh::MAX_FRAMES);
         if (screenshot_pending(state)) ImGui::OpenPopup("Capturing Frame");
         ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
         ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
         if (ImGui::BeginPopupModal("Capturing Frame", 0, ImGuiWindowFlags_NoResize)) {
-            ImGui::ProgressBar(CLAMP(fraction, 0.0f, 1.0f));
+            ImGui::ProgressBar(MD_CLAMP(fraction, 0.0f, 1.0f));
             if (!screenshot_pending(state)) ImGui::CloseCurrentPopup();     // saved this frame
             ImGui::EndPopup();
         }
@@ -7449,9 +7684,9 @@ static constexpr float BOND_LENGTH_MIN    = 5.0f;
 static float bond_length_limit(SystemContext& sc) {
     const md_unitcell_t& cell = sc.data.state.unitcell;
     if (md_unitcell_flags(&cell) != 0) {
-        vec3_t ext = {0};
+        md_float3_t ext = {0};
         md_unitcell_diag_extract_float(ext.elem, &cell);
-        return MAX(3.0f, vec3_reduce_min(ext) * 0.5f);
+        return MD_MAX(3.0f, md_float3_reduce_min(ext) * 0.5f);
     }
 
     const md_system_t& sys = sc.data.sys;
@@ -7462,11 +7697,11 @@ static float bond_length_limit(SystemContext& sc) {
             for (size_t i = 0; i < sys.bond.count; ++i) {
                 const md_atom_pair_t pair = sys.bond.pairs[i];
                 if ((size_t)pair.idx[0] < frame.num_atoms && (size_t)pair.idx[1] < frame.num_atoms) {
-                    max_d2 = MAX(max_d2, vec3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
+                    max_d2 = MD_MAX(max_d2, md_float3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
                 }
             }
         }
-        sc.data.bond_length_limit = MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
+        sc.data.bond_length_limit = MD_MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
         sc.data.bond_length_limit_version = sys.topology_version;
     }
     return sc.data.bond_length_limit;
@@ -7475,22 +7710,22 @@ static float bond_length_limit(SystemContext& sc) {
 // The copies of the scene the periodic images show (system.periodic_images): its own, as it is, then the translations of
 // the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
 // None without a cell or images.
-static void compute_periodic_transforms(md_array(mat4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc) {
+static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc) {
     md_array_shrink(*transforms, 0);
     const md_unitcell_t& cell = sys.data.state.unitcell;
     const int* n = sys.scene.periodic_images;
     if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || sys.scene.assembly >= 0) return;
 
-    mat3_t A = {0};
+    md_float3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = sys.scene.operations.state_rotation * mat4_from_mat3(A);
-    md_array_push(*transforms, mat4_ident(), alloc);
+    const md_float4x4_t M = sys.scene.operations.state_rotation * md_float4x4_from_float3x3(A);
+    md_array_push(*transforms, md_float4x4_ident(), alloc);
     for (int k = -n[2]; k <= n[2]; ++k) {
         for (int j = -n[1]; j <= n[1]; ++j) {
             for (int i = -n[0]; i <= n[0]; ++i) {
                 if (i == 0 && j == 0 && k == 0) continue;
-                const vec3_t t = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)i, (float)j, (float)k, 0.0f)));
-                md_array_push(*transforms, mat4_translate(t.x, t.y, t.z), alloc);
+                const md_float3_t t = md_float3_from_float4(md_float4x4_mul_float4(M, md_float4_set((float)i, (float)j, (float)k, 0.0f)));
+                md_array_push(*transforms, md_float4x4_translate(t.x, t.y, t.z), alloc);
             }
         }
     }
@@ -7544,82 +7779,115 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const SystemCo
 }
 
 // The edges of the unit cell of the frame shown (a SimulationBox representation), through the turn the coordinates
-// carry if the orientation is kept (the cell itself cannot hold one). Capsules of the thickness, shaded as the rest of
-// the scene (the world queue writes the G-buffer), never thinner than a pixel where they are, so a box seen from afar
-// does not break up; or lines of a pixel. With axes, the edges along a, b and c from the origin red, green and blue.
-// The cells out of view are left out.
+// carry if the orientation is kept (the cell itself cannot hold one). Tubes of the thickness in points on the screen,
+// shaded as the rest of the scene (the world queue writes the G-buffer), never thinner than a pixel; or lines of a
+// pixel. With axes, the edges along a, b and c from the origin red, green and blue. The cells out of view are left out.
 static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
     ApplicationState* state = sys.app;
     const md_unitcell_t& cell = sys.data.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
 
-    mat3_t A = {0};
+    md_float3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const mat4_t M = sys.scene.operations.state_rotation * mat4_from_mat3(A);
-    const uint32_t color = convert_color(vec4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
-    const uint32_t axis_color[3] = { convert_color(vec4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(vec4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
+    const md_float4x4_t M = sys.scene.operations.state_rotation * md_float4x4_from_float3x3(A);
+    const uint32_t color = convert_color(md_float4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
+    const uint32_t axis_color[3] = { convert_color(md_float4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
 
     immediate::Scope scope(state->gfx.world, "simulation box");
 
-    // The corners: bit k of i is the coordinate along cell vector k
-    vec3_t corner[8];
+    // The corners: bit b of i is the coordinate along cell vector b
+    md_float3_t corner[8];
     for (int i = 0; i < 8; ++i) {
-        corner[i] = vec3_from_vec4(mat4_mul_vec4(M, vec4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
+        corner[i] = md_float3_from_float4(md_float4x4_mul_float4(M, md_float4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
     }
 
-    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection
-    const mat4_t& V = state->view.param.matrix.curr.view;
-    const mat4_t& P = state->view.param.matrix.curr.proj;
-    const float   h = (float)MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
+    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection.
+    // A point likewise, with h the view's height in points: the view is the whole window, DisplaySize in points, and a
+    // screenshot at another resolution is the same view, its points as much larger as the image is.
+    const md_float4x4_t& V = state->view.param.matrix.curr.view;
+    const md_float4x4_t& P = state->view.param.matrix.curr.proj;
+    const float   h_px = (float)MD_MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
+    const float   h_pt = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
     const bool    ortho = P.elem[3][3] == 1.0f;
-    const float   px_per_depth = 2.0f / (P.elem[1][1] * h);
+
+    // The radius of a tube in the world is k times the depth (k itself in an orthographic projection): its diameter the
+    // thickness in points, and at least about a pixel. As the radius is linear in the depth, an edge drawn as a
+    // truncated cone from the radius at one end to that at the other is of the same width on screen all along it.
+    const float k = MD_MAX(0.5f * rep.box.thickness * 2.0f / (P.elem[1][1] * h_pt), 0.6f * 2.0f / (P.elem[1][1] * h_px));
+    // Where the depth is less than this, the tube is clipped to it: in front of the camera, and its radius still k d
+    const float min_depth = 1.0e-3f;
+    auto depth_of = [&](md_float3_t p) {
+        return ortho ? 1.0f : -md_float3_from_float4(md_float4x4_mul_float4(V, md_float4_from_float3(p, 1.0f))).z;
+    };
 
     // The planes of the view volume, inward, and the sphere of a cell about its center: a cell wholly outside of one is
-    // out of view. The capsules are at most a few pixels thick, a margin of a hundredth of the cell covers them.
-    const mat4_t PV = P * V;
-    vec4_t plane[6];
+    // out of view, the tubes' radius at the far side of the cell taken as the margin.
+    const md_float4x4_t PV = P * V;
+    md_float4_t plane[6];
     for (int p = 0; p < 6; ++p) {
         const int r = p / 2;
         const float s = (p & 1) ? -1.0f : 1.0f;
-        const vec4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
-        const vec4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
-        plane[p] = vec4_add(row_w, vec4_mul1(row_r, s));
-        const float len = vec3_length(vec3_from_vec4(plane[p]));
-        plane[p] = len > 0.0f ? vec4_mul1(plane[p], 1.0f / len) : vec4_t{0, 0, 0, 1};
+        const md_float4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
+        const md_float4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
+        plane[p] = md_float4_add(row_w, md_float4_mul1(row_r, s));
+        const float len = md_float3_length(md_float3_from_float4(plane[p]));
+        plane[p] = len > 0.0f ? md_float4_mul1(plane[p], 1.0f / len) : md_float4_t{0, 0, 0, 1};
     }
-    const vec3_t cell_center = (corner[0] + corner[7]) * 0.5f;
+    const md_float3_t cell_center = (corner[0] + corner[7]) * 0.5f;
     float cell_radius = 0.0f;
-    for (int i = 0; i < 8; ++i) cell_radius = MAX(cell_radius, vec3_length(corner[i] - cell_center));
-    cell_radius = cell_radius * 1.01f + 0.5f * rep.box.thickness;
+    for (int i = 0; i < 8; ++i) cell_radius = MD_MAX(cell_radius, md_float3_length(corner[i] - cell_center));
+    cell_radius *= 1.01f;
 
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const md_array(mat4_t) transforms = sys.scene.periodic_transforms;
-    const size_t num_cells = rep.periodic_images ? MAX(md_array_size(transforms), (size_t)1) : 1;
+    const md_array(md_float4x4_t) transforms = sys.scene.periodic_transforms;
+    const size_t num_cells = rep.periodic_images ? MD_MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
-        const vec3_t t = c == 0 ? vec3_t{0, 0, 0} : vec3_from_vec4(transforms[c].col[3]);
-        const vec4_t center = vec4_from_vec3(mat4_mul_vec3(sys.scene.placement_curr, cell_center + t, 1.0f), 1.0f);
+        const md_float3_t t = c == 0 ? md_float3_t{0, 0, 0} : md_float3_from_float4(transforms[c].col[3]);
+        // Where the system is placed (SystemScene::placement, rigid: the radius of the cell stays)
+        const md_float4x4_t& W = sys.scene.placement_curr;
+        md_float3_t wc[8];
+        for (int i = 0; i < 8; ++i) wc[i] = md_float4x4_mul_float3(W, corner[i] + t, 1.0f);
+        const md_float3_t wcenter = md_float4x4_mul_float3(W, cell_center + t, 1.0f);
+        const float margin = rep.box.thickness > 0.0f ? k * MD_MAX(depth_of(wcenter) + cell_radius, 0.0f) : 0.0f;
+        const md_float4_t center = md_float4_from_float3(wcenter, 1.0f);
         bool out_of_view = false;
         for (int p = 0; p < 6 && !out_of_view; ++p) {
-            out_of_view = vec4_dot(plane[p], center) < -cell_radius;
+            out_of_view = md_float4_dot(plane[p], center) < -(cell_radius + margin);
         }
         if (out_of_view) continue;
-        for (int i = 0; i < 8; ++i) {
-            for (int k = 0; k < 3; ++k) {
-                const int bit = 1 << k;
-                if (i & bit) continue;
-                const int j = i | bit;
-                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[k] : color;
-                // Where the system is placed
-                const vec3_t p0 = mat4_mul_vec3(sys.scene.placement_curr, corner[i] + t, 1.0f);
-                const vec3_t p1 = mat4_mul_vec3(sys.scene.placement_curr, corner[j] + t, 1.0f);
-                if (rep.box.thickness > 0.0f) {
-                    const vec3_t mid  = (p0 + p1) * 0.5f;
-                    const float depth = ortho ? 1.0f : MAX(-vec3_from_vec4(mat4_mul_vec4(V, vec4_from_vec3(mid, 1.0f))).z, 0.0f);
-                    const float radius = MAX(0.5f * rep.box.thickness, 0.6f * px_per_depth * depth);
-                    immediate::capsule(scope, p0, p1, radius, col);
-                } else {
-                    immediate::line(scope, p0, p1, col);
+
+        if (rep.box.thickness <= 0.0f) {
+            for (int i = 0; i < 8; ++i) {
+                for (int b = 0; b < 3; ++b) {
+                    if (i & (1 << b)) continue;
+                    const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
+                    immediate::line(scope, wc[i], wc[i | (1 << b)], col);
                 }
+            }
+            continue;
+        }
+
+        // The corners as spheres, one each, of the tubes' radius there: it closes the three tubes that meet in it. The
+        // origin's is of the box's colour too with axes, where the three axes start.
+        float depth[8];
+        for (int i = 0; i < 8; ++i) {
+            depth[i] = depth_of(wc[i]);
+            if (depth[i] >= min_depth) {
+                immediate::sphere(scope, wc[i], k * depth[i], color, 0xFFFFFFFF, 16, 32);
+            }
+        }
+        for (int i = 0; i < 8; ++i) {
+            for (int b = 0; b < 3; ++b) {
+                if (i & (1 << b)) continue;
+                const int j = i | (1 << b);
+                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
+                md_float3_t p0 = wc[i], p1 = wc[j];
+                float  d0 = depth[i],      d1 = depth[j];
+                if (d0 < min_depth && d1 < min_depth) continue;
+                // Clipped to min_depth where it passes behind the camera, so that the radius stays k times the depth
+                if (d0 < min_depth) { p0 = md_float3_lerp(p0, p1, (min_depth - d0) / (d1 - d0)); d0 = min_depth; }
+                if (d1 < min_depth) { p1 = md_float3_lerp(p1, p0, (min_depth - d1) / (d0 - d1)); d1 = min_depth; }
+                immediate::frustum(scope, p0, p1, k * d0, k * d1, col);
             }
         }
     }
@@ -7627,171 +7895,128 @@ static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
 
 static void draw_representations_opaque(SystemContext& sys) {
     ApplicationState* state = sys.app;
-    ASSERT(state);
+    MD_ASSERT(state);
 
     if (sys.data.sys.atom.count == 0) {
         return;
     }
 
-#if EXPERIMENTAL_GFX_API
-    if (use_gfx) {
-        const uint32_t instance_count = 10000;
-        static mat4_t* transforms = 0;
+    const size_t num_representations = md_array_size(sys.representation.reps);
+    if (num_representations == 0) return;
 
-        if (transforms == 0) {
-            auto rnd = []() -> float {
-                return (float)rand() / RAND_MAX;
-            };
-            for (uint32_t i = 0; i < instance_count; ++i) {
-                vec3_t axis = {rnd(), rnd(), rnd()};
-                quat_t ori = quat_angle_axis(rnd() * TWO_PI, vec3_normalize(axis));
-                mat4_t R = mat4_from_quat(ori);
-                mat4_t T = mat4_translate(rnd() * 4000, rnd() * 4000, rnd() * 4000);
-                mat4_t M = T * R;
-                md_urange_t range = {0, (int32_t)sys.data.sys.atom.count};
-                md_array_push(transforms, M, persistent_alloc);
-            }
+	glEnable(GL_DEPTH_TEST);
+
+    md_array(md_gl_draw_op_t) draw_ops = 0;
+    // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
+    md_array(md_gl_draw_op_t) glyph_ops = 0;
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = sys.representation.reps[i];
+
+        if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid && !rep.sphere_fallback) {
+            const size_t beg = md_array_size(glyph_ops);
+            representation_glyph_draw_ops(&glyph_ops, sys, rep, frame_alloc);
+            place_ops(&glyph_ops, beg, sys, rep, true, frame_alloc);
+            // The cartoon of the proteins needs a protein backbone to draw
+            if (sys.data.sys.protein_backbone.range.count == 0) continue;
         }
 
-        md_gfx_draw_op_t* draw_ops = 0;
-        for (int64_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
-            if (representation_shown(*state, sys.representation.reps[i])) {
-                md_gfx_draw_op_t op;
-                op.structure = sys.data.gfx_structure;
-                op.representation = sys.representation.reps[i].gfx_rep;
-                op.model_mat = NULL;
+        if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
+            if (representation_shown(sys, rep) && rep.type_is_valid) {
+                const md_gl_draw_op_t op = representation_draw_op(rep);
+                const size_t beg = md_array_size(draw_ops);
                 md_array_push(draw_ops, op, frame_alloc);
-                
-                for (uint32_t j = 0; j < instance_count; ++j) {
-                    md_gfx_draw_op_t op;
-                    op.structure = sys.data.gfx_structure;
-                    op.representation = sys.representation.reps[i].gfx_rep;
-                    op.model_mat = &transforms[j];
-                    md_array_push(draw_ops, op, frame_alloc);
-                }
-                
+                // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
+                representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
+                place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
             }
-        }
-
-        md_gfx_draw((uint32_t)md_array_size(draw_ops), draw_ops, &state->view.param.matrix.curr.proj, &state->view.param.matrix.curr.view, &state->view.param.matrix.inv.proj, &state->view.param.matrix.inv.view);
-    } else {
-#endif
-        const size_t num_representations = md_array_size(sys.representation.reps);
-        if (num_representations == 0) return;
-
-		glEnable(GL_DEPTH_TEST);
-
-        md_array(md_gl_draw_op_t) draw_ops = 0;
-        // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
-        md_array(md_gl_draw_op_t) glyph_ops = 0;
-        for (size_t i = 0; i < num_representations; ++i) {
-            const Representation& rep = sys.representation.reps[i];
-
-            if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid) {
-                const size_t beg = md_array_size(glyph_ops);
-                representation_glyph_draw_ops(&glyph_ops, sys, rep, frame_alloc);
-                place_ops(&glyph_ops, beg, sys, rep, true, frame_alloc);
-                // The cartoon of the proteins needs a protein backbone to draw
-                if (sys.data.sys.protein_backbone.range.count == 0) continue;
+        } else if (rep.type == RepresentationType::Bonds) {
+            if (representation_shown(sys, rep) && rep.type_is_valid) {
+                const size_t beg = md_array_size(draw_ops);
+                representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
+                place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
             }
+        } else if (rep.type == RepresentationType::DipoleMoment) {
+            if (representation_shown(sys, rep)) {
+                // immediate draw of dipole moment as arrow
+                md_float3_t dipole_vec = { 0, 0, 0 };
+                md_float3_t dipole_org = { 0, 0, 0 };
+                if (dipole_moment_read(&dipole_vec, &dipole_org, sys.data.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
+                    // The representation's own (key, index) IS the picking address: the group's
+                    // range was reserved under that key this frame, and the shader adds the base to
+                    // the per primitive index, so the element index is what goes on the primitive.
+                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
+                    // which the shader passes through untouched - visible, just not pickable.
+                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key, sys.id) : nullptr;
 
-            if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
-                if (representation_shown(sys, rep) && rep.type_is_valid) {
-                    const md_gl_draw_op_t op = representation_draw_op(rep);
-                    const size_t beg = md_array_size(draw_ops);
-                    md_array_push(draw_ops, op, frame_alloc);
-                    // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
-                    representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
-                    place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
-                }
-            } else if (rep.type == RepresentationType::Bonds) {
-                if (representation_shown(sys, rep) && rep.type_is_valid) {
-                    const size_t beg = md_array_size(draw_ops);
-                    representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
-                    place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
-                }
-            } else if (rep.type == RepresentationType::DipoleMoment) {
-                if (representation_shown(sys, rep)) {
-                    // immediate draw of dipole moment as arrow
-                    vec3_t dipole_vec = { 0, 0, 0 };
-                    vec3_t dipole_org = { 0, 0, 0 };
-                    if (dipole_moment_read(&dipole_vec, &dipole_org, sys.data.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
-                        // The representation's own (key, index) IS the picking address: the group's
-                        // range was reserved under that key this frame, and the shader adds the base to
-                        // the per primitive index, so the element index is what goes on the primitive.
-                        // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
-                        // which the shader passes through untouched - visible, just not pickable.
-                        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key, sys.id) : nullptr;
+                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                        immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                        immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+                    // Where the system is placed
+                    const md_float4x4_t& W = sys.scene.placement_curr;
+                    const md_float3_t org = rep.dipole.offset + dipole_org;
+                    const md_float3_t beg = md_float4x4_mul_float3(W, org, 1.0f);
+                    const md_float3_t vec = md_float4x4_mul_float3(W, dipole_vec * (float)rep.dipole.scale, 0.0f);
+                    const float  len = md_float3_length(vec);
 
-                        const vec3_t org = dipole_org;
-                        const vec3_t vec = dipole_vec * (float)rep.dipole.scale;
+                    // The head is a fixed shape in units of the shaft radius, never a share of the
+                    // length: a longer dipole is a longer shaft under the same head. Below the length
+                    // where the head would take more than its share of the arrow, the arrow is that
+                    // shortest one compressed along its length only: the radii stay, so a small dipole
+                    // flattens toward a disc that is still as easy to see and hover as a large one.
+                    const float HEAD_RADIUS   = 2.0f;   // x shaft radius
+                    const float HEAD_LENGTH   = 5.0f;   // x shaft radius
+                    const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
 
-                        // cylinder body
-                        const float body_scale = 0.8f;
-
-                        const float body_radius = rep.dipole.radius;
-                        const float head_radius = body_radius * 1.5f;
-
-                        vec3_t cyl_beg = rep.dipole.offset + org;
-                        vec3_t cyl_end = rep.dipole.offset + org + vec * body_scale;
-                        vec3_t arrow_end = rep.dipole.offset + org + vec;
-
-                        uint32_t color_u32 = convert_color(rep.dipole.color);
-
-                        uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
-
-                        // Where the system is placed
-                        const mat4_t& P = sys.scene.placement_curr;
-                        cyl_beg   = mat4_mul_vec3(P, cyl_beg, 1.0f);
-                        cyl_end   = mat4_mul_vec3(P, cyl_end, 1.0f);
-                        arrow_end = mat4_mul_vec3(P, arrow_end, 1.0f);
-
-                        immediate::cylinder(scope, cyl_beg, cyl_end, body_radius, color_u32, picking_idx);
-                        immediate::cone(scope, cyl_end, arrow_end, head_radius, color_u32, picking_idx);
+                    const float shaft_radius = rep.dipole.radius;
+                    const float head_radius  = shaft_radius * HEAD_RADIUS;
+                    float       head_length  = shaft_radius * HEAD_LENGTH;
+                    const float min_len = head_length / HEAD_FRACTION;
+                    if (len < min_len) {
+                        head_length *= len / min_len;   // the shaft, the rest of the length, follows
                     }
-                }
-            } else if (rep.type == RepresentationType::SimulationBox) {
-                if (representation_shown(sys, rep) && rep.type_is_valid) {
-                    draw_simulation_box(sys, rep);
+
+                    const uint32_t color_u32   = convert_color(rep.dipole.color);
+                    const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
+
+                    immediate::arrow(scope, beg, beg + vec, shaft_radius, head_radius, head_length, color_u32, picking_idx);
                 }
             }
+        } else if (rep.type == RepresentationType::SimulationBox) {
+            if (representation_shown(sys, rep) && rep.type_is_valid) {
+                draw_simulation_box(sys, rep);
+            }
         }
-
-        const float max_bond_length = bond_length_limit(sys);
-
-        // Where the system is placed, as its model matrix (SystemScene::placement)
-        const mat4_t view      = state->view.param.matrix.curr.view * sys.scene.placement_curr;
-        const mat4_t prev_view = state->view.param.matrix.prev.view * sys.scene.placement_prev;
-        md_gl_draw_args_t args = {
-            .shaders = state->gl.shaders,
-            .draw_operations = {
-                .count = (uint32_t)md_array_size(draw_ops),
-                .ops = draw_ops,
-            },
-            .view_transform = {
-                .view_matrix = &view.elem[0][0],
-                .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
-                // These two are for temporal anti-aliasing reprojection (optional)
-                .prev_view_matrix = &prev_view.elem[0][0],
-                .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
-            },
-            .picking_offset = gl_picking_offset(sys),
-            .max_bond_length = max_bond_length,
-        };
-
-        draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
-
-        if (md_array_size(glyph_ops) > 0) {
-            args.picking_offset = gl_picking_offset_glyphs(sys);
-            draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
-        }
-#if EXPERIMENTAL_GFX_API
     }
-#endif
+
+    const float max_bond_length = bond_length_limit(sys);
+
+    // Where the system is placed, as its model matrix (SystemScene::placement)
+    const md_float4x4_t view      = state->view.param.matrix.curr.view * sys.scene.placement_curr;
+    const md_float4x4_t prev_view = state->view.param.matrix.prev.view * sys.scene.placement_prev;
+    md_gl_draw_args_t args = {
+        .shaders = state->gl.shaders,
+        .draw_operations = {
+            .count = (uint32_t)md_array_size(draw_ops),
+            .ops = draw_ops,
+        },
+        .view_transform = {
+            .view_matrix = &view.elem[0][0],
+            .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
+            // These two are for temporal anti-aliasing reprojection (optional)
+            .prev_view_matrix = &prev_view.elem[0][0],
+            .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
+        },
+        .picking_offset = gl_picking_offset(sys),
+        .max_bond_length = max_bond_length,
+    };
+
+    draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
+
+    if (md_array_size(glyph_ops) > 0) {
+        args.picking_offset = gl_picking_offset_glyphs(sys);
+        draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
+    }
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
@@ -7809,14 +8034,16 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
         h = md_hash64(&shown, sizeof(shown), h);
         if (!shown) continue;
         h = md_hash64(&rep.type, sizeof(rep.type), h);
+        h = md_hash64(&rep.sphere_fallback, sizeof(rep.sphere_fallback), h);
         h = md_hash64(&rep.md_rep, sizeof(rep.md_rep), h);
         h = md_hash64(&rep.scale, sizeof(rep.scale), h);
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
         h = md_hash64(&rep.noncovalent_bonds, sizeof(rep.noncovalent_bonds), h);
+        h = md_hash64(&rep.coordinate_bonds_dashed, sizeof(rep.coordinate_bonds_dashed), h);
         if (rep.type == RepresentationType::Bonds) {
-            h = md_hash64(&rep.bonds_dashed, sizeof(rep.bonds_dashed), h);
+            h = md_hash64(&rep.bond_dashes, sizeof(rep.bond_dashes), h);
         }
         h = md_hash64(&rep.periodic_images, sizeof(rep.periodic_images), h);
         if (rep.type == RepresentationType::Cartoon) {
@@ -7827,6 +8054,24 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
         if (rep.type == RepresentationType::SimulationBox) {
             h = md_hash64(&rep.box.thickness, sizeof(rep.box.thickness), h);
             h = md_hash64(&rep.box.axes, sizeof(rep.box.axes), h);
+        }
+        if (rep.type == RepresentationType::ElectronicStructure) {
+            // how it is drawn as a volume or on a plane (its isosurfaces are in what draws them)
+            const ElectronicStructureRepresentation& es = rep.electronic_structure;
+            h = md_hash64(&es.display, sizeof(es.display), h);
+            h = md_hash64(&es.cuts, sizeof(es.cuts), h);
+            h = md_hash64(&es.slices, sizeof(es.slices), h);
+            // the slices' edges: which is picked (its edge is drawn over the view instead), and whether they are drawn
+            for (int k = 0; k < es.slices.count; ++k) {
+                const md_float4_t e = es_slice_edge_color(state, rep.node.id, k, es.slices.items[k].enabled);
+                h = md_hash64(&e, sizeof(e), h);
+            }
+            for (const ElectronicStructurePlaneImage& im : es.plane_images) {
+                h = md_hash64(&im.key[im.front], sizeof(uint64_t), h);
+                h = md_hash64(&im.serial, sizeof(im.serial), h);
+                h = md_hash64(&im.current, sizeof(im.current), h);
+            }
+            h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
@@ -7875,6 +8120,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         Representation& rep = sys.representation.reps[i];
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(sys, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
+        if (es.display != ElectronicStructureDisplay::Isosurface) continue;
 
         IsoDesc iso;
         electronic_structure_iso_desc_init(&iso, es);
@@ -7882,7 +8128,7 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
         // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
         // the colour volume spans the box of the density volume
-        const mat4_t world_to_volume = mat4_inverse(es.density_vol.texture_to_world);
+        const md_float4x4_t world_to_volume = md_float4x4_inverse(es.density_vol.texture_to_world);
         const bool use_field  = es.coloring == SurfaceColoring::Field;
         const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
@@ -7942,8 +8188,79 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
     return isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
 }
 
+// The electronic structure representations drawn from their volumes, over what the isosurfaces drew into the same
+// (HDR) target: a volume display by direct volume rendering of the field through the colour map and alpha ramp of
+// each, cut by its planes; a planes display as the field on its planes through the colour map, each of its opacity. True when anything was
+// drawn.
+static bool draw_representations_volumes(ApplicationState* state, bool target_written) {
+    bool written = false;
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(state->system_context, rep) || !rep.type_is_valid) continue;
+        ElectronicStructureRepresentation& es = rep.electronic_structure;
+        const bool slice = es.display == ElectronicStructureDisplay::Planes;
+        // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
+        const bool on_planes = slice && es_plane_images_supported(state, es);
+        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.has_box || (!on_planes && !es.density_vol.tex_id)) continue;
+        md_float4_t planes[ES_MAX_PLANES];
+        float  slice_opacity[ES_MAX_PLANES];
+        uint32_t images[ES_MAX_PLANES];
+        md_float4x4_t rect_from_model[ES_MAX_PLANES];
+        md_float4_t edges[ES_MAX_PLANES];
+        int num_planes = 0;
+        if (slice) {
+            es_slices_conform(&es);
+            const uint32_t rep_id = rep.node.id;
+            num_planes = es_volume_slices(planes, slice_opacity, rect_from_model, es);
+            bool any = false;
+            for (int k = 0; k < num_planes; ++k) {
+                images[k] = 0;
+                if (on_planes) {
+                    const ElectronicStructurePlaneImage& im = es.plane_images[k];
+                    const Volume& v = im.img[im.front];
+                    if (im.current && v.tex_id) images[k] = v.tex_id;
+                }
+                // nothing to draw it from yet: its edges only
+                if (!images[k] && !es.density_vol.tex_id) slice_opacity[k] = 0.0f;
+                edges[k] = es_slice_edge_color(state, rep_id, k, es.slices.items[k].enabled);
+                any |= slice_opacity[k] > 0.0f || edges[k].w > 0.0f;
+            }
+            if (!any) continue;
+        } else {
+            num_planes = es_volume_clip_planes(planes, es);
+        }
+        volume::DvrRenderDesc desc = {};
+        desc.render_target.depth = state->gbuffer.tex.depth;
+        desc.render_target.color = state->gbuffer.tex.transparency_hdr;
+        desc.render_target.width = state->gbuffer.width;
+        desc.render_target.height = state->gbuffer.height;
+        desc.render_target.clear_color = !(target_written || written);
+        desc.texture.density_volume = es.density_vol.tex_id;
+        desc.texture.transfer_function = es_volume_transfer_function(&es);
+        desc.matrix.model = es.box_to_world;
+        desc.matrix.view = state->view.param.matrix.curr.view;
+        desc.matrix.proj = state->view.param.matrix.curr.proj;
+        desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
+        desc.tf.min_value = es.volume.tf.range_beg;
+        desc.tf.max_value = es.volume.tf.range_end;
+        desc.planes.count = num_planes;
+        desc.planes.equations = planes;
+        desc.linear_output = true;
+        desc.slice = slice;
+        desc.slice_opacity = slice ? slice_opacity : nullptr;
+        desc.slice_images = slice && on_planes ? images : nullptr;
+        desc.slice_rect_from_model = slice ? rect_from_model : nullptr;
+        desc.slice_edge = slice ? edges : nullptr;
+        // the edges' width: a line of 1.5 points (as the outlines drawn over the view), in the target's pixels
+        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MD_MAX(state->app.framebuffer.width, 1);
+        volume::render_dvr(desc);
+        written = true;
+    }
+    return written;
+}
+
 static bool draw_representations_transparent(ApplicationState* state) {
-    ASSERT(state);
+    MD_ASSERT(state);
     size_t num_representations = 0;
     for (size_t s = 0; s < state->num_systems; ++s) {
         if (state->systems[s]->data.sys.atom.count > 0) num_representations += md_array_size(state->systems[s]->representation.reps);
@@ -7952,7 +8269,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
     iso_mesh_converged = true;
     if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
-        return draw_representations_transparent_mesh(state);
+        const bool meshes = draw_representations_transparent_mesh(state);
+        return draw_representations_volumes(state, meshes) || meshes;
     }
     isomesh::target_free(&iso_mesh_target);
 
@@ -7964,7 +8282,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
         if (sys.data.sys.atom.count == 0) break;
         Representation& rep = sys.representation.reps[i];
         if (!representation_shown(sys, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure) {
+        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface) {
             const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
             electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
@@ -8027,7 +8345,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                 written = true;
             }
 
-#if DEBUG
+#if MD_DEBUG
             {
 				immediate::Scope scope(state->gfx.world, "debug_electronic_structure");
                 immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
@@ -8035,7 +8353,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 #endif
         }
     }
-    return written;
+    return draw_representations_volumes(state, written) || written;
 }
 
 static void draw_representations_marks(SystemContext& sys) {
@@ -8048,7 +8366,7 @@ static void draw_representations_marks(SystemContext& sys) {
         const Representation& rep = sys.representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
-        if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid) {
+        if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, sys, rep, frame_alloc);
             place_ops(&glyph_ops, beg, sys, rep, true, frame_alloc);
@@ -8071,7 +8389,7 @@ static void draw_representations_marks(SystemContext& sys) {
 
     // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still. Where
     // the system is placed, as its model matrix.
-    const mat4_t view = data->view.param.matrix.curr.view * sys.scene.placement_curr;
+    const md_float4x4_t view = data->view.param.matrix.curr.view * sys.scene.placement_curr;
     md_gl_draw_args_t args = {
         .shaders = data->gl.shaders_marks,
         .draw_operations = {

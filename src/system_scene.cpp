@@ -12,6 +12,7 @@
 
 #include <core/md_bitset.h>
 #include <core/md_str.h>
+#include <core/md_path.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -51,12 +52,12 @@ static const OperationInfo& info_of(SystemOperation op) {
     for (const OperationInfo& info : operation_info) {
         if (info.op == op) return info;
     }
-    ASSERT(false);
+    MD_ASSERT(false);
     return operation_info[0];
 }
 
 SystemOperation system_operation_at(int idx) {
-    ASSERT(0 <= idx && idx < SYSTEM_OPERATION_COUNT);
+    MD_ASSERT(0 <= idx && idx < SYSTEM_OPERATION_COUNT);
     return operation_info[idx].op;
 }
 
@@ -73,7 +74,7 @@ static bool* enabled_flag(SystemContext& sys, SystemOperation op) {
     case SystemOperation_MakeWhole:  return &o.unwrap_structures;
     case SystemOperation_TrackBonds: return &o.bond_tracking.enabled;
     }
-    ASSERT(false);
+    MD_ASSERT(false);
     return &o.recenter;
 }
 
@@ -111,7 +112,7 @@ void system_set_operation_enabled(SystemContext& sys, SystemOperation op, bool e
 
 void system_reset_operations(SystemContext& sys) {
     ApplicationState* app = sys.app;
-    ASSERT(app);
+    MD_ASSERT(app);
     auto& o = sys.scene.operations;
     o.recenter = false;
     o.fixate_orientation = false;
@@ -140,7 +141,7 @@ void system_reset_operations(SystemContext& sys) {
 
 void system_set_assembly(SystemContext& sys, int assembly) {
     ApplicationState* app = sys.app;
-    ASSERT(app);
+    MD_ASSERT(app);
     if (assembly == sys.scene.assembly) return;
     // Its copies at once (they are set every frame, update_view_param), and what is shown changes its extent: the
     // view frames it
@@ -148,7 +149,7 @@ void system_set_assembly(SystemContext& sys, int assembly) {
     assembly_transforms(&sys.scene.assembly_transforms, &sys.scene.assembly_copy_offset, sys.data.sys, assembly, app->allocator.persistent);
     reset_view(&app->view.target, sys.data.state, &sys.representation.visibility_mask, app->view.camera.fov_y, app->view.region, &sys.data.sys, assembly);
     // Room to zoom out to all of it
-    app->view.trackball_param.max_distance = MAX(app->view.trackball_param.max_distance, app->view.target.distance * 10.0f);
+    app->view.trackball_param.max_distance = MD_MAX(app->view.trackball_param.max_distance, app->view.target.distance * 10.0f);
 }
 
 void system_label(char* buf, size_t cap, const SystemContext& sys) {
@@ -183,8 +184,8 @@ static size_t assembly_num_chains(const md_system_t& sys, size_t asm_idx) {
 
 // The width of the column the icons are in, the same as the handles of the representations so that the names line up
 static float icon_column_width() {
-    return MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
-           MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
+    return MD_MAX(ImGui::CalcTextSize(ICON_FA_GRIP_VERTICAL).x,
+           MD_MAX(ImGui::CalcTextSize(ICON_FA_FOLDER).x, ImGui::CalcTextSize(ICON_FA_FOLDER_OPEN).x)) + 6.0f;
 }
 
 static float row_button_size() {
@@ -243,7 +244,7 @@ static void draw_system_menu(SystemContext& sys, bool* remove_request) {
     if (ImGui::MenuItem(ICON_FA_FILE_CIRCLE_PLUS " Add File...")) {
         char path[1024] = "";
         if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Open)) {
-            file_queue_push(&app->file_queue, str_from_cstr(path), FileFlags_None, sys.id);
+            file_queue_push(&app->file_queue, md_str_from_cstr(path), FileFlags_None, sys.id);
         }
     }
     ImGui::SetItemTooltip("Load a file into this system: a trajectory becomes its run, energies or a topology add to it,\n"
@@ -436,12 +437,12 @@ static void draw_copies_row(SystemContext& sc) {
 
     char preview[64] = "Coordinates as they are";
     if (sc.scene.assembly >= 0 && (size_t)sc.scene.assembly < num_assemblies) {
-        const str_t id = md_assembly_id(&sys.assembly, (size_t)sc.scene.assembly);
-        snprintf(preview, sizeof(preview), "Assembly " STR_FMT " (%zu chains)", STR_ARG(id), assembly_num_chains(sys, (size_t)sc.scene.assembly));
+        const md_str_t id = md_assembly_id(&sys.assembly, (size_t)sc.scene.assembly);
+        snprintf(preview, sizeof(preview), "Assembly " MD_STR_FMT " (%zu chains)", MD_STR_ARG(id), assembly_num_chains(sys, (size_t)sc.scene.assembly));
     } else if (images) {
         snprintf(preview, sizeof(preview), "Periodic images");
     }
-    ImGui::SetNextItemWidth(MAX(ImGui::GetContentRegionAvail().x, 1.0f));
+    ImGui::SetNextItemWidth(MD_MAX(ImGui::GetContentRegionAvail().x, 1.0f));
     if (ImGui::BeginCombo("##shown_as", preview)) {
         if (ImGui::Selectable("Coordinates as they are", !shown)) {
             system_set_assembly(sc, -1);
@@ -453,8 +454,8 @@ static void draw_copies_row(SystemContext& sc) {
         }
         for (size_t k = 0; k < num_assemblies; ++k) {
             char label[64];
-            const str_t id = md_assembly_id(&sys.assembly, k);
-            snprintf(label, sizeof(label), "Assembly " STR_FMT " (%zu chains)##%zu", STR_ARG(id), assembly_num_chains(sys, k), k);
+            const md_str_t id = md_assembly_id(&sys.assembly, k);
+            snprintf(label, sizeof(label), "Assembly " MD_STR_FMT " (%zu chains)##%zu", MD_STR_ARG(id), assembly_num_chains(sys, k), k);
             if (ImGui::Selectable(label, sc.scene.assembly == (int)k)) {
                 system_set_assembly(sc, (int)k);
             }
@@ -603,7 +604,7 @@ void draw_system_operations(SystemContext& sys) {
 // The state of the tracking of bond changes in the frame shown, and its advanced settings, under the operation
 static void draw_bond_tracking_details(SystemContext& sys) {
     ApplicationState* app = sys.app;
-    ASSERT(app);
+    MD_ASSERT(app);
     auto& tracking = sys.scene.operations.bond_tracking;
 
     const md_bond_delta_t* delta = bond_tracking_delta(sys);
@@ -641,8 +642,8 @@ static void draw_bond_tracking_details(SystemContext& sys) {
         // The same as a script value, to count or plot: formed(d), broken(d), bond(d)
         char args[512] = "";
         int len = 0;
-        const str_t scope = str_trim(str_from_cstr(tracking.scope.text));
-        if (!str_empty(scope)) len += snprintf(args + len, sizeof(args) - len, STR_FMT, STR_ARG(scope));
+        const md_str_t scope = md_str_trim(md_str_from_cstr(tracking.scope.text));
+        if (!md_str_empty(scope)) len += snprintf(args + len, sizeof(args) - len, MD_STR_FMT, MD_STR_ARG(scope));
         if (tracking.tolerance != MD_BOND_DELTA_TOLERANCE && len < (int)sizeof(args)) {
             len += snprintf(args + len, sizeof(args) - len, "%stolerance=%.3g", len ? ", " : "", tracking.tolerance);
         }
@@ -656,10 +657,10 @@ static void draw_bond_tracking_details(SystemContext& sys) {
             }
             if (len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, "}");
         }
-        const str_t ident = create_unique_identifier(app->script.ir, STR_LIT("bonds_delta"), app->allocator.frame);
+        const md_str_t ident = create_unique_identifier(app->script.ir, MD_STR_LIT("bonds_delta"), app->allocator.frame);
         char line[640];
-        snprintf(line, sizeof(line), STR_FMT " = bond_delta(%s);", STR_ARG(ident), args);
-        script_editor::append_line(app->editor, str_from_cstr(line));
+        snprintf(line, sizeof(line), MD_STR_FMT " = bond_delta(%s);", MD_STR_ARG(ident), args);
+        script_editor::append_line(app->editor, md_str_from_cstr(line));
     }
     ImGui::EndDisabled();
     if (v2) {
@@ -702,7 +703,8 @@ const char* system_file_role_label(const FileEntry& e, FileRole role) {
     switch (role) {
     case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
     case FileRole_Trajectory: return "Trajectory";
-    case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" : "Supplement";
+    case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" :
+                                     e.type == LoaderType_NDX ? "Groups" : "Supplement";
     case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
     default:                  return "";
     }
@@ -719,7 +721,7 @@ static const char* file_role_icon(const FileEntry& e, FileRole role) {
 }
 
 void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t i) {
-    ASSERT(buf && cap > 0);
+    MD_ASSERT(buf && cap > 0);
     buf[0] = '\0';
     const FileList* list = &sys.files;
     const FileEntry* e = file_list_get(list, i);
@@ -727,13 +729,13 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
     switch (file_list_role(list, i)) {
     case FileRole_System: {
         // A topology names the file its coordinates came from
-        str_t coords = {};
+        md_str_t coords = {};
         if (e->coordinates[0]) {
-            coords = str_from_cstr(e->coordinates);
-            extract_file(&coords, coords);
+            coords = md_str_from_cstr(e->coordinates);
+            coords = md_path_filename(coords);
         }
-        snprintf(buf, cap, "%zu atoms%s%s" STR_FMT, sys.data.sys.atom.count, md_system_is_coarse_grained(&sys.data.sys) ? ", coarse grained" : "",
-                 coords.len ? ", coordinates of " : "", STR_ARG(coords));
+        snprintf(buf, cap, "%zu atoms%s%s" MD_STR_FMT, sys.data.sys.atom.count, md_system_is_coarse_grained(&sys.data.sys) ? ", coarse grained" : "",
+                 coords.len ? ", coordinates of " : "", MD_STR_ARG(coords));
         break;
     }
     case FileRole_Trajectory: {
@@ -750,11 +752,11 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
     }
     case FileRole_Series: {
         // The group the file published, which names its source. The series are of the one system loaded.
-        str_t groups[64];
-        const size_t num_groups = MIN(system_series_groups(groups, ARRAY_SIZE(groups), sys), ARRAY_SIZE(groups));
-        const str_t path = str_from_cstr(e->path);
+        md_str_t groups[64];
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), sys), MD_COUNTOF(groups));
+        const md_str_t path = md_str_from_cstr(e->path);
         for (size_t g = 0; g < num_groups; ++g) {
-            if (str_eq(system_series_group_source(sys, groups[g]), path)) {
+            if (md_str_eq(system_series_group_source(sys, groups[g]), path)) {
                 snprintf(buf, cap, "%zu series", system_series_members(nullptr, 0, sys, groups[g]));
                 break;
             }
@@ -762,7 +764,7 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
         break;
     }
     case FileRole_Supplement:
-        snprintf(buf, cap, STR_FMT, STR_ARG(loader::type_name(e->type)));
+        snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(loader::type_name(e->type)));
         break;
     default:
         break;
@@ -817,13 +819,12 @@ void draw_system_files(SystemContext& sc) {
             const bool of_run = e.run >= 0;
             if (of_run && role != FileRole_Trajectory) ImGui::Indent();
 
-            str_t name = str_from_cstr(e.path);
-            extract_file(&name, name);
+            const md_str_t name = md_path_filename(md_str_from_cstr(e.path));
             ImGui::AlignTextToFramePadding();
             if (e.missing) {
-                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " " STR_FMT, STR_ARG(name));
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " " MD_STR_FMT, MD_STR_ARG(name));
             } else {
-                ImGui::Text("%s " STR_FMT, file_role_icon(e, role), STR_ARG(name));
+                ImGui::Text("%s " MD_STR_FMT, file_role_icon(e, role), MD_STR_ARG(name));
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
                 if (e.missing) ImGui::SetTooltip("%s, not loaded: the workspace names it, but it could not be loaded\n%s", system_file_role_label(e, role), e.path);
@@ -850,7 +851,7 @@ void draw_system_files(SystemContext& sc) {
 
 void system_remove(SystemContext& sys) {
     ApplicationState* app = sys.app;
-    ASSERT(app);
+    MD_ASSERT(app);
     // Its data, when it has any: an empty system (the first, before anything is loaded) has nothing to free
     if (system_loaded(sys) || sys.run.path[0]) {
         interrupt_async_tasks(app);
@@ -861,7 +862,7 @@ void system_remove(SystemContext& sys) {
     // What was of it: its representations, its operations and what it was shown as
     remove_all_representations(sys);
     sys.scene.visible = true;
-    sys.scene.placement = mat4_ident();
+    sys.scene.placement = md_float4x4_ident();
     system_reset_operations(sys);
     sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
     sys.scene.assembly = -1;
@@ -879,83 +880,83 @@ void system_scene_serialize(viamd::serialization_state_t& state, const SystemCon
     const auto& s = sys.scene;
     const auto& op = s.operations;
 
-    viamd::write_section_header(state, STR_LIT("SystemScene"));
-    viamd::write_int(state, STR_LIT("System"), (int)sys.id);
-    viamd::write_bool(state, STR_LIT("Visible"), s.visible);
-    if (!mat4_equal(s.placement, mat4_ident())) {
+    viamd::write_section_header(state, MD_STR_LIT("SystemScene"));
+    viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
+    viamd::write_bool(state, MD_STR_LIT("Visible"), s.visible);
+    if (!md_float4x4_equal(s.placement, md_float4x4_ident())) {
         // Column major
-        viamd::write_flt_vec(state, STR_LIT("Placement"), &s.placement.elem[0][0], 16);
+        viamd::write_flt_vec(state, MD_STR_LIT("Placement"), &s.placement.elem[0][0], 16);
     }
 
     // The operations: on or off, and their settings
-    viamd::write_bool(state, STR_LIT("Recenter"), op.recenter);
-    viamd::write_bool(state, STR_LIT("FixateOrientation"), op.fixate_orientation);
-    viamd::write_bool(state, STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
-    viamd::write_str(state,  STR_LIT("RecenterQuery"), str_from_cstr(op.recenter_query.filter.text));
+    viamd::write_bool(state, MD_STR_LIT("Recenter"), op.recenter);
+    viamd::write_bool(state, MD_STR_LIT("FixateOrientation"), op.fixate_orientation);
+    viamd::write_bool(state, MD_STR_LIT("RecenterQueryEnabled"), op.recenter_query.enabled);
+    viamd::write_str(state,  MD_STR_LIT("RecenterQuery"), md_str_from_cstr(op.recenter_query.filter.text));
     if (!md_bitset_empty(op.selection_mask)) {
-        viamd::write_bitset(state, STR_LIT("RecenterTarget"), &op.selection_mask);
+        viamd::write_bitset(state, MD_STR_LIT("RecenterTarget"), &op.selection_mask);
     }
-    viamd::write_bool(state, STR_LIT("ApplyPbc"), op.apply_pbc);
-    viamd::write_bool(state, STR_LIT("UnwrapStructures"), op.unwrap_structures);
-    viamd::write_bool(state, STR_LIT("TrackBonds"), op.bond_tracking.enabled);
-    viamd::write_str(state,  STR_LIT("TrackBondsScope"), str_from_cstr(op.bond_tracking.scope.text));
-    viamd::write_flt(state,  STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
+    viamd::write_bool(state, MD_STR_LIT("ApplyPbc"), op.apply_pbc);
+    viamd::write_bool(state, MD_STR_LIT("UnwrapStructures"), op.unwrap_structures);
+    viamd::write_bool(state, MD_STR_LIT("TrackBonds"), op.bond_tracking.enabled);
+    viamd::write_str(state,  MD_STR_LIT("TrackBondsScope"), md_str_from_cstr(op.bond_tracking.scope.text));
+    viamd::write_flt(state,  MD_STR_LIT("TrackBondsTolerance"), op.bond_tracking.tolerance);
     char origins[64];
-    viamd::write_str(state,  STR_LIT("TrackBondsBreakable"), str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
+    viamd::write_str(state,  MD_STR_LIT("TrackBondsBreakable"), md_str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
 
     // What it is shown as
     if ((s.periodic_images[0] | s.periodic_images[1] | s.periodic_images[2]) != 0) {
-        viamd::write_int_vec(state, STR_LIT("PeriodicImages"), s.periodic_images, 3);
+        viamd::write_int_vec(state, MD_STR_LIT("PeriodicImages"), s.periodic_images, 3);
     }
     if (s.assembly >= 0 && (size_t)s.assembly < sys.data.sys.assembly.count) {
-        viamd::write_str(state, STR_LIT("Assembly"), md_assembly_id(&sys.data.sys.assembly, (size_t)s.assembly));
+        viamd::write_str(state, MD_STR_LIT("Assembly"), md_assembly_id(&sys.data.sys.assembly, (size_t)s.assembly));
     }
 }
 
-bool system_scene_read_entry(SystemContext& sys, str_t ident, str_t arg) {
+bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg) {
     auto& s = sys.scene;
     auto& op = s.operations;
 
-    if (str_eq(ident, STR_LIT("Visible"))) {
+    if (md_str_eq(ident, MD_STR_LIT("Visible"))) {
         viamd::extract_bool(s.visible, arg);
-    } else if (str_eq(ident, STR_LIT("Placement"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("Placement"))) {
         // Column major
-        mat4_t M;
+        md_float4x4_t M;
         if (viamd::extract_flt_vec(&M.elem[0][0], 16, arg)) s.placement = M;
-    } else if (str_eq(ident, STR_LIT("Operations"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("Operations"))) {
         // The operations a system had, of a workspace written while they were added and removed: every system has
         // them all now, on or off by their own entries
-    } else if (str_eq(ident, STR_LIT("Recenter"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("Recenter"))) {
         viamd::extract_bool(op.recenter, arg);
-    } else if (str_eq(ident, STR_LIT("FixateOrientation"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("FixateOrientation"))) {
         viamd::extract_bool(op.fixate_orientation, arg);
-    } else if (str_eq(ident, STR_LIT("ApplyPbc"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("ApplyPbc"))) {
         viamd::extract_bool(op.apply_pbc, arg);
-    } else if (str_eq(ident, STR_LIT("UnwrapStructures"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("UnwrapStructures"))) {
         viamd::extract_bool(op.unwrap_structures, arg);
-    } else if (str_eq(ident, STR_LIT("RecalcBonds")) || str_eq(ident, STR_LIT("TrackBonds"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("RecalcBonds")) || md_str_eq(ident, MD_STR_LIT("TrackBonds"))) {
         // RecalcBonds: what a workspace from before the bond changes were tracked had, the bonds of every frame guessed anew
         viamd::extract_bool(op.bond_tracking.enabled, arg);
-    } else if (str_eq(ident, STR_LIT("TrackBondsScope"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("TrackBondsScope"))) {
         viamd::extract_to_char_buf(op.bond_tracking.scope.text, sizeof(op.bond_tracking.scope.text), arg);
         op.bond_tracking.scope_dirty = true;
-    } else if (str_eq(ident, STR_LIT("TrackBondsTolerance"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("TrackBondsTolerance"))) {
         float tolerance = MD_BOND_DELTA_TOLERANCE;
-        if (viamd::extract_flt(tolerance, arg)) op.bond_tracking.tolerance = CLAMP(tolerance, 0.0f, 0.45f);
-    } else if (str_eq(ident, STR_LIT("TrackBondsBreakable"))) {
-        str_t str;
+        if (viamd::extract_flt(tolerance, arg)) op.bond_tracking.tolerance = MD_CLAMP(tolerance, 0.0f, 0.45f);
+    } else if (md_str_eq(ident, MD_STR_LIT("TrackBondsBreakable"))) {
+        md_str_t str;
         uint32_t mask = 0;
         if (viamd::extract_str(str, arg) && bond_origins_parse(&mask, str)) op.bond_tracking.breakable = mask;
-    } else if (str_eq(ident, STR_LIT("RecenterQueryEnabled"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("RecenterQueryEnabled"))) {
         viamd::extract_bool(op.recenter_query.enabled, arg);
-    } else if (str_eq(ident, STR_LIT("RecenterQuery"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("RecenterQuery"))) {
         viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
         recenter_mark_query_dirty(sys);
-    } else if (str_eq(ident, STR_LIT("PeriodicImages"))) {
+    } else if (md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
         // Integers; a workspace written before [SystemScene] had them as floats ([RenderSettings])
         float n[3];
         if (viamd::extract_flt_vec(n, 3, arg)) {
-            for (int k = 0; k < 3; ++k) s.periodic_images[k] = CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+            for (int k = 0; k < 3; ++k) s.periodic_images[k] = MD_CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
         }
     } else {
         return false;

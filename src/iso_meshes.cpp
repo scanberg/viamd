@@ -10,6 +10,7 @@
 #include <core/md_hash.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -18,9 +19,9 @@
 static constexpr uint32_t PROJECT_ITERATIONS = 8;
 static constexpr uint32_t RELAX_ITERATIONS   = 3;
 
-mat4_t iso_meshes_model_matrix() {
+md_float4x4_t iso_meshes_model_matrix() {
     const float s = (float)BOHR_TO_ANGSTROM;
-    return mat4_scale(s, s, s);
+    return md_float4x4_scale(s, s, s);
 }
 
 double iso_meshes_cell_size(VolumeResolution resolution) {
@@ -38,7 +39,7 @@ double iso_meshes_cell_size(VolumeResolution resolution) {
 
 struct FieldContext {
     md_gto_basis_t basis = {};
-    const vec3_t*  atom_xyz = nullptr;   // bohr
+    const md_float3_t*  atom_xyz = nullptr;   // bohr
     size_t         num_atoms = 0;
 };
 
@@ -63,57 +64,84 @@ static bool field_context(FieldContext* ctx, md_temp_scope_t temp, const IsoFiel
     return true;
 }
 
-static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, str_t coefficient_path, const md_attribute_slice_t* slice) {
+static md_gto_iso_field_t* field_create_orbital(const IsoFieldGeometry& g, md_str_t coefficient_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
     if (!field_context(&ctx, temp, g)) return nullptr;
     size_t num_ao = 0;
     const double* coeffs = orbital_coefficients_extract(&num_ao, temp, *g.sys, coefficient_path, slice);
     if (!coeffs) return nullptr;
     if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and '" STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), STR_ARG(coefficient_path), num_ao);
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(coefficient_path), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), coeffs, md_get_heap_allocator());
+    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), coeffs, md_get_heap_allocator());
 }
 
-md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, str_t coefficient_path, const md_attribute_slice_t* slice) {
+md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     return field_create_orbital(current_geometry(temp, state), coefficient_path, slice);
 }
 
 static md_gto_iso_field_t* field_create_density_matrix(const IsoFieldGeometry& g, const double* density_matrix, size_t dim) {
     if (!density_matrix || dim == 0) return nullptr;
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
     if (!field_context(&ctx, temp, g)) return nullptr;
     if (dim != md_gto_basis_num_ao(&ctx.basis)) {
         MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&ctx.basis), dim);
         return nullptr;
     }
-    return md_gto_iso_field_create_density(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), density_matrix, md_get_heap_allocator());
+    return md_gto_iso_field_create_density(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), density_matrix, md_get_heap_allocator());
 }
 
 md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     return field_create_density_matrix(current_geometry(temp, state), density_matrix, dim);
 }
 
-static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, str_t density_path, const md_attribute_slice_t* slice) {
+md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, const double* coeffs, size_t num_ao) {
+    if (!coeffs || num_ao == 0) return nullptr;
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
+    FieldContext ctx;
+    if (!field_context(&ctx, temp, g)) return nullptr;
+    if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbital %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
+        return nullptr;
+    }
+    return md_gto_iso_field_create(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), coeffs, md_get_heap_allocator());
+}
+
+md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const double* left, const double* right, const double* weight,
+                                              size_t count, size_t num_ao) {
+    if (!left || !weight || count == 0 || num_ao == 0) return nullptr;
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    FieldContext ctx;
+    if (!field_context(&ctx, temp, g)) return nullptr;
+    if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals %zu", md_gto_basis_num_ao(&ctx.basis), num_ao);
+        return nullptr;
+    }
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), left, right, weight, count, md_get_heap_allocator());
+}
+
+static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
     size_t dim = 0;
     const double* D = density_matrix_extract(&dim, temp, *g.sys, density_path, slice);
     return D ? field_create_density_matrix(g, D, dim) : nullptr;
 }
 
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_t density_path, const md_attribute_slice_t* slice) {
+md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     return field_create_density(current_geometry(temp, state), density_path, slice);
 }
 
@@ -121,9 +149,9 @@ md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, str_
 // (md_qm_density_orbitals): the field takes them as they are, where from the matrix it would factorize
 // it again, which for a protein's density is minutes rather than a second. NULL when the system does
 // not publish the orbitals, or the density is zero.
-static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, str_t density_path) {
+static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, md_str_t density_path) {
     md_temp_scope_t temp = md_temp_begin();
-    defer { md_temp_end(temp); };
+    MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
     if (!field_context(&ctx, temp, g)) return nullptr;
     double* rows = nullptr;
@@ -132,10 +160,10 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, s
     const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, g.sys, density_path, md_temp_allocator(temp));
     if (count == 0) return nullptr;
     if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), STR_ARG(density_path), num_ao);
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(density_path), num_ao);
         return nullptr;
     }
-    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), rows, nullptr, weights, count, md_get_heap_allocator());
+    return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), rows, nullptr, weights, count, md_get_heap_allocator());
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -207,13 +235,12 @@ struct IsoFieldSpec {
 
 struct IsoBuild {
     enum Kind { Field, Set } kind = Field;
-    task_system::ID task = task_system::INVALID_ID;
-    bool      ran = false;       // an interrupted pool task never runs its function
+    task_system::Job task;       // a cancelled one (a load) made nothing to be taken
     bool      orphan = false;    // nobody wants what it makes
     md_tick_t t0 = 0;
     uint64_t  key = 0;
     const md_system_t* sys = nullptr;
-    vec3_t*   xyz = nullptr;     // bohr, its copy
+    md_float3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
     // Field
     IsoFieldSpec spec = {};
@@ -238,17 +265,17 @@ static uint32_t  g_num_dead = 0;
 
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
 
-static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const vec3_t* xyz, size_t num_atoms) {
-    if (g_num_builds == ARRAY_SIZE(g_builds)) return nullptr;
+static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
+    if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
     IsoBuild* b = new IsoBuild();
     b->kind = kind;
     b->key = key;
     b->sys = sys;
     b->t0 = md_tick_now();
     if (xyz && num_atoms) {
-        b->xyz = (vec3_t*)malloc(sizeof(vec3_t) * num_atoms);
+        b->xyz = (md_float3_t*)malloc(sizeof(md_float3_t) * num_atoms);
         if (b->xyz) {
-            MEMCPY(b->xyz, xyz, sizeof(vec3_t) * num_atoms);
+            md_memcpy(b->xyz, xyz, sizeof(md_float3_t) * num_atoms);
             b->num_atoms = num_atoms;
         }
     }
@@ -257,12 +284,16 @@ static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t*
 }
 
 static bool build_running(const IsoBuild* b) {
-    return b && task_system::task_is_running(b->task);
+    return b && b->task.running();
+}
+
+// It made what it was for: not cancelled before (or while) it ran
+static bool build_made(const IsoBuild* b) {
+    return b->task.status() == task_system::Status::Completed;
 }
 
 // On a worker thread
 static void build_run(IsoBuild* b) {
-    b->ran = true;
     IsoFieldGeometry g;
     g.sys = b->sys;
     g.atom_xyz = b->xyz;
@@ -275,7 +306,7 @@ static void build_run(IsoBuild* b) {
     md_temp_scope_t temp = md_temp_begin();
     FieldContext ctx;
     if (field_context(&ctx, temp, g)) {
-        b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(vec3_t), b->fields, b->num_fields, md_get_heap_allocator());
+        b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), b->fields, b->num_fields, md_get_heap_allocator());
     }
     md_temp_end(temp);
     md_gpu_stream_destroy(b->stream);   // once its uploads are done: the set is then ready for any stream
@@ -286,8 +317,7 @@ static void build_run(IsoBuild* b) {
 static void build_start(IsoBuild* b) {
     // and the worker's temp arenas given back after: a density's orbitals are read there, hundreds of MB that a
     // pool thread would otherwise hold until it exits
-    b->task = task_system::create_pool_task(STR_LIT("##Isosurface mesh preparation"), [b]() { build_run(b); md_temp_trim(); });
-    task_system::enqueue_task(b->task);
+    b->task.start({}, [b]() { build_run(b); md_temp_trim(); });
 }
 
 static bool field_held(const md_gto_iso_field_t* f) {
@@ -299,37 +329,21 @@ static bool field_held(const md_gto_iso_field_t* f) {
     return false;
 }
 
-// Fields destroyed by pool tasks: a protein's density field is a few hundred MB in large blocks, tens of ms to
+// Fields destroyed on the pool: a protein's density field is a few hundred MB in large blocks, tens of ms to
 // give back, at the frame that takes the next one
-static task_system::ID g_destroys[64];
-static uint32_t        g_num_destroys = 0;
-
 static void field_destroy(md_gto_iso_field_t* field) {
-    for (uint32_t i = 0; i < g_num_destroys;) {
-        if (!task_system::task_is_running(g_destroys[i])) {
-            g_destroys[i] = g_destroys[--g_num_destroys];
-            continue;
-        }
-        ++i;
-    }
-    if (g_num_destroys == ARRAY_SIZE(g_destroys)) {
-        md_gto_iso_field_destroy(field);
-        return;
-    }
-    const task_system::ID task = task_system::create_pool_task(STR_LIT("##Isosurface field release"), [field]() { md_gto_iso_field_destroy(field); });
-    task_system::enqueue_task(task);
-    g_destroys[g_num_destroys++] = task;
+    task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
 void iso_field_release(md_gto_iso_field_t* field) {
     if (!field) return;
-    if (field_held(field) && g_num_dead < ARRAY_SIZE(g_dead_fields)) {
+    if (field_held(field) && g_num_dead < MD_COUNTOF(g_dead_fields)) {
         g_dead_fields[g_num_dead++] = field;
         return;
     }
     if (field_held(field)) {
         // no room to defer it: the task is waited for, which is rare and only costs the time it has left
-        for (uint32_t i = 0; i < g_num_builds; ++i) task_system::task_wait_for(g_builds[i]->task);
+        for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->task.wait();
     }
     field_destroy(field);
 }
@@ -339,7 +353,7 @@ static void build_destroy(IsoBuild* b) {
     if (b->field) field_destroy(b->field);
 #if MD_ENABLE_GPU
     if (b->set) md_gto_iso_gpu_set_destroy(b->gl_stream, (md_gto_iso_gpu_set_t*)b->set);
-    if (b->stream) md_gpu_stream_destroy(b->stream);   // of a task that never ran: nothing on it
+    if (b->stream) md_gpu_stream_destroy(b->stream);   // of a task cancelled before it ran: nothing on it
 #endif
     free(b->xyz);
     delete b;
@@ -384,11 +398,11 @@ void iso_meshes_collect() {
 }
 
 void iso_meshes_shutdown(ApplicationState* state) {
-    for (uint32_t i = 0; i < g_num_builds; ++i) task_system::task_wait_for(g_builds[i]->task);
+    for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->task.wait();
     for (uint32_t i = 0; i < g_num_builds; ++i) g_builds[i]->orphan = true;
     builds_collect();
-    for (uint32_t i = 0; i < g_num_destroys; ++i) task_system::task_wait_for(g_destroys[i]);
-    g_num_destroys = 0;
+    // and the fields given back on the pool
+    task_system::wait_all();
     (void)state;
 }
 
@@ -446,7 +460,7 @@ static void keep_index(IsoMeshes* m, const uint32_t* idx, uint32_t count) {
     free(m->tri_index);
     m->tri_index = count ? (uint32_t*)malloc(sizeof(uint32_t) * count) : nullptr;
     m->tri_index_count = m->tri_index ? count : 0;
-    if (m->tri_index) MEMCPY(m->tri_index, idx, sizeof(uint32_t) * count);
+    if (m->tri_index) md_memcpy(m->tri_index, idx, sizeof(uint32_t) * count);
 }
 
 // The device copy of the vertices, which goes with the mesh it is of
@@ -460,7 +474,7 @@ static void drop_gpu_xyz(IsoMeshes* m, ApplicationState* state) {
 }
 
 void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
-    ASSERT(m);
+    MD_ASSERT(m);
     release_extraction_state(m, state);
     build_orphan((IsoBuild*)m->set_build);
     drop_gpu_xyz(m, state);
@@ -503,7 +517,7 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
         if (build_running(b)) return 0;
         m->set_build = nullptr;
         build_remove(b);
-        if (b->key == m->fields_key && b->ran) {
+        if (b->key == m->fields_key && build_made(b)) {
             if (b->set) {
                 // its uploads are done: the task waited for them before it ended (destroying its stream)
                 m->gpu_set = b->set;
@@ -517,7 +531,7 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
         build_destroy(b);
         if (m->gpu_set) return 1;
         if (m->set_failed_key == m->fields_key) return -1;
-        // of other fields, or interrupted before it ran: one for these
+        // of other fields, or cancelled before it was done: one for these
     }
     IsoBuild* nb = build_new(IsoBuild::Set, m->fields_key, g.sys, g.atom_xyz, g.num_atoms);
     if (!nb) return -1;
@@ -638,10 +652,7 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
     md_gto_iso_cache_info_t info = {};
     md_gto_iso_cache_info(&info, cache);
     if (info.num_bricks > 0) {
-        task_system::ID task = task_system::create_pool_task(STR_LIT("Isosurface mesh corners"), info.num_bricks,
-            [cache](uint32_t beg, uint32_t end, uint32_t) { md_gto_iso_cache_evaluate(cache, beg, end - beg); }, 16);
-        task_system::enqueue_task(task);
-        task_system::task_wait_for(task);
+        task_system::parallel_for(info.num_bricks, 16, [cache](uint32_t beg, uint32_t end) { md_gto_iso_cache_evaluate(cache, beg, end - beg); });
     }
 
     slot->field = field;
@@ -680,8 +691,8 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
         size_t v0 = 0, i0 = 0;
         for (uint32_t k = 0; k < n && pos && nrm && idx; ++k) {
             const md_gto_iso_mesh_t& mk = meshes[k];
-            MEMCPY(pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
-            MEMCPY(nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
+            md_memcpy(pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
+            md_memcpy(nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
             for (uint32_t i = 0; i < mk.index_count; ++i) idx[i0 + i] = mk.index[i] + (uint32_t)v0;
             v0 += mk.vertex_count;
             i0 += mk.index_count;
@@ -704,24 +715,35 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
 
 static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key);
 
+uint64_t iso_meshes_slots_key(const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key) {
+    const uint32_t n = MD_MIN(num_slots, ISO_MESHES_MAX_SLOTS);
+    uint64_t key = md_hash64(&cell_size, sizeof(cell_size), fields_key);
+    for (uint32_t k = 0; k < n; ++k) {
+        key = md_hash64(&slots[k].field, sizeof(slots[k].field), key);
+        key = md_hash64(&slots[k].iso, sizeof(slots[k].iso), key);
+        key = md_hash64(&slots[k].sheets, sizeof(slots[k].sheets), key);
+    }
+    key = md_hash64(&n, sizeof(n), key);
+    return key ? key : 1;
+}
+
+bool iso_meshes_current(const IsoMeshes* m, uint64_t slots_key) {
+    return m && m->key == slots_key && !m->job;
+}
+
 bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t num_slots, double cell_size, uint64_t fields_key,
                        const IsoFieldGeometry* geometry) {
-    ASSERT(m);
-    ASSERT(state);
-    const uint32_t n = MIN(num_slots, ISO_MESHES_MAX_SLOTS);
+    MD_ASSERT(m);
+    MD_ASSERT(state);
+    const uint32_t n = MD_MIN(num_slots, ISO_MESHES_MAX_SLOTS);
     builds_collect();
 
     uint64_t fkey = md_hash64(&n, sizeof(n), fields_key);
-    uint64_t key  = md_hash64(&cell_size, sizeof(cell_size), fields_key);
     for (uint32_t k = 0; k < n; ++k) {
         fkey = md_hash64(&slots[k].field, sizeof(slots[k].field), fkey);
-        key  = md_hash64(&slots[k].field, sizeof(slots[k].field), key);
-        key  = md_hash64(&slots[k].iso, sizeof(slots[k].iso), key);
-        key  = md_hash64(&slots[k].sheets, sizeof(slots[k].sheets), key);
     }
-    key = md_hash64(&n, sizeof(n), key);
+    const uint64_t key = iso_meshes_slots_key(slots, n, cell_size, fields_key);
     fkey = fkey ? fkey : 1;
-    key  = key ? key : 1;
 #if MD_ENABLE_GPU
     // A job under way: on with it if it makes what is wanted, else dropped (the mesh shown stays until the
     // next one is done)
@@ -815,7 +837,7 @@ struct EsIsoMesh {
     md_gto_iso_field_t* field = nullptr;
     IsoFieldSpec field_spec = {};   // what it is of
     bool field_failed = false;
-    vec3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
+    md_float3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
     IsoBuild* field_build = nullptr;    // the field of another key, being made on a worker thread
     IsoMeshes meshes = {};
@@ -851,17 +873,17 @@ static IsoFieldSpec field_spec_of(const ElectronicStructureRepresentation& es) {
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& es) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
-        const str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.orbital_idx);
         return field_create_orbital(g, path, &slice);
     }
     case ElectronicStructureSource::NaturalTransitionOrbital: {
-        const str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
+        const md_str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
         const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.excited_state_idx, (uint32_t)es.nto_lambda_idx);
         return field_create_orbital(g, path, &slice);
     }
     case ElectronicStructureSource::TransitionDensity: {
-        str_t path = es_path::attachment_density;
+        md_str_t path = es_path::attachment_density;
         switch (es.transition_density_component) {
         case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
         case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
@@ -874,7 +896,7 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldS
     case ElectronicStructureSource::ElectronDensity: {
         // from its orbitals where the system has them, from its matrix otherwise. Its maxima are at the
         // nuclei: the GPU extraction evaluates it only around the surface (the flood)
-        const str_t path = es_electron_density_path(es.spin);
+        const md_str_t path = es_electron_density_path(es.spin);
         md_gto_iso_field_t* f = field_create_scf_density(g, path);
         if (!f) f = field_create_density(g, path, nullptr);
         md_gto_iso_field_set_maxima_at_atoms(f, true);
@@ -906,7 +928,7 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
 }
 
 void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructureRepresentation* es) {
-    ASSERT(es);
+    MD_ASSERT(es);
     if (!es->iso_mesh) return;
     iso_meshes_free(&es->iso_mesh->meshes, state);
     iso_field_release(es->iso_mesh->field);     // when no set of it is being made
@@ -938,8 +960,8 @@ static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t f
 }
 
 size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, ApplicationState* state, Representation* rep, const IsoDesc& iso) {
-    ASSERT(state);
-    ASSERT(rep);
+    MD_ASSERT(state);
+    MD_ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es.iso_mesh) es.iso_mesh = new EsIsoMesh();
     EsIsoMesh& em = *es.iso_mesh;
@@ -953,11 +975,11 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     const IsoFieldSpec spec = field_spec_of(es);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
-        !(em.field_build->ran && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
+        !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
         IsoBuild* b = em.field_build;
         em.field_build = nullptr;
         build_remove(b);
-        if (b->ran && field_spec_equal(b->spec, spec)) {
+        if (build_made(b) && field_spec_equal(b->spec, spec)) {
             // in: the meshes of the old field go with their state on the device (their set holds it)
             iso_meshes_drop_fields(&em.meshes, state);
             iso_field_release(em.field);
@@ -977,7 +999,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
                 MD_LOG_DEBUG("Isosurface meshes: the field of '%s' made in %.1f ms (on a worker thread)", rep->name, md_tick_to_milliseconds(md_tick_now() - b->t0));
             }
         }
-        build_destroy(b);   // of another field, or interrupted before it ran: made again below
+        build_destroy(b);   // of another field, or cancelled before it was done: made again below
     }
     if (!em.field) {
         field_build_begin(em, state, field_key, spec);
@@ -991,7 +1013,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     uint32_t num_slots = 0;
     int      entry_slot[8];
     uint32_t entry_sheets[8];
-    const size_t count = MIN(iso.count, (size_t)8);
+    const size_t count = MD_MIN(iso.count, (size_t)8);
     for (size_t i = 0; i < count; ++i) {
         entry_slot[i] = -1;
         const double v = (double)iso.values[i];
@@ -1059,7 +1081,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         if (surface_field_points_poll(&em.field_points, &values, &nv) == SurfaceFieldPointsStatus::Done && values && nv == em.meshes.xyz_count) {
             // and its gradient along the surface, which the isolines take their width from
             md_temp_scope_t temp = md_temp_begin();
-            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MAX(nv, (size_t)1));
+            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MD_MAX(nv, (size_t)1));
             isomesh::mesh_field_gradient(gradients, em.meshes.xyz, values, (uint32_t)nv, em.meshes.tri_index, em.meshes.tri_index_count);
             if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
@@ -1074,7 +1096,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         vertex_field = em.span.valid;
     }
 
-    const mat4_t model = iso_meshes_model_matrix();
+    const md_float4x4_t model = iso_meshes_model_matrix();
     size_t n = 0;
     for (size_t i = 0; i < count; ++i) {
         if (entry_slot[i] < 0) continue;

@@ -5,6 +5,7 @@
 
 #include <core/md_allocator.h>
 #include <core/md_writer.h>
+#include <core/md_vec_math.h>
 
 #include <string.h>
 
@@ -184,7 +185,7 @@ UTEST(timeline_periods, workspace_round_trip) {
     TimelinePeriod* a = timeline_periods_add(&rs, "Unfolding", 430, 470, false);
     strcpy(a->note, "The helix unwinds here.\nCompare with the second run.");
     TimelinePeriod* b = timeline_periods_add(&rs, "Recent", -60, 0, true);
-    b->color = vec4_set(0.25f, 0.5f, 0.75f, 1.0f);
+    b->color = md_float4_set(0.25f, 0.5f, 0.75f, 1.0f);
     timeline_periods_add(&rs, nullptr, 12, 12, false);
 
     viamd::serialization_state_t w = {};
@@ -195,10 +196,10 @@ UTEST(timeline_periods, workspace_round_trip) {
     r.text = md_str_writer_to_str(&w.sw);
 
     TimelinePeriods out = {};
-    str_t section;
+    md_str_t section;
     int sections = 0;
     while (viamd::next_section_header(section, r)) {
-        ASSERT_TRUE(str_eq(section, STR_LIT("TimelinePeriod")));
+        ASSERT_TRUE(md_str_eq(section, MD_STR_LIT("TimelinePeriod")));
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
         sections += 1;
     }
@@ -250,7 +251,7 @@ UTEST(timeline_periods, ids_survive_a_save_and_a_load) {
 
     viamd::deserialization_state_t r = {};
     r.text = md_str_writer_to_str(&w.sw);
-    str_t section;
+    md_str_t section;
     while (viamd::next_section_header(section, r)) {
         ASSERT_TRUE(timeline_periods_deserialize_period(r, &out));
     }

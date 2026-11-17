@@ -27,6 +27,9 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/script_suggestions_vial.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plot_periodic_core.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/display_units.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/transfer_function.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/window_menu.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it
@@ -82,7 +85,6 @@ target_include_directories(viamd_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/components          # a component includes as <foo/foo_core.h>
     ${CMAKE_CURRENT_SOURCE_DIR}/../ext/mdlib/unittest      # utest.h, shared with mdlib's own suite
-    ${CMAKE_CURRENT_SOURCE_DIR}/../ext/atomic_queue
     ${CMAKE_CURRENT_SOURCE_DIR}/../ext/enkiTS/src
 )
 

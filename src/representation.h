@@ -27,7 +27,7 @@ struct deserialization_state_t;
 bool representation_can_add(const SystemContext& sys, size_t count = 1);
 
 // Appended at the end of 'group' (0 for the top level). NULL when the system has as many as it can.
-Representation* create_representation(SystemContext& sys, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, str_t filter = {}, uint32_t group = 0);
+Representation* create_representation(SystemContext& sys, RepresentationType type = RepresentationType::SpaceFill, ColorMapping color_mapping = ColorMapping::Type, md_str_t filter = {}, uint32_t group = 0);
 // Placed just after the original, in the same group. NULL when the system has as many as it can.
 Representation* clone_representation(SystemContext& sys, const Representation& rep);
 void remove_representation(SystemContext& sys, size_t idx);
@@ -82,7 +82,7 @@ Representation* create_representation_of_target(SystemContext& sys, const Repres
 // --- Groups ---
 
 // Appended at the end of 'parent' (0 for the top level)
-RepresentationGroup* create_representation_group(SystemContext& sys, str_t name = STR_LIT("group"), uint32_t parent = 0);
+RepresentationGroup* create_representation_group(SystemContext& sys, md_str_t name = MD_STR_LIT("group"), uint32_t parent = 0);
 // The group and everything within it, placed just after the original. Nothing when the representations within it
 // would take the system beyond as many as it can have.
 void clone_representation_group(SystemContext& sys, uint32_t id);
@@ -129,8 +129,9 @@ void update_all_representations(ApplicationState* app);     // of every system
 
 void flag_representation_as_dirty(Representation* rep);
 
-// The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds): of a licorice or a ball and stick, the
-// non-covalent bonds of the system, dashed among its atoms; of a Bonds representation, the bonds its filter picked.
+// The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds), with their kinds, which give their
+// dashes: of a licorice or a ball and stick, the non-covalent bonds of the system among its atoms; of a Bonds
+// representation, the bonds its filter picked.
 // Set again whenever the bonds of the system change.
 void representation_set_weak_bonds(SystemContext& sys, Representation* rep);
 // The representations and the contexts of the groups: what they are evaluated against changed (the script, the system)
@@ -166,7 +167,8 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 // glyphs) are the caller's.
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
 // The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
-// solid or dashed, and the non-covalent bonds of the system, dashed, over the sticks of a licorice or a ball and stick.
+// dashed as it says (BondDashes), and the non-covalent bonds of the system, dashed by kind, over the sticks of a
+// licorice or a ball and stick.
 // Nothing for the others. The copies and the subset are the caller's.
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
 
@@ -183,9 +185,9 @@ void representations_serialize(viamd::serialization_state_t& state, const System
 // The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
 // when it is not one of them
 void representation_write_entries(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep);
-bool representation_read_entry(Representation* rep, str_t ident, str_t arg);
+bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg);
 // True when the section was one of the above, which it has then read
-bool representations_deserialize(str_t section, viamd::deserialization_state_t& state, WorkspaceSystemFn system_of, void* user);
+bool representations_deserialize(md_str_t section, viamd::deserialization_state_t& state, WorkspaceSystemFn system_of, void* user);
 
 // --- UI ---
 

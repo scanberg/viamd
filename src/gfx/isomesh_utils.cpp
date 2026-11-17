@@ -7,6 +7,7 @@
 #include <core/md_allocator.h>
 #include <core/md_hash.h>
 #include <core/md_log.h>
+#include <core/md_vec_math.h>
 
 #include <math.h>
 #include <float.h>
@@ -18,7 +19,7 @@
 
 namespace isomesh {
 
-static constexpr str_t v_shader_src_fs_triangle = STR_LIT(R"(
+static constexpr md_str_t v_shader_src_fs_triangle = MD_STR_LIT(R"(
 #version 410 core
 void main() {
     uint idx = uint(gl_VertexID) % 3U;
@@ -28,7 +29,7 @@ void main() {
 
 // The mean of the frames over the target (isomesh_accumulate.frag): the radiance scaled to the exact coverage
 // of the surfaces (Enderton's alpha correction), and the coverage of the surfaces and what they enclose
-static constexpr str_t f_shader_src_composite = STR_LIT(R"(
+static constexpr md_str_t f_shader_src_composite = MD_STR_LIT(R"(
 #version 410 core
 uniform sampler2D u_tex_color;
 uniform sampler2D u_tex_t;
@@ -98,15 +99,15 @@ static void blue_noise_generate(float* out, int n) {
     float* kernel = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * N);
     for (int y = 0; y < n; ++y) {
         for (int x = 0; x < n; ++x) {
-            const int dx = MIN(x, n - x), dy = MIN(y, n - y);
+            const int dx = MD_MIN(x, n - x), dy = MD_MIN(y, n - y);
             kernel[y * n + x] = expf(-(float)(dx * dx + dy * dy) / (2.0f * sigma * sigma));
         }
     }
     uint8_t* on     = (uint8_t*)md_alloc(md_get_heap_allocator(), N);
     float*   energy = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * N);
     int*     rank   = (int*)md_alloc(md_get_heap_allocator(), sizeof(int) * N);
-    MEMSET(on, 0, N);
-    MEMSET(energy, 0, sizeof(float) * N);
+    md_memset(on, 0, N);
+    md_memset(energy, 0, sizeof(float) * N);
 
     auto splat = [&](int i, float sign) {
         const int ix = i % n, iy = i / n;
@@ -152,16 +153,16 @@ static void blue_noise_generate(float* out, int n) {
     // Ranks below the initial: take the tightest clusters away, on a copy of the state
     uint8_t* on0     = (uint8_t*)md_alloc(md_get_heap_allocator(), N);
     float*   energy0 = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * N);
-    MEMCPY(on0, on, N);
-    MEMCPY(energy0, energy, sizeof(float) * N);
+    md_memcpy(on0, on, N);
+    md_memcpy(energy0, energy, sizeof(float) * N);
     for (int r = num_initial - 1; r >= 0; --r) {
         const int c = tightest_cluster();
         on[c] = 0;
         splat(c, -1.0f);
         rank[c] = r;
     }
-    MEMCPY(on, on0, N);
-    MEMCPY(energy, energy0, sizeof(float) * N);
+    md_memcpy(on, on0, N);
+    md_memcpy(energy, energy0, sizeof(float) * N);
     // and above: fill the largest voids
     for (int r = num_initial; r < N; ++r) {
         const int v = largest_void();
@@ -179,7 +180,7 @@ static void blue_noise_generate(float* out, int n) {
     md_free(md_get_heap_allocator(), energy0, sizeof(float) * N);
 }
 
-static GLuint link(str_t v_src, str_t f_src, const char* name, str_t f_defines = {}) {
+static GLuint link(md_str_t v_src, md_str_t f_src, const char* name, md_str_t f_defines = {}) {
     GLuint v = gl::compile_shader_from_source(v_src, GL_VERTEX_SHADER);
     GLuint f = gl::compile_shader_from_source(f_src, GL_FRAGMENT_SHADER, f_defines);
     GLuint p = 0;
@@ -230,18 +231,18 @@ static void accumulate_locations(AccumulateProgram* ap) {
 #undef LOC
 
 void initialize() {
-    const str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
-    const str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
-    const str_t acc  = {(const char*)isomesh_accumulate_frag, isomesh_accumulate_frag_size};
+    const md_str_t vert = {(const char*)isomesh_vert, isomesh_vert_size};
+    const md_str_t frag = {(const char*)isomesh_frag, isomesh_frag_size};
+    const md_str_t acc  = {(const char*)isomesh_accumulate_frag, isomesh_accumulate_frag_size};
 
     shutdown();
 
     static const char* const pass_defines[5] = {"", "#define ISOMESH_PASS 1", "#define ISOMESH_PASS 2", "#define ISOMESH_PASS 3",
                                                 "#define ISOMESH_PASS 4"};
     for (int p = Pass_Peel0; p <= Pass_Accumulate; ++p) {
-        gl.pass[p].program = link(vert, frag, "pass", str_from_cstr(pass_defines[p]));
+        gl.pass[p].program = link(vert, frag, "pass", md_str_from_cstr(pass_defines[p]));
     }
-    gl.mesh_tod.program   = link(vert, frag, "transmittance", STR_LIT("#define ISOMESH_TRANSMITTANCE"));
+    gl.mesh_tod.program   = link(vert, frag, "transmittance", MD_STR_LIT("#define ISOMESH_TRANSMITTANCE"));
     gl.accumulate.program = link(v_shader_src_fs_triangle, acc, "accumulate");
     gl.composite.program  = link(v_shader_src_fs_triangle, f_shader_src_composite, "composite");
     gl.ok = gl.pass[Pass_Peel0].program && gl.pass[Pass_Peel1].program && gl.pass[Pass_Depth].program &&
@@ -292,7 +293,7 @@ void shutdown() {
 }
 
 bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t stride, uint32_t vertex_count, const uint32_t* index, uint32_t index_count) {
-    ASSERT(mesh);
+    MD_ASSERT(mesh);
     if (vertex_count > 0 && (!position || !normal || stride < 3)) return false;
     if (index_count > 0 && !index) return false;
 
@@ -300,19 +301,19 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
     if (!mesh->vbo) glGenBuffers(1, &mesh->vbo);
     if (!mesh->ibo) glGenBuffers(1, &mesh->ibo);
 
-    float* interleaved = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 6 * MAX(vertex_count, 1u));
-    vec3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    float* interleaved = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 6 * MD_MAX(vertex_count, 1u));
+    md_float3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (uint32_t i = 0; i < vertex_count; ++i) {
         for (int k = 0; k < 3; ++k) {
             const float x = position[stride * i + k];
             interleaved[6 * i + k]     = x;
             interleaved[6 * i + 3 + k] = normal[stride * i + k];
-            lo.elem[k] = MIN(lo.elem[k], x);
-            hi.elem[k] = MAX(hi.elem[k], x);
+            lo.elem[k] = MD_MIN(lo.elem[k], x);
+            hi.elem[k] = MD_MAX(hi.elem[k], x);
         }
     }
-    mesh->bounds_min = vertex_count ? lo : vec3_t{0, 0, 0};
-    mesh->bounds_max = vertex_count ? hi : vec3_t{0, 0, 0};
+    mesh->bounds_min = vertex_count ? lo : md_float3_t{0, 0, 0};
+    mesh->bounds_max = vertex_count ? hi : md_float3_t{0, 0, 0};
 
     glBindVertexArray(mesh->vao);
     glBindBuffer(GL_ARRAY_BUFFER, mesh->vbo);
@@ -330,7 +331,7 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 
-    md_free(md_get_heap_allocator(), interleaved, sizeof(float) * 6 * MAX(vertex_count, 1u));
+    md_free(md_get_heap_allocator(), interleaved, sizeof(float) * 6 * MD_MAX(vertex_count, 1u));
 
     mesh->vertex_count = vertex_count;
     mesh->index_count  = index_count;
@@ -339,7 +340,7 @@ bool mesh_upload(Mesh* mesh, const float* position, const float* normal, size_t 
 }
 
 bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients, uint32_t count) {
-    ASSERT(mesh);
+    MD_ASSERT(mesh);
     if (!mesh->vao) return false;
     if (values && count != mesh->vertex_count) return false;
     glBindVertexArray(mesh->vao);
@@ -350,7 +351,7 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
         glVertexAttrib3f(3, 0.0f, 0.0f, 0.0f);
     } else {
         // The value and its gradient, 4 floats per vertex
-        float* data = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 4 * MAX(count, 1u));
+        float* data = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * 4 * MD_MAX(count, 1u));
         for (uint32_t i = 0; i < count; ++i) {
             data[4 * i + 0] = values[i];
             data[4 * i + 1] = gradients ? gradients[3 * i + 0] : 0.0f;
@@ -365,7 +366,7 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 4, (const void*)(sizeof(float)));
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        md_free(md_get_heap_allocator(), data, sizeof(float) * 4 * MAX(count, 1u));
+        md_free(md_get_heap_allocator(), data, sizeof(float) * 4 * MD_MAX(count, 1u));
     }
     glBindVertexArray(0);
     mesh->version += 1;
@@ -373,25 +374,25 @@ bool mesh_upload_values(Mesh* mesh, const float* values, const float* gradients,
 }
 
 void mesh_field_gradient(float* out, const float* xyz, const float* values, uint32_t vertex_count, const uint32_t* index, uint32_t index_count) {
-    ASSERT(out);
-    MEMSET(out, 0, sizeof(float) * 3 * vertex_count);
+    MD_ASSERT(out);
+    md_memset(out, 0, sizeof(float) * 3 * vertex_count);
     if (!xyz || !values || !index || vertex_count == 0) return;
     float* weight = (float*)md_alloc(md_get_heap_allocator(), sizeof(float) * vertex_count);
-    MEMSET(weight, 0, sizeof(float) * vertex_count);
+    md_memset(weight, 0, sizeof(float) * vertex_count);
 
     for (uint32_t t = 0; t + 2 < index_count; t += 3) {
         const uint32_t i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];
         if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count) continue;
-        const vec3_t p0 = {xyz[3 * i0], xyz[3 * i0 + 1], xyz[3 * i0 + 2]};
-        const vec3_t e1 = vec3_t{xyz[3 * i1], xyz[3 * i1 + 1], xyz[3 * i1 + 2]} - p0;
-        const vec3_t e2 = vec3_t{xyz[3 * i2], xyz[3 * i2 + 1], xyz[3 * i2 + 2]} - p0;
-        const vec3_t n  = vec3_cross(e1, e2);
-        const float  a2 = vec3_dot(n, n);     // (twice the area)^2
+        const md_float3_t p0 = {xyz[3 * i0], xyz[3 * i0 + 1], xyz[3 * i0 + 2]};
+        const md_float3_t e1 = md_float3_t{xyz[3 * i1], xyz[3 * i1 + 1], xyz[3 * i1 + 2]} - p0;
+        const md_float3_t e2 = md_float3_t{xyz[3 * i2], xyz[3 * i2 + 1], xyz[3 * i2 + 2]} - p0;
+        const md_float3_t n  = md_float3_cross(e1, e2);
+        const float  a2 = md_float3_dot(n, n);     // (twice the area)^2
         if (!(a2 > 0.0f)) continue;
         // The gradient g of the linear interpolation in the triangle's plane: g . e1 = f1 - f0, g . e2 = f2 - f0
         const float  df1 = values[i1] - values[i0];
         const float  df2 = values[i2] - values[i0];
-        const vec3_t g   = (vec3_cross(e2, n) * df1 + vec3_cross(n, e1) * df2) * (1.0f / a2);
+        const md_float3_t g   = (md_float3_cross(e2, n) * df1 + md_float3_cross(n, e1) * df2) * (1.0f / a2);
         const float  w   = sqrtf(a2);
         const uint32_t tri[3] = {i0, i1, i2};
         for (uint32_t v : tri) {
@@ -413,7 +414,7 @@ void mesh_field_gradient(float* out, const float* xyz, const float* values, uint
 }
 
 void mesh_free(Mesh* mesh) {
-    ASSERT(mesh);
+    MD_ASSERT(mesh);
     if (mesh->vao) glDeleteVertexArrays(1, &mesh->vao);
     if (mesh->vbo) glDeleteBuffers(1, &mesh->vbo);
     if (mesh->ibo) glDeleteBuffers(1, &mesh->ibo);
@@ -424,7 +425,7 @@ void mesh_free(Mesh* mesh) {
 }
 
 void target_free(Target* t) {
-    ASSERT(t);
+    MD_ASSERT(t);
     GLuint* fbos[] = {&t->fbo_color, &t->fbo_tod, &t->fbo, &t->fbo_peel[0], &t->fbo_peel[1]};
     for (GLuint* f : fbos) {
         if (*f) glDeleteFramebuffers(1, f);
@@ -643,7 +644,7 @@ static uint64_t desc_hash(const RenderDesc& desc) {
             // mean would keep the image from before it, and stop drawing once converged
             if (isolines_active(s.isolines)) {
                 h = md_hash64(&s.isolines.count, sizeof(s.isolines.count), h);
-                h = md_hash64(s.isolines.values, sizeof(float) * MIN(s.isolines.count, (uint32_t)ISOLINES_MAX), h);
+                h = md_hash64(s.isolines.values, sizeof(float) * MD_MIN(s.isolines.count, (uint32_t)ISOLINES_MAX), h);
                 h = md_hash64(&s.isolines.hover, sizeof(s.isolines.hover), h);
                 if (s.isolines.hover) h = md_hash64(&s.isolines.hover_value, sizeof(s.isolines.hover_value), h);
                 h = md_hash64(&s.isolines.width, sizeof(s.isolines.width), h);
@@ -663,7 +664,7 @@ static void draw_surface(const Surface& s) {
 }
 
 bool render(Target* t, const RenderDesc& desc, bool* converged) {
-    ASSERT(t);
+    MD_ASSERT(t);
     if (converged) *converged = true;
     const uint32_t w = desc.render_target.width;
     const uint32_t h = desc.render_target.height;
@@ -683,7 +684,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
     bool any = false;
     uint64_t tris = 0;
-    vec3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    md_float3_t lo = {FLT_MAX, FLT_MAX, FLT_MAX}, hi = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
     for (size_t i = 0; i < desc.num_surfaces; ++i) {
         const Surface& s = desc.surfaces[i];
         if (!drawable(s)) continue;
@@ -691,12 +692,12 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         tris += s.index_count / 3;
         // world space bounds, for the reference distance of the optical depth
         for (int c = 0; c < 8; ++c) {
-            const vec3_t p = {(c & 1) ? s.mesh->bounds_max.x : s.mesh->bounds_min.x,
+            const md_float3_t p = {(c & 1) ? s.mesh->bounds_max.x : s.mesh->bounds_min.x,
                               (c & 2) ? s.mesh->bounds_max.y : s.mesh->bounds_min.y,
                               (c & 4) ? s.mesh->bounds_max.z : s.mesh->bounds_min.z};
-            const vec3_t q = vec3_from_vec4(s.model * vec4_from_vec3(p, 1.0f));
-            lo = vec3_min(lo, q);
-            hi = vec3_max(hi, q);
+            const md_float3_t q = md_float3_from_float4(s.model * md_float4_from_float3(p, 1.0f));
+            lo = md_float3_min(lo, q);
+            hi = md_float3_max(hi, q);
         }
     }
 
@@ -707,27 +708,27 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     // alone: what lies outside is not read, and a new view or new bounds is a new mean.
     int rect[4] = {0, 0, (int)w, (int)h};  // x, y, width, height
     if (any) {
-        const mat4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
+        const md_float4x4_t PV = desc.matrix.proj_no_jitter * desc.matrix.view;
         float x0 = FLT_MAX, y0 = FLT_MAX, x1 = -FLT_MAX, y1 = -FLT_MAX;
         bool behind = false;
         for (int k = 0; k < 8 && !behind; ++k) {
-            const vec4_t q = PV * vec4_t{(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z, 1.0f};
+            const md_float4_t q = PV * md_float4_t{(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z, 1.0f};
             if (q.w <= 1.0e-6f) {
                 behind = true;
                 break;
             }
-            const float x = CLAMP((q.x / q.w * 0.5f + 0.5f) * (float)w, -4.0f, (float)w + 4.0f);
-            const float y = CLAMP((q.y / q.w * 0.5f + 0.5f) * (float)h, -4.0f, (float)h + 4.0f);
-            x0 = MIN(x0, x);
-            x1 = MAX(x1, x);
-            y0 = MIN(y0, y);
-            y1 = MAX(y1, y);
+            const float x = MD_CLAMP((q.x / q.w * 0.5f + 0.5f) * (float)w, -4.0f, (float)w + 4.0f);
+            const float y = MD_CLAMP((q.y / q.w * 0.5f + 0.5f) * (float)h, -4.0f, (float)h + 4.0f);
+            x0 = MD_MIN(x0, x);
+            x1 = MD_MAX(x1, x);
+            y0 = MD_MIN(y0, y);
+            y1 = MD_MAX(y1, y);
         }
         if (!behind) {
-            const int ix0 = CLAMP((int)floorf(x0) - 2, 0, (int)w);
-            const int iy0 = CLAMP((int)floorf(y0) - 2, 0, (int)h);
-            const int ix1 = CLAMP((int)ceilf(x1) + 2, 0, (int)w);
-            const int iy1 = CLAMP((int)ceilf(y1) + 2, 0, (int)h);
+            const int ix0 = MD_CLAMP((int)floorf(x0) - 2, 0, (int)w);
+            const int iy0 = MD_CLAMP((int)floorf(y0) - 2, 0, (int)h);
+            const int ix1 = MD_CLAMP((int)ceilf(x1) + 2, 0, (int)w);
+            const int iy1 = MD_CLAMP((int)ceilf(y1) + 2, 0, (int)h);
             rect[0] = ix0;
             rect[1] = iy0;
             rect[2] = ix1 - ix0;
@@ -744,13 +745,13 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
     glBlendEquation(GL_FUNC_ADD);
 
     if (any && (t->frame < MAX_FRAMES || desc.keep_drawing)) {
-        const mat4_t& V = desc.matrix.view;
+        const md_float4x4_t& V = desc.matrix.view;
         // The caller's projection, or when it is not jittered (proj as proj_no_jitter) one of its own jittered over the
         // pixel by the frame (Halton 2, 3): the mean is then of the pixel's area, the edges antialiased
-        mat4_t P = desc.matrix.proj;
-        if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(mat4_t)) == 0) {
+        md_float4x4_t P = desc.matrix.proj;
+        if (memcmp(&desc.matrix.proj, &desc.matrix.proj_no_jitter, sizeof(md_float4x4_t)) == 0) {
             const uint32_t n = t->frame + 1;
-            mat4_t J = mat4_ident();
+            md_float4x4_t J = md_float4x4_ident();
             J.elem[3][0] = 2.0f * (halton(n, 2) - 0.5f) / (float)w;
             J.elem[3][1] = 2.0f * (halton(n, 3) - 0.5f) / (float)h;
             P = J * P;
@@ -760,18 +761,18 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
 
         // Distances along the rays are taken from the nearest point of the bounds (or the eye, inside them)
         const bool  ortho = P.elem[3][3] == 1.0f;
-        const vec3_t center = vec3_lerp(lo, hi, 0.5f);
-        const float radius = vec3_length(hi - lo) * 0.5f;
-        const vec3_t center_view = vec3_from_vec4(V * vec4_from_vec3(center, 1.0f));
-        const float od_ref = MAX(0.0f, (ortho ? -center_view.z : vec3_length(center_view)) - radius);
+        const md_float3_t center = md_float3_lerp(lo, hi, 0.5f);
+        const float radius = md_float3_length(hi - lo) * 0.5f;
+        const md_float3_t center_view = md_float3_from_float4(V * md_float4_from_float3(center, 1.0f));
+        const float od_ref = MD_MAX(0.0f, (ortho ? -center_view.z : md_float3_length(center_view)) - radius);
 
         const postprocess_pipeline::Lighting light = postprocess_pipeline::lighting(desc.shading.mode);
-        const float env = MAX(desc.shading.environment, 0.0f);
-        const vec3_t sky    = light.sky_radiance * env;
-        const vec3_t ground = light.ground_radiance * env;
+        const float env = MD_MAX(desc.shading.environment, 0.0f);
+        const md_float3_t sky    = light.sky_radiance * env;
+        const md_float3_t ground = light.ground_radiance * env;
         const float n2 = desc.shading.ior;
         const float F0 = powf((1.0f - n2) / (1.0f + n2), 2.0f);
-        const mat4_t inv_proj = mat4_inverse(P);
+        const md_float4x4_t inv_proj = md_float4x4_inverse(P);
         const float inv_res[2] = {1.0f / (float)w, 1.0f / (float)h};
 
         bind_texture(0, GL_TEXTURE_2D, desc.render_target.depth);
@@ -804,10 +805,10 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
             glUniform1f(m.roughness, desc.shading.roughness);
             glUniform1f(m.F0, F0);
             glUniform1f(m.basic, desc.shading.mode == postprocess_pipeline::ShadingMode_Basic ? 1.0f : 0.0f);
-            glUniform1f(m.basic_ambient, CLAMP(desc.shading.ambient, 0.0f, 1.0f));
-            glUniform1f(m.basic_specular, MAX(desc.shading.specular, 0.0f));
+            glUniform1f(m.basic_ambient, MD_CLAMP(desc.shading.ambient, 0.0f, 1.0f));
+            glUniform1f(m.basic_specular, MD_MAX(desc.shading.specular, 0.0f));
             glUniform1f(m.linear_colors, desc.shading.colors == postprocess_pipeline::ColorSpace_Linear ? 1.0f : 0.0f);
-            glUniform1f(m.light_strength, MAX(desc.shading.light, 0.0f));
+            glUniform1f(m.light_strength, MD_MAX(desc.shading.light, 0.0f));
         };
 
         // A pass: its program, then the surfaces
@@ -836,16 +837,16 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
                 glUniformMatrix4fv(m.world_to_volume, 1, GL_FALSE, s.world_to_volume.elem[0]);
                 glUniform1f(m.field_beg, s.field_range_beg);
                 glUniform1f(m.field_inv_ext, ext != 0.0f ? 1.0f / ext : 0.0f);
-                glUniform1f(m.tau, MAX(s.optical_density, 0.0f) * OPTICAL_SCALE);
+                glUniform1f(m.tau, MD_MAX(s.optical_density, 0.0f) * OPTICAL_SCALE);
                 glUniform1ui(m.surface_id, (GLuint)i);
                 // Lines only on the values of the vertices: they carry the gradient the width is taken from
                 const bool lines = coloring == 3 && isolines_active(s.isolines);
-                const GLint line_count = lines ? (GLint)MIN(s.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
+                const GLint line_count = lines ? (GLint)MD_MIN(s.isolines.count, (uint32_t)ISOLINES_MAX) : 0;
                 glUniform1i(m.isoline_count, line_count);
                 if (line_count > 0) glUniform1fv(m.isoline_values, line_count, s.isolines.values);
                 glUniform1i(m.isoline_hover, lines && s.isolines.hover ? 1 : 0);
                 glUniform1f(m.isoline_hover_value, s.isolines.hover_value);
-                glUniform1f(m.isoline_width, MAX(s.isolines.width, 0.0f));
+                glUniform1f(m.isoline_width, MD_MAX(s.isolines.width, 0.0f));
                 draw_surface(s);
             }
         };
@@ -956,7 +957,7 @@ bool render(Target* t, const RenderDesc& desc, bool* converged) {
         glUniform1i(a.tex_tod, 1);
         glUniform1i(a.tex_history_color, 2);
         glUniform1i(a.tex_history_t, 3);
-        glUniform1f(a.weight, 1.0f / (float)(MIN(t->frame, MAX_FRAMES - 1) + 1));   // past MAX_FRAMES: keep_drawing
+        glUniform1f(a.weight, 1.0f / (float)(MD_MIN(t->frame, MAX_FRAMES - 1) + 1));   // past MAX_FRAMES: keep_drawing
         glBindVertexArray(gl.vao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glActiveTexture(GL_TEXTURE0);

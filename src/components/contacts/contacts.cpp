@@ -26,6 +26,7 @@
 #include <md_nonbonded.h>
 
 #include <viamd_event.h>
+#include <window_menu.h>
 #include <viamd.h>
 #include <event.h>
 #include <task_system.h>
@@ -124,8 +125,7 @@ struct Contacts : viamd::EventHandler {
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
 
     // Computation
-    task_system::ID task = 0;
-    std::atomic<bool> busy = false;
+    task_system::Job task;
     Result result;
     Result pending;
     std::atomic<bool> pending_ready = false;
@@ -148,38 +148,39 @@ struct Contacts : viamd::EventHandler {
                 cutoff = 1.0f;
                 break;
             case viamd::EventType_ViamdShutdown:
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
                 md_system_state_free(&frame);
                 break;
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
                 break;
-            case viamd::EventType_ViamdWindowDrawMenu:
-                ImGui::Checkbox("Contacts", &show_window);
+            case viamd::EventType_ViamdWindowMenuRequest:
+                viamd::window_menu_add(e, "Analysis/Contacts", &show_window, {.order = 30});
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:
                 if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 // A new system, or none: whatever was computed or loaded belongs to the old one, and the task reading
                 // it is stopped before it goes
-                if (task) task_system::task_interrupt_and_wait_for(task);
+                task.cancel_and_wait();
+                pending_ready = false;
                 result = Result{};
                 break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
-                viamd::write_section_header(state, STR_LIT("Contacts"));
-                viamd::write_int(state, STR_LIT("GroupBy"), (int)group_by);
-                viamd::write_flt(state, STR_LIT("Cutoff"), cutoff);
+                viamd::write_section_header(state, MD_STR_LIT("Contacts"));
+                viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
+                viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
-                if (str_eq(viamd::section_header(state), STR_LIT("Contacts"))) {
-                    str_t ident, arg;
+                if (md_str_eq(viamd::section_header(state), MD_STR_LIT("Contacts"))) {
+                    md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (str_eq(ident, STR_LIT("GroupBy"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("GroupBy"))) {
                             viamd::extract_enum(group_by, arg, GroupBy_Count);
-                        } else if (str_eq(ident, STR_LIT("Cutoff"))) {
+                        } else if (md_str_eq(ident, MD_STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
                         }
                     }
@@ -193,7 +194,7 @@ struct Contacts : viamd::EventHandler {
     }
 
     void compute() {
-        if (busy) return;
+        if (task.running()) return;
         const md_system_t& sys = app_state->mold.sys;
         const md_system_state_t& cur = app_state->mold.state;
         const size_t N = sys.atom.count;
@@ -238,9 +239,8 @@ struct Contacts : viamd::EventHandler {
         pending.groups.resize(off.size() - 1);
 
         // The system it reads, taken now: what the application calls its system when the task runs need not be it
-        busy = true;
         const SystemContext* sc = &app_state->system_context;
-        task = task_system::create_pool_task(STR_LIT("Contacts"), [this, sc]() {
+        task.start(MD_STR_LIT("Contacts"), [this, sc]() {
             const md_system_t& sys = sc->data.sys;
             const size_t N = sys.atom.count;
             Result& res = pending;
@@ -273,7 +273,7 @@ struct Contacts : viamd::EventHandler {
             desc.radius = std::max(res.cutoff + 2.0 * max_radius, res.energy_cutoff);
             desc.particle_label = label.data();
             md_contact_pairs_t pairs = {};
-            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(16));
+            md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
             std::vector<uint64_t> keys;
             if (md_contact_pairs_init(&pairs, &desc, &sys, arena)) {
                 StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
@@ -292,10 +292,9 @@ struct Contacts : viamd::EventHandler {
             md_arena_allocator_destroy(arena);
             md_bitmask_free(&set_m);
             res.seconds = md_tick_to_seconds(md_tick_now() - t0);
-            pending_ready = true;
-            busy = false;
+            // A cancelled one (a new system) is for the old system: not taken
+            if (!task_system::cancelled()) pending_ready = true;
         });
-        task_system::enqueue_task(task);
     }
 
     void draw_window() {
@@ -315,7 +314,7 @@ struct Contacts : viamd::EventHandler {
                                   "Part: a covalent piece of a molecule: a strand of a polymer with its caps, a glycan, a ligand.\n"
                                   "Particles in no group of the kind are left out.");
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
-            cutoff = CLAMP(cutoff, -10.0f, 100.0f);
+            cutoff = MD_CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
             ImGui::PopItemWidth();
 
@@ -328,6 +327,7 @@ struct Contacts : viamd::EventHandler {
                 ImGui::TextDisabled("Energy: not available, the system carries no non-bonded force field");
             }
 
+            const bool busy = task.running();
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(busy ? "Computing..." : "Compute for current frame")) compute();
             ImGui::EndDisabled();

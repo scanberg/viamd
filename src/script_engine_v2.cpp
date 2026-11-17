@@ -13,7 +13,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_vec_math.h>
 #include <core/md_os.h>
-#include <md_system.h>
 
 #include <md_attributes.h>
 
@@ -30,10 +29,10 @@ struct ProgramV2 {
     md_vial_program_t*          prog;       // NULL for empty source
     uint64_t                    id;         // Ref.program: this compilation, never 0
     const md_system_t*          sys;
-    str_t                       run;
+    md_str_t                       run;
     md_array(md_vial_named_set_t) sets;     // the stored selections, as VIAL takes them
-    md_array(str_t)             idents;     // every top-level name it binds, and the stored selections'
-    md_array(str_t)             outputs;    // the published values plots read: not selections
+    md_array(md_str_t)             idents;     // every top-level name it binds, and the stored selections'
+    md_array(md_str_t)             outputs;    // the published values plots read: not selections
     md_array(uint32_t)          output_idx; // into md_vial_outputs, by outputs
 };
 
@@ -107,17 +106,17 @@ static uint64_t next_program_id() {
 static inline Range range_of(md_vial_span_t s) { return Range{(int)s.beg, (int)s.end}; }
 
 // The output of a name, among md_vial_outputs; nullptr if none
-static const md_vial_output_t* output_of(const Program* p, str_t name) {
+static const md_vial_output_t* output_of(const Program* p, md_str_t name) {
     const ProgramV2* x = pv(p);
     if (!x || !x->prog) return nullptr;
     const md_vial_output_t* o;
     const size_t n = md_vial_outputs(x->prog, &o);
-    for (size_t i = 0; i < n; ++i) if (str_eq(o[i].name, name)) return &o[i];
+    for (size_t i = 0; i < n; ++i) if (md_str_eq(o[i].name, name)) return &o[i];
     return nullptr;
 }
 
 
-Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator_i* alloc) {
+Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_allocator_i* alloc) {
     Program* p = (Program*)md_alloc(alloc, sizeof(Program));
     memset(p, 0, sizeof(*p));
     p->lang = lang;
@@ -127,7 +126,7 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
     p->v2 = x;
     x->id = next_program_id();
     x->sys = desc.sys;
-    x->run = str_copy(desc.run, alloc);
+    x->run = md_alloc_str(alloc, desc.run);
     // The stored selections, as lists of atoms
     for (size_t i = 0; i < desc.num_sets; ++i) {
         const md_bitset_t& b = desc.sets[i].atoms;
@@ -136,12 +135,12 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         size_t k = 0;
         md_bitset_iter_t it = md_bitset_iter(b);
         while (k < n && md_bitset_iter_next(&it)) atoms[k++] = (uint32_t)it.idx;
-        md_vial_named_set_t ns = {str_copy(desc.sets[i].name, alloc), atoms, k};
+        md_vial_named_set_t ns = {md_alloc_str(alloc, desc.sets[i].name), atoms, k};
         md_array_push(x->sets, ns, alloc);
         md_array_push(x->idents, ns.name, alloc);
     }
     // Empty source is not compiled: the program holds the sets alone
-    if (str_empty(src)) return p;
+    if (md_str_empty(src)) return p;
     md_vial_compile_desc_t cd = {};
     cd.sys = desc.sys;
     cd.run = x->run;
@@ -156,7 +155,7 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         // The code first, as the reference lists it
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), nullptr};
         if (dg[i].severity == MD_VIAL_SEVERITY_ERROR) md_array_push(p->errs, d, alloc);
         else md_array_push(p->warns, d, alloc);
     }
@@ -168,11 +167,11 @@ Program* compile(Language lang, str_t src, const CompileDesc& desc, md_allocator
         if (!md_vial_expr_info(x->prog, mk[i].expr, &h)) continue;
         char buf[256];
         const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
-        Mark m = {range_of(mk[i].span), (int)mk[i].depth, str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, alloc), Ref{x->id, mk[i].expr}};
+        Mark m = {range_of(mk[i].span), (int)mk[i].depth, md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), Ref{x->id, mk[i].expr}};
         m.unit = h.unit;
         m.unit_at = h.unit_at;
         m.unit_len = h.unit_len;
-        m.type_len = (uint32_t)MIN(strlen(h.type), m.text.len);
+        m.type_len = (uint32_t)MD_MIN(strlen(h.type), m.text.len);
         m.has_number = h.has_number;
         m.number = h.number;
         md_array_push(p->marks, m, alloc);
@@ -242,20 +241,20 @@ void write_diagnostics(md_writer_i* w, const Program* p) {
         const Diagnostic* d = pass == 0 ? p->errs : p->warns;
         for (size_t i = 0; i < md_array_size(d); ++i) {
             const int len = snprintf(buf, sizeof(buf), "%s [%d, %d): %.*s\n", pass == 0 ? "error" : "warning", d[i].range.beg, d[i].range.end, (int)d[i].text.len, d[i].text.ptr);
-            if (len > 0) md_write(w, buf, (size_t)MIN(len, (int)sizeof(buf) - 1));
+            if (len > 0) md_write(w, buf, (size_t)MD_MIN(len, (int)sizeof(buf) - 1));
         }
     }
 }
 
 size_t num_identifiers(const Program* p) { return pv(p) ? md_array_size(pv(p)->idents) : 0; }
 
-const str_t* identifiers(const Program* p) { return pv(p) ? pv(p)->idents : nullptr; }
+const md_str_t* identifiers(const Program* p) { return pv(p) ? pv(p)->idents : nullptr; }
 
 size_t num_outputs(const Program* p) { return pv(p) ? md_array_size(pv(p)->outputs) : 0; }
 
-const str_t* output_names(const Program* p) { return pv(p) ? pv(p)->outputs : nullptr; }
+const md_str_t* output_names(const Program* p) { return pv(p) ? pv(p)->outputs : nullptr; }
 
-uint32_t output_flags(const Program* p, str_t name) {
+uint32_t output_flags(const Program* p, md_str_t name) {
     const md_vial_output_t* o = output_of(p, name);
     if (!o || o->selection) return 0;
     uint32_t f = 0;
@@ -267,11 +266,11 @@ uint32_t output_flags(const Program* p, str_t name) {
     return f;
 }
 
-Range output_range(const Program* p, str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? range_of(o->span) : Range{}; }
+Range output_range(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? range_of(o->span) : Range{}; }
 
-uint64_t output_fingerprint(const Program* p, str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? o->fingerprint : 0; }
+uint64_t output_fingerprint(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? o->fingerprint : 0; }
 
-Ref output_ref(const Program* p, str_t name) {
+Ref output_ref(const Program* p, md_str_t name) {
     const md_vial_output_t* o = output_of(p, name);
     if (!o) return Ref{};
     const uint32_t e = md_vial_expr_at(vp(p), o->span.beg);
@@ -280,15 +279,15 @@ Ref output_ref(const Program* p, str_t name) {
 
 bool ref_valid(const Program* p, Ref ref) { return pv(p) && ref.program == pv(p)->id && ref.node != 0; }
 
-str_t ref_name(const Program* p, Ref ref) {
+md_str_t ref_name(const Program* p, Ref ref) {
     // The output it is the name of, as plots know it; empty for any other expression
-    if (!v2::ref_valid(p, ref)) return str_t{};
+    if (!v2::ref_valid(p, ref)) return md_str_t{};
     const md_vial_output_t* o;
     const size_t n = md_vial_outputs(vp(p), &o);
     for (size_t i = 0; i < n; ++i) {
         if (!o[i].selection && md_vial_expr_at(vp(p), o[i].span.beg) == ref.node) return o[i].name;
     }
-    return str_t{};
+    return md_str_t{};
 }
 
 int ref_dim(const Program* p, Ref ref) {
@@ -309,9 +308,7 @@ Eval* eval_create(const Eval* prev, const Program* prog, const EvalDesc& desc, m
     md_vial_eval_desc_t d = {};
     d.sys = desc.sys;
     d.run = desc.run;
-    d.num_threads = desc.num_threads;
-    d.parallel_for = desc.parallel_for;
-    d.parallel_user = desc.parallel_user;
+    d.executor = desc.executor;
     // What an earlier evaluation of v2 computed alike is taken over
     md_vial_eval_t* v = ve(prev) ? md_vial_eval_create_from(ve(prev), vp(prog), &d, alloc) : md_vial_eval_create(vp(prog), &d, alloc);
     if (!v) return nullptr;
@@ -387,11 +384,11 @@ uint64_t eval_fingerprint(const Eval* e) { return ev(e) ? ev(e)->fingerprint : 0
 
 size_t eval_num_outputs(const Eval* e) { return ev(e) ? v2::num_outputs(ev(e)->prog) : 0; }
 
-uint64_t eval_output_fingerprint(const Eval* e, str_t name) { return ev(e) ? v2::output_fingerprint(ev(e)->prog, name) : 0; }
+uint64_t eval_output_fingerprint(const Eval* e, md_str_t name) { return ev(e) ? v2::output_fingerprint(ev(e)->prog, name) : 0; }
 
 size_t eval_num_frames(const Eval* e) { return ev(e) ? ev(e)->num_frames : 0; }
 
-md_bitset_t eval_output_frames(const Eval* e, str_t name, md_allocator_i* alloc) {
+md_bitset_t eval_output_frames(const Eval* e, md_str_t name, md_allocator_i* alloc) {
     EvalV2* x = ev(e);
     if (!x || !x->num_frames) return md_bitset_empty_set();
     md_allocator_i* temp = md_get_heap_allocator();
@@ -418,7 +415,7 @@ md_bitset_t eval_pending_frames(Eval* e, md_allocator_i* alloc) {
     uint8_t* pending = (uint8_t*)md_alloc(temp, x->num_frames);
     memset(pending, 0, x->num_frames);
     const size_t no = v2::num_outputs(x->prog);
-    const str_t* names = v2::output_names(x->prog);
+    const md_str_t* names = v2::output_names(x->prog);
     for (size_t i = 0; i < no; ++i) {
         if (md_vial_eval_output_frames(x->eval, names[i], held, x->num_frames) != x->num_frames) continue;
         for (size_t f = 0; f < x->num_frames; ++f) pending[f] |= !held[f];
@@ -433,7 +430,7 @@ md_bitset_t eval_pending_frames(Eval* e, md_allocator_i* alloc) {
     return r;
 }
 
-bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint32_t*, size_t) {
+bool eval_frames(Eval* e, const Program*, const md_system_t*, md_str_t, const uint32_t*, size_t) {
     // Every frame in one run, spread over the evaluation's threads: a call while one runs does nothing
     EvalV2* x = ev(e);
     if (!x) return false;
@@ -452,7 +449,7 @@ bool eval_frames(Eval* e, const Program*, const md_system_t*, str_t, const uint3
     for (size_t i = 0; i < nd; ++i) {
         char buf[512];
         const int len = snprintf(buf, sizeof(buf), "%.5s: %.*s", dg[i].code, (int)dg[i].message.len, dg[i].message.ptr);
-        Diagnostic d = {range_of(dg[i].span), str_copy(str_t{buf, (size_t)(len > 0 ? MIN(len, (int)sizeof(buf) - 1) : 0)}, e->alloc), nullptr};
+        Diagnostic d = {range_of(dg[i].span), md_alloc_str(e->alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), nullptr};
         // R0101 and R0102 leave a value missing and fail nothing (the reference's "a value can be missing")
         const bool missing = !strncmp(dg[i].code, "R0101", 5) || !strncmp(dg[i].code, "R0102", 5);
         if (missing) md_array_push(x->warns, d, e->alloc);
@@ -518,15 +515,15 @@ bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, con
     return ok;
 }
 
-static AggSlot* find_slot(EvalV2* x, uint64_t key, str_t name) {
+static AggSlot* find_slot(EvalV2* x, uint64_t key, md_str_t name) {
     for (size_t i = 0; i < md_array_size(x->slots); ++i) {
         AggSlot* s = &x->slots[i];
-        if (s->key == key && str_eq(str_from_cstr(s->name), name)) return s;
+        if (s->key == key && md_str_eq(md_str_from_cstr(s->name), name)) return s;
     }
     return nullptr;
 }
 
-bool aggregate_request(Eval* e, uint64_t key, str_t name, const md_bitset_t* frames) {
+bool aggregate_request(Eval* e, uint64_t key, md_str_t name, const md_bitset_t* frames) {
     EvalV2* x = ev(e);
     if (!x || !frames || name.len >= sizeof(AggSlot::name)) return false;
     const uint32_t kinds = v2::output_flags(x->prog, name);
@@ -551,12 +548,12 @@ bool aggregate_request(Eval* e, uint64_t key, str_t name, const md_bitset_t* fra
     return true;
 }
 
-void aggregate_release(Eval* e, uint64_t key, str_t name) {
+void aggregate_release(Eval* e, uint64_t key, md_str_t name) {
     EvalV2* x = ev(e);
     if (!x) return;
     for (size_t i = 0; i < md_array_size(x->slots); ++i) {
         AggSlot* s = &x->slots[i];
-        if (s->key != key || !str_eq(str_from_cstr(s->name), name)) continue;
+        if (s->key != key || !md_str_eq(md_str_from_cstr(s->name), name)) continue;
         if (s->job) {
             // Its frames are read to the end, there being no stopping one job alone
             job_free(s->job);
@@ -571,7 +568,7 @@ void aggregate_release(Eval* e, uint64_t key, str_t name) {
 
 static void job_main(void* data) {
     VolumeJob* j = (VolumeJob*)data;
-    j->ok = md_vial_eval_aggregate(j->eval, str_from_cstr(j->name), j->mask, j->values, j->num_values) == j->num_values;
+    j->ok = md_vial_eval_aggregate(j->eval, md_str_from_cstr(j->name), j->mask, j->values, j->num_values) == j->num_values;
     store_release(j->done, 1);
 }
 
@@ -605,7 +602,7 @@ static bool volume_update(EvalV2* x, AggSlot* s, uint64_t runs, md_allocator_i* 
     md_bitset_iter_t it = md_bitset_iter(s->frames);
     while (md_bitset_iter_next(&it)) if (it.idx < x->num_frames) j->mask[it.idx] = 1;
     // Its size, known without reading a frame
-    const size_t nv = md_vial_eval_aggregate(x->eval, str_from_cstr(s->name), j->mask, nullptr, 0);
+    const size_t nv = md_vial_eval_aggregate(x->eval, md_str_from_cstr(s->name), j->mask, nullptr, 0);
     if (!nv) { job_free(j); return s->computed; }
     j->num_values = nv;
     j->values = (float*)md_alloc(heap, nv * sizeof(float));
@@ -627,11 +624,11 @@ static bool slot_update(EvalV2* x, AggSlot* s, md_allocator_i* alloc) {
     memset(mask, 0, x->num_frames);
     md_bitset_iter_t it = md_bitset_iter(s->frames);
     while (md_bitset_iter_next(&it)) if (it.idx < x->num_frames) mask[it.idx] = 1;
-    const size_t n = md_vial_eval_aggregate(x->eval, str_from_cstr(s->name), mask, nullptr, 0);
+    const size_t n = md_vial_eval_aggregate(x->eval, md_str_from_cstr(s->name), mask, nullptr, 0);
     bool ok = n > 0;
     if (ok) {
         md_array_resize(s->values, n, alloc);
-        ok = md_vial_eval_aggregate(x->eval, str_from_cstr(s->name), mask, s->values, n) == n;
+        ok = md_vial_eval_aggregate(x->eval, md_str_from_cstr(s->name), mask, s->values, n) == n;
     }
     md_free(md_get_heap_allocator(), mask, x->num_frames ? x->num_frames : 1);
     if (ok) {
@@ -653,7 +650,7 @@ static AggregateInfo slot_info(const EvalV2* x, const AggSlot* s) {
     return a;
 }
 
-bool aggregate_info(AggregateInfo* out, const Eval* e, uint64_t key, str_t name) {
+bool aggregate_info(AggregateInfo* out, const Eval* e, uint64_t key, md_str_t name) {
     EvalV2* x = ev(e);
     AggSlot* s = x ? find_slot(x, key, name) : nullptr;
     if (!s) return false;
@@ -662,7 +659,7 @@ bool aggregate_info(AggregateInfo* out, const Eval* e, uint64_t key, str_t name)
     return true;
 }
 
-bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* e, uint64_t key, str_t name) {
+bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t num_values, const Eval* e, uint64_t key, md_str_t name) {
     EvalV2* x = ev(e);
     AggSlot* s = x ? find_slot(x, key, name) : nullptr;
     if (!s || !slot_update(x, s, e->alloc)) return false;
@@ -680,28 +677,28 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
 
 static const uint32_t WHITE = 0xFFFFFFFFu;
 
-static inline vec3_t v3(const float p[3]) { return vec3_t{p[0], p[1], p[2]}; }
-static inline Vertex vtx(vec3_t p) { Vertex v; v.pos = p; v.color = WHITE; v.normal = vec3_t{0, 0, 1}; v.picking_idx = 0xFFFFFFFFu; return v; }
+static inline md_float3_t v3(const float p[3]) { return md_float3_t{p[0], p[1], p[2]}; }
+static inline Vertex vtx(md_float3_t p) { Vertex v; v.pos = p; v.color = WHITE; v.normal = md_float3_t{0, 0, 1}; v.picking_idx = 0xFFFFFFFFu; return v; }
 
-static void line(Drawing* d, vec3_t a, vec3_t b) {
+static void line(Drawing* d, md_float3_t a, md_float3_t b) {
     md_array_push(d->lines, vtx(a), d->alloc);
     md_array_push(d->lines, vtx(b), d->alloc);
 }
 
 // Two unit vectors at right angles to n and to each other
-static void basis_of(vec3_t n, vec3_t* u, vec3_t* w) {
-    n = vec3_normalize(n);
-    const vec3_t t = fabsf(n.x) < 0.9f ? vec3_t{1, 0, 0} : vec3_t{0, 1, 0};
-    *u = vec3_normalize(vec3_cross(n, t));
-    *w = vec3_cross(n, *u);
+static void basis_of(md_float3_t n, md_float3_t* u, md_float3_t* w) {
+    n = md_float3_normalize(n);
+    const md_float3_t t = fabsf(n.x) < 0.9f ? md_float3_t{1, 0, 0} : md_float3_t{0, 1, 0};
+    *u = md_float3_normalize(md_float3_cross(n, t));
+    *w = md_float3_cross(n, *u);
 }
 
-static void circle(Drawing* d, vec3_t c, vec3_t u, vec3_t w, float r, bool fill) {
+static void circle(Drawing* d, md_float3_t c, md_float3_t u, md_float3_t w, float r, bool fill) {
     const int N = 32;
-    vec3_t prev = vec3_add(c, vec3_mul1(u, r));
+    md_float3_t prev = md_float3_add(c, md_float3_mul1(u, r));
     for (int i = 1; i <= N; ++i) {
         const float a = 6.2831853f * (float)i / (float)N;
-        const vec3_t p = vec3_add(c, vec3_add(vec3_mul1(u, r * cosf(a)), vec3_mul1(w, r * sinf(a))));
+        const md_float3_t p = md_float3_add(c, md_float3_add(md_float3_mul1(u, r * cosf(a)), md_float3_mul1(w, r * sinf(a))));
         line(d, prev, p);
         if (fill) {
             md_array_push(d->triangles, vtx(c), d->alloc);
@@ -713,7 +710,7 @@ static void circle(Drawing* d, vec3_t c, vec3_t u, vec3_t w, float r, bool fill)
 }
 
 static void prim(Drawing* d, const md_vial_prim_t& p) {
-    const vec3_t a = v3(p.p[0]), b = v3(p.p[1]);
+    const md_float3_t a = v3(p.p[0]), b = v3(p.p[1]);
     switch (p.kind) {
     case MD_VIAL_PRIM_MARKER:
         md_array_push(d->points, vtx(a), d->alloc);
@@ -723,44 +720,44 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         break;
     case MD_VIAL_PRIM_ARROW: {
         line(d, a, b);
-        const vec3_t dir = vec3_sub(b, a);
-        const float len = vec3_length(dir);
+        const md_float3_t dir = md_float3_sub(b, a);
+        const float len = md_float3_length(dir);
         if (len <= 0.0f) break;
-        vec3_t u, w;
+        md_float3_t u, w;
         basis_of(dir, &u, &w);
-        const float h = MIN(0.25f * len, 1.0f);
-        const vec3_t back = vec3_sub(b, vec3_mul1(vec3_normalize(dir), h));
-        line(d, b, vec3_add(back, vec3_mul1(u, 0.4f * h)));
-        line(d, b, vec3_sub(back, vec3_mul1(u, 0.4f * h)));
-        line(d, b, vec3_add(back, vec3_mul1(w, 0.4f * h)));
-        line(d, b, vec3_sub(back, vec3_mul1(w, 0.4f * h)));
+        const float h = MD_MIN(0.25f * len, 1.0f);
+        const md_float3_t back = md_float3_sub(b, md_float3_mul1(md_float3_normalize(dir), h));
+        line(d, b, md_float3_add(back, md_float3_mul1(u, 0.4f * h)));
+        line(d, b, md_float3_sub(back, md_float3_mul1(u, 0.4f * h)));
+        line(d, b, md_float3_add(back, md_float3_mul1(w, 0.4f * h)));
+        line(d, b, md_float3_sub(back, md_float3_mul1(w, 0.4f * h)));
         break;
     }
     case MD_VIAL_PRIM_SPHERE:
         // Three great circles
-        circle(d, a, vec3_t{1, 0, 0}, vec3_t{0, 1, 0}, p.r, false);
-        circle(d, a, vec3_t{0, 1, 0}, vec3_t{0, 0, 1}, p.r, false);
-        circle(d, a, vec3_t{0, 0, 1}, vec3_t{1, 0, 0}, p.r, false);
+        circle(d, a, md_float3_t{1, 0, 0}, md_float3_t{0, 1, 0}, p.r, false);
+        circle(d, a, md_float3_t{0, 1, 0}, md_float3_t{0, 0, 1}, p.r, false);
+        circle(d, a, md_float3_t{0, 0, 1}, md_float3_t{1, 0, 0}, p.r, false);
         break;
     case MD_VIAL_PRIM_ARC: {
         // The angle at a from b to c: a filled sector, at a third of the shorter arm
-        const vec3_t c = v3(p.p[2]);
-        const vec3_t x = vec3_sub(b, a), y = vec3_sub(c, a);
-        const float lx = vec3_length(x), ly = vec3_length(y);
+        const md_float3_t c = v3(p.p[2]);
+        const md_float3_t x = md_float3_sub(b, a), y = md_float3_sub(c, a);
+        const float lx = md_float3_length(x), ly = md_float3_length(y);
         if (lx <= 0.0f || ly <= 0.0f) break;
-        const float r = 0.33f * MIN(lx, ly);
-        const vec3_t ux = vec3_div1(x, lx), uy = vec3_div1(y, ly);
-        const float ang = acosf(CLAMP(vec3_dot(ux, uy), -1.0f, 1.0f));
-        vec3_t perp = vec3_sub(uy, vec3_mul1(ux, vec3_dot(ux, uy)));
-        const float lp = vec3_length(perp);
+        const float r = 0.33f * MD_MIN(lx, ly);
+        const md_float3_t ux = md_float3_div1(x, lx), uy = md_float3_div1(y, ly);
+        const float ang = acosf(MD_CLAMP(md_float3_dot(ux, uy), -1.0f, 1.0f));
+        md_float3_t perp = md_float3_sub(uy, md_float3_mul1(ux, md_float3_dot(ux, uy)));
+        const float lp = md_float3_length(perp);
         if (lp <= 1e-6f) break;
-        perp = vec3_div1(perp, lp);
-        const int N = MAX(4, (int)(ang * 16.0f));
-        vec3_t prev = vec3_add(a, vec3_mul1(ux, r));
+        perp = md_float3_div1(perp, lp);
+        const int N = MD_MAX(4, (int)(ang * 16.0f));
+        md_float3_t prev = md_float3_add(a, md_float3_mul1(ux, r));
         line(d, a, prev);
         for (int i = 1; i <= N; ++i) {
             const float t = ang * (float)i / (float)N;
-            const vec3_t q = vec3_add(a, vec3_add(vec3_mul1(ux, r * cosf(t)), vec3_mul1(perp, r * sinf(t))));
+            const md_float3_t q = md_float3_add(a, md_float3_add(md_float3_mul1(ux, r * cosf(t)), md_float3_mul1(perp, r * sinf(t))));
             line(d, prev, q);
             md_array_push(d->triangles, vtx(a), d->alloc);
             md_array_push(d->triangles, vtx(prev), d->alloc);
@@ -771,7 +768,7 @@ static void prim(Drawing* d, const md_vial_prim_t& p) {
         break;
     }
     case MD_VIAL_PRIM_DISK: {
-        vec3_t u, w;
+        md_float3_t u, w;
         basis_of(b, &u, &w);
         circle(d, a, u, w, p.r, true);
         break;
@@ -803,7 +800,7 @@ static void group(Drawing* out, const uint32_t* atoms, size_t n) {
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags) {
     if (!out || !v2::ref_valid(ctx.prog, ref) || !ctx.sys) return false;
     const bool all = flags == DRAW_DEFAULT;
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
     md_vial_drawing_t dr;
     const bool ok = md_vial_draw(&dr, &d, ref.node, temp);
@@ -815,7 +812,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
             // are is published beside it, script/<name>/origin and /basis
             for (size_t i = 0; i < dr.num_poses; ++i) {
                 const md_vial_pose_t& ps = dr.poses[i];
-                mat4_t M;
+                md_float4x4_t M;
                 memcpy(M.elem, ps.m, sizeof(M.elem));
                 md_array_push(out->sdf.matrices, M, out->alloc);
                 md_array_push(out->sdf.structures, md_bitset_from_indices(dr.atoms + ps.beg, ps.end - ps.beg, out->alloc), out->alloc);
@@ -825,7 +822,7 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
             for (size_t i = 0; i < dr.num_labels; ++i) {
                 Text t;
                 t.pos = v3(dr.labels[i].pos);
-                t.str = str_copy(dr.labels[i].text, out->alloc);
+                t.str = md_alloc_str(out->alloc, dr.labels[i].text);
                 t.value = dr.labels[i].value;
                 t.unit = dr.labels[i].unit;
                 md_array_push(out->text, t, out->alloc);
@@ -836,10 +833,10 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
     return ok;
 }
 
-bool draw_text(Drawing* out, str_t expr, const DrawCtx& ctx, uint32_t flags) {
+bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags) {
     // What an expression picks, as a filter of the program's language picks it
     if (!out || !ctx.sys || (flags != DRAW_DEFAULT && !(flags & DRAW_ATOMS))) return false;
-    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_vial_filter_desc_t fd = {};
     fd.sys = ctx.sys;
     fd.state = ctx.state;
@@ -862,9 +859,9 @@ size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx
 }
 
 // The language's lists, made once
-static const std::vector<str_t>& keyword_list() {
-    static const std::vector<str_t> list = [] {
-        std::vector<str_t> v(md_vial_keywords(nullptr, 0));
+static const std::vector<md_str_t>& keyword_list() {
+    static const std::vector<md_str_t> list = [] {
+        std::vector<md_str_t> v(md_vial_keywords(nullptr, 0));
         md_vial_keywords(v.data(), v.size());
         return v;
     }();
@@ -873,9 +870,9 @@ static const std::vector<str_t>& keyword_list() {
 
 size_t num_keywords(Language) { return keyword_list().size(); }
 
-const str_t* keywords(Language) { return keyword_list().data(); }
+const md_str_t* keywords(Language) { return keyword_list().data(); }
 
-size_t builtin_names(Language, str_t* out, size_t cap) { return md_vial_builtin_names(out, cap); }
+size_t builtin_names(Language, md_str_t* out, size_t cap) { return md_vial_builtin_names(out, cap); }
 
 static CompletionKind kind_of(md_vial_completion_kind_t k) {
     switch (k) {
@@ -906,7 +903,7 @@ static Completions completions_of(const md_vial_completions_t& c, md_allocator_i
     return r;
 }
 
-Completions complete(Language, str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
+Completions complete(Language, md_str_t src, int cursor, const md_system_t* sys, md_allocator_i* alloc) {
     if (cursor < 0 || (size_t)cursor > src.len) return Completions{};
     md_vial_compile_desc_t d = {};
     d.sys = sys;
@@ -919,22 +916,22 @@ Completions complete(Language, str_t src, int cursor, const md_system_t* sys, md
     return r;
 }
 
-str_t attr_path(Language, const md_attributes_t* table, const md_attribute_t* attr) {
+md_str_t attr_path(Language, const md_attributes_t* table, const md_attribute_t* attr) {
     // attr(path) reads <run>/<path>: the run is the prefix of attr's path with a frame axis, <run>/time
-    if (!table || !attr) return str_t{};
-    const str_t path = attr->path;
+    if (!table || !attr) return md_str_t{};
+    const md_str_t path = attr->path;
     char buf[512];
     for (size_t i = 1; i < path.len && i + 6 < sizeof(buf); ++i) {
         if (path.ptr[i] != '/') continue;
         memcpy(buf, path.ptr, i);
         memcpy(buf + i, "/time", 5);
-        const md_attribute_t* t = md_attributes_find(table, str_t{buf, i + 5});
-        if (t && t != attr) return md_vial_attr_path(str_t{path.ptr, i}, path);
+        const md_attribute_t* t = md_attributes_find(table, md_str_t{buf, i + 5});
+        if (t && t != attr) return md_vial_attr_path(md_str_t{path.ptr, i}, path);
     }
-    return str_t{};
+    return md_str_t{};
 }
 
-bool name_valid(Language, str_t name) { return md_vial_name_valid(name); }
+bool name_valid(Language, md_str_t name) { return md_vial_name_valid(name); }
 
 // ### FILTERS ###
 // An expression compiled alone, with the stored selections and the program's published selections as names
@@ -945,8 +942,8 @@ struct Filtered {
     FilterResult     r;
 };
 
-static void run_filter(Filtered* out, str_t expr, const FilterCtx& ctx) {
-    out->temp = md_arena_allocator_create(md_get_heap_allocator(), MEGABYTES(1));
+static void run_filter(Filtered* out, md_str_t expr, const FilterCtx& ctx) {
+    out->temp = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
     md_vial_filter_desc_t d = {};
     d.sys = ctx.sys;
     d.state = ctx.state;
@@ -979,7 +976,7 @@ static void run_filter(Filtered* out, str_t expr, const FilterCtx& ctx) {
 
 static void filter_done(Filtered* f) { md_arena_allocator_destroy(f->temp); }
 
-FilterResult filter(Language, md_bitset_t* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter(Language, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     // Every particle it picks: the union of its sets
     Filtered f;
     run_filter(&f, expr, ctx);
@@ -994,7 +991,7 @@ FilterResult filter(Language, md_bitset_t* dst, str_t expr, const FilterCtx& ctx
     return r;
 }
 
-FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     // Each set it picks: one, or an array of them
     Filtered f;
     run_filter(&f, expr, ctx);
@@ -1010,7 +1007,7 @@ FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, str_t expr, const
     return r;
 }
 
-FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     // bond(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
     Filtered f;
     run_filter(&f, expr, ctx);
@@ -1044,7 +1041,7 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, str_t expr, c
     return r;
 }
 
-Completions filter_complete(Language, str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
+Completions filter_complete(Language, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
     if (!ctx.sys || cursor < 0 || (size_t)cursor > expr.len) return Completions{};
     md_vial_filter_desc_t d = {};
     d.sys = ctx.sys;

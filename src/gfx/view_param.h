@@ -1,13 +1,13 @@
 #pragma once
 
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 struct ViewParam {
     struct Block {
-        mat4_t view;
-        mat4_t proj;
-        mat4_t norm;
-        mat4_t proj_no_jitter;
+        md_float4x4_t view;
+        md_float4x4_t proj;
+        md_float4x4_t norm;
+        md_float4x4_t proj_no_jitter;
     };
 
     struct {
@@ -17,8 +17,8 @@ struct ViewParam {
     } matrix;
 
     struct {
-        vec2_t curr;
-        vec2_t prev;
+        md_float2_t curr;
+        md_float2_t prev;
     } jitter;
 
     struct {
@@ -26,6 +26,6 @@ struct ViewParam {
         float far;
     } clip_planes;
 
-    vec2_t resolution;
+    md_float2_t resolution;
     float fov_y;
 };

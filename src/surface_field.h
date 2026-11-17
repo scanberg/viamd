@@ -86,6 +86,15 @@ enum class SurfaceFieldKind {
     // nearly always positive, give 0 everywhere. Defined for hybrid DFT (the paper: B3LYP/6-31+G(d,p)) and read
     // on the 0.004 au isodensity surface; strongly method and basis dependent.
     LocalElectronAttachmentEnergy,
+
+    // The density scale length of the QM region's ground state density, L(r) = rho / |grad rho| = 1 / |grad ln rho|
+    // (md_qm_density_scale_length): the distance over which the density changes by a factor e. On an isodensity
+    // surface rho = c it is c / |grad rho|, how far the surface moves along its normal per relative change of the
+    // density - a change d rho / rho moves it by L d rho / rho - so it shows where the boundary of the electron cloud
+    // is soft (large L) and where stiff (small L), as when the density is compressed under pressure (GOSTSHYP). Bohr.
+    // Made of the total density's orbitals (md_qm_density_orbitals) and its gradient: on the CPU by md_gto_iso in
+    // double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
+    DensityScaleLength,
     Count
 };
 
@@ -162,7 +171,7 @@ struct SurfaceFieldDesc {
     SurfaceFieldKind         kind = SurfaceFieldKind::EmbeddingPotential;
     const md_system_t*       sys = nullptr;
     const md_system_state_t* state = nullptr;           // the environment's sites (embedding potential)
-    const vec3_t*            basis_atom_xyz = nullptr;  // bohr, one per basis atom: the QM nuclei and where
+    const md_float3_t*            basis_atom_xyz = nullptr;  // bohr, one per basis atom: the QM nuclei and where
     size_t                   num_basis_atoms = 0;       // the basis sits (surface_field_uses_basis)
 
     // The surfaces: the isosurfaces at iso_values of `density`, sampled on `grid` (bohr, x fastest,
@@ -187,7 +196,7 @@ struct SurfaceFieldDesc {
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
     return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy ||
-           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy;
+           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy || kind == SurfaceFieldKind::DensityScaleLength;
 }
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the

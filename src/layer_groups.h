@@ -140,6 +140,6 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
 // ## Workspace
 
 // Its section's entries; id: what the layers in it name it by (Group=id)
-void layer_group_serialize(viamd::serialization_state_t& state, str_t section, const LayerGroup& g);
+void layer_group_serialize(viamd::serialization_state_t& state, md_str_t section, const LayerGroup& g);
 // One entry of a group's section. Its file id is written to *file_id.
-void layer_group_deserialize_entry(LayerGroup* g, str_t ident, str_t arg, int* file_id);
+void layer_group_deserialize_entry(LayerGroup* g, md_str_t ident, md_str_t arg, int* file_id);

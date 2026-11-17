@@ -5,7 +5,7 @@
 
 #include <md_gl.h>
 #include <core/md_array.h>
-#include <core/md_vec_math.h>
+#include <core/md_vec.h>
 
 struct md_system_t;
 struct md_system_state_t;

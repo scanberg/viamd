@@ -115,7 +115,7 @@ struct DensityMapJob;
 // Starts a job. sigma: the standard deviation of the gaussian it is smoothed with, in the domain's units of x (the grid's
 // texels are taken to be square). num_chunks: how many parts the samples are binned in, at most what the pool has
 // threads for (each takes a grid of its own); the source is called once for each.
-DensityMapJob* density_map_launch(str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done);
+DensityMapJob* density_map_launch(md_str_t label, const DensityMapDomain& domain, float sigma, uint32_t num_chunks, DensityMapSource source, DensityMapDone done);
 
 // Its result is not wanted: done is called with NULL. With wait, returns once the source is no longer called (what it
 // reads may then go).

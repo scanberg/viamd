@@ -39,6 +39,8 @@
 #define PLOT_MAX_SERIES_PER_SUBPLOT  32
 #define PLOT_MAX_POPULATION          256
 #define PLOT_MAX_PERIODS             8
+#define PLOT_LINE_WEIGHT_MIN         0.5f
+#define PLOT_LINE_WEIGHT_MAX         8.0f
 #define SERIES_PATH_CAP              192
 
 // ImGui drag and drop payload types, all carrying a SeriesDragPayload
@@ -91,8 +93,8 @@ bool      series_key_equal(const SeriesKey& a, const SeriesKey& b);
 // The source's name in a workspace ("system", "script"), and back. "script_filtered", of a workspace from before there
 // were periods, is the script over SERIES_PERIOD_LEGACY_FILTER, which is written to period when it is given.
 const char* series_source_name(SeriesSource source);
-bool        series_source_from_name(SeriesSource* out, str_t name, uint32_t* period = nullptr);
-SeriesKey series_key(SeriesSource source, str_t path, SeriesVariant variant = SeriesVariant_Values, uint32_t period = 0);
+bool        series_source_from_name(SeriesSource* out, md_str_t name, uint32_t* period = nullptr);
+SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant = SeriesVariant_Values, uint32_t period = 0);
 
 // The period a workspace's SERIES_PERIOD_LEGACY_FILTER stands for, once its periods are read: the period the filter
 // followed, or every frame. Any other period as it is.
@@ -103,7 +105,7 @@ uint32_t series_legacy_period(const ApplicationState* app, uint32_t period);
 // evaluation's slot of it over them, not from the table.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source);
 // The table which holds path for source
-const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, str_t path);
+const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, md_str_t path);
 // The frames the temporal script property of key is taken over: those it has evaluated, of its period's, written to
 // out, allocated with alloc. Its own: a property taken over from a previous evaluation holds its frames while one added
 // since is still being evaluated. A copy taken under the evaluation's lock, so it can be read while the evaluation
@@ -118,12 +120,12 @@ void   series_label(char* buf, size_t cap, const ApplicationState* app, const Se
 ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key);
 
 // "script/<ident>" -> "<ident>" for a script series, empty otherwise
-str_t series_script_ident(const SeriesKey& key);
+md_str_t series_script_ident(const SeriesKey& key);
 
 // The name of member k of the series' population, from "<path>/labels": what the script property holds is what an
 // attr() pattern matched ("Coul-SR:Protein-SOL" of attr("edr/coul_sr_*")). Empty when its members have no names. A
 // view into the table, valid for the frame.
-str_t series_member_label(const ApplicationState* app, const SeriesKey& key, int k);
+md_str_t series_member_label(const ApplicationState* app, const SeriesKey& key, int k);
 
 // How what a script series shows stands against the script as it is now in the editor, and how far its evaluation has
 // come. Anything else is always current.
@@ -179,9 +181,11 @@ struct PlotSeries {
     ImPlotMarker    marker = ImPlotMarker_Square;
     float           marker_size = 1.0f;
     float           bar_width = 1.0f;           // of a bin, for bars
+    float           line_weight = 1.0f;         // of a line, in pixels, for a distribution drawn as one
     int             num_bins = 128;             // for a distribution
-    float           smoothing = 0.0f;           // for a distribution of values: the bandwidth of a kernel density estimate
-                                                // in Silverman's, 0 for none (series_resolve_histogram)
+    float           smoothing = 1.0f;           // for a distribution of values: the bandwidth of a kernel density estimate
+                                                // in Silverman's, 0 for none (series_resolve_histogram). On by default: a
+                                                // histogram of a short period, of few frames, is mostly noise
 
     // Which members of a population are drawn
     std::bitset<PLOT_MAX_POPULATION> population_mask = {};
@@ -222,9 +226,9 @@ void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subpl
 
 // Workspace: the subplot count and every entry with its style, as one section plus one section
 // per entry. The layout is cleared by the caller before a workspace is read.
-void plot_layout_serialize(viamd::serialization_state_t& state, str_t section, str_t series_section, const PlotSubplot* subplots, int num_subplots);
+void plot_layout_serialize(viamd::serialization_state_t& state, md_str_t section, md_str_t series_section, const PlotSubplot* subplots, int num_subplots);
 // Reads the section the state is at if it is one of the two. False otherwise.
-bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t section, str_t series_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots);
+bool plot_layout_deserialize(viamd::deserialization_state_t& state, md_str_t section, md_str_t series_section, const ApplicationState* app, PlotSubplot* subplots, int* num_subplots);
 
 // ## Series loaded along the run
 //
@@ -232,12 +236,12 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, str_t sectio
 // "source" string beside its members ("<run>/edr", "<run>/xvg/energy"). Paths are views into the
 // system's table.
 
-size_t system_series_groups(str_t out_groups[], size_t cap, const SystemContext& sys);
-str_t  system_series_group_source(const SystemContext& sys, str_t group);
+size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys);
+md_str_t  system_series_group_source(const SystemContext& sys, md_str_t group);
 // "edr  (md.edr)": the group below the run and the name of the file
-void   system_series_group_label(char* buf, size_t cap, const ApplicationState* app, str_t group);
+void   system_series_group_label(char* buf, size_t cap, const ApplicationState* app, md_str_t group);
 // The plottable members of a group: temporal, numeric, resident, not an axis. Returns the total.
-size_t system_series_members(str_t out_paths[], size_t cap, const SystemContext& sys, str_t group);
+size_t system_series_members(md_str_t out_paths[], size_t cap, const SystemContext& sys, md_str_t group);
 
 // ## What a series can be shown as
 
@@ -334,6 +338,8 @@ struct SeriesHistogramView {
     SeriesPeriodic periodic = {};   // of periodic values, in the display unit
     double y_scale = 1.0;           // bins -> display unit
     double y_min = 0, y_max = 0;    // in the display unit
+    double bandwidth_min = 0;       // of a kernel density estimate, the standard deviation of its Gaussian in the display
+    double bandwidth_max = 0;       // unit, over the members (the same over periods); 0 when not smoothed
 
     char  label[96] = "";                       // with the state appended (series_state_suffix)
     char  plot_id[SERIES_PATH_CAP + 104] = "";
@@ -418,8 +424,8 @@ struct SeriesVolumeView {
     // corner of the first voxel, and one step along each axis of the data, outermost first. Without it (v1) a volume is
     // a cube of half extent Drawing::sdf.extent, its data x fastest.
     bool  placed = false;
-    vec3_t origin = {};
-    vec3_t basis[3] = {};
+    md_float3_t origin = {};
+    md_float3_t basis[3] = {};
     // The density of what it maps over the unit cell, in its unit (v2: script/<name>/bulk); NaN when not known
     double bulk = NAN;
 };

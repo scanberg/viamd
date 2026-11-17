@@ -1,6 +1,6 @@
 #pragma once
 
-#include <core/md_os.h>
+#include <core/md_path.h>
 #include <core/md_str.h>
 #include <core/md_writer.h>
 
@@ -15,8 +15,8 @@ namespace viamd {
 //
 // Returns an empty string when the executable path cannot be determined or does not fit, which the
 // caller has to treat as "the resource is not there" rather than as a path.
-static inline str_t resource_path(md_str_writer_t* sb, str_t relative) {
-    ASSERT(sb);
+static inline md_str_t resource_path(md_str_writer_t* sb, md_str_t relative) {
+    MD_ASSERT(sb);
 
     char exe[2048];
     const size_t len = md_path_write_exe(exe, sizeof(exe));
@@ -26,8 +26,8 @@ static inline str_t resource_path(md_str_writer_t* sb, str_t relative) {
         return {};
     }
 
-    str_t dir = {};
-    if (!extract_folder_path(&dir, {exe, len})) {
+    const md_str_t dir = md_path_folder({exe, len});
+    if (md_str_empty(dir)) {
         return {};
     }
 

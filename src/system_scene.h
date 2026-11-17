@@ -92,4 +92,4 @@ void system_scene_serialize(viamd::serialization_state_t& state, const SystemCon
 // One entry of [SystemScene] or of the [Operations] of a workspace written before it, read into app. Returns false
 // for an entry it does not read: System, which the caller matches against the system loaded, and what refers to the
 // loaded system (Assembly, RecenterTarget), which the caller keeps until it is loaded.
-bool system_scene_read_entry(SystemContext& sys, str_t ident, str_t arg);
+bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg);
