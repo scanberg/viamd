@@ -581,7 +581,7 @@ struct DensityVolume : viamd::EventHandler {
         // of a representation of the Representations window
         for (size_t i = 0; i < md_array_size(reps); ++i) {
             viamd::write_section_header(state, MD_STR_LIT("DensityVolumeRepresentation"));
-            representation_write_entries(state, app, reps[i].rep);
+            representation_write_entries(state, MD_STR_LIT("DensityVolumeRepresentation"), app, reps[i].rep);
         }
     }
 
@@ -705,10 +705,9 @@ struct DensityVolume : viamd::EventHandler {
 
     void deserialize_rep(viamd::deserialization_state_t& state) {
         DensityVolumeRep* r = add_rep();
-        md_str_t ident, arg;
-        while (viamd::next_entry(ident, arg, state)) {
-            representation_read_entry(&r->rep, ident, arg);
-        }
+        viamd::read_section(state, MD_STR_LIT("DensityVolumeRepresentation"), [&](md_str_t path, md_str_t arg) {
+            return representation_read_entry(&r->rep, path, arg);
+        });
         // Only representations of atoms are drawn here
         if (r->rep.type > RepresentationType::Cartoon) {
             r->rep.type = RepresentationType::BallAndStick;
