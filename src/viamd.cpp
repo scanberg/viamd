@@ -595,7 +595,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     if (formal_charge) {
         tooltip_row(req, MD_STR_LIT("formal charge"), "%+d", formal_charge);
     }
-    if (flags & MD_ATOM_FLAG_QM) {
+    if (md_atom_is_qm(&sys.atom, atom_idx)) {
         tooltip_row(req, MD_STR_LIT("region"), "QM");
     }
 
@@ -1790,14 +1790,14 @@ void free_system_data(ApplicationState* data) {
     // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
     // next load reuses it.
     md_allocator_i* sys_alloc = data->mold.sys.alloc;
-    md_allocator_i* derived_alloc = data->mold.sys.derived_alloc;
-    // What was inferred is on the heap, which the arena's rewind does not give back
+    md_allocator_i* derived_backing = data->mold.sys.derived_backing;
+    // What was inferred is in an arena on the heap, which the arena's rewind does not give back
     md_system_derived_free(&data->mold.sys);
     md_arena_allocator_reset(sys_alloc);
     md_memset(&data->mold.sys, 0, sizeof(data->mold.sys));
     md_memset(&data->mold.state, 0, sizeof(data->mold.state));
     data->mold.sys.alloc   = sys_alloc;
-    data->mold.sys.derived_alloc = derived_alloc;
+    data->mold.sys.derived_backing = derived_backing;
     data->mold.state.alloc = sys_alloc;
 
     md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);
@@ -1881,11 +1881,12 @@ LoadResult load_data_from_file(ApplicationState* state, md_str_t filepath, const
 // ### INFERENCE IN THE BACKGROUND ###
 //
 // The work (md_system_infer_prepare) shares the core of the system, which nothing writes until it is published or
-// discarded, and has of its own what inference writes and the coordinates shown when it was made, which become the
-// system's reference state: on the heap, the system's allocator of the derived. It is inferred on a worker with its
-// loops on the pool. Published, its arrays become the system's and those they replace are freed; the system keeps its
+// discarded, and has of its own a derived arena (its pages on the heap, the system's derived backing), with the
+// coordinates it is inferred from, which become the system's reference state. It is inferred on a worker with its loops
+// on the pool. Published, its arena becomes the system's and the one it replaces is destroyed; the system keeps its
 // core, its attribute table and its force field. What is left of the work in its arena (its copies of the types of the
-// atoms) goes with it. The work of a topology which changed meanwhile (a supplement, an edit) is dropped and made again.
+// atoms) goes with it. The work of a topology which changed meanwhile (a supplement, an edit) is dropped and made again,
+// from the same coordinates.
 
 static void inference_discard_work(SystemInference& inf) {
     if (inf.arena) {
@@ -1898,26 +1899,40 @@ static void inference_discard_work(SystemInference& inf) {
 
 static void system_inference_on_main(ApplicationState* app, task_system::Status status);
 
-void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
+// What the system is inferred from when nothing says: the coordinates of the work under way, should it be made again
+// (those Recompute Bonds gave it), else those the system was inferred from (an edit of its bonds keeps the bonds inferred
+// as they were), else those shown (as loaded)
+static const md_system_state_t* inference_coordinates(const ApplicationState* app) {
+    const SystemInference& inf = app->mold.inference;
+    if (inf.arena && inf.work.sys.reference.xyz) return &inf.work.sys.reference;
+    if (app->mold.sys.reference.xyz) return &app->mold.sys.reference;
+    return &app->mold.state;
+}
+
+void system_inference_start(ApplicationState* app, const md_system_state_t* state) {
     MD_ASSERT(app);
     SystemInference& inf = app->mold.inference;
     inf.job.cancel_and_wait();
-    inference_discard_work(inf);
     const md_system_t& sys = app->mold.sys;
     if (sys.atom.count == 0) {
-        inf.pending = false;
-        return;
-    }
-
-    inf.arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-    if (!md_system_infer_prepare(&inf.work, &sys, &app->mold.state, inf.arena)) {
-        VIAMD_LOG_ERROR("Could not prepare the inference of the structure of the system");
         inference_discard_work(inf);
         inf.pending = false;
         return;
     }
 
-    inf.flags = flags;
+    // Made before the work it replaces is dropped: the coordinates may be that work's
+    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    md_system_infer_work_t work = {};
+    const bool prepared = md_system_infer_prepare(&work, &sys, state ? state : inference_coordinates(app), arena);
+    inference_discard_work(inf);
+    if (!prepared) {
+        VIAMD_LOG_ERROR("Could not prepare the inference of the structure of the system");
+        md_arena_allocator_destroy(arena);
+        inf.pending = false;
+        return;
+    }
+    inf.arena = arena;
+    inf.work = work;
     inf.done = false;
     inf.pending = true;
     inf.restart = false;
@@ -1925,7 +1940,7 @@ void system_inference_start(ApplicationState* app, md_infer_flags_t flags) {
     SystemInference* p = &inf;
     inf.job.start(MD_STR_LIT("Inferring structure"),
         [p]() {
-            md_system_infer_run(&p->work, p->flags, task_system::executor());
+            md_system_infer_run(&p->work, task_system::executor());
             // Bond inference leaves its scratch committed in this thread's arenas (it rewinds them, which keeps the
             // pages): given back, as this was large and is done
             md_temp_trim();
@@ -1999,7 +2014,7 @@ static bool inference_publish(ApplicationState* app) {
     // A version of its own: what was derived from the core is stale
     if (!md_system_infer_publish(&sys, &inf.work)) return false;
 
-    // Its arrays are the system's now, those they replaced freed: the arena has nothing of the system
+    // Its derived arena is the system's now, the one it replaced destroyed: the arena has nothing of the system
     md_arena_allocator_destroy(inf.arena);
     inf.arena = nullptr;
     inf.work = {};
@@ -2032,7 +2047,7 @@ static void system_inference_on_main(ApplicationState* app, task_system::Status 
 void system_inference_update(ApplicationState* app) {
     SystemInference& inf = app->mold.inference;
     if (inf.pending && inf.restart && !inf.job.running()) {
-        system_inference_start(app, inf.flags);
+        system_inference_start(app, nullptr);
     }
 }
 
@@ -2043,10 +2058,11 @@ void system_inference_finish(ApplicationState* app) {
     if (app->script.eval) script::eval_interrupt(app->script.eval);
     task_system::wait_all();
     if (!(inf.done && inference_publish(app))) {
-        // Inferred on the system itself, here and now
+        // Inferred on the system itself, here and now, from the coordinates the work was to be inferred from (copied by
+        // the inference before the work is dropped)
         inf.job.cancel_and_wait();
+        md_system_infer(&app->mold.sys, inference_coordinates(app), task_system::executor());
         inference_discard_work(inf);
-        md_system_infer(&app->mold.sys, &app->mold.state, inf.flags, task_system::executor());
         inf.pending = false;
         inf.restart = false;
         system_inferred_refresh(app);
@@ -2095,6 +2111,7 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
             task_system::wait_all();
 
             const size_t num_atoms = state->mold.sys.atom.count;
+            const uint64_t topology_version = state->mold.sys.topology_version;
             if (loader::load_supplemental(&state->mold.sys, path_to_file, load_state, run)) {
                 // The contract of a supplement: it adds to the atoms, and never changes how many there are.
                 // What is kept by atom index (selections, user bonds, particle type edits, and all of it in a
@@ -2107,8 +2124,11 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
                 result = LoadResult_Supplement;
                 file_list_record(&state->files.list, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
 
-                // A topology replaces bonds (and with them structures), which the GPU holds a copy of
+                // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the system
+                // is inferred again by it (md_itp_system_supplement, md_topology_system_supplement), all of what is
+                // derived in a new arena, so what is built of that is built again
                 state->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                if (state->mold.sys.topology_version != topology_version) system_inferred_refresh(state);
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
                 if (role == FileRole_Series) {
@@ -2151,19 +2171,10 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
             state->files.list.atom_count = state->mold.sys.atom.count;
 
             // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
-            // other models) itself, and leaves out what it cannot derive for them (bonds, structures, backbones)
-            md_infer_flags_t flags = MD_SYSTEM_INFER_ALL;
-            if ((load_state.flags & LoaderFlag_Topology) && state->mold.sys.bond.count > 0) {
-                // The file's bonds are the force field's; inferring would replace them with a guess.
-                // Structures and rings are still derived, from those bonds. A topology format that
-                // carried no bonds at all (an H5MD file without connectivity) has none to protect, and
-                // gets them inferred like any other structure.
-                flags &= ~MD_SYSTEM_INFER_BOND_BIT;
-                flags |= MD_SYSTEM_INFER_MOLECULE_BIT;
-            }
-            // The colours of the particle types now, which the core is shown with; the rest in the background, put in
-            // place when it is done (system_inference_start)
-            md_system_infer(&state->mold.sys, &state->mold.state, MD_SYSTEM_INFER_COLOR_BIT, nullptr);
+            // other models) itself, and infers no bond between atoms a topology gives all the bonds of
+            // (md_atom_data_t::bonds_complete). The colours of the particle types now, which the core is shown with
+            // (they are of the core); the rest in the background, put in place when it is done (system_inference_start)
+            md_system_infer_type_colors(&state->mold.sys);
             state->mold.inference.pending = true;
             init_system_data(state);
 
@@ -2173,7 +2184,7 @@ LoadResult load_data(ApplicationState* state, md_str_t filepath, const loader::L
                 open_run(state, path_to_file, load_state);
             }
             // After the run is opened, which interrupts what runs on the pool
-            system_inference_start(state, flags & ~MD_SYSTEM_INFER_COLOR_BIT);
+            system_inference_start(state, nullptr);
         } else if (role == FileRole_Trajectory) {
             if (!state->mold.sys.atom.count) {
                 VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
@@ -2794,6 +2805,23 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         }
     }
 
+    // The bonds the user made: of the core, so given before the system is inferred, which they are part of. As many atoms
+    // as when the workspace was saved, or they would join others.
+    {
+        const size_t loaded_atoms = data->mold.sys.atom.count;
+        const bool bonds_fit = loaded_atoms > 0 && (plan.atom_count == 0 || plan.atom_count == loaded_atoms);
+        const size_t num_user_bonds = bonds_fit ? md_array_size(pending.user_bonds) : 0;
+        if (num_user_bonds > 0) {
+            system_core_edit_begin(data);
+            for (size_t i = 0; i < num_user_bonds; ++i) {
+                const md_atom_pair_t& pair = pending.user_bonds[i];
+                if ((size_t)pair.idx[0] < loaded_atoms && (size_t)pair.idx[1] < loaded_atoms && pair.idx[0] != pair.idx[1]) {
+                    md_system_bond_insert(&data->mold.sys, pair.idx[0], pair.idx[1], pending.user_bond_flags[i]);
+                }
+            }
+        }
+    }
+
     // What follows refers to the system as inferred (its bonds, residue types, structures): waited for here, as the
     // workspace's steps were applied after inference when it was not in the background
     system_inference_finish(data);
@@ -2861,27 +2889,6 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     if (pending.has_recenter_target && mask_fits(&pending.recenter_target)) {
         md_bitset_assign(&data->operations.selection_mask, pending.recenter_target, data->allocator.persistent);
         recenter_update_target_data(data);
-    }
-
-    const size_t num_user_bonds = atoms_as_saved ? md_array_size(pending.user_bonds) : 0;
-    if (num_user_bonds > 0) {
-        md_system_t& sys = data->mold.sys;
-        system_bonds_edit_begin(data);
-        bool graph = false;
-        for (size_t i = 0; i < num_user_bonds; ++i) {
-            const md_atom_pair_t& pair = pending.user_bonds[i];
-            if ((size_t)pair.idx[0] < num_atoms && (size_t)pair.idx[1] < num_atoms && pair.idx[0] != pair.idx[1]) {
-                const md_bond_flags_t flags = pending.user_bond_flags[i];
-                graph |= !md_bond_is_noncovalent(flags);
-                md_system_bond_insert(&sys, pair.idx[0], pair.idx[1], flags);
-                // The next one finds this one, should the workspace have it twice
-                if (!md_bond_is_noncovalent(flags)) md_system_bond_build_connectivity(&sys);
-            }
-        }
-        if (graph) {
-            md_system_infer_coordination(&sys);
-        }
-        system_bonds_changed(data, graph);
     }
 
     // The assembly shown, by its id in the files loaded
@@ -3060,9 +3067,10 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         viamd::write_bitset(state, MD_STR_LIT("Mask"), &selection);
     }
 
-    // Save user defined bonds, of the graph and non-covalent, with the kind they were given
+    // Save user defined bonds, of the graph and non-covalent, with the kind they were given: those given, whether the
+    // system is inferred of them yet or not
     bool has_user_bonds = false;
-    const md_bond_data_t& bonds = app_state->mold.sys.bond;
+    const md_bond_data_t& bonds = app_state->mold.sys.given_bond;
     for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
         const md_bond_flags_t flags = bonds.flags[i];
         if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
@@ -6677,59 +6685,44 @@ bool recompute_bonds(ApplicationState* app, int64_t frame) {
     md_system_state_t state = { .alloc = temp.arena };
     if (!bond_coordinates(&state, app, frame)) return false;
 
-    system_bonds_edit_begin(app);
-    // The bonds inferred anew (those given stay) and what follows from them, from the same coordinates, which
-    // md_system_infer records as the reference
-    md_system_infer(&sys, &state, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT | MD_SYSTEM_INFER_CHEMISTRY_BIT | MD_SYSTEM_INFER_LIPID_BIT | MD_SYSTEM_INFER_FRAGMENT_BIT, task_system::executor());
-    system_bonds_changed(app, false);
+    // All of it inferred again from these coordinates (copied by the work), which become the reference: in the
+    // background, as after an edit of the bonds
+    system_inference_start(app, &state);
     return true;
 }
 
-void system_bonds_edit_begin(ApplicationState* app) {
+void system_core_edit_begin(ApplicationState* app) {
     MD_ASSERT(app);
-    // An edit of the bonds is of the system as inferred
-    system_inference_finish(app);
+    SystemInference& inf = app->mold.inference;
     if (app->script.eval) script::eval_interrupt(app->script.eval);
+    // The work of an inference under way shares the core: stopped, and kept for the coordinates it was to be inferred
+    // from (system_core_changed starts it again)
+    inf.job.cancel_and_wait();
     task_system::wait_all();
+    // What the system has derived is of the core before the edit
+    inf.pending = true;
+    inf.restart = false;
 }
 
-void system_bonds_changed(ApplicationState* app, bool graph_edited) {
+void system_core_changed(ApplicationState* app) {
     MD_ASSERT(app);
-    md_system_t& sys = app->mold.sys;
-    if (graph_edited) {
-        md_system_bond_build_connectivity(&sys);
-        // The molecules a bond joins are one, and a ring it closes is one. The orders are not perceived again: they
-        // are what they were, and a bond added by hand has none.
-        md_molecule_data_t molecules = {};
-        md_molecule_infer(&molecules, &sys, md_system_derived_alloc(&sys));
-        md_molecule_data_free(&sys.molecule, md_system_derived_alloc(&sys));
-        sys.molecule = molecules;
-        md_ring_data_t rings = {};
-        md_ring_infer(&rings, &sys, md_system_derived_alloc(&sys));
-        md_ring_data_free(&sys.ring, md_system_derived_alloc(&sys));
-        sys.ring = rings;
-        // And so are its fragments, which the molecules' inference clears
-        md_system_infer_fragments(&sys);
-    }
-    app->mold.dirty_gpu_buffers |= MolBit_DirtyBonds;
-    // The properties of a script are of the topology they were evaluated with (script::compile), and the bond sets
-    // it holds are indices of the bonds there were. Compiled in this frame, before the representations which name them
-    // are evaluated, rather than once the delay for typing has passed.
-    app->script.compile_ir = true;
-    app->script.time_since_last_change = 1.0e9;
-    flag_all_representations_as_dirty(app);
+    system_inference_start(app, nullptr);
+}
+
+// Of the bonds the system has now: not of those of an inference before (BondTracking::topology_version)
+static bool bond_tracking_valid(const ApplicationState* app) {
+    const auto& bt = app->operations.bond_tracking;
+    return bt.enabled && bt.key != 0 && bt.topology_version == app->mold.sys.topology_version;
 }
 
 const md_bond_delta_t* bond_tracking_delta(const ApplicationState* app) {
     MD_ASSERT(app);
-    const auto& bt = app->operations.bond_tracking;
-    return bt.enabled && bt.key != 0 ? &bt.delta : nullptr;
+    return bond_tracking_valid(app) ? &app->operations.bond_tracking.delta : nullptr;
 }
 
 const md_chem_delta_t* bond_tracking_chem(const ApplicationState* app) {
     MD_ASSERT(app);
-    const auto& bt = app->operations.bond_tracking;
-    return bt.enabled && bt.key != 0 ? &bt.chem : nullptr;
+    return bond_tracking_valid(app) ? &app->operations.bond_tracking.chem : nullptr;
 }
 
 md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, int* formal_charge, int* hydrogen_count) {
@@ -6856,6 +6849,7 @@ void bond_tracking_update(ApplicationState* app) {
     md_bond_delta_free(&bt.delta, app->allocator.persistent);
     bt.delta = delta;
     bt.key = key;
+    bt.topology_version = sys.topology_version;
     bt.time_ms = time_ms;
     bt.formed_capacity = MD_MAX(bt.formed_capacity, delta.num_formed);
     if (!same) {

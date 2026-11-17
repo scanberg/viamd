@@ -74,7 +74,7 @@ const Peptide* peptide() {
         p.sys = {.alloc = p.alloc};
         p.state = {.alloc = p.alloc};
         ok = md_pdb_system_init_from_file(&p.sys, &p.state, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) &&
-             md_system_infer(&p.sys, &p.state, MD_SYSTEM_INFER_ALL, NULL);
+             md_system_infer(&p.sys, &p.state, NULL);
     }
     return ok ? &p : nullptr;
 }
