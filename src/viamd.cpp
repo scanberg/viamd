@@ -1790,14 +1790,12 @@ void free_system_data(ApplicationState* data) {
     // the only pointer to the arena has to be carried across by hand. Rewound, not destroyed - the
     // next load reuses it.
     md_allocator_i* sys_alloc = data->mold.sys.alloc;
-    md_allocator_i* derived_backing = data->mold.sys.derived_backing;
-    // What was inferred is in an arena on the heap, which the arena's rewind does not give back
+    // What was inferred is in an arena of the persistent allocator's pages, which the arena's rewind does not give back
     md_system_derived_free(&data->mold.sys);
     md_arena_allocator_reset(sys_alloc);
     md_memset(&data->mold.sys, 0, sizeof(data->mold.sys));
     md_memset(&data->mold.state, 0, sizeof(data->mold.state));
     data->mold.sys.alloc   = sys_alloc;
-    data->mold.sys.derived_backing = derived_backing;
     data->mold.state.alloc = sys_alloc;
 
     md_array_free(data->operations.initial_frame.rel_xyzw, data->allocator.persistent);

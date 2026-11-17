@@ -782,13 +782,12 @@ int main(int argc, char** argv) {
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MD_MEGABYTES(1)), MD_MEGABYTES(1));
     // One arena per dataset, held by the system and the state that share it. Both are rewound
     // rather than destroyed between loads, so this handle is set once and never reassigned.
+    // What is inferred of the system (its bonds, molecules, rings, chemistry, ...) is in an arena of its own, replaced
+    // whole whenever it is inferred again (an edit of its bonds, Recompute Bonds), whose pages come from where this one
+    // takes its own: the persistent allocator, which gives them back (md_system_t, ALLOCATORS). Destroyed with the
+    // system in free_system_data.
     state.mold.sys.alloc   = md_arena_allocator_create(persistent_alloc, MD_MEGABYTES(1));
     state.mold.state.alloc = state.mold.sys.alloc;
-    // What is inferred of the system (its bonds, molecules, rings, chemistry, ...) is in an arena of its own, replaced
-    // whole whenever it is inferred again (an edit of its bonds, Recompute Bonds): its pages on the heap, which gives them
-    // back, where the dataset's arena would keep those of every inference (md_system_t, ALLOCATORS). Destroyed with the
-    // system in free_system_data.
-    state.mold.sys.derived_backing = md_get_heap_allocator();
 
     md_temp_arena_system_init();
 
