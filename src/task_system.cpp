@@ -401,6 +401,12 @@ static bool executor_parallel_for(void* user, uint32_t count, uint32_t grain, md
     });
 }
 
+// md_run_lanes asks at its syncs, on whichever lane's thread completes one: the pieces carry the job's context
+static bool executor_cancelled(void* user) {
+    (void)user;
+    return cancelled();
+}
+
 static md_executor_t g_executor = {};
 
 const md_executor_t* executor() {
@@ -425,7 +431,7 @@ void initialize(uint32_t num_threads) {
     MD_ASSERT(!g_initialized);
     g_ts.Initialize(num_threads);
     g_initialized = true;
-    g_executor = {executor_parallel_for, nullptr, g_ts.GetNumTaskThreads()};
+    g_executor = {executor_parallel_for, nullptr, g_ts.GetNumTaskThreads(), executor_cancelled, false};
 }
 
 void shutdown() {

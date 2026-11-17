@@ -61,6 +61,11 @@ bool parallel_for(uint32_t count, F&& f) { return parallel_for(count, 1, static_
 // The pool as an executor, for what mdlib spreads over threads (md_executor.h): parallel_for underneath, with
 // thread_index() as thread_idx. Its loops run at the priority of whoever issues them, and stop with their job. NULL
 // before initialize(): mdlib then runs the loops on the calling thread.
+//
+// mdlib's wide sections (md_run_lanes) run on it too: their lanes are the pieces of one parallel_for, joined by the
+// threads which pick them up before the section's first sync, and they wait for each other at syncs of their own,
+// never in the pool. A thread which waits in the pool meanwhile (a parallel_for of a job) may pick up a lane, and then
+// returns to its wait only when the whole section is done.
 const md_executor_t* executor();
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -17,10 +17,9 @@
 namespace {
 
 void ensure_task_system() {
-    static bool initialized = false;
-    if (!initialized) {
+    // Other tests may have brought it up already (test_lanes.cpp): then with whatever number of threads they chose
+    if (!task_system::executor()) {
         task_system::initialize(4);
-        initialized = true;
         atexit([]() { task_system::shutdown(); });
     }
 }
