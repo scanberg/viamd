@@ -6,6 +6,7 @@
 #include <core/md_log.h>
 
 #include <string.h>
+#include <stdio.h>
 
 namespace viamd {
 
@@ -325,6 +326,385 @@ bool extract_bitset(md_bitset_t* bs, md_str_t arg, md_allocator_i* alloc) {
 	}
 
 	return true;
+}
+
+bool extract_flt_list(float* elem, size_t* count, size_t cap, md_str_t arg) {
+	// Checked whole before anything is written
+	md_str_t rest = arg;
+	md_str_t tok;
+	size_t n = 0;
+	while (md_parse_next_token_delim(&tok, &rest, ',')) {
+		tok = md_str_trim(tok);
+		if (!(md_parse_is_float(tok) || md_parse_is_int(tok))) return false;
+		n += 1;
+	}
+	if (n > cap) return false;
+	rest = arg;
+	for (size_t i = 0; i < n; ++i) {
+		md_parse_next_token_delim(&tok, &rest, ',');
+		elem[i] = (float)md_parse_float(md_str_trim(tok));
+	}
+	*count = n;
+	return true;
+}
+
+// ## Paths
+
+bool path_next(md_str_t& step, md_str_t& path) {
+	if (md_str_empty(path)) return false;
+	const size_t dot = md_str_find_char(path, '.');
+	step = md_str_substr(path, 0, dot);
+	path = dot == MD_STR_NPOS ? md_str_t{} : md_str_substr(path, dot + 1, SIZE_MAX);
+	return true;
+}
+
+md_str_t path_join(char* buf, size_t cap, md_str_t a, md_str_t b) {
+	if (md_str_empty(a)) return b;
+	const size_t len = a.len + 1 + b.len;
+	if (len >= cap) return {};
+	memcpy(buf, a.ptr, a.len);
+	buf[a.len] = '.';
+	memcpy(buf + a.len + 1, b.ptr, b.len);
+	buf[len] = '\0';
+	return {buf, len};
+}
+
+bool next_subsection(md_str_t& sub, md_str_t section, deserialization_state_t& state) {
+	// What the reader of the current section left unread
+	md_str_t ident, arg;
+	while (next_entry(ident, arg, state)) {}
+
+	// next_entry stops at the line of the next header, without taking it
+	md_str_t line;
+	if (!md_parse_peek_line(&line, &state.text)) return false;
+	line = md_str_trim(line);
+	if (!md_str_begins_with(line, MD_STR_LIT("[")) || !md_str_ends_with(line, MD_STR_LIT("]"))) return false;
+
+	const md_str_t name = md_str_trim(md_str_substr(line, 1, md_str_len(line) - 2));
+	if (name.len <= section.len + 1 || name.ptr[section.len] != '.' || !md_str_begins_with(name, section)) return false;
+
+	md_parse_skip_line(&state.text);
+	state.cur_section = name;
+	sub = md_str_substr(name, section.len + 1, SIZE_MAX);
+	return true;
+}
+
+// The number a '#' stands for: 1 to 3 digits and nothing else
+static bool is_key_number(md_str_t s) {
+	if (s.len == 0 || s.len > 3) return false;
+	for (size_t i = 0; i < s.len; ++i) {
+		if (s.ptr[i] < '0' || s.ptr[i] > '9') return false;
+	}
+	return true;
+}
+
+md_str_t path_alias(char* buf, size_t cap, md_str_t key, const PathAlias* aliases, size_t count) {
+	for (size_t i = 0; i < count; ++i) {
+		const md_str_t old_key = md_str_from_cstr(aliases[i].key);
+		const md_str_t path    = md_str_from_cstr(aliases[i].path);
+		const size_t hash = md_str_find_char(old_key, '#');
+		if (hash == MD_STR_NPOS) {
+			if (md_str_eq(key, old_key)) {
+				if (path.len >= cap) return {};
+				md_str_copy_to_char_buf(buf, cap, path);
+				return {buf, path.len};
+			}
+			continue;
+		}
+		// The families end in their number
+		MD_ASSERT(hash == old_key.len - 1);
+		const md_str_t family = md_str_substr(old_key, 0, hash);
+		if (!md_str_begins_with(key, family)) continue;
+		const md_str_t num = md_str_substr(key, family.len, SIZE_MAX);
+		if (!is_key_number(num)) continue;
+
+		const size_t at = md_str_find_char(path, '#');
+		MD_ASSERT(at != MD_STR_NPOS);
+		const size_t len = path.len - 1 + num.len;
+		if (len >= cap) return {};
+		memcpy(buf, path.ptr, at);
+		memcpy(buf + at, num.ptr, num.len);
+		memcpy(buf + at + num.len, path.ptr + at + 1, path.len - at - 1);
+		buf[len] = '\0';
+		return {buf, len};
+	}
+	return {};
+}
+
+// ## Visitor
+
+Visitor Visitor::writer(serialization_state_t& state, md_str_t section) {
+	Visitor v;
+	v.ser = &state;
+	v.section_name = section;
+	return v;
+}
+
+Visitor Visitor::reader(md_str_t path, md_str_t arg) {
+	Visitor v;
+	v.rest = path;
+	v.arg = arg;
+	return v;
+}
+
+// The index of an item: digits, below cap. -1 otherwise.
+static int item_index(md_str_t step, int cap) {
+	if (!is_key_number(step)) return -1;
+	const int i = (int)md_parse_int(step);
+	return i < cap ? i : -1;
+}
+
+bool Visitor::take(const char* key) {
+	MD_ASSERT(reading());
+	if (done() || !md_str_eq_cstr(rest, key)) return false;
+	taken = true;
+	return true;
+}
+
+bool Visitor::enter(const char* key, md_str_t* after) const {
+	MD_ASSERT(reading());
+	if (done()) return false;
+	md_str_t path = rest;
+	md_str_t step;
+	if (!path_next(step, path) || !md_str_eq_cstr(step, key)) return false;
+	*after = path;
+	return true;
+}
+
+md_str_t Visitor::key_path(const char* key) {
+	MD_ASSERT(writing());
+	// Behind a section, a field of the object itself would land in it
+	MD_ASSERT(!(sectioned && depth == 0));
+	const size_t len = strlen(key);
+	if (prefix_len + len >= sizeof(key_buf)) {
+		MD_LOG_ERROR("Workspace: the path of '%s' is too long to be written", key);
+		return {};
+	}
+	memcpy(key_buf, prefix, prefix_len);
+	memcpy(key_buf + prefix_len, key, len);
+	key_buf[prefix_len + len] = '\0';
+	return {key_buf, prefix_len + len};
+}
+
+void Visitor::push(FrameKind kind, const char* key, int index) {
+	MD_ASSERT(depth < (int)MD_COUNTOF(frames));
+	frames[depth++] = { key, index, prefix_len, kind };
+	if (writing() && kind != Frame_Section) {
+		const int n = index < 0 ? snprintf(prefix + prefix_len, sizeof(prefix) - prefix_len, "%s.", key)
+		                        : snprintf(prefix + prefix_len, sizeof(prefix) - prefix_len, "%s.%d.", key, index);
+		MD_ASSERT(n > 0 && prefix_len + (uint32_t)n < sizeof(prefix));
+		prefix_len += (uint32_t)n;
+	}
+}
+
+#define VISITOR_FIELD(write_call, read_call)       \
+	if (writing()) {                              \
+		const md_str_t k = key_path(key);         \
+		if (!md_str_empty(k)) write_call;         \
+		return false;                             \
+	}                                             \
+	return take(key) && (read_call)
+
+bool Visitor::field(const char* key, bool& val)        { VISITOR_FIELD(write_bool(*ser, k, val), extract_bool(val, arg)); }
+bool Visitor::field(const char* key, int& val)         { VISITOR_FIELD(write_int (*ser, k, val), extract_int (val, arg)); }
+bool Visitor::field(const char* key, float& val)       { VISITOR_FIELD(write_flt (*ser, k, val), extract_flt (val, arg)); }
+bool Visitor::field(const char* key, double& val)      { VISITOR_FIELD(write_dbl (*ser, k, val), extract_dbl (val, arg)); }
+bool Visitor::field(const char* key, md_float2_t& val) { VISITOR_FIELD(write_flt_vec(*ser, k, val.elem, 2), extract_flt_vec(val.elem, 2, arg)); }
+bool Visitor::field(const char* key, md_float3_t& val) { VISITOR_FIELD(write_vec3(*ser, k, val), extract_vec3(val, arg)); }
+bool Visitor::field(const char* key, md_float4_t& val) { VISITOR_FIELD(write_vec4(*ser, k, val), extract_vec4(val, arg)); }
+bool Visitor::field(const char* key, float* elem, size_t len) { VISITOR_FIELD(write_flt_vec(*ser, k, elem, len), extract_flt_vec(elem, len, arg)); }
+bool Visitor::field(const char* key, md_str_t& val)    { VISITOR_FIELD(write_str(*ser, k, val), extract_str(val, arg)); }
+bool Visitor::field(const char* key, char* buf, size_t cap) { VISITOR_FIELD(write_str(*ser, k, md_str_from_cstr(buf)), extract_to_char_buf(buf, cap, arg)); }
+
+#undef VISITOR_FIELD
+
+bool Visitor::field_enum(const char* key, int& val, const EnumNames& names) {
+	if (writing()) {
+		const md_str_t k = key_path(key);
+		if (md_str_empty(k)) return false;
+		if (0 <= val && val < names.count) {
+			write_str(*ser, k, md_str_from_cstr(names.names[val]));
+		} else {
+			write_int(*ser, k, val);
+		}
+		return false;
+	}
+	if (!take(key)) return false;
+	for (int i = 0; i < names.count; ++i) {
+		if (md_str_eq_cstr(arg, names.names[i])) {
+			val = i;
+			return true;
+		}
+	}
+	int i;
+	if (extract_int(i, arg) && 0 <= i && i < names.count) {
+		val = i;
+		return true;
+	}
+	MD_LOG_DEBUG("Workspace: '%s' has no value '" MD_STR_FMT "', it is skipped", key, MD_STR_ARG(arg));
+	return false;
+}
+
+bool Visitor::field_index_int(const char* key, int& val, int count) {
+	if (writing()) {
+		const md_str_t k = key_path(key);
+		if (!md_str_empty(k)) write_int(*ser, k, val);
+		return false;
+	}
+	if (!take(key)) return false;
+	int i;
+	if (extract_int(i, arg) && 0 <= i && i < count) {
+		val = i;
+		return true;
+	}
+	return false;
+}
+
+bool Visitor::field_named(const char* key, int& val, const char* (*name_of)(int), int (*index_of)(md_str_t)) {
+	if (writing()) {
+		const md_str_t k = key_path(key);
+		if (md_str_empty(k)) return false;
+		const char* name = name_of(val);
+		if (name) {
+			write_str(*ser, k, md_str_from_cstr(name));
+		} else {
+			write_int(*ser, k, val);
+		}
+		return false;
+	}
+	if (!take(key)) return false;
+	const int idx = index_of(arg);
+	if (idx >= 0) {
+		val = idx;
+		return true;
+	}
+	int i;
+	if (extract_int(i, arg) && name_of(i)) {
+		val = i;
+		return true;
+	}
+	MD_LOG_DEBUG("Workspace: '%s' has no value '" MD_STR_FMT "', it is skipped", key, MD_STR_ARG(arg));
+	return false;
+}
+
+bool Visitor::list(const char* key, float* elem, int& count, int cap, int arity) {
+	MD_ASSERT(arity > 0 && count >= 0 && count <= cap);
+	if (writing()) {
+		const md_str_t k = key_path(key);
+		if (!md_str_empty(k)) write_flt_vec(*ser, k, elem, (size_t)(count * arity));
+		return false;
+	}
+	md_str_t after;
+	if (!enter(key, &after)) return false;
+	taken = true;
+	if (md_str_empty(after)) {
+		// The whole list
+		float tmp[64];
+		MD_ASSERT((size_t)(cap * arity) <= MD_COUNTOF(tmp));
+		size_t n = 0;
+		if (!extract_flt_list(tmp, &n, (size_t)(cap * arity), arg) || n % (size_t)arity != 0) return false;
+		md_memcpy(elem, tmp, n * sizeof(float));
+		count = (int)(n / (size_t)arity);
+		return true;
+	}
+	// One item of it
+	md_str_t step;
+	path_next(step, after);
+	const int i = md_str_empty(after) ? item_index(step, cap) : -1;
+	if (i < 0 || !extract_flt_vec(elem + (size_t)i * (size_t)arity, (size_t)arity, arg)) return false;
+	count = MD_MAX(count, i + 1);
+	return true;
+}
+
+bool Visitor::block(const char* key) {
+	if (writing()) {
+		push(Frame_Block, key, -1);
+		return true;
+	}
+	md_str_t after;
+	if (!enter(key, &after) || md_str_empty(after)) return false;
+	rest = after;
+	push(Frame_Block, key, -1);
+	return true;
+}
+
+bool Visitor::section(const char* key) {
+	if (writing()) {
+		// Of the object itself, not of a block within it
+		MD_ASSERT(depth == 0);
+		char buf[256];
+		const md_str_t name = path_join(buf, sizeof(buf), section_name, md_str_from_cstr(key));
+		if (md_str_empty(name)) return false;
+		write_section_header(*ser, name);
+		push(Frame_Section, key, -1);
+		sectioned = true;
+		return true;
+	}
+	return block(key);
+}
+
+bool Visitor::each(const char* key, int& i, int& count, int cap) {
+	MD_ASSERT(cap > 0);
+	// The call after an item: the item ends
+	const bool after_item = depth > 0 && frames[depth - 1].kind == Frame_Each && strcmp(frames[depth - 1].key, key) == 0;
+
+	if (writing()) {
+		int next = 0;
+		if (after_item) {
+			depth -= 1;
+			prefix_len = frames[depth].prefix_len;
+			next = frames[depth].index + 1;
+		} else {
+			// How many: an array that is empty says so
+			const md_str_t k = key_path(key);
+			if (md_str_empty(k)) return false;
+			write_int(*ser, k, MD_CLAMP(count, 0, cap));
+		}
+		if (next >= MD_MIN(count, cap)) return false;
+		push(Frame_Each, key, next);
+		i = next;
+		return true;
+	}
+
+	if (after_item) {
+		// The entry was in that item: nothing after it can be it
+		depth -= 1;
+		finished = true;
+		return false;
+	}
+	md_str_t after;
+	if (!enter(key, &after)) return false;
+	if (md_str_empty(after)) {
+		// key=<count>
+		taken = true;
+		int n;
+		if (extract_int(n, arg)) count = MD_CLAMP(n, 0, cap);
+		return false;
+	}
+	md_str_t step;
+	path_next(step, after);
+	const int idx = item_index(step, cap);
+	if (idx < 0 || md_str_empty(after)) {
+		// Within the array, but no field of an item of it
+		finished = true;
+		return false;
+	}
+	rest = after;
+	count = MD_MAX(count, idx + 1);
+	push(Frame_Each, key, idx);
+	i = idx;
+	return true;
+}
+
+void Visitor::end() {
+	MD_ASSERT(depth > 0);
+	depth -= 1;
+	if (writing()) {
+		prefix_len = frames[depth].prefix_len;
+	} else {
+		// The entry was within the block: nothing after it can be it
+		finished = true;
+	}
 }
 
 }

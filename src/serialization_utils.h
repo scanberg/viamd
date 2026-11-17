@@ -4,6 +4,7 @@
 #include <core/md_str.h>
 #include <core/md_writer.h>
 #include <core/md_vec.h>
+#include <core/md_log.h>
 
 struct md_bitset_t;
 
@@ -19,6 +20,13 @@ struct md_bitset_t;
 // spanning lines, or with whitespace at either end - is written between triple quotes, and read back
 // verbatim. Lines that are neither (blank lines, the banner, anything starting with '#' or ';') are
 // skipped.
+//
+// A key can be a PATH into what its section is of: steps separated by '.', each a name, or the index of an item of
+// an array - Field.Range, Slice.0.Opacity. A section header can be one too: [Representation.ElectronicStructure]
+// right after a [Representation] continues it, and its keys are paths within ElectronicStructure. To a reader the
+// two are the same path; the writer puts a large block in a section of its own so that its lines are short
+// (Visitor::section). The keys of a workspace from before the paths are single steps, and those that moved into a
+// block are mapped onto their paths (ElectronicStructureSlice3 onto ElectronicStructure.Slice.3.Plane, PathAlias).
 //
 // Readers are forgiving and writers are exact: numbers are written with the digits it takes to read
 // back the same value, an extract_* that cannot parse its argument returns false and leaves the
@@ -93,5 +101,201 @@ static inline bool extract_enum(T& val, md_str_t arg, int count) {
 static inline bool extract_vec3(md_float3_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 3, arg); }
 static inline bool extract_vec4(md_float4_t& v, md_str_t arg) { return extract_flt_vec(v.elem, 4, arg); }
 static inline bool extract_quat(md_quat_t& q, md_str_t arg) { return extract_flt_vec(q.elem, 4, arg); }
+
+// A list of any length up to cap: count is how many there were, and an empty value is the empty list. False, with
+// nothing written, when one of them is not a number or there are more than cap. Lists are of the paths, which no
+// VIAMD wrote with decimal commas, so a ',' always separates.
+bool extract_flt_list(float* elem, size_t* count, size_t cap, md_str_t arg);
+
+// ## Paths
+
+// Takes the first step off a path: false when there is none
+bool path_next(md_str_t& step, md_str_t& path);
+
+// a.b into buf (b alone when a is empty), empty when it does not fit
+md_str_t path_join(char* buf, size_t cap, md_str_t a, md_str_t b);
+
+// Advances to the next section when it continues 'section' ([section.sub]), sub its path within it. Otherwise false,
+// and the next section is left for next_section_header: a continuation that does not follow what it continues is
+// read by nobody, as any section nobody knows.
+bool next_subsection(md_str_t& sub, md_str_t section, deserialization_state_t& state);
+
+// The entries of the current section, and of the sections continuing it, each as its path and value: read(path, arg)
+// says whether it was one it knows, and one that was not is logged (debug).
+template <typename F>
+void read_section(deserialization_state_t& state, md_str_t section, F&& read) {
+	md_str_t ident, arg;
+	while (next_entry(ident, arg, state)) {
+		if (!read(ident, arg)) {
+			MD_LOG_DEBUG("Workspace: [" MD_STR_FMT "] has no '" MD_STR_FMT "', it is skipped", MD_STR_ARG(section), MD_STR_ARG(ident));
+		}
+	}
+	md_str_t sub;
+	while (next_subsection(sub, section, state)) {
+		while (next_entry(ident, arg, state)) {
+			char buf[256];
+			const md_str_t path = path_join(buf, sizeof(buf), sub, ident);
+			if (md_str_empty(path) || !read(path, arg)) {
+				MD_LOG_DEBUG("Workspace: [" MD_STR_FMT "] has no '" MD_STR_FMT "', it is skipped", MD_STR_ARG(state.cur_section), MD_STR_ARG(ident));
+			}
+		}
+	}
+}
+
+// Where a key of a workspace from before the paths is now. '#' in both stands for the number of a numbered key:
+// {"ElectronicStructureSliceOpacity#", "ElectronicStructure.Slice.#.Opacity"}. A '#' is digits and nothing else, so a
+// family is never mistaken for a longer one which begins like it (ElectronicStructureSlice# for SliceOpacity3).
+struct PathAlias {
+	const char* key;
+	const char* path;
+};
+
+// The path of key, into buf: empty when it is none of the aliases
+md_str_t path_alias(char* buf, size_t cap, md_str_t key, const PathAlias* aliases, size_t count);
+
+template <size_t N>
+static inline md_str_t path_alias(char* buf, size_t cap, md_str_t key, const PathAlias (&aliases)[N]) {
+	return path_alias(buf, cap, key, aliases, N);
+}
+
+// ## Visitor
+//
+// One function per struct lists its fields, and it is called both to write the struct and to read each entry back
+// into it: what is written and what is read are the same list, and a struct used in several places (a colour scale)
+// has its list once.
+//
+//     void visit(viamd::Visitor& v, Thing& t) {
+//         if (v.field("Source", t.source, source_names)) {
+//             thing_set_source_defaults(&t);           // only when it was read
+//         }
+//         v.field("Iso", t.iso);
+//         if (v.when(t.has_field) && v.block("Field")) {
+//             visit(v, t.field_scale);                 // Field.Colormap, Field.Range, ...
+//             v.end();
+//         }
+//         for (int i; v.each("Slice", i, t.num_slices, MAX_SLICES); ) {
+//             v.field("Opacity", t.slices[i].opacity); // Slice.0.Opacity, ...
+//         }
+//     }
+//
+// Writing goes through the list in its order. Reading takes one entry at a time, so the fields are read in the order
+// of the file, which is the order they were written in: a field which sets others up (a source, and the defaults of
+// its spin) is read before them, as long as it comes before them in the list.
+//
+// A field returns true only when reading, only for the field the entry was for, and only when its value read: what
+// follows reading a value - a clamp, what it sets up - goes in that branch. Writing, it returns false. when(),
+// block(), section() and each() say what is visited, writing and reading alike. Writing does not change the struct,
+// so a writer may hand in one it was given as const.
+
+// The names of the values of an enum, as a workspace keeps them: the value's identifier, which does not change when
+// the enum is reordered or what it is shown as is
+struct EnumNames {
+	const char* const* names;
+	int count;
+};
+
+template <size_t N>
+static inline EnumNames enum_names(const char* const (&names)[N]) { return { names, (int)N }; }
+
+struct Visitor {
+	// Writes the fields of the struct (an object) into the current section, which is 'section': a block written in a
+	// section of its own is [section.Name]
+	static Visitor writer(serialization_state_t& state, md_str_t section);
+	// Reads one entry, by its path within the object
+	static Visitor reader(md_str_t path, md_str_t arg);
+
+	bool writing() const { return ser != nullptr; }
+	bool reading() const { return ser == nullptr; }
+	// What is written only when cond holds is read whenever the file has it
+	bool when(bool cond) const { return reading() || cond; }
+	// Reading: whether the entry was one of the fields (also when its value did not read)
+	bool consumed() const { return taken; }
+
+	bool field(const char* key, bool& val);
+	bool field(const char* key, int& val);
+	bool field(const char* key, float& val);
+	bool field(const char* key, double& val);
+	bool field(const char* key, md_float2_t& val);
+	bool field(const char* key, md_float3_t& val);
+	bool field(const char* key, md_float4_t& val);
+	// Exactly len numbers
+	bool field(const char* key, float* elem, size_t len);
+	// Read, a view of the text being read
+	bool field(const char* key, md_str_t& val);
+	bool field(const char* key, char* buf, size_t cap);
+
+	// An enum, by its name. Its index is read too, which is how a value was kept before it had a name.
+	template <typename E>
+	bool field(const char* key, E& val, const EnumNames& names) {
+		int i = (int)val;
+		if (!field_enum(key, i, names)) return false;
+		val = (E)i;
+		return true;
+	}
+	// An enum by its index alone, in [0, count): for the keys an older VIAMD reads too, which knows no names
+	template <typename E>
+	bool field_index(const char* key, E& val, int count) {
+		int i = (int)val;
+		if (!field_index_int(key, i, count)) return false;
+		val = (E)i;
+		return true;
+	}
+	// A value that has a name elsewhere (a colour map, by ImPlot's name): name_of gives the name of a value (NULL for
+	// none, which is written as the number), index_of the value of a name (-1 for none). A number is read as the
+	// value it is when it has a name.
+	bool field_named(const char* key, int& val, const char* (*name_of)(int), int (*index_of)(md_str_t));
+
+	// A list of count items of 'arity' numbers each, on one line: Isolines=-0.01,0.01. Reading one replaces the list;
+	// an item of it, key.<i>, is read too (the numbered keys of older workspaces), the count then at least i + 1.
+	bool list(const char* key, float* elem, int& count, int cap, int arity = 1);
+
+	// A block of fields within the object (key.field): true when its fields are to be visited, then end()
+	bool block(const char* key);
+	// A block in a section of its own ([section.key]), for one with many fields. It comes after every other field of
+	// the object, which would otherwise be written into it. Then end().
+	bool section(const char* key);
+	// Each item of an array of blocks (key.<i>.field), i its index: for (int i; v.each("Slice", i, count, cap); ) {}.
+	// The count is written first (key=<count>), so an array is what it says even where it starts with items of its
+	// own; reading an item makes the count at least its index + 1.
+	bool each(const char* key, int& i, int& count, int cap);
+	void end();
+
+private:
+	enum FrameKind : uint8_t { Frame_Block, Frame_Section, Frame_Each };
+	struct Frame {
+		const char* key;
+		int         index;
+		uint32_t    prefix_len;
+		FrameKind   kind;
+	};
+
+	bool field_enum(const char* key, int& val, const EnumNames& names);
+	bool field_index_int(const char* key, int& val, int count);
+	// Reading: whether the entry is key, within the blocks entered (and takes it)
+	bool take(const char* key);
+	// Reading: whether the entry is within key, the rest after it
+	bool enter(const char* key, md_str_t* rest) const;
+	// Writing: the path of key, in the blocks entered
+	md_str_t key_path(const char* key);
+	void push(FrameKind kind, const char* key, int index);
+	bool done() const { return taken || finished; }
+
+	// Writing
+	serialization_state_t* ser = nullptr;
+	md_str_t section_name = {};
+	char     prefix[192] = {};
+	uint32_t prefix_len = 0;
+	bool     sectioned = false;   // a section was written: the object's own fields are behind it
+	char     key_buf[256] = {};
+
+	// Reading
+	md_str_t rest = {};           // what is left of the entry's path, past the blocks entered
+	md_str_t arg = {};
+	bool     taken = false;       // the entry was a field
+	bool     finished = false;    // the entry is within a block that was visited: nothing after it can be it
+
+	Frame frames[8] = {};
+	int   depth = 0;
+};
 
 }
