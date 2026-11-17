@@ -2382,20 +2382,9 @@ static bool representation_read_legacy(Representation* rep, md_str_t key, md_str
 }
 
 bool representation_read_entry(Representation* rep, md_str_t path, md_str_t arg) {
-    viamd::Visitor v = viamd::Visitor::reader(path, arg);
-    visit_representation(v, *rep, nullptr);
-    if (v.consumed()) return true;
-
-    // A key of a workspace from before the paths: one step
-    if (md_str_find_char(path, '.') != MD_STR_NPOS) return false;
-    char buf[128];
-    const md_str_t moved = viamd::path_alias(buf, sizeof(buf), path, representation_aliases);
-    if (!md_str_empty(moved)) {
-        viamd::Visitor w = viamd::Visitor::reader(moved, arg);
-        visit_representation(w, *rep, nullptr);
-        return w.consumed();
-    }
-    return representation_read_legacy(rep, path, arg);
+    return viamd::read_entry(path, arg, representation_aliases,
+        [&](viamd::Visitor& v) { visit_representation(v, *rep, nullptr); },
+        [&](md_str_t key, md_str_t val) { return representation_read_legacy(rep, key, val); });
 }
 
 static void deserialize_representation(ApplicationState* data, viamd::deserialization_state_t& state) {

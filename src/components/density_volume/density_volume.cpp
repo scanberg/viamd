@@ -8,6 +8,7 @@
 #include <viamd.h>
 #include <serialization_utils.h>
 #include <representation.h>
+#include <color_scale.h>
 #include <property_grid.h>
 #include <filter_input.h>
 
@@ -529,53 +530,90 @@ struct DensityVolume : viamd::EventHandler {
         dirty_vol = true;
     }
 
+    // The volume shown as it is read, made into its key once the whole section is
+    struct VolumeRead {
+        SeriesSource source = SeriesSource_Script;
+        uint32_t period = 0;
+        uint32_t member = 0;
+        md_str_t path = {};
+    };
+
+    // The settings of [DensityVolume], one list to write and read them by (serialization_utils.h, Visitor). read: what
+    // is read of the volume shown, when reading.
+    void visit_settings(viamd::Visitor& v, VolumeRead* read) {
+        static const char* const legend_mode_names[]  = { "Opaque", "Transparent", "Split" };
+        static const char* const compare_show_names[] = { "This", "Difference", "Other" };
+
+        // The volume shown, by the series it is of
+        if (v.when(volume_key.path[0] != '\0') && v.block("Property")) {
+            md_str_t source = md_str_from_cstr(series_source_name(volume_key.source));
+            if (v.field("Source", source)) series_source_from_name(&read->source, source, &read->period);
+            md_str_t path = md_str_from_cstr(volume_key.path);
+            if (v.field("Path", path)) read->path = path;
+            int period = (int)volume_key.period;
+            if (v.when(volume_key.period != 0) && v.field("Period", period)) read->period = (uint32_t)MD_MAX(period, 0);
+            int member = (int)volume_member;
+            if (v.when(volume_member != 0) && v.field("Member", member)) read->member = (uint32_t)MD_MAX(member, 0);
+            v.end();
+        }
+        if (v.block("Dvr")) {
+            v.field("Enabled", dvr.enabled);
+            v.field_named("Colormap", dvr.tf.colormap, color_scale_colormap_name, color_scale_colormap_index);
+            v.field("AlphaScale", dvr.tf.alpha_scale);
+            float range[2] = { dvr.tf.min_val, dvr.tf.max_val };
+            if (v.field("Range", range, 2)) {
+                dvr.tf.min_val = range[0];
+                dvr.tf.max_val = range[1];
+            }
+            v.end();
+        }
+        if (v.block("Iso")) {
+            v.field("Enabled", iso.enabled);
+            int count = (int)iso.count;
+            for (int i; v.each("Level", i, count, (int)MD_COUNTOF(iso.values)); ) {
+                v.field("Value", iso.values[i]);
+                v.field("Color", iso.colors[i]);
+            }
+            iso.count = (size_t)count;
+            v.end();
+        }
+        if (v.block("Clip")) {
+            v.field("Min", clip_volume.min);
+            v.field("Max", clip_volume.max);
+            v.field("Color", clip_volume_color);
+            v.end();
+        }
+        if (v.block("Legend")) {
+            v.field("Enabled", legend.enabled);
+            v.field("Checkerboard", legend.checkerboard);
+            v.field("ColormapMode", legend.colormap_mode, viamd::enum_names(legend_mode_names));
+            v.end();
+        }
+        v.field("ResolutionScale", resolution_scale);
+        v.field("BoundingBoxColor", bounding_box_color);
+        v.field("ShowBoundingBox", show_bounding_box);
+        v.field("RelativeToBulk", relative_to_bulk);
+        // The volume compared with, when there is one
+        if (v.when(cmp.path[0] != '\0') && v.block("Compare")) {
+            if (v.field("File", cmp.path, sizeof(cmp.path))) cmp.load = true;
+            v.field("Show", cmp.show, viamd::enum_names(compare_show_names));
+            v.end();
+        }
+        v.field("ShowReferenceStructures", show_reference_structures);
+        v.field("ShowReferenceEnsemble", show_reference_ensemble);
+        v.field("EnsembleFade", ensemble_fade);
+        v.field("ShowCoordinateSystem", show_coordinate_system_widget);
+        v.field("ShowPanel", show_panel);
+        v.field("PanelWidth", panel_width);
+        // The [DensityVolumeRepresentation] sections after this one, said even when there are none
+        int rep_count = (int)md_array_size(reps);
+        if (v.field("RepresentationCount", rep_count)) workspace_rep_count = MD_MAX(rep_count, 0);
+    }
+
     void serialize(viamd::serialization_state_t& state) {
         viamd::write_section_header(state, MD_STR_LIT("DensityVolume"));
-        if (volume_key.path[0] != '\0') {
-            viamd::write_str(state, MD_STR_LIT("PropertySource"), md_str_from_cstr(series_source_name(volume_key.source)));
-            viamd::write_str(state, MD_STR_LIT("PropertyPath"), md_str_from_cstr(volume_key.path));
-            if (volume_key.period != 0) {
-                viamd::write_int(state, MD_STR_LIT("PropertyPeriod"), (int)volume_key.period);
-            }
-            if (volume_member != 0) {
-                viamd::write_int(state, MD_STR_LIT("PropertyMember"), (int)volume_member);
-            }
-        }
-        viamd::write_bool(state, MD_STR_LIT("DvrEnabled"), dvr.enabled);
-        viamd::write_int (state, MD_STR_LIT("DvrColormap"), dvr.tf.colormap);
-        viamd::write_flt (state, MD_STR_LIT("DvrAlphaScale"), dvr.tf.alpha_scale);
-        const float tf_range[2] = { dvr.tf.min_val, dvr.tf.max_val };
-        viamd::write_flt_vec(state, MD_STR_LIT("DvrRange"), tf_range, 2);
-        viamd::write_bool(state, MD_STR_LIT("IsoEnabled"), iso.enabled);
-        viamd::write_int (state, MD_STR_LIT("IsoCount"), (int64_t)iso.count);
-        for (size_t i = 0; i < iso.count && i < MD_COUNTOF(iso.values); ++i) {
-            char key[32];
-            snprintf(key, sizeof(key), "IsoValue%zu", i);
-            viamd::write_flt(state, md_str_from_cstr(key), iso.values[i]);
-            snprintf(key, sizeof(key), "IsoColor%zu", i);
-            viamd::write_vec4(state, md_str_from_cstr(key), iso.colors[i]);
-        }
-        viamd::write_vec3(state, MD_STR_LIT("ClipMin"), clip_volume.min);
-        viamd::write_vec3(state, MD_STR_LIT("ClipMax"), clip_volume.max);
-        viamd::write_bool(state, MD_STR_LIT("LegendEnabled"), legend.enabled);
-        viamd::write_bool(state, MD_STR_LIT("LegendCheckerboard"), legend.checkerboard);
-        viamd::write_int (state, MD_STR_LIT("LegendColormapMode"), legend.colormap_mode);
-        viamd::write_flt (state, MD_STR_LIT("ResolutionScale"), resolution_scale);
-        viamd::write_vec4(state, MD_STR_LIT("ClipVolumeColor"), clip_volume_color);
-        viamd::write_vec4(state, MD_STR_LIT("BoundingBoxColor"), bounding_box_color);
-        viamd::write_bool(state, MD_STR_LIT("ShowBoundingBox"), show_bounding_box);
-        viamd::write_bool(state, MD_STR_LIT("RelativeToBulk"), relative_to_bulk);
-        if (cmp.path[0]) {
-            viamd::write_str(state, MD_STR_LIT("CompareFile"), md_str_from_cstr(cmp.path));
-            viamd::write_int(state, MD_STR_LIT("CompareShow"), cmp.show);
-        }
-        viamd::write_bool(state, MD_STR_LIT("ShowReferenceStructures"), show_reference_structures);
-        viamd::write_bool(state, MD_STR_LIT("ShowReferenceEnsemble"), show_reference_ensemble);
-        viamd::write_flt (state, MD_STR_LIT("EnsembleFade"), ensemble_fade);
-        viamd::write_bool(state, MD_STR_LIT("ShowCoordinateSystem"), show_coordinate_system_widget);
-        viamd::write_bool(state, MD_STR_LIT("ShowPanel"), show_panel);
-        viamd::write_flt (state, MD_STR_LIT("PanelWidth"), panel_width);
-        viamd::write_int (state, MD_STR_LIT("RepresentationCount"), (int64_t)md_array_size(reps));
+        viamd::Visitor v = viamd::Visitor::writer(state, MD_STR_LIT("DensityVolume"));
+        visit_settings(v, nullptr);
 
         // Each representation of the reference structures in a section of its own after this one, with the entries
         // of a representation of the Representations window
@@ -591,106 +629,58 @@ struct DensityVolume : viamd::EventHandler {
         return reps;
     }
 
-    void deserialize(viamd::deserialization_state_t& state) {
-        SeriesSource source = SeriesSource_Script;
-        uint32_t period = 0;
-        uint32_t member = 0;
-        md_str_t path = {};
-        md_str_t ident, arg;
-        while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "PropertySource")) {
-                md_str_t name;
-                viamd::extract_str(name, arg);
-                series_source_from_name(&source, name, &period);
-            } else if (md_str_eq_cstr(ident, "PropertyPeriod")) {
-                int i = 0;
-                if (viamd::extract_int(i, arg)) period = (uint32_t)MD_MAX(i, 0);
-            } else if (md_str_eq_cstr(ident, "PropertyMember")) {
-                int i = 0;
-                if (viamd::extract_int(i, arg)) member = (uint32_t)MD_MAX(i, 0);
-            } else if (md_str_eq_cstr(ident, "PropertyPath")) {
-                viamd::extract_str(path, arg);
-            } else if (md_str_eq_cstr(ident, "DvrEnabled")) {
-                viamd::extract_bool(dvr.enabled, arg);
-            } else if (md_str_eq_cstr(ident, "DvrColormap")) {
-                viamd::extract_int(dvr.tf.colormap, arg);
-            } else if (md_str_eq_cstr(ident, "DvrAlphaScale")) {
-                viamd::extract_flt(dvr.tf.alpha_scale, arg);
-            } else if (md_str_eq_cstr(ident, "DvrRange")) {
-                float r[2];
-                if (viamd::extract_flt_vec(r, 2, arg)) { dvr.tf.min_val = r[0]; dvr.tf.max_val = r[1]; }
-            } else if (md_str_eq_cstr(ident, "IsoEnabled")) {
-                viamd::extract_bool(iso.enabled, arg);
-            } else if (md_str_eq_cstr(ident, "IsoCount")) {
-                int n;
-                if (viamd::extract_int(n, arg)) iso.count = (size_t)MD_CLAMP(n, 0, (int)MD_COUNTOF(iso.values));
-            } else if (md_str_eq_cstr(ident, "ClipMin")) {
-                viamd::extract_vec3(clip_volume.min, arg);
-            } else if (md_str_eq_cstr(ident, "ClipMax")) {
-                viamd::extract_vec3(clip_volume.max, arg);
-            } else if (md_str_eq_cstr(ident, "LegendEnabled")) {
-                viamd::extract_bool(legend.enabled, arg);
-            } else if (md_str_eq_cstr(ident, "LegendCheckerboard")) {
-                viamd::extract_bool(legend.checkerboard, arg);
-            } else if (md_str_eq_cstr(ident, "LegendColormapMode")) {
-                viamd::extract_int(legend.colormap_mode, arg);
-            } else if (md_str_eq_cstr(ident, "ResolutionScale")) {
-                viamd::extract_flt(resolution_scale, arg);
-            } else if (md_str_eq_cstr(ident, "ClipVolumeColor")) {
-                viamd::extract_vec4(clip_volume_color, arg);
-            } else if (md_str_eq_cstr(ident, "BoundingBoxColor")) {
-                viamd::extract_vec4(bounding_box_color, arg);
-            } else if (md_str_eq_cstr(ident, "ShowBoundingBox")) {
-                viamd::extract_bool(show_bounding_box, arg);
-            } else if (md_str_eq_cstr(ident, "RelativeToBulk")) {
-                viamd::extract_bool(relative_to_bulk, arg);
-            } else if (md_str_eq_cstr(ident, "CompareFile")) {
-                md_str_t f;
-                if (viamd::extract_str(f, arg)) {
-                    md_str_copy_to_char_buf(cmp.path, sizeof(cmp.path), f);
-                    cmp.load = true;
-                }
-            } else if (md_str_eq_cstr(ident, "CompareShow")) {
-                viamd::extract_int(cmp.show, arg);
-                cmp.show = MD_CLAMP(cmp.show, 0, (int)CompareShow_Other);
-            } else if (md_str_eq_cstr(ident, "ShowReferenceStructures")) {
-                viamd::extract_bool(show_reference_structures, arg);
-            } else if (md_str_eq_cstr(ident, "ShowReferenceEnsemble")) {
-                viamd::extract_bool(show_reference_ensemble, arg);
-            } else if (md_str_eq_cstr(ident, "EnsembleFade")) {
-                viamd::extract_flt(ensemble_fade, arg);
-            } else if (md_str_eq_cstr(ident, "ShowCoordinateSystem")) {
-                viamd::extract_bool(show_coordinate_system_widget, arg);
-            } else if (md_str_eq_cstr(ident, "ShowPanel")) {
-                viamd::extract_bool(show_panel, arg);
-            } else if (md_str_eq_cstr(ident, "PanelWidth")) {
-                viamd::extract_flt(panel_width, arg);
-            } else if (md_str_eq_cstr(ident, "RepresentationCount")) {
-                int n = 0;
-                if (viamd::extract_int(n, arg)) workspace_rep_count = MD_MAX(n, 0);
-            } else if (md_str_eq_cstr(ident, "RepType")) {
-                // From before there were several representations: the one there was
-                viamd::extract_enum(legacy_rep()->rep.type, arg, (int)RepresentationType::Cartoon + 1);
-            } else if (md_str_eq_cstr(ident, "RepColorMapping")) {
-                viamd::extract_enum(legacy_rep()->rep.color_mapping, arg, (int)ColorMapping::Count);
-            } else if (md_str_eq_cstr(ident, "RepParam")) {
-                // Its parameters were the scales, in the order of a representation's
-                viamd::extract_flt_vec(legacy_rep()->rep.scale.elem, 4, arg);
-            } else if (md_str_eq_cstr(ident, "RepColor")) {
-                viamd::extract_vec4(legacy_rep()->rep.base_color, arg);
-            } else {
-                for (size_t i = 0; i < MD_COUNTOF(iso.values); ++i) {
-                    char key[32];
-                    snprintf(key, sizeof(key), "IsoValue%zu", i);
-                    if (md_str_eq_cstr(ident, key)) { viamd::extract_flt(iso.values[i], arg); break; }
-                    snprintf(key, sizeof(key), "IsoColor%zu", i);
-                    if (md_str_eq_cstr(ident, key)) { viamd::extract_vec4(iso.colors[i], arg); break; }
-                }
-            }
+    // The keys of workspaces from before the paths whose meaning changed: of the one representation there was
+    bool read_legacy(md_str_t key, md_str_t arg) {
+        if (md_str_eq_cstr(key, "RepType")) {
+            viamd::extract_enum(legacy_rep()->rep.type, arg, (int)RepresentationType::Cartoon + 1);
+        } else if (md_str_eq_cstr(key, "RepColorMapping")) {
+            viamd::extract_enum(legacy_rep()->rep.color_mapping, arg, (int)ColorMapping::Count);
+        } else if (md_str_eq_cstr(key, "RepParam")) {
+            // Its parameters were the scales, in the order of a representation's
+            viamd::extract_flt_vec(legacy_rep()->rep.scale.elem, 4, arg);
+        } else if (md_str_eq_cstr(key, "RepColor")) {
+            viamd::extract_vec4(legacy_rep()->rep.base_color, arg);
+        } else {
+            return false;
         }
-        if (!md_str_empty(path)) {
-            volume_key = series_key(source, path, SeriesVariant_Values, period);
-            volume_member = member;
+        return true;
+    }
+
+    void deserialize(viamd::deserialization_state_t& state) {
+        // Where the keys of workspaces from before the paths are now, of those that only moved
+        static const viamd::PathAlias aliases[] = {
+            { "PropertySource",     "Property.Source" },
+            { "PropertyPath",       "Property.Path" },
+            { "PropertyPeriod",     "Property.Period" },
+            { "PropertyMember",     "Property.Member" },
+            { "DvrEnabled",         "Dvr.Enabled" },
+            { "DvrColormap",        "Dvr.Colormap" },
+            { "DvrAlphaScale",      "Dvr.AlphaScale" },
+            { "DvrRange",           "Dvr.Range" },
+            { "IsoEnabled",         "Iso.Enabled" },
+            { "IsoCount",           "Iso.Level" },
+            { "IsoValue#",          "Iso.Level.#.Value" },
+            { "IsoColor#",          "Iso.Level.#.Color" },
+            { "ClipMin",            "Clip.Min" },
+            { "ClipMax",            "Clip.Max" },
+            { "ClipVolumeColor",    "Clip.Color" },
+            { "LegendEnabled",      "Legend.Enabled" },
+            { "LegendCheckerboard", "Legend.Checkerboard" },
+            { "LegendColormapMode", "Legend.ColormapMode" },
+            { "CompareFile",        "Compare.File" },
+            { "CompareShow",        "Compare.Show" },
+        };
+
+        VolumeRead read;
+        viamd::read_section(state, MD_STR_LIT("DensityVolume"), [&](md_str_t path, md_str_t arg) {
+            return viamd::read_entry(path, arg, aliases,
+                [&](viamd::Visitor& v) { visit_settings(v, &read); },
+                [&](md_str_t key, md_str_t val) { return read_legacy(key, val); });
+        });
+
+        if (!md_str_empty(read.path)) {
+            volume_key = series_key(read.source, read.path, SeriesVariant_Values, read.period);
+            volume_member = read.member;
         }
         // Workspaces from before the two were exclusive can have both on: DVR wins, as it did by default
         if (dvr.enabled && iso.enabled) {

@@ -476,3 +476,39 @@ UTEST(viamd_serialization_visitor, path_helpers) {
     EXPECT_FALSE(viamd::extract_flt_list(v, &n, 4, MD_STR_LIT("1,,2")));
     EXPECT_EQ(7u, (uint32_t)n);
 }
+
+UTEST(viamd_serialization_visitor, read_entry_falls_back_to_aliases_then_legacy) {
+    static const viamd::PathAlias aliases[] = {
+        { "ThingIso",        "Iso" },
+        { "ThingValue#",     "Values.#" },
+    };
+    Thing t;
+    int legacy_calls = 0;
+    auto read = [&](md_str_t path, md_str_t arg) {
+        return viamd::read_entry(path, arg, aliases,
+            [&](viamd::Visitor& v) { visit(v, t); },
+            [&](md_str_t key, md_str_t) {
+                legacy_calls += 1;
+                // A key whose meaning changed: read as it was meant
+                if (md_str_eq_cstr(key, "ThingDoubleIso")) { t.iso = 2 * 0.5; return true; }
+                return false;
+            });
+    };
+    // A path first, then an alias: neither reaches the legacy keys
+    EXPECT_TRUE(read(MD_STR_LIT("Iso"), MD_STR_LIT("0.25")));
+    EXPECT_NEAR(0.25, t.iso, 1e-12);
+    EXPECT_TRUE(read(MD_STR_LIT("ThingIso"), MD_STR_LIT("0.5")));
+    EXPECT_NEAR(0.5, t.iso, 1e-12);
+    EXPECT_TRUE(read(MD_STR_LIT("ThingValue0"), MD_STR_LIT("3")));
+    EXPECT_EQ(3.0f, t.values[0]);
+    EXPECT_EQ(0, legacy_calls);
+
+    EXPECT_TRUE(read(MD_STR_LIT("ThingDoubleIso"), MD_STR_LIT("x")));
+    EXPECT_NEAR(1.0, t.iso, 1e-12);
+    EXPECT_FALSE(read(MD_STR_LIT("Unknown"), MD_STR_LIT("1")));
+    EXPECT_EQ(2, legacy_calls);
+
+    // A path that is no field is not taken for a key from before the paths
+    EXPECT_FALSE(read(MD_STR_LIT("Scale.Unknown"), MD_STR_LIT("1")));
+    EXPECT_EQ(2, legacy_calls);
+}

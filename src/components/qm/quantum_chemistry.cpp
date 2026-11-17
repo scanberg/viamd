@@ -10091,6 +10091,59 @@ struct QuantumChemistry : viamd::EventHandler {
         pending_groups.atoms_initialized = true;
     }
 
+    // The windows and the flow, one list to write and read them by (serialization_utils.h, Visitor). The groups are
+    // records after them, each a GroupLabel and what follows it (deserialize_workspace).
+    void visit_settings(viamd::Visitor& v) {
+        static const char* const route_names[] = { "Fragments", "Orbitals" };
+        static const char* const order_names[] = { "Weight", "Barycentre", "Graph" };
+        MD_STATIC_ASSERT(MD_COUNTOF(route_names) == FLOW_MODE_COUNT, "a name for each route");
+        MD_STATIC_ASSERT(MD_COUNTOF(order_names) == FLOW_ORDER_GRAPH + 1, "a name for each order");
+
+        v.field("ShowTransitionAnalysis", nto.show_window);
+        v.field("ShowChargeTransfer", flow.show_window);
+        if (v.block("Flow")) {
+            v.field("Route", flow.mode, viamd::enum_names(route_names));
+            if (v.field("Rows", flow.max_rows)) flow.max_rows = MD_CLAMP(flow.max_rows, 2, 40);
+            v.field("Threshold", flow.cut.threshold);
+            v.field("OthersCap", flow.cut.other_max);
+            v.field("SizeNormalize", flow.size_normalize);
+            int expanded = (int)flow.cut.other_expanded;
+            if (v.field("OthersExpanded", expanded)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, expanded);
+            if (v.field("BarWidth", flow.params.node_thickness)) flow.bar_width = flow.params.node_thickness;
+            v.field("NodeGap", flow.params.node_gap);
+            v.field("RibbonOpacity", flow.style.ribbon_alpha);
+            v.field("RibbonCurvature", flow.style.ribbon_curvature);
+            v.field("Order", flow.params.order, viamd::enum_names(order_names));
+            int sweeps = (int)flow.params.barycentre_sweeps;
+            if (v.field("Sweeps", sweeps)) flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
+            v.field("RibbonMinPx", flow.style.ribbon_min_px);
+            v.field("NodeTint", flow.style.node_fill_tint);
+            v.field("NodeBorder", flow.style.border_width);
+            v.field("ColorLabels", flow.style.color_labels);
+            v.field("ColorBySide", flow.style.color_by_side);
+            v.field("RibbonLabels", flow.style.show_ribbon_labels);
+            v.field("Legend", flow.show_legend);
+            v.end();
+        }
+    }
+
+    // The keys of workspaces from before the paths whose meaning changed
+    bool read_legacy(md_str_t key, md_str_t arg) {
+        if (md_str_eq_cstr(key, "FlowMode")) {
+            // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
+            int mode = 0;
+            if (viamd::extract_int(mode, arg)) {
+                flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
+            }
+        } else if (md_str_eq_cstr(key, "FlowNodeThickness") || md_str_eq_cstr(key, "FlowRibbonAlpha") ||
+                   md_str_eq_cstr(key, "FlowNodeFillTint") || md_str_eq_cstr(key, "FlowBorderWidth")) {
+            // the boxed style's settings: they do not carry over to the bars
+        } else {
+            return false;
+        }
+        return true;
+    }
+
     void serialize_workspace(viamd::serialization_state_t& ser) {
         // Nothing to write without a QM system loaded, and the group assignment is what this
         // section is FOR: num_qm_atoms is "did init_qm_from_system run", which is the same question
@@ -10103,27 +10156,8 @@ struct QuantumChemistry : viamd::EventHandler {
         // compatibility branch that has to be carried forever.
         viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
 
-        viamd::write_bool(ser, MD_STR_LIT("ShowTransitionAnalysis"), nto.show_window);
-        viamd::write_bool(ser, MD_STR_LIT("ShowChargeTransfer"),     flow.show_window);
-        viamd::write_int (ser, MD_STR_LIT("FlowRoute"),              (int64_t)flow.mode);
-        viamd::write_int (ser, MD_STR_LIT("FlowRows"),               (int64_t)flow.max_rows);
-        viamd::write_flt (ser, MD_STR_LIT("FlowThreshold"),          flow.cut.threshold);
-        viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
-        viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
-        viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, MD_STR_LIT("FlowBarWidth"),           flow.params.node_thickness);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonOpacity"),      flow.style.ribbon_alpha);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
-        viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
-        viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeTint"),           flow.style.node_fill_tint);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeBorder"),         flow.style.border_width);
-        viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
-        viamd::write_bool(ser, MD_STR_LIT("FlowColorBySide"),        flow.style.color_by_side);
-        viamd::write_bool(ser, MD_STR_LIT("FlowRibbonLabels"),       flow.style.show_ribbon_labels);
-        viamd::write_bool(ser, MD_STR_LIT("FlowLegend"),             flow.show_legend);
+        viamd::Visitor v = viamd::Visitor::writer(ser, MD_STR_LIT("QuantumChemistry"));
+        visit_settings(v);
 
         viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
 
@@ -10158,96 +10192,60 @@ struct QuantumChemistry : viamd::EventHandler {
             pending_groups.color[i] = md_float4_t{0.5f, 0.5f, 0.5f, 1.0f};
         }
 
+        // Where the keys of workspaces from before the paths are now, of those that only moved
+        static const viamd::PathAlias aliases[] = {
+            { "FlowRoute",           "Flow.Route" },
+            { "FlowRows",            "Flow.Rows" },
+            { "FlowThreshold",       "Flow.Threshold" },
+            { "FlowOthersCap",       "Flow.OthersCap" },
+            { "FlowSizeNormalize",   "Flow.SizeNormalize" },
+            { "FlowOthersExpanded",  "Flow.OthersExpanded" },
+            { "FlowBarWidth",        "Flow.BarWidth" },
+            { "FlowNodeGap",         "Flow.NodeGap" },
+            { "FlowRibbonOpacity",   "Flow.RibbonOpacity" },
+            { "FlowRibbonCurvature", "Flow.RibbonCurvature" },
+            { "FlowOrder",           "Flow.Order" },
+            { "FlowSweeps",          "Flow.Sweeps" },
+            { "FlowRibbonMinPx",     "Flow.RibbonMinPx" },
+            { "FlowNodeTint",        "Flow.NodeTint" },
+            { "FlowNodeBorder",      "Flow.NodeBorder" },
+            { "FlowColorLabels",     "Flow.ColorLabels" },
+            { "FlowColorBySide",     "Flow.ColorBySide" },
+            { "FlowRibbonLabels",    "Flow.RibbonLabels" },
+            { "FlowLegend",          "Flow.Legend" },
+        };
+
         // 'GroupLabel' opens a group; the color and atom entries that follow belong to it. The
         // index only advances on a label, so a malformed section cannot walk off the end.
         int64_t group_idx = -1;
 
-        md_str_t ident = {};
-        md_str_t arg   = {};
-        while (viamd::next_entry(ident, arg, deser)) {
-            if (md_str_eq_cstr(ident, "ShowTransitionAnalysis")) {
-                viamd::extract_bool(nto.show_window, arg);
-            } else if (md_str_eq_cstr(ident, "ShowChargeTransfer")) {
-                viamd::extract_bool(flow.show_window, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRoute")) {
-                int mode = FLOW_MODE_FRAGMENTS;
-                if (viamd::extract_int(mode, arg)) {
-                    flow.mode = (flow_mode_t)MD_CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
-                }
-            } else if (md_str_eq_cstr(ident, "FlowRows")) {
-                int rows = flow.max_rows;
-                if (viamd::extract_int(rows, arg)) flow.max_rows = MD_CLAMP(rows, 2, 40);
-            } else if (md_str_eq_cstr(ident, "FlowMode")) {
-                // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
-                int mode = 0;
-                if (viamd::extract_int(mode, arg)) {
-                    flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
-                }
-            } else if (md_str_eq_cstr(ident, "FlowThreshold")) {
-                viamd::extract_flt(flow.cut.threshold, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOthersCap")) {
-                viamd::extract_flt(flow.cut.other_max, arg);
-            } else if (md_str_eq_cstr(ident, "FlowSizeNormalize")) {
-                viamd::extract_flt(flow.size_normalize, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
-                int mask = 0;
-                if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
-            } else if (md_str_eq_cstr(ident, "FlowBarWidth")) {
-                if (viamd::extract_flt(flow.bar_width, arg)) flow.params.node_thickness = flow.bar_width;
-            } else if (md_str_eq_cstr(ident, "FlowNodeThickness") || md_str_eq_cstr(ident, "FlowRibbonAlpha") ||
-                       md_str_eq_cstr(ident, "FlowNodeFillTint") || md_str_eq_cstr(ident, "FlowBorderWidth")) {
-                // the boxed style's settings: they do not carry over to the bars
-            } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
-                viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonOpacity")) {
-                viamd::extract_flt(flow.style.ribbon_alpha, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
-                viamd::extract_flt(flow.style.ribbon_curvature, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOrder")) {
-                int order = FLOW_ORDER_WEIGHT;
-                if (viamd::extract_int(order, arg)) {
-                    flow.params.order = (flow_order_t)MD_CLAMP(order, 0, (int)FLOW_ORDER_GRAPH);
-                }
-            } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
-                viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeTint")) {
-                viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeBorder")) {
-                viamd::extract_flt(flow.style.border_width, arg);
-            } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
-                viamd::extract_bool(flow.style.color_labels, arg);
-            } else if (md_str_eq_cstr(ident, "FlowColorBySide")) {
-                viamd::extract_bool(flow.style.color_by_side, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonLabels")) {
-                viamd::extract_bool(flow.style.show_ribbon_labels, arg);
-            } else if (md_str_eq_cstr(ident, "FlowLegend")) {
-                viamd::extract_bool(flow.show_legend, arg);
-            } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
-                int sweeps = 2;
-                if (viamd::extract_int(sweeps, arg)) {
-                    flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
-                }
-            } else if (md_str_eq_cstr(ident, "GroupCount")) {
+        viamd::read_section(deser, MD_STR_LIT("QuantumChemistry"), [&](md_str_t path, md_str_t arg) {
+            if (md_str_eq_cstr(path, "GroupCount")) {
                 int count = 0;
                 if (viamd::extract_int(count, arg)) {
                     pending_groups.count = (size_t)MD_CLAMP(count, 0, MAX_NTO_GROUPS);
                 }
-            } else if (md_str_eq_cstr(ident, "GroupLabel")) {
+            } else if (md_str_eq_cstr(path, "GroupLabel")) {
                 group_idx += 1;
                 if (group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
                 }
-            } else if (md_str_eq_cstr(ident, "GroupColor")) {
+            } else if (md_str_eq_cstr(path, "GroupColor")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_vec4(pending_groups.color[group_idx], arg);
                 }
-            } else if (md_str_eq_cstr(ident, "GroupAtoms")) {
+            } else if (md_str_eq_cstr(path, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
                     viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
                 }
+            } else {
+                return viamd::read_entry(path, arg, aliases,
+                    [&](viamd::Visitor& v) { visit_settings(v); },
+                    [&](md_str_t key, md_str_t val) { return read_legacy(key, val); });
             }
-        }
+            return true;
+        });
 
         // Trust the labels actually present over a GroupCount that disagrees with them.
         pending_groups.count = MD_MAX(pending_groups.count, (size_t)(group_idx + 1));

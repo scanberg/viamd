@@ -298,4 +298,24 @@ private:
 	int   depth = 0;
 };
 
+// One entry read through a visit function, visit(Visitor&): by its path, or, a key of a workspace from before the
+// paths, by where the aliases have put it, or else by legacy(key, arg), which reads the keys whose meaning changed
+// as they were meant. Whether it was read.
+template <typename Visit, typename Legacy, size_t N>
+bool read_entry(md_str_t path, md_str_t arg, const PathAlias (&aliases)[N], Visit&& visit, Legacy&& legacy) {
+	Visitor v = Visitor::reader(path, arg);
+	visit(v);
+	if (v.consumed()) return true;
+	// A key from before the paths is one step
+	if (md_str_find_char(path, '.') != MD_STR_NPOS) return false;
+	char buf[256];
+	const md_str_t moved = path_alias(buf, sizeof(buf), path, aliases);
+	if (!md_str_empty(moved)) {
+		Visitor w = Visitor::reader(moved, arg);
+		visit(w);
+		return w.consumed();
+	}
+	return legacy(path, arg);
+}
+
 }
