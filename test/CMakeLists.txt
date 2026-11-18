@@ -12,6 +12,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/serialization_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/event.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_system.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/gpu_job.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/timeline_periods.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/representation_tree.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp

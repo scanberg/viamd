@@ -7,8 +7,8 @@
 // one GL mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
 // a field in several slots costs its functions once - and the result is read back once; without a GPU device
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
-// job (md_gto_iso_gpu_job_t) advanced by every update for a few milliseconds at most: the mesh shown stays the
-// previous one until the job is done, so a long extraction never stalls the frame (iso_meshes_progress tells how
+// job (md_gto_iso_gpu_job_t, run as a GpuJob: gpu_job.h) advanced once a frame: the mesh shown stays the
+// previous one until the job is done, so a long extraction never stalls the frame (the overlay tells how
 // far it is). The CPU path blocks.
 //
 // Before a job, the fields go to the device (md_gto_iso_gpu_set_t), which for a large density is seconds of CPU
@@ -71,9 +71,9 @@ struct IsoMeshes {
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
 
-    // The GPU extraction under way (md_gto_iso_gpu_job_t), of the slots whose key is job_key: until it is done
-    // the mesh above is the previous one
-    void*    job = nullptr;
+    // The GPU extraction under way (a GpuJob of an md_gto_iso_gpu_job_t: gpu_job.h, listed in the overlay while it
+    // runs), of the slots whose key is job_key: until it is done the mesh above is the previous one
+    class GpuJob* job = nullptr;
     uint64_t job_key = 0;
     uint32_t job_slots = 0;
     int64_t  job_start = 0;     // md_tick_t: when it began
@@ -112,11 +112,6 @@ void iso_meshes_collect();
 
 // Waits for the pool tasks under way and frees what they made. Before the GPU device and the task system go.
 void iso_meshes_shutdown(ApplicationState* state);
-
-// The GPU extractions under way for longer than a moment, for a progress display: how far each is (0 to 1), or
-// negative for what is being prepared on a worker thread (a field, a set), which has no fraction. Returns how many
-// (at most cap).
-size_t iso_meshes_progress(float* fraction, size_t cap);
 
 md_float4x4_t iso_meshes_model_matrix();
 

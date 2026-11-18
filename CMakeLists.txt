@@ -173,6 +173,7 @@ set(SRC_FILES
     src/display_units.cpp
     src/display_units_settings.cpp
     src/surface_field.cpp
+    src/gpu_job.cpp
     src/event.cpp
     src/file_list.cpp
     src/load_order.h
@@ -217,6 +218,7 @@ set(SRC_FILES
     src/color_utils.h
     src/display_units.h
     src/surface_field.h
+    src/gpu_job.h
     src/iso_meshes.h
     src/event.h
     src/file_list.h

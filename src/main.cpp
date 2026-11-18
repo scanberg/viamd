@@ -49,6 +49,7 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <gpu_job.h>
 #include <es_planes.h>
 #include <surface_field.h>
 #include <md_gto_iso.h>
@@ -87,6 +88,9 @@
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
+// What a frame spends issuing the GPU jobs' next pieces, all of them (gpu_job.h): the pieces are the GPU's time, this
+// is the frame's
+#define GPU_JOBS_BUDGET_MS 6.0
 #define VIS_FLAGS (script::DRAW_ATOMS | script::DRAW_GEOMETRY | script::DRAW_TEXT)
 
 // Global data for application
@@ -1034,6 +1038,8 @@ int main(int argc, char** argv) {
             md_gpu_device_poll(state.gpu_device);
         }
 #endif
+        // The GPU work over frames (gpu_job.h): every job advanced, a few ms in all
+        gpu_jobs_poll(GPU_JOBS_BUDGET_MS);
         // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
@@ -1780,6 +1786,7 @@ int main(int argc, char** argv) {
         // what its field has under way holds the GPU stream and pool tasks: both still here
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
     }
+    gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
@@ -3787,31 +3794,21 @@ static void draw_animation_window(ApplicationState* data) {
 static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
+    // What ends within a few frames shows nothing: a bar that flashes says nothing
+    constexpr double MIN_SECONDS = 0.25;
 
-    // The jobs with a label (task_system activities)
-    task_system::ActivityInfo activities[8];
-    const size_t num_activities = task_system::activity_list(activities, MD_COUNTOF(activities));
+    // Everything under way over time, in one list (task_system activities): the pool's labelled jobs (what the GPU
+    // evaluations wait for: density matrices, fields, orbitals read on demand), the GPU jobs (gpu_job.h: the surface
+    // fields, the isosurface meshes) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
+    task_system::ActivityInfo all[32];
+    const size_t num_all = task_system::activity_list(all, MD_COUNTOF(all));
+    task_system::ActivityInfo activities[32];
+    size_t num_activities = 0;
+    for (size_t i = 0; i < num_all; ++i) {
+        const bool is_evaluate = all[i].id == data->tasks.evaluate.activity_id();
+        if (all[i].seconds >= MIN_SECONDS || is_evaluate) activities[num_activities++] = all[i];
+    }
     bool any_task_label_visible = num_activities > 0;
-    // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
-    float iso_fraction[8];
-    const size_t num_iso = iso_meshes_progress(iso_fraction, MD_COUNTOF(iso_fraction));
-    any_task_label_visible |= num_iso > 0;
-    // the density volumes evaluated on the GPU over frames
-    float vol_fraction[8];
-    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, MD_COUNTOF(vol_fraction));
-    any_task_label_visible |= num_vol > 0;
-    // the density matrix a volume waits for, made on a worker thread
-    double dmat_seconds = 0.0;
-    const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
-    any_task_label_visible |= dmat_preparing;
-    // the natural transition orbitals of an excited state, read on a worker thread (es_nto_ready)
-    double nto_seconds = 0.0;
-    const bool nto_warming = es_nto_warming(data, &nto_seconds) && nto_seconds > 0.25;
-    any_task_label_visible |= nto_warming;
-    // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
-    SurfaceFieldProgress field_progress[8];
-    const size_t num_field = surface_field_progress(field_progress, MD_COUNTOF(field_progress));
-    any_task_label_visible |= num_field > 0;
     // and what the components have under way that the task system does not show, such as the analytic critical
     // point search of the QM module: asked for through an event, as a component may not be built
     TaskProgressRequest component_progress = {};
@@ -3831,7 +3828,7 @@ static void draw_async_task_window(ApplicationState* data) {
         const float pad = 3.0f;
         const float size = ImGui::GetFontSize() + pad * 2;
 
-        char buf[64];
+        char buf[96];
         for (size_t i = 0; i < num_activities; i++) {
             const task_system::ActivityInfo& a = activities[i];
             const bool is_evaluate = a.id == data->tasks.evaluate.activity_id();
@@ -3839,12 +3836,13 @@ static void draw_async_task_window(ApplicationState* data) {
             // One task over every frame (v2): the evaluation says how far it is
             if (is_evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
+            const float width = ImGui::GetContentRegionAvail().x - (a.cancellable ? size + pad : 0.0f);
             if (fract < 0.0f) {
                 // no fraction to show: an indeterminate bar, to say it is not stuck
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), a.label);
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(width, 0), a.label);
             } else {
-                snprintf(buf, sizeof(buf), "%s %.1f%%", a.label, fract * 100.f);
-                ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+                snprintf(buf, sizeof(buf), "%s %.0f%%", a.label, fract * 100.f);
+                ImGui::ProgressBar(fract, ImVec2(width, 0), buf);
             }
             if (a.cancellable) {
                 ImGui::SameLine();
@@ -3856,36 +3854,6 @@ static void draw_async_task_window(ApplicationState* data) {
                     }
                 }
                 ImGui::PopID();
-            }
-        }
-        for (size_t i = 0; i < num_iso; i++) {
-            if (iso_fraction[i] < 0.0f) {
-                // being prepared on a worker thread: an indeterminate bar
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Isosurface mesh: preparing");
-            } else {
-                snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
-                ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            }
-        }
-        if (dmat_preparing) {
-            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
-        }
-        for (size_t i = 0; i < num_vol; i++) {
-            snprintf(buf, sizeof(buf), "Density volume %.0f%%", vol_fraction[i] * 100.f);
-            ImGui::ProgressBar(vol_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-        }
-        if (nto_warming) {
-            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Natural transition orbitals: computing");
-        }
-        for (size_t i = 0; i < num_field; i++) {
-            const SurfaceFieldProgress& p = field_progress[i];
-            if (p.preparing) {
-                snprintf(buf, sizeof(buf), "%s: preparing", p.label);
-                // no fraction to show: an indeterminate bar (a negative fraction moving with time), to say it is not stuck
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            } else {
-                snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
-                ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
             }
         }
         for (size_t i = 0; i < component_progress.count; i++) {
