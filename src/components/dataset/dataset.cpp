@@ -3681,12 +3681,13 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
-    // A table of the bonds of the user's edits: those added (the user's, to remove) or removed (to restore). Returns the
-    // bond whose button was pressed, -1 for none: applied after, as it changes what is drawn.
-    static int64_t draw_bond_edits(ApplicationState& data, const char* id, const md_bond_data_t& bonds, bool removed) {
+    // A table of the user's edits of the bonds (md_system_t::bond_edit): the bonds added (to remove), or those removed
+    // (MD_BOND_FLAG_INACTIVE, to restore). Returns the edit whose button was pressed, -1 for none: applied after, as it
+    // changes what is drawn.
+    static int64_t draw_bond_edits(ApplicationState& data, const char* id, const md_bond_list_t& bonds, bool removed) {
         const md_system_t& sys = data.mold.sys;
         int64_t pressed = -1;
-        const size_t num = bonds.count + bonds.noncovalent_count;
+        const size_t num = md_bond_list_count(&bonds);
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
         const int num_cols = removed ? 4 : 3;
         if (!ImGui::BeginTable(id, num_cols, flags)) return -1;
@@ -3696,6 +3697,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthFixed);
         ImGui::TableHeadersRow();
         for (size_t i = 0; i < num; ++i) {
+            if (((bonds.flags[i] & MD_BOND_FLAG_INACTIVE) != 0) != removed) continue;
             const md_atom_pair_t pair = bonds.pairs[i];
             if (pair.idx[0] < 0 || pair.idx[1] < 0 || (size_t)pair.idx[0] >= sys.atom.count || (size_t)pair.idx[1] >= sys.atom.count) continue;
             ImGui::TableNextRow();
@@ -3747,10 +3749,10 @@ struct Dataset : viamd::EventHandler {
             c.origin[MD_BOND_ORIGIN_FILE], c.origin[MD_BOND_ORIGIN_TOPOLOGY], c.origin[MD_BOND_ORIGIN_INFERRED], c.origin[MD_BOND_ORIGIN_USER]);
         ImGui::TextDisabled("Right click a bond in the viewport to remove it, or two atoms to add one. Hover to highlight, shift click to select.");
 
-        const md_bond_data_t& removed = sys.removed_bond;
-        const md_bond_data_t& added = sys.user_bond;
-        const size_t num_removed = removed.count + removed.noncovalent_count;
-        const size_t num_added = added.count + added.noncovalent_count;
+        const md_bond_list_t& edits = sys.bond_edit;
+        size_t num_removed = 0;
+        for (size_t i = 0; i < md_bond_list_count(&edits); ++i) num_removed += (edits.flags[i] & MD_BOND_FLAG_INACTIVE) != 0;
+        const size_t num_added = md_bond_list_count(&edits) - num_removed;
 
         char header[64];
         snprintf(header, sizeof(header), "Removed (%zu)###removed", num_removed);
@@ -3758,18 +3760,21 @@ struct Dataset : viamd::EventHandler {
             if (num_removed == 0) {
                 ImGui::TextDisabled("No bond is removed. A bond the file, a topology or inference gives can be, as none is certain.");
             } else {
-                const int64_t i = draw_bond_edits(data, "##removed_bonds", removed, true);
+                const int64_t i = draw_bond_edits(data, "##removed_bonds", edits, true);
                 const bool all = ImGui::Button("Restore All");
                 if (i >= 0 || all) {
                     system_core_edit_begin(&data);
                     if (all) {
-                        while (sys.removed_bond.count + sys.removed_bond.noncovalent_count > 0) {
-                            const md_atom_pair_t p = sys.removed_bond.pairs[0];
-                            if (!md_system_bond_restore(&sys, p.idx[0], p.idx[1], sys.removed_bond.flags[0])) break;
+                        // Each restored takes its edit away, which the last takes the place of: from the last down
+                        for (size_t k = md_bond_list_count(&sys.bond_edit); k-- > 0;) {
+                            const md_bond_flags_t f = sys.bond_edit.flags[k];
+                            if (!(f & MD_BOND_FLAG_INACTIVE)) continue;
+                            const md_atom_pair_t p = sys.bond_edit.pairs[k];
+                            md_system_bond_restore(&sys, p.idx[0], p.idx[1], f);
                         }
                     } else {
-                        const md_atom_pair_t p = removed.pairs[i];
-                        md_system_bond_restore(&sys, p.idx[0], p.idx[1], removed.flags[i]);
+                        const md_atom_pair_t p = edits.pairs[i];
+                        md_system_bond_restore(&sys, p.idx[0], p.idx[1], edits.flags[i]);
                     }
                     system_core_changed(&data);
                 }
@@ -3781,11 +3786,11 @@ struct Dataset : viamd::EventHandler {
             if (num_added == 0) {
                 ImGui::TextDisabled("No bond is added.");
             } else {
-                const int64_t i = draw_bond_edits(data, "##added_bonds", added, false);
+                const int64_t i = draw_bond_edits(data, "##added_bonds", edits, false);
                 if (i >= 0) {
                     system_core_edit_begin(&data);
-                    const md_atom_pair_t p = added.pairs[i];
-                    md_system_bond_remove(&sys, p.idx[0], p.idx[1], added.flags[i]);
+                    const md_atom_pair_t p = edits.pairs[i];
+                    md_system_bond_remove(&sys, p.idx[0], p.idx[1], edits.flags[i]);
                     system_core_changed(&data);
                 }
             }

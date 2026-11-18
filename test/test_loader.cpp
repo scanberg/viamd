@@ -306,7 +306,7 @@ UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
         ls.coordinates = coords[i].file;
         ASSERT_TRUE(loader::load(&sys, &state, MD_STR_LIT("viamd_test_water.prmtop"), ls));
         EXPECT_EQ(6u, sys.atom.count);
-        EXPECT_EQ(6u, sys.given_bond.count);
+        EXPECT_EQ(6u, md_bond_list_count(&sys.given_bond));
         ASSERT_TRUE(md_system_state_has_coords(&state));
         EXPECT_NEAR(coords[i].x0, state.xyz[0].x, 1e-4f);
         /* The run the trajectory was read through is gone again */

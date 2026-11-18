@@ -3087,30 +3087,29 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         viamd::write_bitset(state, MD_STR_LIT("Mask"), &selection);
     }
 
-    // Save user defined bonds, of the graph and non-covalent, with the kind they were given: the user's (md_system_t::
-    // user_bond), whether the system is inferred of them yet or not
-    const md_bond_data_t& bonds = app_state->mold.sys.user_bond;
-    if (bonds.count + bonds.noncovalent_count > 0) {
-        viamd::write_section_header(state, MD_STR_LIT("UserBonds"));
-    }
-    for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
-        const md_bond_flags_t flags = bonds.flags[i];
-        viamd::write_int_vec(state, MD_STR_LIT("atoms"), bonds.pairs[i].idx, 2);
-        if (flags & MD_BOND_FLAG_KIND_GIVEN) {
-            viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(flags)));
+    // The user's edits of the bonds (md_system_t::bond_edit), whether the system is inferred of them yet or not: the
+    // bonds added, of the graph and non-covalent, with the kind they were given, then the bonds removed (given by the
+    // data or inferred), each with its kind, which tells its range (the graph, the elastic or the non-covalent bonds),
+    // and where it came from
+    const md_bond_list_t& edits = app_state->mold.sys.bond_edit;
+    const size_t num_edits = md_bond_list_count(&edits);
+    for (int removed = 0; removed < 2; ++removed) {
+        bool has_section = false;
+        for (size_t i = 0; i < num_edits; ++i) {
+            const md_bond_flags_t flags = edits.flags[i];
+            if (((flags & MD_BOND_FLAG_INACTIVE) != 0) != (removed == 1)) continue;
+            if (!has_section) {
+                viamd::write_section_header(state, removed ? MD_STR_LIT("RemovedBonds") : MD_STR_LIT("UserBonds"));
+                has_section = true;
+            }
+            viamd::write_int_vec(state, MD_STR_LIT("atoms"), edits.pairs[i].idx, 2);
+            if (removed || (flags & MD_BOND_FLAG_KIND_GIVEN)) {
+                viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(flags)));
+            }
+            if (removed) {
+                viamd::write_str(state, MD_STR_LIT("origin"), md_str_from_cstr(md_bond_origin_name(md_bond_origin(flags))));
+            }
         }
-    }
-
-    // And the bonds the user removed (md_system_t::removed_bond), given by the data or inferred: each with its kind,
-    // which tells its range (the graph, the elastic or the non-covalent bonds), and where it came from
-    const md_bond_data_t& removed = app_state->mold.sys.removed_bond;
-    if (removed.count + removed.noncovalent_count > 0) {
-        viamd::write_section_header(state, MD_STR_LIT("RemovedBonds"));
-    }
-    for (size_t i = 0; i < removed.count + removed.noncovalent_count; ++i) {
-        viamd::write_int_vec(state, MD_STR_LIT("atoms"), removed.pairs[i].idx, 2);
-        viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(removed.flags[i])));
-        viamd::write_str(state, MD_STR_LIT("origin"), md_str_from_cstr(md_bond_origin_name(md_bond_origin(removed.flags[i]))));
     }
 
     viamd::write_section_header(state, MD_STR_LIT("Windows"));
