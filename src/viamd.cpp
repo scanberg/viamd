@@ -2378,6 +2378,8 @@ struct WorkspacePending {
 
     md_array(md_atom_pair_t)  user_bonds;
     md_array(md_bond_flags_t) user_bond_flags;    // [user_bonds] Origin user, and the kind when one was given
+    md_array(md_atom_pair_t)  removed_bonds;      // The bonds the user removed, given by the data or inferred
+    md_array(md_bond_flags_t) removed_bond_flags; // [removed_bonds] The kind, which tells the range
 
     bool has_selection_mask;
     md_bitset_t selection_mask;
@@ -2660,8 +2662,11 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 else if (md_str_eq(ident, MD_STR_LIT("RecenterTarget")))      pending.has_recenter_target = deserialize_mask(&pending.recenter_target, arg, temp_alloc);
             }
         } else if (representations_deserialize(data, section, state)) {
-        } else if (md_str_eq(section, MD_STR_LIT("UserBonds"))) {
+        } else if (md_str_eq(section, MD_STR_LIT("UserBonds")) || md_str_eq(section, MD_STR_LIT("RemovedBonds"))) {
             // Each bond its atoms, and the kind it was given after them, if one was
+            const bool removed = md_str_eq(section, MD_STR_LIT("RemovedBonds"));
+            md_array(md_atom_pair_t)&  bonds = removed ? pending.removed_bonds : pending.user_bonds;
+            md_array(md_bond_flags_t)& flags = removed ? pending.removed_bond_flags : pending.user_bond_flags;
             bool last_taken = false;
             while (viamd::next_entry(ident, arg, state)) {
                 if (md_str_eq(ident, MD_STR_LIT("atoms"))) {
@@ -2669,8 +2674,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     last_taken = viamd::extract_int_vec(atom_indices, 2, arg) && atom_indices[0] >= 0 && atom_indices[1] >= 0;
                     if (last_taken) {
                         md_atom_pair_t pair = { atom_indices[0], atom_indices[1] };
-                        md_array_push(pending.user_bonds, pair, temp_alloc);
-                        md_array_push(pending.user_bond_flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), temp_alloc);
+                        md_array_push(bonds, pair, temp_alloc);
+                        md_array_push(flags, md_bond_flags_set_origin(MD_BOND_FLAG_NONE, MD_BOND_ORIGIN_USER), temp_alloc);
                     }
                 } else if (md_str_eq(ident, MD_STR_LIT("kind")) && last_taken) {
                     md_str_t str;
@@ -2680,8 +2685,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                         VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as an interaction");
                         kind = (md_bond_flags_t)MD_BOND_KIND_INTERACTION;
                     }
-                    md_bond_flags_t* flags = md_array_last(pending.user_bond_flags);
-                    *flags = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
+                    *md_array_last(flags) = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
                 }
             }
         } else if (md_str_eq(section, MD_STR_LIT("Script"))) {
@@ -2803,14 +2807,22 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         }
     }
 
-    // The bonds the user made: of the core, so given before the system is inferred, which they are part of. As many atoms
-    // as when the workspace was saved, or they would join others.
+    // The bonds the user removed and made: of the core, so given before the system is inferred, which they are part of.
+    // As many atoms as when the workspace was saved, or they would join others. Removed first: a bond the user made
+    // where one was removed is the user's, and stays.
     {
         const size_t loaded_atoms = data->mold.sys.atom.count;
         const bool bonds_fit = loaded_atoms > 0 && (plan.atom_count == 0 || plan.atom_count == loaded_atoms);
         const size_t num_user_bonds = bonds_fit ? md_array_size(pending.user_bonds) : 0;
-        if (num_user_bonds > 0) {
+        const size_t num_removed_bonds = bonds_fit ? md_array_size(pending.removed_bonds) : 0;
+        if (num_user_bonds + num_removed_bonds > 0) {
             system_core_edit_begin(data);
+            for (size_t i = 0; i < num_removed_bonds; ++i) {
+                const md_atom_pair_t& pair = pending.removed_bonds[i];
+                if ((size_t)pair.idx[0] < loaded_atoms && (size_t)pair.idx[1] < loaded_atoms && pair.idx[0] != pair.idx[1]) {
+                    md_system_bond_remove(&data->mold.sys, pair.idx[0], pair.idx[1], pending.removed_bond_flags[i]);
+                }
+            }
             for (size_t i = 0; i < num_user_bonds; ++i) {
                 const md_atom_pair_t& pair = pending.user_bonds[i];
                 if ((size_t)pair.idx[0] < loaded_atoms && (size_t)pair.idx[1] < loaded_atoms && pair.idx[0] != pair.idx[1]) {
@@ -3077,6 +3089,17 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         if (flags & MD_BOND_FLAG_KIND_GIVEN) {
             viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(flags)));
         }
+    }
+
+    // And the bonds the user removed (md_system_t::removed_bond), given by the data or inferred: each with its kind,
+    // which tells its range (the graph, the elastic or the non-covalent bonds)
+    const md_bond_data_t& removed = app_state->mold.sys.removed_bond;
+    if (removed.count + removed.noncovalent_count > 0) {
+        viamd::write_section_header(state, MD_STR_LIT("RemovedBonds"));
+    }
+    for (size_t i = 0; i < removed.count + removed.noncovalent_count; ++i) {
+        viamd::write_int_vec(state, MD_STR_LIT("atoms"), removed.pairs[i].idx, 2);
+        viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(removed.flags[i])));
     }
 
     viamd::write_section_header(state, MD_STR_LIT("Windows"));

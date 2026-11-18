@@ -3393,16 +3393,15 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     }
                     ImGui::EndMenu();
                 }
-                if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-                    snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
-                    if (ImGui::MenuItem(buf)) {
-                        // The user's bond it is, and the system inferred again without it (the index is of the bonds
-                        // as they are drawn, which stay until then)
-                        system_core_edit_begin(state);
-                        md_system_bond_remove(&sys, bond_idx);
-                        system_core_changed(state);
-                        ImGui::CloseCurrentPopup();
-                    }
+                snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
+                if (ImGui::MenuItem(buf)) {
+                    // Any bond: the user's goes, one the data gives or inference finds is removed, as neither is
+                    // certain. The system is inferred again without it (the index is of the bonds as they are drawn,
+                    // which stay until then)
+                    system_core_edit_begin(state);
+                    md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], flags);
+                    system_core_changed(state);
+                    ImGui::CloseCurrentPopup();
                 }
             }
         }

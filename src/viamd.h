@@ -2507,7 +2507,7 @@ bool system_inference_pending(const ApplicationState& app);
 // (a supplement, a workspace, an edit of the bonds)
 void system_inference_finish(ApplicationState* app);
 
-// To be called before the core of the system is edited (the user's bonds: md_system_bond_insert, md_system_bond_remove):
+// To be called before the core of the system is edited (the bonds: md_system_bond_insert, md_system_bond_remove):
 // what reads it on other threads stops. The script evaluation is interrupted (the script is compiled again once the
 // system is inferred again, and starts over), the other tasks of the pool finish, and an inference under way, whose work
 // shares the core, is dropped: the system is to be inferred again (system_core_changed, or system_inference_finish).
