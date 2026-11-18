@@ -44,7 +44,7 @@ jobs:
             -DBUILD_SHARED_LIBS=OFF \
             -DBUILD_STATIC_LIBS=ON \
             -DVIAMD_CREATE_MACOSX_BUNDLE=ON \
-            -DVIAMD_UNITTEST=OFF
+            -DVIAMD_UNITTEST=OFF \
             -DVIAMD_ENABLE_QM=ON \
             -DMD_ENABLE_GPU=ON \
             -DMD_ENABLE_HDF5=ON \
