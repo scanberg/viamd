@@ -1,6 +1,8 @@
 #include "density_cache.h"
+#include "task_system.h"
 
 #include <md_system.h>
+#include <md_attributes.h>
 #include <md_qm.h>
 #include <core/md_allocator.h>
 #include <core/md_hash.h>
@@ -23,6 +25,7 @@ struct DensityCache {
     };
     std::mutex         mutex;
     std::vector<Entry> entries;
+    task_system::Job   preload;     // density_cache_preload's; ~Job cancels and waits for it
 };
 
 // What a density is made of: its attribute's version, and the orbitals' (an SCF density computed from them, as a
@@ -101,6 +104,21 @@ std::shared_ptr<const PackedDensity> density_cache_packed(DensityCache* cache, c
     cache->entries[slot].key = key;
     cache->entries[slot].density = d;
     return d;
+}
+
+void density_cache_preload(DensityCache* cache, const md_system_t& sys, md_str_t path) {
+    if (!cache || !md_attributes_find(&sys.attributes, path)) return;
+    const md_system_t* s = &sys;
+    // a static path or the caller's: copied, so that the job holds its own
+    std::string name(path.ptr, path.len);
+    cache->preload.start(MD_STR_LIT("Density matrix: reading"), [cache, s, name]() {
+        // through the pool's executor: a density computed from its orbitals (a file without the matrix) is spread
+        // over it (task_system: a job's loops run in it and stop with it)
+        md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
+        density_cache_packed(cache, *s, md_str_t{name.data(), name.size()}, io);
+        md_attribute_io_destroy(io);
+        md_temp_trim();
+    });
 }
 
 size_t density_cache_bytes(DensityCache* cache) {

@@ -7,6 +7,9 @@
 // them read it again whenever it was wanted; kept, it is read once, and is half the square's size (371 MB for 9636
 // AOs). The GPU paths do not read it: they build their tiles from the orbitals (md_gto_gpu_dmat).
 //
+// Read when a system is loaded (density_cache_preload, from init_system_data), on the task pool while the geometry is
+// shown, so that the first of them finds it there.
+//
 // Of a system: cleared with it (free_system_data, once its tasks have ended). The cache itself lives as long as the
 // application, so that a task holding a pointer to it is never left with a freed one across a load.
 
@@ -39,6 +42,12 @@ void density_cache_clear(DensityCache* cache);
 // waits for it. Null when the system has no such symmetric density, or it cannot be read (logged by the reader).
 // cache null: read, not kept.
 std::shared_ptr<const PackedDensity> density_cache_packed(DensityCache* cache, const md_system_t& sys, md_str_t path, md_attribute_io_t* io);
+
+// Reads the density at path into the cache on the task pool, now (a pool job of the cache's, listed while it runs):
+// a consumer asking for it meanwhile waits for this read rather than making its own. A load cancels it before it has
+// begun (task_system::cancel_all); one under way is waited for, as a read cannot stop halfway. sys must stay until
+// it has ended: the application's, which a load frees only after waiting for the pool.
+void density_cache_preload(DensityCache* cache, const md_system_t& sys, md_str_t path);
 
 // The bytes kept, for a display or a log
 size_t density_cache_bytes(DensityCache* cache);

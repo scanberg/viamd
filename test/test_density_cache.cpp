@@ -1,6 +1,7 @@
 #include "utest.h"
 #include <density_cache.h>
 #include <loader.h>
+#include <task_system.h>
 
 #include <md_system.h>
 #include <md_qm.h>
@@ -9,7 +10,16 @@
 #include <core/md_unit.h>
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
+
+// The pool, once for the process (it has no re-entrant initialize): whichever test brings it up first
+static void density_test_task_system() {
+    if (!task_system::executor()) {
+        task_system::initialize(4);
+        atexit([]() { task_system::shutdown(); });
+    }
+}
 
 // A density read once is kept as its packed triangle (the symmetric part), handed out again while what it is made
 // of keeps its version, read again once it changes (the old one staying with who holds it), and gone on a clear.
@@ -98,5 +108,29 @@ UTEST(density_cache, molden_density_is_the_square_ones_triangle) {
     density_cache_destroy(cache);
     md_free(heap, full, sizeof(double) * n * n);
     md_system_state_free(&state);
+    md_system_free(&sys);
+}
+
+// The read at load (density_cache_preload): on the pool, into the cache, where a consumer then finds it
+UTEST(density_cache, preload_reads_it_on_the_pool) {
+    density_test_task_system();
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_system_t sys = {.alloc = heap};
+    sys.attributes.alloc = heap;
+    const md_str_t path = MD_STR_LIT("orbital/total/density");
+    const double m[4] = { 2.0, 0.5, 0.5, 1.0 };
+    ASSERT_NE(MD_ATTRIBUTE_INVALID, md_qm_publish_matrix(&sys, path, MD_STR_LIT("Density"), md_unit_none(), m, 2, 2));
+
+    DensityCache* cache = density_cache_create();
+    density_cache_preload(cache, sys, path);
+    task_system::wait_all();
+    EXPECT_EQ(sizeof(double) * 3, density_cache_bytes(cache));
+    std::shared_ptr<const PackedDensity> a = density_cache_packed(cache, sys, path, nullptr);
+    ASSERT_TRUE(a != nullptr);
+    EXPECT_EQ(0.5, a->tri[1]);
+    EXPECT_EQ(a.get(), density_cache_packed(cache, sys, path, nullptr).get());
+
+    density_cache_preload(cache, sys, MD_STR_LIT("orbital/alpha/density"));     // none: nothing started
+    density_cache_destroy(cache);
     md_system_free(&sys);
 }

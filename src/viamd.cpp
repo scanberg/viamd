@@ -1775,6 +1775,17 @@ void init_system_data(ApplicationState* data) {
     // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
     // shown: the state a representation of them starts at
     es_nto_ready(data, 0);
+
+    // The SCF density the CPU paths read (the ESP, the critical points: the total density, the alpha one without
+    // it), into the density cache on the task pool while the geometry is shown: the first of them finds it there
+    // rather than reading it then (seconds on a protein). Only for a system with a basis to make a field of it with.
+    {
+        const md_system_t& sys = data->mold.sys;
+        const md_str_t path = md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+        const bool basis = md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
+                           md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr;
+        if (basis) density_cache_preload(density_cache_of(data), sys, path);
+    }
 }
 
 static void system_inference_free(ApplicationState* app);

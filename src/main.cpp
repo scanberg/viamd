@@ -1791,10 +1791,11 @@ int main(int argc, char** argv) {
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
+    // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
+    density_cache_destroy(state.mold.density_cache);
+    state.mold.density_cache = nullptr;
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
-    density_cache_destroy(state.mold.density_cache);   // the pool's tasks, which read it, have ended
-    state.mold.density_cache = nullptr;
 
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
