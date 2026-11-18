@@ -3348,9 +3348,9 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     };
                     for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
-                            // Given, and the system inferred again with it: drawn once that is in place
+                            // The user's, and the system inferred again with it: drawn once that is in place
                             system_core_edit_begin(state);
-                            md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
+                            md_system_bond_insert(&sys, idx[0], idx[1], kinds[k].flags);
                             system_core_changed(state);
                             ImGui::CloseCurrentPopup();
                         }
