@@ -2,6 +2,7 @@
 #include <gpu_job.h>
 
 #include <viamd.h>
+#include <representation.h>
 #include <task_system.h>
 #include <surface_field.h>
 
@@ -1073,6 +1074,28 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         }
     }
     return n;
+}
+
+void electronic_structure_meshes_update(ApplicationState* state, Representation* rep) {
+    MD_ASSERT(state);
+    MD_ASSERT(rep);
+    // as draw_representations_transparent_mesh draws them
+    if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(*state, *rep)) return;
+    if (state->settings.isosurface_rendering != IsosurfaceRendering_Mesh || state->mold.sys.atom.count == 0) return;
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (es.display != ElectronicStructureDisplay::Isosurface) return;
+    IsoDesc iso;
+    electronic_structure_iso_desc_init(&iso, es);
+    isomesh::Surface surfaces[16];      // 8 values, 2 sheets each
+    electronic_structure_mesh_surfaces(surfaces, MD_COUNTOF(surfaces), state, rep, iso);
+}
+
+uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es) {
+    if (!es.iso_mesh) return 0;
+    const EsIsoMesh& em = *es.iso_mesh;
+    const uint64_t v[4] = {(uint64_t)(uintptr_t)&em, em.meshes.mesh.version, (uint64_t)em.meshes.ok | ((uint64_t)em.span.valid << 1),
+                           em.meshes.num_slots};
+    return md_hash64(v, sizeof(v), 0x150e5);
 }
 
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es) {

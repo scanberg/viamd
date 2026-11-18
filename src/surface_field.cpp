@@ -1493,7 +1493,10 @@ static bool start_readback(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
 }
 #endif
 
+static uint64_t field_upload_count = 0;   // SurfaceFieldVolume::version: unique across volumes and their lives
+
 static void field_upload(SurfaceFieldVolume* vol) {
+    vol->version = ++field_upload_count;
     const int* dim = vol->grid.dim;
     if (!vol->tex_id) {
         gl::init_texture_3D(&vol->tex_id, dim[0], dim[1], dim[2], GL_R32F);

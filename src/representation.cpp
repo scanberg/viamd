@@ -1059,6 +1059,8 @@ void update_all_representations(ApplicationState* state) {
         // The field it is coloured by is evaluated over frames, shown or not
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
         update_representation(state, rep);
+        // Its isosurfaces as meshes: taken over frames too, the view drawn or not (in the key of the view)
+        if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_meshes_update(state, rep);
         // The images of its planes follow them as they are moved, which is no update of the representation
         if (rep->type == RepresentationType::ElectronicStructure && rep->type_is_valid && representation_shown(*state, *rep)) {
             electronic_structure_plane_images_update(state, rep);

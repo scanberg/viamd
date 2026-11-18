@@ -8233,6 +8233,15 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
                 h = md_hash64(&im.current, sizeof(im.current), h);
             }
             h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
+            // What arrives over frames, whether or not the view is drawn: the meshes of its isosurfaces and the values
+            // at their vertices (electronic_structure_meshes_update), the field its surfaces are coloured by
+            // (electronic_structure_field_poll), and the range of its colour scale, which follows the values
+            const uint64_t meshes = electronic_structure_mesh_key(es);
+            h = md_hash64(&meshes, sizeof(meshes), h);
+            h = md_hash64(&es.field_vol.tex_id, sizeof(es.field_vol.tex_id), h);
+            h = md_hash64(&es.field_vol.version, sizeof(es.field_vol.version), h);
+            const float field_map[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
+            h = md_hash64(field_map, sizeof(field_map), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);

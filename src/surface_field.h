@@ -146,6 +146,8 @@ struct SurfaceFieldVolume {
     size_t    num_voxels = 0;
     size_t    num_evaluated = 0;
     size_t    num_uploaded = 0;     // num_evaluated when the texture was last written
+    uint64_t  version = 0;          // of what the texture holds: new with every write (unique across volumes), for the
+                                    // key of the view (lazy rendering draws it again only when that changes)
     bool      complete = false;     // every voxel holds a value
     bool      on_gpu = false;       // and it was the GPU that evaluated the last of them
 

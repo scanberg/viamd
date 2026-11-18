@@ -140,6 +140,16 @@ md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const d
 // the values on the vertices when it is automatic.
 size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, ApplicationState* state, Representation* rep, const IsoDesc& iso);
 
+// Brings a representation's meshes up to date, once a frame whether or not the view is drawn: lazy rendering draws
+// the scene only when its key changes, and what electronic_structure_mesh_surfaces takes over frames (the field from
+// its worker thread, the extraction's job, the field at the vertices) is to arrive all the same. Nothing for a
+// representation that the mesh rendering does not draw (hidden, another display, the isosurfaces raycast).
+void electronic_structure_meshes_update(ApplicationState* state, Representation* rep);
+
+// What the representation's meshes are as drawn (their geometry and the values at their vertices), for the key of the
+// view: 0 without any
+uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es);
+
 // The spread of the field over the vertices of the representation's meshes; not valid without any
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es);
 void   electronic_structure_mesh_free(ApplicationState* state, ElectronicStructureRepresentation* es);
