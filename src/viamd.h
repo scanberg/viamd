@@ -1526,6 +1526,10 @@ struct ApplicationState {
         // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
         // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
         void*               nto_warm = nullptr;
+        // The SCF densities the CPU paths read (the ESP, the critical point search), each kept as its packed
+        // triangle in double once read (density_cache.h; density_cache_of). Its entries are of the system and go
+        // with it; the cache itself is the application's.
+        struct DensityCache* density_cache = nullptr;
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -2872,6 +2876,9 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
 bool es_nto_ready(ApplicationState* state, size_t state_idx);
 // What es_nto_ready keeps, freed: with the system, after its pool tasks have ended
 void es_nto_warm_free(ApplicationState* state);
+
+// The application's density cache (density_cache.h), made when first asked for. Main thread.
+struct DensityCache* density_cache_of(ApplicationState* state);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow

@@ -5,6 +5,7 @@
 #include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>
+#include "density_cache.h"
 #include <md_gto_iso.h>
 
 #include <atomic>
@@ -1784,6 +1785,7 @@ void free_system_data(ApplicationState* data) {
     // Before the arena is rewound: the inferred arrays live in arenas of their own, which go with the system
     system_inference_free(data);
     es_nto_warm_free(data);     // its tasks were waited for above
+    density_cache_clear(data->mold.density_cache);   // the densities of the system: nothing reads them any more
 
     // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
     // second handle to it: md_memset over md_system_t clears sys.alloc along with everything else, so
@@ -3688,6 +3690,12 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
     return false;
 }
 
+DensityCache* density_cache_of(ApplicationState* state) {
+    MD_ASSERT(state);
+    if (!state->mold.density_cache) state->mold.density_cache = density_cache_create();
+    return state->mold.density_cache;
+}
+
 void es_nto_warm_free(ApplicationState* state) {
     MD_ASSERT(state);
     NtoWarm* w = (NtoWarm*)state->mold.nto_warm;
@@ -4888,6 +4896,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.num_iso     = iso.count;
     desc.source_hash = source_hash;
     desc.band_hash   = band_hash;
+    desc.density_cache = density_cache_of(state);
     if (surface_field_uses_basis(es.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);

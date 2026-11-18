@@ -1,4 +1,5 @@
 #include <surface_field.h>
+#include <density_cache.h>
 
 #include <task_system.h>
 #include <gpu_job.h>
@@ -338,9 +339,11 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
         MD_LOG_ERROR("Electrostatic potential: no ground state density over the %zu atomic orbitals of the basis", num_ao);
         return false;
     }
-    const size_t num_d = num_ao * num_ao;
-    double* D = (double*)md_temp_alloc(temp, sizeof(double) * num_d);
-    if (!D || md_attribute_extract_f64(D, num_d, &sys.attributes, d_attr, md_attribute_slice_all(), md_unit_none()) != num_d) {
+    // Its packed triangle in double, kept once read (density_cache.h): md_gto_int makes the same distribution of it
+    // as of the square matrix, which is twice the size and was read from the file for every build. On a worker
+    // thread: its loops on this one (no io), as the read always was.
+    const std::shared_ptr<const PackedDensity> D = density_cache_packed(desc.density_cache, sys, d_attr->path, nullptr);
+    if (!D || D->dim != num_ao) {
         MD_LOG_ERROR("Electrostatic potential: could not read '" MD_STR_FMT "'", MD_STR_ARG(d_attr->path));
         return false;
     }
@@ -361,7 +364,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     cd.basis            = &basis;
     cd.atom_xyz         = desc.basis_atom_xyz[0].elem;
     cd.atom_xyz_stride  = sizeof(md_float3_t);
-    cd.density_matrix   = D;
+    cd.density_packed   = D->tri;
     cd.density_scale    = -1.0;
     cd.point_xyz        = desc.basis_atom_xyz[0].elem;
     cd.point_xyz_stride = sizeof(md_float3_t);
@@ -665,6 +668,7 @@ struct FieldBuild {
     uint64_t           hash = 0;
     SurfaceFieldKind   kind = SurfaceFieldKind::EmbeddingPotential;
     const md_system_t* sys = nullptr;
+    DensityCache*      density_cache = nullptr;     // the application's: outlives the build
     md_float3_t*            basis_atom_xyz = nullptr;
     size_t             num_basis_atoms = 0;
     md_float3_t*            state_xyz = nullptr;
@@ -719,6 +723,7 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     b->hash = desc.source_hash;
     b->kind = desc.kind;
     b->sys  = desc.sys;
+    b->density_cache = desc.density_cache;
 #if MD_ENABLE_GPU
     if (desc.gpu_stream && kind_is_ratio(desc.kind)) {
         b->stream = md_gpu_stream_create(md_gpu_stream_device(desc.gpu_stream), MD_GPU_STREAM_COMPUTE, "surface field");
@@ -754,6 +759,7 @@ static void build_run(FieldBuild* b) {
     desc.basis_atom_xyz  = b->basis_atom_xyz;
     desc.num_basis_atoms = b->num_basis_atoms;
     desc.source_hash     = b->hash;
+    desc.density_cache   = b->density_cache;
     md_allocator_i* heap = md_get_heap_allocator();
     if (kind_is_ratio(b->kind)) {
         b->data.ratio = build_ratio(desc);

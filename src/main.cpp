@@ -50,6 +50,7 @@
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
 #include <gpu_job.h>
+#include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
 #include <md_gto_iso.h>
@@ -1792,6 +1793,8 @@ int main(int argc, char** argv) {
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
+    density_cache_destroy(state.mold.density_cache);   // the pool's tasks, which read it, have ended
+    state.mold.density_cache = nullptr;
 
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU

@@ -31,6 +31,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plane.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/transfer_function.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/window_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/density_cache.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it

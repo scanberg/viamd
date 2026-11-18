@@ -6,6 +6,7 @@
 #include <viamd.h>
 #include <representation.h>
 #include <task_system.h>
+#include <density_cache.h>
 #include <color_utils.h>
 
 #include <gfx/volumerender_utils.h>
@@ -744,10 +745,12 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         return nullptr;
     }
 
+    // The density as the ESP keeps it too (density_cache.h): read from its file once, not for every search
     const md_str_t path = critical_points_density_path(sys);
-    size_t dim = 0;
-    const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
-    if (!density || dim != num_ao) {
+    md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
+    const std::shared_ptr<const PackedDensity> density = density_cache_packed(density_cache_of(&app), sys, path, io);
+    md_attribute_io_destroy(io);
+    if (!density || density->dim != num_ao) {
         MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" MD_STR_FMT "'", num_ao, MD_STR_ARG(path));
         return nullptr;
     }
@@ -772,8 +775,18 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         job->atom_xyz[3 * i + 2] = atom_pos[i].z;
     }
 
+    // The square matrix the search takes, of the kept triangle: its symmetric part, both halves
     job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    md_memcpy(job->density, density, sizeof(double) * num_ao * num_ao);
+    {
+        const double* tri = density->tri;
+        size_t k = 0;
+        for (size_t i = 0; i < num_ao; ++i) {
+            for (size_t j = i; j < num_ao; ++j, ++k) {
+                job->density[i * num_ao + j] = tri[k];
+                job->density[j * num_ao + i] = tri[k];
+            }
+        }
+    }
 
     job->desc.basis              = &job->basis;
     job->desc.atom_xyz           = job->atom_xyz;

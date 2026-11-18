@@ -195,6 +195,11 @@ struct SurfaceFieldDesc {
     // density by md_gto_int, the orbitals by md_gto_iso), else on the CPU's worker threads. The stream must
     // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
+
+    // Optional: where the QM density the ESP is made of is kept once read (density_cache.h), so that making the ESP
+    // again - another geometry, or back to it from another field - does not read it from its file again. Null: read
+    // each time. Must outlive the volume (the application's is).
+    struct DensityCache*     density_cache = nullptr;
 };
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
