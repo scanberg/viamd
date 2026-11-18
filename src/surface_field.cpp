@@ -114,9 +114,9 @@ static const md_attribute_t* find_atom_charges(const md_system_t& sys) {
 // The embedding potential is the environment's: the QM region is what the surfaces are drawn from,
 // never a source of the field on them. A QM atom carries a charge too when the system came from a
 // topology a QM calculation supplements (the force field's), and that charge sits inside the very
-// surface it would colour, so the QM flag excludes an atom whatever it carries.
+// surface it would colour, so the QM region excludes an atom whatever it carries.
 static inline bool atom_in_environment(const md_system_t& sys, size_t i) {
-    return (md_atom_flags(&sys.atom, i) & MD_ATOM_FLAG_QM) == 0;
+    return !md_atom_is_qm(&sys.atom, i);
 }
 
 // Whether any atom is outside the QM region: what the 'environment' keyword requires as well

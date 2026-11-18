@@ -134,7 +134,7 @@ UTEST(viamd_color, res_type) {
     md_system_t sys = { .alloc = alloc };
     md_system_state_t st = { .alloc = alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&sys, &st, md_str_from_cstr(pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
     ASSERT_EQ(3, (int)sys.residue.count);
 
     uint32_t colors[9] = {};

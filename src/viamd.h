@@ -1310,15 +1310,15 @@ inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 // GPU_PLANE_DIM^2 x 1 R32F texture, the largest plane image (es_plane_images.h)
 inline constexpr uint32_t GPU_PLANE_DIM = 2048;
 
-// What is derived from the core a loader gives (the bonds, what the residues are, the structures, the chemistry:
-// md_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
-// then the system is shown as loaded: its atoms, as spheres where a representation needs what is not there yet. One
-// system at a time: a load cancels the inference of the system before it.
+// What is derived from the core a loader gives and the user edits (the bonds, what the residues are, the structures,
+// the chemistry: md_system_infer), inferred in the background and put in place of what the system had between frames.
+// Until then the system is shown as it was: as loaded, its atoms, as spheres where a representation needs what is not
+// there yet; after an edit of its bonds, as inferred before. One system at a time: a load cancels the inference of the
+// system before it.
 struct SystemInference {
     task_system::Job    job;
-    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred on the heap
+    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, the derived in an arena of its own
     md_allocator_i*     arena = nullptr;        // The rest of the work: its copies of the types of the atoms
-    md_infer_flags_t    flags = MD_SYSTEM_INFER_NONE;
     std::atomic<bool>   done{false};            // The work is inferred: not cancelled half way
     bool                pending = false;        // The system shows its core: inference is under way, or to be started again
     bool                restart = false;        // Cancelled (the pool was interrupted) or of a topology since changed
@@ -1896,6 +1896,10 @@ struct ApplicationState {
             md_chem_delta_t chem = {};
             size_t ring_capacity = 0;
             uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+            // The topology of the system it was found against: the bonds its broken ones are indices of, which are of
+            // the system as inferred then. Another inference (an edit of the bonds, Recompute Bonds) puts other bonds
+            // in their place, and the delta is not of them until it is computed again (bond_tracking_update).
+            uint64_t topology_version = 0;
             double time_ms = 0.0;                       // How long that took
         } bond_tracking;
 
@@ -2485,15 +2489,16 @@ md_unit_t             run_time_unit(const ApplicationState* app);
 // its own (md_system_extract_begin) so the files stay open across them.
 bool extract_frame(const ApplicationState* app, int64_t frame, md_system_state_t* out);
 
-// Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
-// coordinates shown when there is no run. Inferred bonds are replaced, those of a file, a topology or a user are kept,
-// and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
-// the reference of the topology (md_system_t::reference).
+// Infers the system again (in the background, system_inference_start) from the given whole frame of the run, or from
+// the coordinates shown when there is no run: the bonds inferred are found anew, those of a file, a topology or a user
+// are kept, and what follows from them (rings, structures, bond orders) is of the same coordinates, which become the
+// reference of the topology (md_system_t::reference).
 bool recompute_bonds(ApplicationState* app, int64_t frame);
 
 // INFERENCE IN THE BACKGROUND (SystemInference)
-// Starts inferring what flags say on a copy of the system as it is now
-void system_inference_start(ApplicationState* app, md_infer_flags_t flags);
+// Starts inferring the system as it is now, from state (NULL: the coordinates shown): all of what is derived, put in
+// place of what it has once done
+void system_inference_start(ApplicationState* app, const md_system_state_t* state);
 // Once per frame: starts again what was cancelled, or was inferred from a topology which changed since
 void system_inference_update(ApplicationState* app);
 // Whether the system shows its core, what inference derives not there yet
@@ -2502,15 +2507,16 @@ bool system_inference_pending(const ApplicationState& app);
 // (a supplement, a workspace, an edit of the bonds)
 void system_inference_finish(ApplicationState* app);
 
-// To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
-// threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the
-// pool finish.
-void system_bonds_edit_begin(ApplicationState* app);
+// To be called before the core of the system is edited (the bonds: md_system_bond_insert, md_system_bond_remove):
+// what reads it on other threads stops. The script evaluation is interrupted (the script is compiled again once the
+// system is inferred again, and starts over), the other tasks of the pool finish, and an inference under way, whose work
+// shares the core, is dropped: the system is to be inferred again (system_core_changed, or system_inference_finish).
+// What the system shows stays what it was inferred as until then, and so do the indices of its bonds.
+void system_core_edit_begin(ApplicationState* app);
 
-// What follows the bonds of the system, after they changed (created, removed, inferred again): what is drawn of them,
-// the script (whose properties are of the topology) and the representations. graph_edited when bonds of the graph were
-// added or removed by hand: its connectivity, the structures and the rings are built again.
-void system_bonds_changed(ApplicationState* app, bool graph_edited);
+// After the core was edited: the system is inferred again in the background, from the coordinates shown, and what is
+// drawn of it, the script (whose properties are of the topology) and the representations follow once that is in place.
+void system_core_changed(ApplicationState* app);
 
 // The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
 // bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.

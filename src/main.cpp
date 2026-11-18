@@ -782,12 +782,12 @@ int main(int argc, char** argv) {
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MD_MEGABYTES(1)), MD_MEGABYTES(1));
     // One arena per dataset, held by the system and the state that share it. Both are rewound
     // rather than destroyed between loads, so this handle is set once and never reassigned.
+    // What is inferred of the system (its bonds, molecules, rings, chemistry, ...) is in an arena of its own, replaced
+    // whole whenever it is inferred again (an edit of its bonds, Recompute Bonds), whose pages come from where this one
+    // takes its own: the persistent allocator, which gives them back (md_system_t, ALLOCATORS). Destroyed with the
+    // system in free_system_data.
     state.mold.sys.alloc   = md_arena_allocator_create(persistent_alloc, MD_MEGABYTES(1));
     state.mold.state.alloc = state.mold.sys.alloc;
-    // What is inferred of the system (its bonds, molecules, rings, chemistry, ...) is replaced whenever it is inferred
-    // again or its bonds are changed: on the heap, which gives back what is replaced, where the arena would keep it
-    // (md_system_t, ALLOCATORS). Freed with the system in free_system_data.
-    state.mold.sys.derived_alloc = md_get_heap_allocator();
 
     md_temp_arena_system_init();
 
@@ -3348,11 +3348,10 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     };
                     for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
-                            const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
-                            system_bonds_edit_begin(state);
-                            md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
-                            if (graph) md_system_infer_coordination(&sys);
-                            system_bonds_changed(state, graph);
+                            // The user's, and the system inferred again with it: drawn once that is in place
+                            system_core_edit_begin(state);
+                            md_system_bond_insert(&sys, idx[0], idx[1], kinds[k].flags);
+                            system_core_changed(state);
                             ImGui::CloseCurrentPopup();
                         }
                         ImGui::SetItemTooltip("%s", kinds[k].tip);
@@ -3394,15 +3393,15 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                     }
                     ImGui::EndMenu();
                 }
-                if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-                    snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
-                    if (ImGui::MenuItem(buf)) {
-                        const bool graph = (size_t)bond_idx < sys.bond.count;
-                        system_bonds_edit_begin(state);
-                        md_system_bond_remove(&sys, bond_idx);
-                        system_bonds_changed(state, graph);
-                        ImGui::CloseCurrentPopup();
-                    }
+                snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
+                if (ImGui::MenuItem(buf)) {
+                    // Any bond: the user's goes, one the data gives or inference finds is removed, as neither is
+                    // certain. The system is inferred again without it (the index is of the bonds as they are drawn,
+                    // which stay until then)
+                    system_core_edit_begin(state);
+                    md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], flags);
+                    system_core_changed(state);
+                    ImGui::CloseCurrentPopup();
                 }
             }
         }
