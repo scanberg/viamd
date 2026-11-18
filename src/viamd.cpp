@@ -3065,21 +3065,17 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         viamd::write_bitset(state, MD_STR_LIT("Mask"), &selection);
     }
 
-    // Save user defined bonds, of the graph and non-covalent, with the kind they were given: those given, whether the
-    // system is inferred of them yet or not
-    bool has_user_bonds = false;
-    const md_bond_data_t& bonds = app_state->mold.sys.given_bond;
+    // Save user defined bonds, of the graph and non-covalent, with the kind they were given: the user's (md_system_t::
+    // user_bond), whether the system is inferred of them yet or not
+    const md_bond_data_t& bonds = app_state->mold.sys.user_bond;
+    if (bonds.count + bonds.noncovalent_count > 0) {
+        viamd::write_section_header(state, MD_STR_LIT("UserBonds"));
+    }
     for (size_t i = 0; i < bonds.count + bonds.noncovalent_count; ++i) {
         const md_bond_flags_t flags = bonds.flags[i];
-        if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-            if (!has_user_bonds) {
-                viamd::write_section_header(state, MD_STR_LIT("UserBonds"));
-                has_user_bonds = true;
-            }
-            viamd::write_int_vec(state, MD_STR_LIT("atoms"), bonds.pairs[i].idx, 2);
-            if (flags & MD_BOND_FLAG_KIND_GIVEN) {
-                viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(flags)));
-            }
+        viamd::write_int_vec(state, MD_STR_LIT("atoms"), bonds.pairs[i].idx, 2);
+        if (flags & MD_BOND_FLAG_KIND_GIVEN) {
+            viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(flags)));
         }
     }
 
