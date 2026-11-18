@@ -2685,7 +2685,17 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                         VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as an interaction");
                         kind = (md_bond_flags_t)MD_BOND_KIND_INTERACTION;
                     }
-                    *md_array_last(flags) = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, MD_BOND_ORIGIN_USER);
+                    *md_array_last(flags) = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, md_bond_origin(*md_array_last(flags)));
+                } else if (md_str_eq(ident, MD_STR_LIT("origin")) && last_taken && removed) {
+                    // Where the bond removed came from: shown, of no effect
+                    md_str_t str;
+                    if (viamd::extract_str(str, arg)) {
+                        for (int o = 0; o < 4; ++o) {
+                            if (md_str_eq_cstr(md_str_trim(str), md_bond_origin_name((md_bond_origin_t)o))) {
+                                *md_array_last(flags) = md_bond_flags_set_origin(*md_array_last(flags), (md_bond_origin_t)o);
+                            }
+                        }
+                    }
                 }
             }
         } else if (md_str_eq(section, MD_STR_LIT("Script"))) {
@@ -3092,7 +3102,7 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     }
 
     // And the bonds the user removed (md_system_t::removed_bond), given by the data or inferred: each with its kind,
-    // which tells its range (the graph, the elastic or the non-covalent bonds)
+    // which tells its range (the graph, the elastic or the non-covalent bonds), and where it came from
     const md_bond_data_t& removed = app_state->mold.sys.removed_bond;
     if (removed.count + removed.noncovalent_count > 0) {
         viamd::write_section_header(state, MD_STR_LIT("RemovedBonds"));
@@ -3100,6 +3110,7 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     for (size_t i = 0; i < removed.count + removed.noncovalent_count; ++i) {
         viamd::write_int_vec(state, MD_STR_LIT("atoms"), removed.pairs[i].idx, 2);
         viamd::write_str(state, MD_STR_LIT("kind"), md_str_from_cstr(bond_kind_str(removed.flags[i])));
+        viamd::write_str(state, MD_STR_LIT("origin"), md_str_from_cstr(md_bond_origin_name(md_bond_origin(removed.flags[i]))));
     }
 
     viamd::write_section_header(state, MD_STR_LIT("Windows"));
