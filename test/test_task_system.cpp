@@ -19,9 +19,11 @@ namespace {
 void ensure_task_system() {
     static bool initialized = false;
     if (!initialized) {
-        task_system::initialize(4);
+        if (!task_system::executor()) {     // another test may have brought it up (test_density_cache.cpp)
+            task_system::initialize(4);
+            atexit([]() { task_system::shutdown(); });
+        }
         initialized = true;
-        atexit([]() { task_system::shutdown(); });
     }
 }
 

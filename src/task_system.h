@@ -138,6 +138,7 @@ struct Activity {
     std::atomic<float>   progress{-1.0f};   // negative: unknown
     std::atomic<int32_t> cancel{0};         // set when it is asked to stop
     bool                 cancellable = true;
+    int64_t              t0 = 0;            // md_tick_t: when it began (activity_begin)
     Activity*            prev = nullptr;    // the list, under its lock
     Activity*            next = nullptr;
     bool                 listed = false;
@@ -151,6 +152,7 @@ struct ActivityInfo {
     char     label[ACTIVITY_LABEL_SIZE];
     float    progress;
     bool     cancellable;
+    double   seconds;       // since it began: what ends within a few frames is better not shown at all
 };
 
 // A copy of what is under way: labels are not read while the work ends

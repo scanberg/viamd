@@ -12,6 +12,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/serialization_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/event.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/task_system.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/gpu_job.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/timeline_periods.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/representation_tree.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/loader.cpp
@@ -30,6 +31,7 @@ set(UNIT_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/plane.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/transfer_function.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/window_menu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/density_cache.cpp
 )
 
 # Every .cpp in this folder is a test for the application's own units. Dropping one in is all it

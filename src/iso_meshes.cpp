@@ -1,6 +1,8 @@
 #include <iso_meshes.h>
+#include <gpu_job.h>
 
 #include <viamd.h>
+#include <representation.h>
 #include <task_system.h>
 #include <surface_field.h>
 
@@ -171,37 +173,10 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, m
 // ---------------------------------------------------------------------------------------------------------------
 
 #if MD_ENABLE_GPU
-// The jobs under way, for iso_meshes_progress: a job and when it began
-static constexpr uint32_t MAX_JOBS = 64;
-static md_gto_iso_gpu_job_t* active_job[MAX_JOBS];
-static md_tick_t             active_t0[MAX_JOBS];
-static uint32_t              num_active = 0;
-
-static void job_register(md_gto_iso_gpu_job_t* job) {
-    if (num_active < MAX_JOBS) {
-        active_job[num_active] = job;
-        active_t0[num_active] = md_tick_now();
-        num_active++;
-    }
-}
-
-static void job_unregister(md_gto_iso_gpu_job_t* job) {
-    for (uint32_t i = 0; i < num_active; ++i) {
-        if (active_job[i] == job) {
-            num_active--;
-            active_job[i] = active_job[num_active];
-            active_t0[i] = active_t0[num_active];
-            return;
-        }
-    }
-}
-
 // Drops the job under way, if any: what it made is lost, the mesh shown stays
 static void job_cancel(IsoMeshes* m) {
     if (!m->job) return;
-    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
-    job_unregister(job);
-    md_gto_iso_gpu_job_end(job, nullptr);
+    delete m->job;      // cancels: what it has in flight completes, its mesh is freed
     m->job = nullptr;
     m->job_key = 0;
     m->job_slots = 0;
@@ -315,9 +290,10 @@ static void build_run(IsoBuild* b) {
 }
 
 static void build_start(IsoBuild* b) {
-    // and the worker's temp arenas given back after: a density's orbitals are read there, hundreds of MB that a
-    // pool thread would otherwise hold until it exits
-    b->task.start({}, [b]() { build_run(b); md_temp_trim(); });
+    // listed while it runs (a protein's density is seconds of it), and the worker's temp arenas given back after: a
+    // density's orbitals are read there, hundreds of MB that a pool thread would otherwise hold until it exits
+    b->task.start(b->kind == IsoBuild::Field ? MD_STR_LIT("Isosurface field: preparing") : MD_STR_LIT("Isosurface mesh: preparing"),
+                  [b]() { build_run(b); md_temp_trim(); });
 }
 
 static bool field_held(const md_gto_iso_field_t* f) {
@@ -406,24 +382,6 @@ void iso_meshes_shutdown(ApplicationState* state) {
     (void)state;
 }
 
-size_t iso_meshes_progress(float* fraction, size_t cap) {
-    size_t n = 0;
-    const md_tick_t now = md_tick_now();
-    // what is being made on worker threads: no fraction (negative)
-    for (uint32_t i = 0; i < g_num_builds && n < cap; ++i) {
-        const IsoBuild* b = g_builds[i];
-        if (b->orphan || !build_running(b) || md_tick_to_seconds(now - b->t0) < 0.25) continue;
-        fraction[n++] = -1.0f;
-    }
-#if MD_ENABLE_GPU
-    for (uint32_t i = 0; i < num_active && n < cap; ++i) {
-        // a job done within a few frames shows nothing
-        if (md_tick_to_seconds(now - active_t0[i]) < 0.25) continue;
-        fraction[n++] = md_gto_iso_gpu_job_progress(active_job[i]);
-    }
-#endif
-    return n;
-}
 
 static void release_extraction_state(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
@@ -562,23 +520,24 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     }
     md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(state->gpu_stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc);
     if (!job) return false;
-    m->job = job;
+    m->job = new GpuJob();
+    m->job->start(job, MD_STR_LIT("Isosurface mesh"));
     m->job_key = key;
     m->job_slots = n;
     m->job_start = md_tick_now();
-    job_register(job);
     return true;
 }
 
 // Advances the job. Done: its mesh replaces the one shown (m->key becomes the job's). Returns 1 while it runs,
 // 2 when it is done, 0 when it failed (the mesh shown is kept)
 static int job_poll(IsoMeshes* m, ApplicationState* state) {
-    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
-    // waited for in its first frames only: a short job then ends within them, and a long one costs the frame
-    // nothing more than a look
+    // advanced once a frame with every GPU job (gpu_jobs_poll); here too in its first frames, so that a short job ends
+    // within them
     const double age_ms = md_tick_to_milliseconds(md_tick_now() - m->job_start);
-    if (md_gto_iso_gpu_job_poll(job, age_ms < 4.0 * JOB_POLL_MS ? JOB_POLL_MS : 0.0) == MD_GTO_ISO_GPU_JOB_RUNNING) return 1;
-    job_unregister(job);
+    if (age_ms < 4.0 * JOB_POLL_MS) m->job->advance(JOB_POLL_MS);
+    if (m->job->status() == GpuJob::Status::Running) return 1;
+    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job->take();     // NULL unless done: failed or cancelled
+    delete m->job;
     md_gto_iso_gpu_mesh_t gm = {};
     const bool done = md_gto_iso_gpu_job_end(job, &gm);
     const uint64_t key = m->job_key;
@@ -1060,6 +1019,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
+            desc.density_cache = density_cache_of(state);
             if (surface_field_uses_basis(es.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
@@ -1115,6 +1075,28 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         }
     }
     return n;
+}
+
+void electronic_structure_meshes_update(ApplicationState* state, Representation* rep) {
+    MD_ASSERT(state);
+    MD_ASSERT(rep);
+    // as draw_representations_transparent_mesh draws them
+    if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(*state, *rep)) return;
+    if (state->settings.isosurface_rendering != IsosurfaceRendering_Mesh || state->mold.sys.atom.count == 0) return;
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (es.display != ElectronicStructureDisplay::Isosurface) return;
+    IsoDesc iso;
+    electronic_structure_iso_desc_init(&iso, es);
+    isomesh::Surface surfaces[16];      // 8 values, 2 sheets each
+    electronic_structure_mesh_surfaces(surfaces, MD_COUNTOF(surfaces), state, rep, iso);
+}
+
+uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es) {
+    if (!es.iso_mesh) return 0;
+    const EsIsoMesh& em = *es.iso_mesh;
+    const uint64_t v[4] = {(uint64_t)(uintptr_t)&em, em.meshes.mesh.version, (uint64_t)em.meshes.ok | ((uint64_t)em.span.valid << 1),
+                           em.meshes.num_slots};
+    return md_hash64(v, sizeof(v), 0x150e5);
 }
 
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es) {

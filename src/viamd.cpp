@@ -5,6 +5,7 @@
 #include <md_run.h>
 #include <md_dssp.h>
 #include <md_qm.h>
+#include "density_cache.h"
 #include <md_gto_iso.h>
 
 #include <atomic>
@@ -1774,6 +1775,17 @@ void init_system_data(ApplicationState* data) {
     // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
     // shown: the state a representation of them starts at
     es_nto_ready(data, 0);
+
+    // The SCF density the CPU paths read (the ESP, the critical points: the total density, the alpha one without
+    // it), into the density cache on the task pool while the geometry is shown: the first of them finds it there
+    // rather than reading it then (seconds on a protein). Only for a system with a basis to make a field of it with.
+    {
+        const md_system_t& sys = data->mold.sys;
+        const md_str_t path = md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+        const bool basis = md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
+                           md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr;
+        if (basis) density_cache_preload(density_cache_of(data), sys, path);
+    }
 }
 
 static void system_inference_free(ApplicationState* app);
@@ -1784,6 +1796,7 @@ void free_system_data(ApplicationState* data) {
     // Before the arena is rewound: the inferred arrays live in arenas of their own, which go with the system
     system_inference_free(data);
     es_nto_warm_free(data);     // its tasks were waited for above
+    density_cache_clear(data->mold.density_cache);   // the densities of the system: nothing reads them any more
 
     // The arena OUTLIVES the system it backs, and the zeroing below is why there used to be a
     // second handle to it: md_memset over md_system_t clears sys.alloc along with everything else, so
@@ -3667,13 +3680,11 @@ size_t es_excited_state_count(const md_system_t& sys) {
 // The states' NTOs read once on a worker thread: what es_nto_ready keeps. A state's status is written by its task
 // and read by the frame. A task reads the system, so it ends before the system goes: free_system_data waits for
 // every pool task (interrupt_async_tasks) before this is freed. The task is detached, so nothing cancels it before
-// it has run (which would leave its state under way for good), and es_nto_warming is what the panel shows.
+// it has run (which would leave its state under way for good); it is listed in the overlay while it runs.
 struct NtoWarm {
     enum : uint8_t { NotBegun = 0, UnderWay = 1, Done = 2 };
     size_t count = 0;
     std::atomic<uint8_t>* status = nullptr;
-    std::atomic<int64_t>  under_way = 0;
-    md_tick_t t0 = 0;   // when the oldest still under way began, read only while under_way > 0
 };
 
 bool es_nto_ready(ApplicationState* state, size_t state_idx) {
@@ -3701,10 +3712,9 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
     }
     if (status == NtoWarm::NotBegun) {
         w->status[state_idx].store(NtoWarm::UnderWay, std::memory_order_relaxed);
-        if (w->under_way.fetch_add(1) == 0) w->t0 = md_tick_now();
         const md_system_t* sys_ptr = &state->mold.sys;
         const uint32_t idx = (uint32_t)state_idx;
-        task_system::detach({}, [w, sys_ptr, idx]() {
+        task_system::detach(MD_STR_LIT("Natural transition orbitals: reading"), [w, sys_ptr, idx]() {
             // the weights: the reader computes the state's orbitals with them, and keeps all three
             const md_attribute_t* a = md_attributes_find(&sys_ptr->attributes, es_path::nto_lambda);
             if (a) {
@@ -3717,18 +3727,16 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
             }
             // done whether or not it could be read: where it is read next, it fails as loudly as it would have
             w->status[idx].store(NtoWarm::Done, std::memory_order_release);
-            w->under_way.fetch_sub(1);
             md_temp_trim();
         });
     }
     return false;
 }
 
-bool es_nto_warming(const ApplicationState* state, double* seconds) {
-    const NtoWarm* w = state ? (const NtoWarm*)state->mold.nto_warm : nullptr;
-    const bool warming = w && w->under_way.load() > 0;
-    if (seconds) *seconds = warming ? md_tick_to_seconds(md_tick_now() - w->t0) : 0.0;
-    return warming;
+DensityCache* density_cache_of(ApplicationState* state) {
+    MD_ASSERT(state);
+    if (!state->mold.density_cache) state->mold.density_cache = density_cache_create();
+    return state->mold.density_cache;
 }
 
 void es_nto_warm_free(ApplicationState* state) {
@@ -4060,9 +4068,9 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
     return true;
 }
 
-// The readback of a density job's evaluation: its slot now, the copy once the job is all issued
-// (gpu_volume_jobs_poll). Takes the job.
-static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj) {
+// The readback of a density job's evaluation (a density, ELF or LOL: md_gto_gpu_job_t): its slot now, the copy once the
+// job is all issued (gpu_volume_jobs_poll). Takes the job. label: what it is, for the overlay (a static string).
+static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj, const char* label) {
     if (md_gto_gpu_job_poll(dj, false)) {
         md_gto_gpu_job_end(dj);
         return gpu_volume_readback(state, vol_tex, grid);
@@ -4085,6 +4093,7 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
     job->grid = grid;
     job->density_job = dj;
     job->t0 = md_tick_now();
+    job->label = label;
     return true;
 }
 
@@ -4138,43 +4147,41 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
     return true;
 }
 
-#endif // MD_ENABLE_GPU
+// The volumes' evaluations in the overlay: a slot's activity while its job runs (issued or not) and until its readback
+// lands, under the label it was given; not cancellable there (a representation's volume would keep the hash of what it
+// never got)
+static task_system::Activity g_volume_activity[ApplicationState::GPU_VOLUME_JOB_SLOTS];
+static const char*           g_volume_activity_label[ApplicationState::GPU_VOLUME_JOB_SLOTS];
 
-#if !MD_ENABLE_GPU
-bool density_dmat_preparing(const ApplicationState*, double* seconds) {
-    if (seconds) *seconds = 0.0;
-    return false;
+static void gpu_volume_activities_update(const ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        const ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        void* dj = j.density_job ? j.density_job : j.issued_job;
+        task_system::Activity& a = g_volume_activity[i];
+        const char* label = j.in_flight && dj ? (j.label ? j.label : "Volume") : nullptr;
+        if (label != g_volume_activity_label[i]) {
+            task_system::activity_end(&a);
+            g_volume_activity_label[i] = label;
+            if (label) {
+                a.cancellable = false;
+                a.progress.store(0.0f, std::memory_order_relaxed);
+                task_system::activity_begin(&a, md_str_from_cstr(label));
+            }
+        }
+        if (label) a.progress.store(md_gto_gpu_job_progress((md_gto_gpu_job_t*)dj), std::memory_order_relaxed);
+    }
 }
-#endif
+
+#endif // MD_ENABLE_GPU
 
 void gpu_volume_jobs_poll(ApplicationState* state) {
     MD_ASSERT(state);
 #if MD_ENABLE_GPU
     if (state->gpu_stream) gpu_density_jobs_issue(state, false);
+    gpu_volume_activities_update(state);
 #else
     (void)state;
 #endif
-}
-
-size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap) {
-    MD_ASSERT(state);
-    size_t n = 0;
-#if MD_ENABLE_GPU
-    const md_tick_t now = md_tick_now();
-    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS && n < cap; ++i) {
-        const ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
-        void* dj = j.density_job ? j.density_job : j.issued_job;
-        if (!j.in_flight || !dj) continue;
-        // one done within a few frames shows nothing
-        if (md_tick_to_seconds(now - (md_tick_t)j.t0) < 0.25) continue;
-        fraction[n++] = md_gto_gpu_job_progress((md_gto_gpu_job_t*)dj);
-    }
-#else
-    (void)state;
-    (void)fraction;
-    (void)cap;
-#endif
-    return n;
 }
 
 bool gpu_volume_job_cancel(ApplicationState* state, uint32_t vol_tex) {
@@ -4319,11 +4326,11 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
 // ---------------------------------------------------------------------------
 // ELF and LOL over a grid
 // ---------------------------------------------------------------------------
-// On the GPU by their own grid kernel (md_gto_gpu_localization_launch): the spins' density matrices in tiles,
-// built on the device from the orbitals over a GPU basis at the AO cutoff 1e-8 (ELF is made of small differences
+// On the GPU by their own grid kernel (md_gto_gpu_localization_job_begin): the spins' density matrices in tiles,
+// built on the device from the orbitals over a GPU basis at the AO cutoff 1e-7 (ELF is made of small differences
 // in the tails), made by a pool task (localization_gpu_prepare) and kept until the orbitals change or the atoms
-// move out of the tiles' margin; the kernel issued into the GPU stream as the density's is, and its volume read
-// back as the density's (gpu_volume_readback): nothing waits. Without a GPU, by a pool task on the CPU, in double
+// move out of the tiles' margin; the kernel issued into the GPU stream as a job in pieces, as the density's is, and its
+// volume read back as the density's (gpu_volume_readback_after): nothing waits. Without a GPU, by a pool task on the CPU, in double
 // (localization_poll): of each spin rho_s with its gradient and tau_s over the derivative basis
 // (md_qm_kinetic_orbitals), then md_qm_elf or md_qm_lol per point; slow.
 //
@@ -4332,7 +4339,7 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
 // which follows the exact one to the 1e-3 isodensity and goes to 0 smoothly by rho 1e-4 (md_qm_elf). LOL is a plain
 // ratio and goes to 0 there itself. The CPU path, in double from the same float data, alike.
 #define ES_LOCALIZATION_RHO_MIN 0.0
-#define ES_LOCALIZATION_CUTOFF 1.0e-8
+#define ES_LOCALIZATION_CUTOFF 1.0e-7
 #define ES_LOCALIZATION_CHUNK (1u << 18)
 // How far the atoms may move before the matrices' pattern is made again (bohr), as the density's (GPU_DMAT_MARGIN)
 #define ES_LOCALIZATION_MARGIN 1.0
@@ -4698,7 +4705,10 @@ static int localization_gpu_prepare(ApplicationState* state) {
     return 0;
 }
 
-// ELF or LOL into vol_tex by the kernel, read back as the density is; what it reads is there (localization_gpu_prepare)
+// ELF or LOL into vol_tex by the kernel, as a job read back as the density's is: its counting pass issued and nothing
+// waited for (the launch waited on the GL thread for the counts and whatever the stream held before them, then issued
+// every piece at once: minutes of GPU work ahead of the display for a protein), the pieces issued a few ahead of the
+// GPU over the frames (gpu_volume_jobs_poll). What it reads is there (localization_gpu_prepare).
 static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool lol) {
     LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
     if (!L || !L->ok || L->task.running()) return false;
@@ -4711,8 +4721,9 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
         .d_min = MD_QM_ELF_D_MIN,
         .out_tex = gpu_eval_target(state), .grid = &grid, .sample_offset = {0.5f, 0.5f, 0.5f},
     };
-    if (!md_gto_gpu_localization_launch(state->gpu_stream, &desc)) return false;
-    return gpu_volume_readback(state, vol_tex, grid);
+    md_gto_gpu_job_t* job = md_gto_gpu_localization_job_begin(state->gpu_stream, &desc);
+    if (!job) return false;
+    return gpu_volume_readback_after(state, vol_tex, grid, job, lol ? "Localized orbital locator (LOL)" : "Electron localization function (ELF)");
 }
 #endif
 
@@ -4928,6 +4939,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.num_iso     = iso.count;
     desc.source_hash = source_hash;
     desc.band_hash   = band_hash;
+    desc.density_cache = density_cache_of(state);
     if (surface_field_uses_basis(es.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
@@ -5311,16 +5323,6 @@ static bool dpack_build_take(ApplicationState* state, bool wait) {
     return true;
 }
 
-bool density_dmat_preparing(const ApplicationState* state, double* seconds) {
-    const DmatBuild* b = state ? (const DmatBuild*)state->mold.gpu_dmat_build : nullptr;
-    const DensityPackBuild* p = state ? (const DensityPackBuild*)state->mold.gpu_dpack_build : nullptr;
-    const md_tick_t now = md_tick_now();
-    double t = 0.0;
-    if (b) t = MD_MAX(t, md_tick_to_seconds(now - b->t0));
-    if (p) t = MD_MAX(t, md_tick_to_seconds(now - p->t0));
-    if (seconds) *seconds = t;
-    return b != nullptr || p != nullptr;
-}
 
 // For the representations' evaluations, which wait for it without waiting on it: true when the dmat holds the
 // SCF density at density_path for the atoms where they are (the evaluation can be issued), or when the density
@@ -5359,7 +5361,7 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
         return true;    // made where it is asked for
     }
     md_memcpy(b->xyz, xyz, sizeof(md_float3_t) * num_atoms);
-    b->task.start({}, [b]() {
+    b->task.start(MD_STR_LIT("Density matrix: preparing"), [b]() {
         b->dmat = density_dmat_pattern(b->stream, *b->sys, b->xyz);
         if (b->dmat && !density_dmat_fill(b->stream, b->dmat, *b->sys, b->path, b->num_cgtos)) {
             md_gto_gpu_dmat_destroy(b->stream, b->dmat);
@@ -5410,7 +5412,7 @@ static bool density_pack_prepare(ApplicationState* state, md_str_t density_path,
         delete b;
         return true;    // extracted where it is asked for
     }
-    b->task.start({}, [b]() {
+    b->task.start(MD_STR_LIT("Density matrix: reading"), [b]() {
         const md_attribute_t* a = md_attributes_find(&b->sys->attributes, b->path);
         const size_t len = b->num_cgtos * (b->num_cgtos + 1) / 2;
         if (a) {
@@ -5581,7 +5583,7 @@ bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     md_gto_gpu_job_t* job = nullptr;
     if (gpu_evaluation_ready(state)) {
         if (!density_to_gpu_volume(state, grid, density_path, slice, op, async ? &job : nullptr)) return false;
-        return job ? gpu_volume_readback_after(state, vol_tex, grid, job) : gpu_volume_readback(state, vol_tex, grid);
+        return job ? gpu_volume_readback_after(state, vol_tex, grid, job, "Density volume") : gpu_volume_readback(state, vol_tex, grid);
     }
 #endif
     (void)vol_tex; (void)grid; (void)density_path; (void)slice; (void)op; (void)async;

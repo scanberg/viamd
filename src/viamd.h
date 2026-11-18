@@ -1363,9 +1363,10 @@ struct ApplicationState {
         // readback is queued when it is (gpu_volume_jobs_poll), of this grid
         void*             density_job = nullptr;
         md_grid_t         grid      = {};
-        // The same once it is all issued, kept for its progress until the readback lands (gpu_volume_jobs_progress)
+        // The same once it is all issued, kept for its progress until the readback lands (its activity)
         void*             issued_job = nullptr;
         int64_t           t0 = 0;               // md_tick_t: when the evaluation began
+        const char*       label = nullptr;      // what it evaluates, for the overlay (a static string)
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -1525,6 +1526,10 @@ struct ApplicationState {
         // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
         // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
         void*               nto_warm = nullptr;
+        // The SCF densities the CPU paths read (the ESP, the critical point search), each kept as its packed
+        // triangle in double once read (density_cache.h; density_cache_of). Its entries are of the system and go
+        // with it; the cache itself is the application's.
+        struct DensityCache* density_cache = nullptr;
 
 #if MD_ENABLE_GPU
         // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -2739,21 +2744,13 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
 void gpu_volume_jobs_drain(ApplicationState* state);
 
 // Issues what the density jobs have room for (their pieces, a few in flight), and queues the readbacks of those
-// all issued: once a frame.
+// all issued: once a frame. Each evaluation of a volume on the GPU (a density, ELF or LOL) is listed in the overlay
+// while it runs, as a task_system activity, from its first piece until its readback lands.
 void gpu_volume_jobs_poll(ApplicationState* state);
-
-// The density evaluations on the GPU under way for longer than a moment, for a progress display: how far each is
-// (0 to 1). Returns how many (at most cap). 0 without the GPU backend.
-size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap);
 
 // Drops the density evaluation into vol_tex that is not yet all issued, if there is one: what it has in flight
 // completes, nothing more is issued, and the texture keeps what it held. True when one was dropped.
 bool gpu_volume_job_cancel(ApplicationState* state, uint32_t vol_tex);
-
-// Whether a density's matrix is being made on a worker thread for a representation's volume (an SCF density's
-// tiles, or another density's packed triangle), and for how long: for a progress display. False without the
-// GPU backend.
-bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
 // A line of the task overlay from a component, given in answer to EventType_ViamdTaskProgressRequest: what is
 // under way, how far it is (0 to 1), and optionally a flag the overlay's close button raises to stop it. Read in
@@ -2883,10 +2880,11 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
 // have not been. What waits on it keeps showing what it had. True when there is nothing to wait for (resident
 // or absent).
 bool es_nto_ready(ApplicationState* state, size_t state_idx);
-// Whether any are being read on a worker thread, and for how long the oldest has been (the async info panel)
-bool es_nto_warming(const ApplicationState* state, double* seconds);
 // What es_nto_ready keeps, freed: with the system, after its pool tasks have ended
 void es_nto_warm_free(ApplicationState* state);
+
+// The application's density cache (density_cache.h), made when first asked for. Main thread.
+struct DensityCache* density_cache_of(ApplicationState* state);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow

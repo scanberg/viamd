@@ -33,11 +33,13 @@ struct SurfaceFieldPointsWork;
 //             either costs nothing, and the values interpolate as values rather than as colours
 //
 // NOTHING HERE BLOCKS. Making what the field is evaluated from (reading a QM density and building
-// md_gto_int's distribution of it: seconds on a protein; the ionization energy's orbitals) runs on a worker thread, the evaluation on
-// the GPU as an md_gto_int job advanced a little each frame, and its readback is waited for by
+// md_gto_int's distribution of it: seconds on a protein; the ionization energy's orbitals, and their fields on
+// the device) runs on a worker thread, the evaluation on the GPU as a job in pieces of a few ms of GPU time
+// (md_gto_int's, md_gto_iso's: a GpuJob, gpu_job.h, advanced once a frame), and its readback is waited for by
 // looking. An update works out what is wanted and starts it; surface_field_poll, once a frame while
 // surface_field_busy, takes what has finished. Until new values arrive a surface keeps the ones it
-// has, and surface_field_progress names what is under way for a progress display.
+// has. What is under way is listed in the overlay (task_system activities: the preparation, the CPU's
+// evaluation and the GPU job each under the field's name), and can be cancelled there.
 //
 // The field volume has the density volume's grid, or a coarser one over the same box where the
 // field is smooth and dear: the electrostatic potential of a QM density is a sum over tens of
@@ -144,6 +146,8 @@ struct SurfaceFieldVolume {
     size_t    num_voxels = 0;
     size_t    num_evaluated = 0;
     size_t    num_uploaded = 0;     // num_evaluated when the texture was last written
+    uint64_t  version = 0;          // of what the texture holds: new with every write (unique across volumes), for the
+                                    // key of the view (lazy rendering draws it again only when that changes)
     bool      complete = false;     // every voxel holds a value
     bool      on_gpu = false;       // and it was the GPU that evaluated the last of them
 
@@ -191,6 +195,11 @@ struct SurfaceFieldDesc {
     // density by md_gto_int, the orbitals by md_gto_iso), else on the CPU's worker threads. The stream must
     // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
+
+    // Optional: where the QM density the ESP is made of is kept once read (density_cache.h), so that making the ESP
+    // again - another geometry, or back to it from another field - does not read it from its file again. Null: read
+    // each time. Must outlive the volume (the application's is).
+    struct DensityCache*     density_cache = nullptr;
 };
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
@@ -241,16 +250,6 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
 // frame while surface_field_busy, from the GL thread.
 bool surface_field_poll(SurfaceFieldVolume* vol);
 bool surface_field_busy(const SurfaceFieldVolume& vol);
-
-// What is under way for longer than a moment, every volume and point set, for a progress display:
-// the field's name and how far it is (0 to 1; 0 while its distribution is being made). Returns how
-// many (at most cap).
-struct SurfaceFieldProgress {
-    const char* label = "";
-    float       fraction = 0.0f;
-    bool        preparing = false;  // the distribution is being made
-};
-size_t surface_field_progress(SurfaceFieldProgress* out, size_t cap);
 
 // Forgets what the values are of, keeping the allocations: the next update evaluates afresh. For
 // when the data changes under the same geometry, a new system loaded over the old.
