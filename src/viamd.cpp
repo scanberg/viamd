@@ -4276,7 +4276,7 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
 // ELF and LOL over a grid
 // ---------------------------------------------------------------------------
 // On the GPU by their own grid kernel (md_gto_gpu_localization_job_begin): the spins' density matrices in tiles,
-// built on the device from the orbitals over a GPU basis at the AO cutoff 1e-8 (ELF is made of small differences
+// built on the device from the orbitals over a GPU basis at the AO cutoff 1e-7 (ELF is made of small differences
 // in the tails), made by a pool task (localization_gpu_prepare) and kept until the orbitals change or the atoms
 // move out of the tiles' margin; the kernel issued into the GPU stream as a job in pieces, as the density's is, and its
 // volume read back as the density's (gpu_volume_readback_after): nothing waits. Without a GPU, by a pool task on the CPU, in double
@@ -4288,7 +4288,7 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
 // which follows the exact one to the 1e-3 isodensity and goes to 0 smoothly by rho 1e-4 (md_qm_elf). LOL is a plain
 // ratio and goes to 0 there itself. The CPU path, in double from the same float data, alike.
 #define ES_LOCALIZATION_RHO_MIN 0.0
-#define ES_LOCALIZATION_CUTOFF 1.0e-8
+#define ES_LOCALIZATION_CUTOFF 1.0e-7
 #define ES_LOCALIZATION_CHUNK (1u << 18)
 // How far the atoms may move before the matrices' pattern is made again (bohr), as the density's (GPU_DMAT_MARGIN)
 #define ES_LOCALIZATION_MARGIN 1.0
