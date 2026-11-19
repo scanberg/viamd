@@ -3323,15 +3323,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             prop::row("magnitude", density ? (const char*)u8"The surfaces of |ρ| instead of ρ" : (const char*)u8"The surfaces of |Ψ| instead of Ψ");
             update_rep |= ImGui::Checkbox("##magnitude", &es.use_magnitude);
         }
-        prop::section_end();
-    }
-
-    const double min_tau = 0.0;
-    const double max_tau = 1.0;
-    const double iso_min = 1.0e-2;
-    const double iso_max = 5.0;
-
-    if (prop::section("Display")) {
+        // How it is drawn, with what is drawn: a row, not a section of one
         prop::row("display", "How the field is drawn:\n"
                              "Isosurface: surfaces where it takes given values\n"
                              "Volume: the whole field, its values through a colour map and an opacity ramp, cut by planes\n"
@@ -3354,6 +3346,12 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         }
         prop::section_end();
     }
+
+    const double min_tau = 0.0;
+    const double max_tau = 1.0;
+    const double iso_min = 1.0e-2;
+    const double iso_max = 5.0;
+
 
     if (es.display == ElectronicStructureDisplay::Isosurface) {
         if (prop::section("Surface")) {
@@ -4323,16 +4321,19 @@ static bool draw_representation_properties(ApplicationState* state, Representati
     case RepresentationType::Cavity:
         update_rep |= draw_representation_cavity(rep);
         break;
-    default:
+    default: {
+        const bool one_row = representation_geometry_is_one_row(rep);
+        if (one_row) update_rep |= draw_representation_geometry(state, rep);
         if (prop::section("Color")) {
             update_rep |= draw_representation_coloring(state, rep);
             prop::section_end();
         }
-        if (prop::section("Geometry", false)) {
+        if (!one_row && prop::section("Geometry", false)) {
             update_rep |= draw_representation_geometry(state, rep);
             prop::section_end();
         }
         break;
+    }
     }
 
     prop::end();

@@ -1348,13 +1348,15 @@ struct DensityVolume : viamd::EventHandler {
                 r.dirty = true;
             }
 
+            const bool one_row = representation_geometry_is_one_row(rep);
+            if (one_row) draw_representation_geometry(state, rep);
             if (prop::section("Color")) {
                 if (draw_representation_coloring(state, rep)) {
                     r.colors_dirty = true;
                 }
                 prop::section_end();
             }
-            if (prop::section("Geometry", false)) {
+            if (!one_row && prop::section("Geometry", false)) {
                 // Only what the args of the draws take, but whether the head of a lipid is two spheres, which its glyphs'
                 // colours do
                 const bool two_heads = rep.two_head_spheres;
