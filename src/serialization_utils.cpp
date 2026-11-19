@@ -4,8 +4,10 @@
 #include <core/md_bitset.h>
 #include <core/md_base64.h>
 #include <core/md_log.h>
+#include <core/md_array.h>
 
 #include <string.h>
+#include <stdio.h>
 
 namespace viamd {
 
@@ -325,6 +327,265 @@ bool extract_bitset(md_bitset_t* bs, md_str_t arg, md_allocator_i* alloc) {
 	}
 
 	return true;
+}
+
+bool extract_flt_list(float* elem, size_t* count, size_t cap, md_str_t arg) {
+	// Checked whole before anything is written
+	md_str_t rest = arg;
+	md_str_t tok;
+	size_t n = 0;
+	while (md_parse_next_token_delim(&tok, &rest, ',')) {
+		tok = md_str_trim(tok);
+		if (!(md_parse_is_float(tok) || md_parse_is_int(tok))) return false;
+		n += 1;
+	}
+	if (n > cap) return false;
+	rest = arg;
+	for (size_t i = 0; i < n; ++i) {
+		md_parse_next_token_delim(&tok, &rest, ',');
+		elem[i] = (float)md_parse_float(md_str_trim(tok));
+	}
+	*count = n;
+	return true;
+}
+
+// ## Paths
+
+// The number a '#' stands for: 1 to 3 digits and nothing else
+static bool is_key_number(md_str_t s) {
+	if (s.len == 0 || s.len > 3) return false;
+	for (size_t i = 0; i < s.len; ++i) {
+		if (s.ptr[i] < '0' || s.ptr[i] > '9') return false;
+	}
+	return true;
+}
+
+md_str_t path_alias(char* buf, size_t cap, md_str_t key, const PathAlias* aliases, size_t count) {
+	for (size_t i = 0; i < count; ++i) {
+		const md_str_t old_key = md_str_from_cstr(aliases[i].key);
+		const md_str_t path    = md_str_from_cstr(aliases[i].path);
+		const size_t hash = md_str_find_char(old_key, '#');
+		if (hash == MD_STR_NPOS) {
+			if (md_str_eq(key, old_key)) {
+				if (path.len >= cap) return {};
+				md_str_copy_to_char_buf(buf, cap, path);
+				return {buf, path.len};
+			}
+			continue;
+		}
+		// The families end in their number
+		MD_ASSERT(hash == old_key.len - 1);
+		const md_str_t family = md_str_substr(old_key, 0, hash);
+		if (!md_str_begins_with(key, family)) continue;
+		const md_str_t num = md_str_substr(key, family.len, SIZE_MAX);
+		if (!is_key_number(num)) continue;
+
+		const size_t at = md_str_find_char(path, '#');
+		MD_ASSERT(at != MD_STR_NPOS);
+		const size_t len = path.len - 1 + num.len;
+		if (len >= cap) return {};
+		memcpy(buf, path.ptr, at);
+		memcpy(buf + at, num.ptr, num.len);
+		memcpy(buf + at + num.len, path.ptr + at + 1, path.len - at - 1);
+		buf[len] = '\0';
+		return {buf, len};
+	}
+	return {};
+}
+
+PathPrefix::PathPrefix(const char* prefix) {
+	const int n = snprintf(buf, sizeof(buf), "%s", prefix);
+	MD_ASSERT(n >= 0 && (size_t)n < sizeof(buf));
+	len = (uint32_t)n;
+}
+
+PathPrefix PathPrefix::sub(const char* key, int index) const {
+	PathPrefix p = *this;
+	const int n = index < 0 ? snprintf(p.buf + len, sizeof(p.buf) - len, "%s.", key)
+	                        : snprintf(p.buf + len, sizeof(p.buf) - len, "%s.%d.", key, index);
+	MD_ASSERT(n > 0 && len + (uint32_t)n < sizeof(p.buf));
+	p.len = len + (uint32_t)n;
+	return p;
+}
+
+md_str_t PathPrefix::operator()(const char* key) {
+	const int n = snprintf(key_buf, sizeof(key_buf), "%.*s%s", (int)len, buf, key);
+	MD_ASSERT(n > 0 && (size_t)n < sizeof(key_buf));
+	return {key_buf, (size_t)n};
+}
+
+// ## Entries
+
+Entries read_entries(deserialization_state_t& state, const PathAlias* aliases, size_t num_aliases, md_allocator_i* alloc) {
+	Entries e = {};
+	e.alloc = alloc;
+	md_str_t ident, arg;
+	while (next_entry(ident, arg, state)) {
+		Entry entry = { ident, arg, false };
+		// A key from before the paths is one step: where it is now, when it only moved
+		if (num_aliases && md_str_find_char(ident, '.') == MD_STR_NPOS) {
+			char buf[256];
+			const md_str_t moved = path_alias(buf, sizeof(buf), ident, aliases, num_aliases);
+			if (!md_str_empty(moved)) entry.path = md_alloc_str(alloc, moved);
+		}
+		md_array_push(e.items, entry, alloc);
+	}
+	e.count = md_array_size(e.items);
+	return e;
+}
+
+void entries_unread(const Entries& e, md_str_t section) {
+	for (size_t i = 0; i < e.count; ++i) {
+		if (!e.items[i].read) {
+			MD_LOG_DEBUG("Workspace: [" MD_STR_FMT "] '" MD_STR_FMT "' is read by nothing, it is skipped", MD_STR_ARG(section), MD_STR_ARG(e.items[i].path));
+		}
+	}
+}
+
+const md_str_t* get_value(Entries& e, md_str_t path) {
+	const md_str_t* val = nullptr;
+	for (size_t i = 0; i < e.count; ++i) {
+		if (md_str_eq(e.items[i].path, path)) {
+			e.items[i].read = true;
+			val = &e.items[i].value;
+		}
+	}
+	return val;
+}
+
+static bool not_read(md_str_t path, md_str_t value) {
+	MD_LOG_DEBUG("Workspace: '" MD_STR_FMT "' has a value that does not read, '" MD_STR_FMT "': it is skipped", MD_STR_ARG(path), MD_STR_ARG(value));
+	return false;
+}
+
+#define ENTRIES_GET(extract_call)                             \
+	const md_str_t* v = get_value(e, path);                  \
+	if (!v) return false;                                     \
+	const md_str_t arg = *v;                                  \
+	return (extract_call) || not_read(path, arg)
+
+bool get(Entries& e, md_str_t path, bool& val)        { ENTRIES_GET(extract_bool(val, arg)); }
+bool get(Entries& e, md_str_t path, int& val)         { ENTRIES_GET(extract_int(val, arg)); }
+bool get(Entries& e, md_str_t path, float& val)       { ENTRIES_GET(extract_flt(val, arg)); }
+bool get(Entries& e, md_str_t path, double& val)      { ENTRIES_GET(extract_dbl(val, arg)); }
+bool get(Entries& e, md_str_t path, md_float2_t& val) { ENTRIES_GET(extract_flt_vec(val.elem, 2, arg)); }
+bool get(Entries& e, md_str_t path, md_float3_t& val) { ENTRIES_GET(extract_vec3(val, arg)); }
+bool get(Entries& e, md_str_t path, md_float4_t& val) { ENTRIES_GET(extract_vec4(val, arg)); }
+bool get(Entries& e, md_str_t path, float* elem, size_t len) { ENTRIES_GET(extract_flt_vec(elem, len, arg)); }
+bool get(Entries& e, md_str_t path, char* buf, size_t cap)   { ENTRIES_GET(extract_to_char_buf(buf, cap, arg)); }
+bool get(Entries& e, md_str_t path, md_str_t& val)    { ENTRIES_GET(extract_str(val, arg)); }
+
+#undef ENTRIES_GET
+
+bool get_enum_int(Entries& e, md_str_t path, int& val, const EnumNames& names) {
+	const md_str_t* v = get_value(e, path);
+	if (!v) return false;
+	for (int i = 0; i < names.count; ++i) {
+		if (md_str_eq_cstr(*v, names.names[i])) {
+			val = i;
+			return true;
+		}
+	}
+	int i;
+	if (extract_int(i, *v) && 0 <= i && i < names.count) {
+		val = i;
+		return true;
+	}
+	return not_read(path, *v);
+}
+
+void write_enum(serialization_state_t& state, md_str_t path, int val, const EnumNames& names) {
+	if (0 <= val && val < names.count) {
+		write_str(state, path, md_str_from_cstr(names.names[val]));
+	} else {
+		write_int(state, path, val);
+	}
+}
+
+bool get_named(Entries& e, md_str_t path, int& val, int (*index_of)(md_str_t)) {
+	const md_str_t* v = get_value(e, path);
+	if (!v) return false;
+	const int i = index_of(*v);
+	if (i >= 0) {
+		val = i;
+		return true;
+	}
+	return extract_int(val, *v) || not_read(path, *v);
+}
+
+void write_named(serialization_state_t& state, md_str_t path, int val, const char* (*name_of)(int)) {
+	if (const char* name = name_of(val)) {
+		write_str(state, path, md_str_from_cstr(name));
+	} else {
+		write_int(state, path, val);
+	}
+}
+
+// The index an entry is an item of, path.<i> or path.<i>.<...>: -1 for none
+static int item_index(md_str_t entry, md_str_t path) {
+	if (entry.len <= path.len + 1 || !md_str_begins_with(entry, path) || entry.ptr[path.len] != '.') return -1;
+	md_str_t rest = md_str_substr(entry, path.len + 1, SIZE_MAX);
+	const size_t dot = md_str_find_char(rest, '.');
+	const md_str_t num = md_str_substr(rest, 0, dot);
+	if (num.len == 0 || num.len > 4) return -1;
+	int i = 0;
+	for (size_t k = 0; k < num.len; ++k) {
+		if (num.ptr[k] < '0' || num.ptr[k] > '9') return -1;
+		i = i * 10 + (num.ptr[k] - '0');
+	}
+	return i;
+}
+
+bool get_list(Entries& e, md_str_t path, float* elem, int& count, int cap, int arity) {
+	MD_ASSERT(arity > 0 && cap >= 0);
+	bool found = false;
+	if (const md_str_t* v = get_value(e, path)) {
+		float tmp[256];
+		MD_ASSERT((size_t)(cap * arity) <= MD_COUNTOF(tmp));
+		size_t n = 0;
+		if (extract_flt_list(tmp, &n, (size_t)(cap * arity), *v) && n % (size_t)arity == 0) {
+			md_memcpy(elem, tmp, sizeof(float) * n);
+			count = (int)(n / (size_t)arity);
+			found = true;
+		} else {
+			not_read(path, *v);
+		}
+	}
+	// An older workspace's items, a key each
+	for (size_t i = 0; i < e.count; ++i) {
+		const int idx = item_index(e.items[i].path, path);
+		if (idx < 0) continue;
+		e.items[i].read = true;
+		if (idx >= cap || !extract_flt_vec(elem + idx * arity, (size_t)arity, e.items[i].value)) continue;
+		count = MD_MAX(count, idx + 1);
+		found = true;
+	}
+	return found;
+}
+
+void write_list(serialization_state_t& state, md_str_t path, const float* elem, int count, int arity) {
+	// An empty list is a value too: no items
+	if (count == 0) {
+		write_str(state, path, MD_STR_LIT(""));
+		return;
+	}
+	write_flt_vec(state, path, elem, (size_t)(count * arity));
+}
+
+bool get_count(Entries& e, md_str_t path, int& count, int cap) {
+	bool found = false;
+	int n = 0;
+	if (get(e, path, n)) {
+		count = MD_CLAMP(n, 0, cap);
+		found = true;
+	}
+	for (size_t i = 0; i < e.count; ++i) {
+		const int idx = item_index(e.items[i].path, path);
+		if (idx < 0 || idx >= cap) continue;
+		count = MD_MAX(count, idx + 1);
+		found = true;
+	}
+	return found;
 }
 
 }

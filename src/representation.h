@@ -169,12 +169,14 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
 
 // --- Workspace ---
 
-// [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it
+// [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it. A
+// representation's keys are paths within it (ElectronicStructure.Slice.0.Opacity, serialization_utils.h).
 void representations_serialize(viamd::serialization_state_t& state, const ApplicationState* app);
-// The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
-// when it is not one of them
+// The fields of a representation, all but where it is in the tree (Group), into the current section
 void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app, const Representation& rep);
-bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg);
+// Reads them, from the entries of the current section up to the next header (section: its name, for the log), and the
+// keys of a workspace from before the paths
+void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section);
 // True when the section was one of the above, which it has then read
 bool representations_deserialize(ApplicationState* app, md_str_t section, viamd::deserialization_state_t& state);
 

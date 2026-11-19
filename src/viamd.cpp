@@ -2322,8 +2322,11 @@ bool bond_origins_parse(uint32_t* out, md_str_t str) {
 //
 // VERSION, in [Workspace]: 1 (no [Workspace] section) stored the files in slots ([Files] MoleculeFile,
 // TrajectoryFile, EnergyFile, SeriesFile); 2 stores systems, their runs and their files ([System], [Run],
-// [Input]). A version newer than the reader's is read for what the reader knows.
-static const int WORKSPACE_VERSION = 2;
+// [Input]); 3 keys what is within an object by its path (ElectronicStructure.Field.Range, Slice.0.Opacity), see
+// serialization_utils.h. A version newer
+// than the reader's is read for what the reader knows: a version 2 reader keeps a representation's name, filter,
+// type and colours, and leaves what moved into blocks at its defaults.
+static const int WORKSPACE_VERSION = 3;
 
 struct WorkspaceWindow {
     char  name[32];

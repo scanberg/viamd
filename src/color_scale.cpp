@@ -14,6 +14,17 @@
 #include <math.h>
 #include <stdio.h>
 
+const char* color_scale_colormap_name(int colormap) {
+    return (0 <= colormap && colormap < ImPlot::GetColormapCount()) ? ImPlot::GetColormapName(colormap) : nullptr;
+}
+
+int color_scale_colormap_index(md_str_t name) {
+    char buf[64];
+    if (md_str_empty(name) || name.len >= sizeof(buf)) return -1;
+    md_str_copy_to_char_buf(buf, sizeof(buf), name);
+    return ImPlot::GetColormapIndex(buf);
+}
+
 uint32_t color_scale_color_u32(const ColorScale& scale, float value) {
     return ImPlot::SampleColormapU32(color_scale_param(scale, value), scale.colormap);
 }
