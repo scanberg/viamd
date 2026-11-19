@@ -2,6 +2,7 @@
 
 #include <viamd.h>
 #include <imgui.h>
+#include <grid_field.h>
 
 #include <core/md_common.h>
 
@@ -32,6 +33,8 @@ static const EsField es_fields[] = {
 };
 
 static const md_str_t density_property_prefix = MD_STR_LIT("es/density_property/");
+// A grid's path is its attribute's (grid_field.h): cube/<name>
+static const md_str_t grid_prefix = MD_STR_LIT(GRID_FIELD_PREFIX "/");
 
 struct GroupLabel {
     const char* group;
@@ -42,6 +45,7 @@ static const GroupLabel group_labels[] = {
     { "es",                  "Electronic Structure" },
     { "es/gostshyp",         "GOSTSHYP" },
     { "es/density_property", "Density Properties" },
+    { GRID_FIELD_PREFIX,     "Cube Files" },
 };
 
 md_str_t field_group_label(md_str_t group) {
@@ -87,7 +91,21 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
         e.label = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
         e.keywords = "density property";
         e.source = ElectronicStructureSource::DensityProperty;
-        e.density_property_key = attr->id;
+        e.attribute_key = attr->id;
+        md_array_push(*out, e, alloc);
+        count += 1;
+    }
+    // The grids of files, a leaf each: cube/<name>, its title its label
+    for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, MD_STR_LIT(GRID_FIELD_PREFIX)); md_attributes_next(&it);) {
+        const md_attribute_t* attr = it.attr;
+        if (!grid_field_is_grid(attr)) continue;
+        FieldEntry e = {};
+        snprintf(e.path, sizeof(e.path), "%.*s", (int)attr->path.len, attr->path.ptr);
+        e.label = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
+        e.keywords = "cube grid file";
+        e.source = ElectronicStructureSource::Grid;
+        e.attribute_key = attr->id;
+        e.field_kind = SurfaceFieldKind::Grid;
         md_array_push(*out, e, alloc);
         count += 1;
     }
@@ -95,6 +113,11 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
 }
 
 size_t field_path_of_source(char* buf, size_t cap, ElectronicStructureSource source, md_attribute_id_t key, const md_system_t& sys) {
+    if (source == ElectronicStructureSource::Grid) {
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, key);
+        if (!attr) return 0;
+        return (size_t)snprintf(buf, cap, "%.*s", (int)attr->path.len, attr->path.ptr);
+    }
     if (source == ElectronicStructureSource::DensityProperty) {
         const md_attribute_t* attr = md_attributes_get(&sys.attributes, key);
         if (!attr) return 0;
@@ -117,6 +140,11 @@ size_t field_path_of_kind(char* buf, size_t cap, SurfaceFieldKind kind) {
 }
 
 bool field_resolve(ElectronicStructureSource* source, md_attribute_id_t* key, md_str_t path) {
+    if (md_str_begins_with(path, grid_prefix) && path.len > grid_prefix.len) {
+        *source = ElectronicStructureSource::Grid;
+        *key = md_attributes_id_from_path(path);
+        return true;
+    }
     if (md_str_begins_with(path, density_property_prefix)) {
         char attr[FIELD_PATH_MAX];
         const md_str_t rel = md_str_substr(path, density_property_prefix.len);
@@ -137,6 +165,10 @@ bool field_resolve(ElectronicStructureSource* source, md_attribute_id_t* key, md
 }
 
 bool field_resolve_kind(SurfaceFieldKind* kind, md_str_t path) {
+    if (md_str_begins_with(path, grid_prefix) && path.len > grid_prefix.len) {
+        *kind = SurfaceFieldKind::Grid;     // which grid: field_resolve
+        return true;
+    }
     if (md_str_eq_cstr(path, "es/density")) {
         *kind = SurfaceFieldKind::ElectronDensity;
         return true;

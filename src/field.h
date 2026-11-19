@@ -25,6 +25,7 @@ enum class ElectronicStructureSource;
 //   es/elf, es/lol
 //   es/esp, es/embedding_potential, es/alie, es/leae, es/density_scale_length
 //   es/gostshyp/wall_potential, es/gostshyp/effective_potential, es/gostshyp/energy_density
+//   cube/<name>                        a grid of a file, the path of its attribute (grid_field.h)   (member)
 // A path names a field, or a family of them told apart by parameters (an orbital by its spin and index), as an array
 // attribute is one path with an index. The path is what a workspace keeps of what a representation shows; the label
 // what the picker shows; a search matches either, and some words more (FieldEntry::keywords).
@@ -39,7 +40,7 @@ struct FieldEntry {
     md_str_t label = {};                    // the pretty name, searched as the path is; borrowed: static, or the attribute's
     const char* keywords = "";              // more words a search finds it by
     ElectronicStructureSource source = {};
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+    md_attribute_id_t attribute_key = MD_ATTRIBUTE_INVALID;
     SurfaceFieldKind field_kind = SurfaceFieldKind::Count;  // the surface field it is, if it is one: what can colour
 };
 
@@ -52,12 +53,12 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
 md_str_t field_group_label(md_str_t group);
 
 // The path of the field a representation's source is (and its density property), and of a surface field
-size_t field_path_of_source(char* buf, size_t cap, ElectronicStructureSource source, md_attribute_id_t density_property_key, const md_system_t& sys);
+size_t field_path_of_source(char* buf, size_t cap, ElectronicStructureSource source, md_attribute_id_t attribute_key, const md_system_t& sys);
 size_t field_path_of_kind(char* buf, size_t cap, SurfaceFieldKind kind);
 
 // What a path is: false for one no field has (a density property's is resolved without the system: its key is its
 // attribute's path)
-bool field_resolve(ElectronicStructureSource* source, md_attribute_id_t* density_property_key, md_str_t path);
+bool field_resolve(ElectronicStructureSource* source, md_attribute_id_t* attribute_key, md_str_t path);
 bool field_resolve_kind(SurfaceFieldKind* kind, md_str_t path);
 
 // A combo of the fields: its popup a filter (every word of it in the path, the label or the keywords) and the fields

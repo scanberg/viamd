@@ -57,6 +57,7 @@ enum LoaderType_ {
     LoaderType_AMBER_ENERGY    = MD_IO_FORMAT_AMBER_ENERGY,  // Amber mdout or mden energies, a series along the loaded trajectory
     LoaderType_PSF             = MD_IO_FORMAT_PSF,           // CHARMM / NAMD topology (.psf): atoms and bonds, no coordinates
     LoaderType_NAMD_COOR       = MD_IO_FORMAT_NAMD_COOR,     // NAMD binary coordinates (.coor): coordinates for a topology
+    LoaderType_CUBE            = MD_IO_FORMAT_CUBE,          // Gaussian cube: a system of its atoms, or a grid for the atoms of one loaded
     LoaderType_COUNT           = MD_IO_FORMAT_COUNT
 };
 

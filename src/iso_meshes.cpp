@@ -799,7 +799,7 @@ static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
            a.transition_density_component == b.transition_density_component && a.orbital_idx == b.orbital_idx &&
            a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx &&
-           a.density_property_key == b.density_property_key;
+           a.attribute_key == b.attribute_key;
 }
 
 // What a representation's field is of, copied for the task that makes it: the field (FieldRef), as that is all a
@@ -843,7 +843,7 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
         return f;
     }
     case ElectronicStructureSource::DensityProperty: {
-        const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.density_property_key);
+        const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.attribute_key);
         return attr ? field_create_density(g, attr->path, nullptr) : nullptr;
     }
     default:
@@ -863,7 +863,7 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
     h = md_hash64(&es.shown.orbital_idx, sizeof(es.shown.orbital_idx), h);
     h = md_hash64(&es.shown.excited_state_idx, sizeof(es.shown.excited_state_idx), h);
     h = md_hash64(&es.shown.nto_lambda_idx, sizeof(es.shown.nto_lambda_idx), h);
-    h = md_hash64(&es.shown.density_property_key, sizeof(es.shown.density_property_key), h);
+    h = md_hash64(&es.shown.attribute_key, sizeof(es.shown.attribute_key), h);
     return h ? h : 1;
 }
 
@@ -991,6 +991,8 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         source = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source);
         const md_system_state_t& st = state->mold.state;
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
+        source = md_hash64(&g.field_key, sizeof(g.field_key), source);
+        source = md_hash64(&g.field_member, sizeof(g.field_member), source);
         const uint64_t values_key = md_hash64_combine(source, em.meshes.key);
         if (values_key != em.values_key) {
             // Begun now, taken below once it is done: the surfaces go uncoloured until then
@@ -1003,6 +1005,8 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             desc.state       = &state->mold.state;
             desc.source_hash = source;
             desc.density_cache = density_cache_of(state);
+            desc.grid_key    = g.field_key;
+            desc.grid_member = (uint32_t)MD_MAX(g.field_member, 0);
             if (surface_field_uses_basis(g.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }

@@ -42,6 +42,7 @@
 #include <imgui.h>
 #include <imgui_notify.h>
 #include <es_planes.h>
+#include <grid_field.h>
 #include <implot.h>
 #include <implot_internal.h>
 
@@ -4347,7 +4348,7 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
         *out_path = es_electron_density_path(es.shown.spin);
         return true;
     case ElectronicStructureSource::DensityProperty: {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.shown.density_property_key);
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.shown.attribute_key);
         if (!attr) return false;
         *out_path = attr->path;
         return true;
@@ -4706,6 +4707,10 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     // (vol_hash names it) cut at the isovalues
     uint64_t source_hash = md_hash64(&g.field_kind, sizeof(g.field_kind), 0);
     source_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source_hash);
+    if (g.field_kind == SurfaceFieldKind::Grid) {
+        source_hash = md_hash64(&g.field_key, sizeof(g.field_key), source_hash);
+        source_hash = md_hash64(&g.field_member, sizeof(g.field_member), source_hash);
+    }
     uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
     band_hash = md_hash64_combine(band_hash, es.vol_hash);
     if (source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
@@ -4737,6 +4742,8 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.source_hash = source_hash;
     desc.band_hash   = band_hash;
     desc.density_cache = density_cache_of(state);
+    desc.grid_key    = g.field_key;
+    desc.grid_member = (uint32_t)MD_MAX(g.field_member, 0);
     if (surface_field_uses_basis(g.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
@@ -5491,7 +5498,8 @@ static uint64_t es_source_hash(const ApplicationState* state, const ElectronicSt
     h = md_hash64(&es.shown.orbital_idx,                  sizeof(es.shown.orbital_idx), h);
     h = md_hash64(&es.shown.excited_state_idx,            sizeof(es.shown.excited_state_idx), h);
     h = md_hash64(&es.shown.nto_lambda_idx,               sizeof(es.shown.nto_lambda_idx), h);
-    h = md_hash64(&es.shown.density_property_key,         sizeof(es.shown.density_property_key), h);
+    h = md_hash64(&es.shown.attribute_key,         sizeof(es.shown.attribute_key), h);
+    h = md_hash64(&es.shown.member,                sizeof(es.shown.member), h);
     return h;
 }
 
@@ -5624,8 +5632,17 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
     if (kind == SurfaceFieldKind::Count || !surface_field_available(kind, sys)) return -1;
 
     md_grid_t grid = {};
-    const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(g)];
-    if (!electronic_structure_grid_init(&grid, sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+    if (kind == SurfaceFieldKind::Grid) {
+        // a file's grid: its own, placed, the values as the file has them whatever the resolution
+        GridField f;
+        const bool ok = grid_field_get(&f, sys, state->mold.state, g.shown.attribute_key, (uint32_t)MD_MAX(g.shown.member, 0), false) &&
+                        grid_field_md_grid(&grid, f);
+        grid_field_free(&f);
+        if (!ok) return -1;
+    } else {
+        const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(g)];
+        if (!electronic_structure_grid_init(&grid, sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+    }
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -5638,6 +5655,8 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
     // field is made of (an electrostatic potential's distribution) and evaluates again
     desc.source_hash = es_source_hash(state, g);
     desc.band_hash   = 1;
+    desc.grid_key    = g.shown.attribute_key;
+    desc.grid_member = (uint32_t)MD_MAX(g.shown.member, 0);
     if (surface_field_uses_basis(kind)) {
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
     }
@@ -5858,6 +5877,12 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
         }
     }
 
+    // A grid the system does not have: its first
+    if (es->shown.source == ElectronicStructureSource::Grid && grid_field_count(sys, es->shown.attribute_key) == 0) {
+        es->shown.attribute_key = grid_field_first(sys);
+        es->shown.member = 0;
+    }
+
     // The same rule the representation window applies when it draws: a key naming none of the
     // properties this system has is replaced by the first one.
     if (es->shown.source == ElectronicStructureSource::DensityProperty) {
@@ -5865,13 +5890,13 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
         const size_t num_props = MD_MIN(density_properties_gather(props, MD_COUNTOF(props), sys), MD_COUNTOF(props));
         bool found = false;
         for (size_t i = 0; i < num_props; ++i) {
-            if (props[i].key == es->shown.density_property_key) {
+            if (props[i].key == es->shown.attribute_key) {
                 found = true;
                 break;
             }
         }
         if (!found && num_props > 0) {
-            es->shown.density_property_key = props[0].key;
+            es->shown.attribute_key = props[0].key;
         }
     }
 

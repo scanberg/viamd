@@ -3,6 +3,7 @@
 #include <representation.h>
 #include <gostshyp.h>
 #include <field.h>
+#include <grid_field.h>
 
 #include <md_system.h>
 
@@ -1995,7 +1996,7 @@ static const char* const es_source_names[]           = { "MolecularOrbital", "Na
                                                          "DensityProperty", "ElectronLocalization", "LocalizedOrbitalLocator",
                                                          "ElectrostaticPotential", "EmbeddingPotential", "AverageLocalIonizationEnergy",
                                                          "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
-                                                         "GostshypEffectivePotential", "GostshypEnergyDensity" };
+                                                         "GostshypEffectivePotential", "GostshypEnergyDensity", "Grid" };
 static const char* const es_spin_names[]             = { "None", "Alpha", "Beta", "Total", "Difference" };
 static const char* const es_nto_component_names[]    = { "Particle", "Hole" };
 static const char* const es_transition_component_names[] = { "Attachment", "Detachment", "Difference" };
@@ -2004,7 +2005,7 @@ static const char* const surface_coloring_names[]    = { "Uniform", "AtomColors"
 static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "ElectrostaticPotential", "AverageLocalIonizationEnergy",
                                                          "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
                                                          "GostshypEffectivePotential", "GostshypEnergyDensity", "ElectronDensity",
-                                                         "ElectronLocalization", "LocalizedOrbitalLocator" };
+                                                         "ElectronLocalization", "LocalizedOrbitalLocator", "Grid" };
 static const char* const es_surface_names[]          = { "Other", "Own" };
 static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
 static const char* const cavity_shape_names[]        = { "Cylinder", "Sphere" };
@@ -2140,7 +2141,7 @@ static bool read_attribute_path(viamd::Entries& e, md_str_t path, md_attribute_i
 // A field (FieldRef): its path (field.h) and the parameters of its family
 static void write_field_ref(viamd::serialization_state_t& s, viamd::PathPrefix p, const FieldRef& f, const md_system_t& sys) {
     char path[FIELD_PATH_MAX];
-    const size_t path_len = field_path_of_source(path, sizeof(path), f.source, f.density_property_key, sys);
+    const size_t path_len = field_path_of_source(path, sizeof(path), f.source, f.attribute_key, sys);
     if (path_len > 0 && path_len < sizeof(path)) viamd::write_str(s, p("Path"), md_str_t{path, path_len});
     // the parameters its family has: the others are its defaults as it is read
     const bool orbital = f.source == ElectronicStructureSource::MolecularOrbital;
@@ -2154,6 +2155,7 @@ static void write_field_ref(viamd::serialization_state_t& s, viamd::PathPrefix p
     if (orbital || density) viamd::write_enum(s, p("Spin"), (int)f.spin, viamd::enum_names(es_spin_names));
     if (nto) viamd::write_enum(s, p("NtoComponent"), (int)f.nto_component, viamd::enum_names(es_nto_component_names));
     if (td) viamd::write_enum(s, p("TransitionDensityComponent"), (int)f.transition_density_component, viamd::enum_names(es_transition_component_names));
+    if (f.source == ElectronicStructureSource::Grid && f.member > 0) viamd::write_int(s, p("Member"), f.member);
 }
 
 // The path of a field into f, its defaults set: false when there is none, or no field has it
@@ -2168,7 +2170,8 @@ static bool read_field_path(viamd::Entries& e, viamd::PathPrefix p, FieldRef& f)
     }
     f.source = source;
     field_ref_set_defaults(&f);
-    if (source == ElectronicStructureSource::DensityProperty) f.density_property_key = key;
+    if (source == ElectronicStructureSource::DensityProperty || source == ElectronicStructureSource::Grid) f.attribute_key = key;
+    if (source == ElectronicStructureSource::Grid) f.member = 0;
     return true;
 }
 
@@ -2181,6 +2184,7 @@ static void read_field_params(viamd::Entries& e, viamd::PathPrefix p, FieldRef& 
     viamd::get_enum(e, p("Spin"), f.spin, viamd::enum_names(es_spin_names));
     viamd::get_enum(e, p("NtoComponent"), f.nto_component, viamd::enum_names(es_nto_component_names));
     viamd::get_enum(e, p("TransitionDensityComponent"), f.transition_density_component, viamd::enum_names(es_transition_component_names));
+    viamd::get(e, p("Member"), f.member);
 }
 
 static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
@@ -2212,8 +2216,11 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
     if (es.coloring == SurfaceColoring::Field) {
         viamd::PathPrefix f = p.sub("Field");
         char field_path[FIELD_PATH_MAX];
-        const size_t len = field_path_of_kind(field_path, sizeof(field_path), es.field_kind);
+        const size_t len = es.field_kind == SurfaceFieldKind::Grid ?
+            field_path_of_source(field_path, sizeof(field_path), ElectronicStructureSource::Grid, es.field_key, sys) :
+            field_path_of_kind(field_path, sizeof(field_path), es.field_kind);
         if (len > 0 && len < sizeof(field_path)) viamd::write_str(s, f("Path"), md_str_t{field_path, len});
+        if (es.field_kind == SurfaceFieldKind::Grid && es.field_member > 0) viamd::write_int(s, f("Member"), es.field_member);
         write_color_scale(s, f, es.field_map);
         write_isolines(s, f, es.field_isolines);
     }
@@ -2252,11 +2259,11 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
 
     // The density property it draws and its isosurfaces, as many as there are whenever there could be some: a
     // DensityProperty source sets some up for itself when it has none, which an empty list read after it undoes
-    const bool has_property = (attributes && md_attributes_get(attributes, es.shown.density_property_key)) ||
+    const bool has_property = (attributes && md_attributes_get(attributes, es.shown.attribute_key)) ||
                               es.shown.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
     if (has_property) {
         viamd::PathPrefix d = p.sub("DensityProperty");
-        write_attribute_path(s, d("Path"), attributes, es.shown.density_property_key);
+        write_attribute_path(s, d("Path"), attributes, es.shown.attribute_key);
         viamd::write_int(s, d("Iso"), es.density_property.num_isos);
         for (int i = 0; i < es.density_property.num_isos; ++i) {
             viamd::PathPrefix q = d.sub("Iso", i);
@@ -2316,6 +2323,12 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     SurfaceFieldKind color_kind;
     if (viamd::get(e, f("Path"), field_path) && field_resolve_kind(&color_kind, field_path)) {
         es.field_kind = color_kind;
+        if (color_kind == SurfaceFieldKind::Grid) {
+            ElectronicStructureSource source;
+            field_resolve(&source, &es.field_key, field_path);
+            es.field_member = 0;
+            viamd::get(e, f("Member"), es.field_member);
+        }
     } else {
         viamd::get_enum(e, f("Kind"), es.field_kind, viamd::enum_names(surface_field_kind_names));
     }
@@ -2371,7 +2384,7 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     }
 
     viamd::PathPrefix d = p.sub("DensityProperty");
-    read_attribute_path(e, d("Path"), es.shown.density_property_key);
+    read_attribute_path(e, d("Path"), es.shown.attribute_key);
     viamd::get_count(e, d("Iso"), es.density_property.num_isos, (int)MD_COUNTOF(es.density_property.values));
     for (int i = 0; i < es.density_property.num_isos; ++i) {
         viamd::PathPrefix q = d.sub("Iso", i);
@@ -2790,6 +2803,37 @@ bool representations_deserialize(ApplicationState* app, md_str_t section, viamd:
 // How the isosurfaces of an electronic structure representation are coloured, as rows of its Color section: the
 // colouring, and for a field the field, its colour scale and its isolines. The atoms' colours are not offered for a
 // density property; a field is offered whenever the dataset has what one is made from.
+// Of a grid of several values a point (an MO cube of several orbitals), which: a row of its own only then
+static bool draw_grid_member(const char* id, int* member, md_attribute_id_t key, const md_system_t& sys) {
+    const uint32_t count = key != MD_ATTRIBUTE_INVALID ? grid_field_count(sys, key) : 0;
+    if (count <= 1) return false;
+    bool changed = false;
+    if (*member < 0 || *member >= (int)count) {
+        *member = 0;
+        changed = true;
+    }
+    char label[64];
+    const int id0 = grid_field_member_id(sys, key, (uint32_t)*member);
+    if (id0 >= 0) snprintf(label, sizeof(label), "%d (id %d)", *member + 1, id0);
+    else snprintf(label, sizeof(label), "%d", *member + 1);
+    prop::row("value", "Which of the values of each point of the grid: an MO cube's orbitals by their number");
+    ImGui::PushID(id);
+    if (ImGui::BeginCombo("##member", label)) {
+        for (uint32_t i = 0; i < count; ++i) {
+            const int mid = grid_field_member_id(sys, key, i);
+            if (mid >= 0) snprintf(label, sizeof(label), "%u (id %d)", i + 1, mid);
+            else snprintf(label, sizeof(label), "%u", i + 1);
+            if (ImGui::Selectable(label, (int)i == *member)) {
+                *member = (int)i;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::PopID();
+    return changed;
+}
+
 static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode, bool field_only) {
     bool update_rep = false;
     if (field_only) goto scale;
@@ -2814,6 +2858,10 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
                     const SurfaceFieldKind first = surface_field_first_available(sys);
                     surface_field_scale_for_kind(&es.field_map, es.field_kind, first);
                     es.field_kind = first;
+                }
+                if (c == SurfaceColoring::Field && es.field_kind == SurfaceFieldKind::Grid && grid_field_count(sys, es.field_key) == 0) {
+                    es.field_key = grid_field_first(sys);
+                    es.field_member = 0;
                 }
                 update_rep = true;
             }
@@ -2860,15 +2908,33 @@ scale:
         md_array(FieldEntry) entries = nullptr;
         const size_t n = field_catalog(&entries, sys, md_temp_allocator(temp));
         char path[FIELD_PATH_MAX] = "";
-        field_path_of_kind(path, sizeof(path), es.field_kind);
-        const int picked = field_picker("color_field", surface_field_kind_info(es.field_kind).label, entries, n, md_str_from_cstr(path),
+        const char* preview = surface_field_kind_info(es.field_kind).label;
+        char preview_buf[FIELD_PATH_MAX] = "";
+        if (es.field_kind == SurfaceFieldKind::Grid) {
+            // a grid by its own name
+            field_path_of_source(path, sizeof(path), ElectronicStructureSource::Grid, es.field_key, sys);
+            for (size_t i = 0; i < n; ++i) {
+                if (strcmp(entries[i].path, path) == 0) {
+                    snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)entries[i].label.len, entries[i].label.ptr);
+                    preview = preview_buf;
+                }
+            }
+        } else {
+            field_path_of_kind(path, sizeof(path), es.field_kind);
+        }
+        const int picked = field_picker("color_field", preview, entries, n, md_str_from_cstr(path),
                                         [](const FieldEntry& e) { return e.field_kind != SurfaceFieldKind::Count; });
         if (picked >= 0) {
             const SurfaceFieldKind kind = entries[picked].field_kind;
             if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
             es.field_kind = kind;
+            if (kind == SurfaceFieldKind::Grid) {
+                es.field_key = entries[picked].attribute_key;
+                es.field_member = 0;
+            }
             update_rep = true;
         }
+        update_rep |= draw_grid_member("color_member", &es.field_member, es.field_kind == SurfaceFieldKind::Grid ? es.field_key : MD_ATTRIBUTE_INVALID, sys);
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
         // What this dataset's potential is made of, since a polarizable run may or may not have kept its
@@ -3088,7 +3154,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             md_array(FieldEntry) entries = nullptr;
             const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
             char path[FIELD_PATH_MAX] = "";
-            field_path_of_source(path, sizeof(path), es.shown.source, es.shown.density_property_key, state->mold.sys);
+            field_path_of_source(path, sizeof(path), es.shown.source, es.shown.attribute_key, state->mold.sys);
             // what it is: its label, a density property's its own
             md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.shown.source]);
             for (size_t i = 0; i < n; ++i) {
@@ -3106,9 +3172,16 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         es.surface_value = es_isodensity_default(state->mold.sys, e.source);
                     }
                 }
-                if (e.source == ElectronicStructureSource::DensityProperty) es.shown.density_property_key = e.density_property_key;
+                if (e.source == ElectronicStructureSource::DensityProperty) es.shown.attribute_key = e.attribute_key;
+                if (e.source == ElectronicStructureSource::Grid && es.shown.attribute_key != e.attribute_key) {
+                    es.shown.attribute_key = e.attribute_key;
+                    es.shown.member = 0;
+                }
                 update_rep = true;
             }
+        }
+        if (es.shown.source == ElectronicStructureSource::Grid) {
+            update_rep |= draw_grid_member("member", &es.shown.member, es.shown.attribute_key, state->mold.sys);
         }
 
         if (electronic_structure_is_density_property(es)) {
@@ -3122,14 +3195,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 // than drawing nothing.
                 const DensityProperty* selected = nullptr;
                 for (int n = 0; n < num_density_props; ++n) {
-                    if (density_props[n].key == es.shown.density_property_key) {
+                    if (density_props[n].key == es.shown.attribute_key) {
                         selected = &density_props[n];
                         break;
                     }
                 }
                 if (!selected) {
                     selected = &density_props[0];
-                    es.shown.density_property_key = selected->key;
+                    es.shown.attribute_key = selected->key;
                     update_rep = true;
                 }
 
@@ -3474,7 +3547,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     md_array(FieldEntry) entries = nullptr;
                     const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
                     char path[FIELD_PATH_MAX] = "";
-                    field_path_of_source(path, sizeof(path), es.surface_field.source, es.surface_field.density_property_key, state->mold.sys);
+                    field_path_of_source(path, sizeof(path), es.surface_field.source, es.surface_field.attribute_key, state->mold.sys);
                     md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.surface_field.source]);
                     for (size_t i = 0; i < n; ++i) {
                         if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
@@ -3486,12 +3559,16 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         return e.source == ElectronicStructureSource::ElectronDensity || electronic_structure_source_is_surface_field(e.source) ||
                                e.source == ElectronicStructureSource::ElectronLocalization || e.source == ElectronicStructureSource::LocalizedOrbitalLocator;
                     });
-                    if (picked >= 0 && entries[picked].source != es.surface_field.source) {
+                    if (picked >= 0 && (entries[picked].source != es.surface_field.source || entries[picked].attribute_key != es.surface_field.attribute_key)) {
                         es.surface_field = FieldRef{ .source = entries[picked].source };
                         field_ref_set_defaults(&es.surface_field);
+                        if (es.surface_field.source == ElectronicStructureSource::Grid) es.surface_field.attribute_key = entries[picked].attribute_key;
                         const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.surface_field.source);
                         es.surface_value = fk != SurfaceFieldKind::Count ? fabs(surface_field_kind_info(fk).iso) : es_isodensity_default(state->mold.sys, es.shown.source);
                         update_rep = true;
+                    }
+                    if (es.surface_field.source == ElectronicStructureSource::Grid) {
+                        update_rep |= draw_grid_member("surface_member", &es.surface_field.member, es.surface_field.attribute_key, state->mold.sys);
                     }
                     const SurfaceFieldKind sk = electronic_structure_source_field_kind(es.surface_field.source);
                     if (sk == SurfaceFieldKind::Count) {

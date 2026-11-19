@@ -6,6 +6,7 @@
 #include <core/md_grid.h>
 #include <core/md_unit.h>
 #include <core/md_gpu.h>
+#include <md_attributes.h>
 
 #include <color_scale.h>
 
@@ -121,6 +122,11 @@ enum class SurfaceFieldKind {
     // GPU by its own kernel (viamd.cpp); this is what colours a surface, and the volume without that kernel.
     ElectronLocalization,
     LocalizedOrbitalLocator,
+
+    // Values given on a grid by a file, a cube (grid_field.h): which one by SurfaceFieldDesc::grid_key and grid_member,
+    // placed on the atoms it is of as they are, trilinear between its points and 0 outside. Of no unit it states, its
+    // sign taken to mean something (an orbital, a potential: a density is the same, without the negative surface).
+    Grid,
     Count
 };
 
@@ -229,11 +235,15 @@ struct SurfaceFieldDesc {
     // again - another geometry, or back to it from another field - does not read it from its file again. Null: read
     // each time. Must outlive the volume (the application's is).
     struct DensityCache*     density_cache = nullptr;
+
+    // Grid: the attribute of its values, and which of them where it has several a point (part of source_hash)
+    md_attribute_id_t        grid_key = MD_ATTRIBUTE_INVALID;
+    uint32_t                 grid_member = 0;
 };
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
-    return kind != SurfaceFieldKind::EmbeddingPotential;
+    return kind != SurfaceFieldKind::EmbeddingPotential && kind != SurfaceFieldKind::Grid;
 }
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the

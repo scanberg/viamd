@@ -180,6 +180,8 @@ enum class ElectronicStructureSource {
     GostshypWallPotential,      // of the GOSTSHYP wall of a run under pressure (gostshyp.h)
     GostshypEffectivePotential,
     GostshypEnergyDensity,
+    // Values on a grid a file gave, a cube (grid_field.h): which by FieldRef::attribute_key and member
+    Grid,
     Count
 };
 
@@ -340,6 +342,7 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "GOSTSHYP Wall Potential",
     "GOSTSHYP Effective Potential",
     "GOSTSHYP Energy Density",
+    "Cube",
 };
 
 // The kind of surface field a source is evaluated as (surface_field.h): Count for those evaluated of orbitals and
@@ -357,6 +360,7 @@ static inline SurfaceFieldKind electronic_structure_source_field_kind(Electronic
     case ElectronicStructureSource::GostshypWallPotential:         return SurfaceFieldKind::GostshypWallPotential;
     case ElectronicStructureSource::GostshypEffectivePotential:    return SurfaceFieldKind::GostshypEffectivePotential;
     case ElectronicStructureSource::GostshypEnergyDensity:         return SurfaceFieldKind::GostshypEnergyDensity;
+    case ElectronicStructureSource::Grid:                          return SurfaceFieldKind::Grid;
     default:                                                       return SurfaceFieldKind::Count;
     }
 }
@@ -400,6 +404,8 @@ static inline bool electronic_structure_source_on_other_surface_possible(Electro
 // The surface a source starts out on: where it is read (the density's) for what is read on one, its own isosurfaces
 // for ELF and LOL, whose shapes (the basins, the shells) are the point
 static inline ElectronicStructureSurface electronic_structure_default_surface(ElectronicStructureSource s) {
+    // a cube's values are whatever they are: its own isosurfaces first
+    if (s == ElectronicStructureSource::Grid) return ElectronicStructureSurface::Own;
     return electronic_structure_source_is_surface_field(s) ? ElectronicStructureSurface::Other : ElectronicStructureSurface::Own;
 }
 
@@ -419,6 +425,7 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_GostshypWallPotential     = 1u << (int)ElectronicStructureSource::GostshypWallPotential,
     ElectronicStructureSourceFlag_GostshypEffectivePotential= 1u << (int)ElectronicStructureSource::GostshypEffectivePotential,
     ElectronicStructureSourceFlag_GostshypEnergyDensity     = 1u << (int)ElectronicStructureSource::GostshypEnergyDensity,
+    ElectronicStructureSourceFlag_Grid                      = 1u << (int)ElectronicStructureSource::Grid,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -766,10 +773,12 @@ struct FieldRef {
     int orbital_idx = 0;
     int excited_state_idx = 0;
     int nto_lambda_idx = 0;
-    // The density property, named by the id of its attribute rather than by a position in a list. An index silently
-    // re-points at a different property whenever the set changes across a reload; an id is derived from the path, so
-    // it names the same thing or nothing at all.
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+    // The attribute the field is read from - a density property's, a grid's (Grid) - named by its id rather than by a
+    // position in a list. An index silently re-points at a different one whenever the set changes across a reload; an
+    // id is derived from the path, so it names the same thing or nothing at all.
+    md_attribute_id_t attribute_key = MD_ATTRIBUTE_INVALID;
+    // Of a grid of several values a point (an MO cube of several orbitals), which
+    int member = 0;
 };
 
 struct ElectronicStructureRepresentation {
@@ -814,6 +823,8 @@ struct ElectronicStructureRepresentation {
     // SurfaceColoring::Field: the field, how it maps to colour, and its values on the grid of
     // density_vol - evaluated only around the isosurfaces this representation draws
     SurfaceFieldKind    field_kind = SurfaceFieldKind::EmbeddingPotential;
+    md_attribute_id_t   field_key = MD_ATTRIBUTE_INVALID;   // of a Grid: its attribute and member (FieldRef)
+    int                 field_member = 0;
     ColorScale          field_map  = surface_field_default_scale(SurfaceFieldKind::EmbeddingPotential);
     ColorScaleIsolines  field_isolines = {};    // lines on the surfaces where the field takes given values
     SurfaceFieldVolume  field_vol  = {};
@@ -1089,6 +1100,8 @@ static inline ElectronicStructureRepresentation electronic_structure_geometry(co
     ElectronicStructureRepresentation g = rep;
     if (!electronic_structure_on_other_surface(rep)) return g;
     g.field_kind = electronic_structure_source_field_kind(rep.shown.source);
+    g.field_key  = rep.shown.attribute_key;
+    g.field_member = rep.shown.member;
     g.coloring   = SurfaceColoring::Field;
     g.shown      = rep.surface_field;
     g.surface    = ElectronicStructureSurface::Own;

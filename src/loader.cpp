@@ -8,6 +8,7 @@
 #include <md_lammps.h>
 #include <md_system.h>
 #include <md_run.h>
+#include <md_cube.h>
 #include <md_attributes.h>
 #include <task_system.h>
 
@@ -56,6 +57,10 @@ void init(LoaderState* state, md_str_t filepath, const md_system_t* sys) {
             MD_LOG_INFO("Could not determine LAMMPS atom format for file '" MD_STR_FMT "'", MD_STR_ARG(filepath));
             state->flags |= LoaderFlag_RequiresDialogue;
         }
+    }
+    // A cube of the loaded atoms (or of its QM atoms) is a grid for them, not a system of its own
+    if (state->type == LoaderType_CUBE && sys && md_cube_system_is_file_supplemental(sys, filepath)) {
+        state->flags |= LoaderFlag_Supplemental;
     }
 #if MD_HDF5
     // Send check to vlx to see if we can supplement the existing system with qm data

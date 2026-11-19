@@ -176,6 +176,7 @@ set(SRC_FILES
     src/surface_field.cpp
     src/gpu_job.cpp
     src/gostshyp.cpp
+    src/grid_field.cpp
     src/field.cpp
     src/cavity.cpp
     src/event.cpp

@@ -1,4 +1,5 @@
 #include <surface_field.h>
+#include <grid_field.h>
 #include <density_cache.h>
 #include <gostshyp.h>
 
@@ -80,6 +81,8 @@ static const SurfaceFieldKindInfo* kind_table() {
         // ElectronLocalization, LocalizedOrbitalLocator: in [0, 1]
         { "Electron Localization (ELF)",     md_unit_none(),                                      SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.8, true },
         { "Localized Orbital Locator (LOL)", md_unit_none(),                                      SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.5, true },
+        // Grid: of a cube, whatever it holds; about zero, as an orbital's or a potential's
+        { "Cube",                    md_unit_none(),                                              SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.02 },
     };
     return table;
 }
@@ -599,6 +602,9 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
     case SurfaceFieldKind::ElectronLocalization:
     case SurfaceFieldKind::LocalizedOrbitalLocator:
         return basis_published(sys) && md_qm_kinetic_available(&sys);
+    case SurfaceFieldKind::Grid:
+        // which grid is the desc's: any
+        return grid_field_first(sys) != MD_ATTRIBUTE_INVALID;
     default:
         return false;
     }
@@ -807,9 +813,10 @@ struct FieldData {
     md_gto_iso_field_t*   rho = nullptr;        // the electron density; with the wall, the energy density rho V1
     md_gto_basis_t*       rho_basis = nullptr;  // its basis, owned
     LocalizationFields*   loc = nullptr;        // ELF or LOL
+    GridField*            grid = nullptr;       // values on a grid, placed
 };
 
-static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio || d.wall || d.rho || d.loc; }
+static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio || d.wall || d.rho || d.loc || d.grid; }
 
 // What a point costs on the CPU, roughly, for the size of a pool task's grain
 static uint64_t field_data_work_per_point(const FieldData& d) {
@@ -818,6 +825,7 @@ static uint64_t field_data_work_per_point(const FieldData& d) {
     if (d.loc)     return 512;                                          // a density with its gradient and tau, per spin
     if (d.rho)     return 128;
     if (d.wall)    return 64;                                           // tens of Gaussians reach a point
+    if (d.grid)    return 8;
     return 1;
 }
 
@@ -847,6 +855,9 @@ static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, u
         }
         else if (d.wall)  gostshyp_wall_evaluate(d.wall, d.wall_field, p, e - b, out + b);
         else if (d.rho)   md_gto_iso_field_evaluate(d.rho, p, e - b, 0, out + b, nullptr);
+        else if (d.grid) {
+            for (uint32_t i = 0; i < e - b; ++i) out[b + i] = grid_field_sample_bohr(*d.grid, p + 3 * i);
+        }
     }
 }
 
@@ -859,6 +870,8 @@ struct FieldBuild {
     size_t             num_basis_atoms = 0;
     md_float3_t*            state_xyz = nullptr;
     size_t             num_state_atoms = 0;
+    md_attribute_id_t  grid_key = MD_ATTRIBUTE_INVALID;
+    uint32_t           grid_member = 0;
     // An orbital ratio's fields go to the device here too, on a stream of the task's own (made on the GL thread,
     // destroyed by the task once its work is done): a set in the D form (more than 1024 functions: a protein's
     // occupied orbitals) builds its matrices on the device and waits for them, seconds that would otherwise be
@@ -888,6 +901,10 @@ static void field_data_destroy(FieldData* d) {
         delete d->rho_basis;
     }
     localization_destroy(d->loc);
+    if (d->grid) {
+        grid_field_free(d->grid);
+        delete d->grid;
+    }
     *d = FieldData{};
 }
 
@@ -917,6 +934,8 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     b->kind = desc.kind;
     b->sys  = desc.sys;
     b->density_cache = desc.density_cache;
+    b->grid_key = desc.grid_key;
+    b->grid_member = desc.grid_member;
 #if MD_ENABLE_GPU
     if (desc.gpu_stream && kind_is_ratio(desc.kind)) {
         b->stream = md_gpu_stream_create(md_gpu_stream_device(desc.gpu_stream), MD_GPU_STREAM_COMPUTE, "surface field");
@@ -987,6 +1006,16 @@ static void build_run(FieldBuild* b) {
         b->data.rho_basis = new md_gto_basis_t{};
         b->data.rho = density_field_create(b->data.rho_basis, *b->sys, b->basis_atom_xyz, b->num_basis_atoms);
         b->ok = b->data.rho != nullptr;
+    } else if (b->kind == SurfaceFieldKind::Grid) {
+        // placed on the atoms as they are
+        b->data.grid = new GridField{};
+        if (!grid_field_get(b->data.grid, *b->sys, state, b->grid_key, b->grid_member)) {
+            delete b->data.grid;
+            b->data.grid = nullptr;
+        } else if (b->data.grid->num_placed_by && b->data.grid->rmsd > 0.1) {
+            MD_LOG_INFO("Cube: placed on its %zu atoms as they are, %.2f A RMSD", b->data.grid->num_placed_by, b->data.grid->rmsd);
+        }
+        b->ok = b->data.grid != nullptr;
     } else if (b->kind == SurfaceFieldKind::ElectronLocalization || b->kind == SurfaceFieldKind::LocalizedOrbitalLocator) {
         b->data.loc = localization_create(*b->sys, b->basis_atom_xyz, b->num_basis_atoms, b->kind == SurfaceFieldKind::LocalizedOrbitalLocator);
         b->ok = b->data.loc != nullptr;
