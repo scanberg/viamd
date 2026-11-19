@@ -34,6 +34,7 @@
 
 #include <task_system.h>
 #include <surface_field.h>
+#include <cavity.h>
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
@@ -116,6 +117,8 @@ constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking d
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
+// A tessera of a cavity (cavity.h), keyed by the representation: what its glyph picks as. The index is the tessera.
+constexpr PickingDomainID PickingDomain_Tessera = HASH_STR_LIT64("picking domain tessera");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
@@ -164,8 +167,19 @@ enum class ElectronicStructureSource {
     TransitionDensity,
     ElectronDensity,
     DensityProperty,
-    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
-    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
+    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf)
+    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol)
+    // Fields of the system as a whole, evaluated as the fields a surface is coloured by are (surface_field.h, the kind
+    // of electronic_structure_source_field_kind): the volume all of the grid, on the GPU where mdlib evaluates them
+    // there, else on the CPU
+    ElectrostaticPotential,
+    EmbeddingPotential,
+    AverageLocalIonizationEnergy,
+    LocalElectronAttachmentEnergy,
+    DensityScaleLength,
+    GostshypWallPotential,      // of the GOSTSHYP wall of a run under pressure (gostshyp.h)
+    GostshypEffectivePotential,
+    GostshypEnergyDensity,
     Count
 };
 
@@ -236,6 +250,7 @@ enum class RepresentationType {
     DipoleMoment,
     SimulationBox,
     Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
+    Cavity,             // The tessellated cavity of the QM atoms (cavity.h), coloured by a field of its tesserae
     Count
 };
 
@@ -268,10 +283,11 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ball And Stick",
     "Ribbons",
     "Cartoon",
-    "Electronic Structure",
+    "Field",
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
+    "Cavity",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -316,7 +332,75 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Density Property",
     "Electron Localization (ELF)",
     "Localized Orbital Locator (LOL)",
+    "Electrostatic Potential",
+    "Embedding Potential",
+    "Local Ionization Energy (ALIE)",
+    "Local Electron Attachment Energy",
+    "Density Scale Length",
+    "GOSTSHYP Wall Potential",
+    "GOSTSHYP Effective Potential",
+    "GOSTSHYP Energy Density",
 };
+
+// The kind of surface field a source is evaluated as (surface_field.h): Count for those evaluated of orbitals and
+// densities on the GPU (viamd.cpp, es_evaluate_into). ELF and LOL are both: by their own kernel on the GPU when
+// there is one, else as a surface field on the CPU.
+static inline SurfaceFieldKind electronic_structure_source_field_kind(ElectronicStructureSource s) {
+    switch (s) {
+    case ElectronicStructureSource::ElectronLocalization:          return SurfaceFieldKind::ElectronLocalization;
+    case ElectronicStructureSource::LocalizedOrbitalLocator:       return SurfaceFieldKind::LocalizedOrbitalLocator;
+    case ElectronicStructureSource::ElectrostaticPotential:        return SurfaceFieldKind::ElectrostaticPotential;
+    case ElectronicStructureSource::EmbeddingPotential:            return SurfaceFieldKind::EmbeddingPotential;
+    case ElectronicStructureSource::AverageLocalIonizationEnergy:  return SurfaceFieldKind::AverageLocalIonizationEnergy;
+    case ElectronicStructureSource::LocalElectronAttachmentEnergy: return SurfaceFieldKind::LocalElectronAttachmentEnergy;
+    case ElectronicStructureSource::DensityScaleLength:            return SurfaceFieldKind::DensityScaleLength;
+    case ElectronicStructureSource::GostshypWallPotential:         return SurfaceFieldKind::GostshypWallPotential;
+    case ElectronicStructureSource::GostshypEffectivePotential:    return SurfaceFieldKind::GostshypEffectivePotential;
+    case ElectronicStructureSource::GostshypEnergyDensity:         return SurfaceFieldKind::GostshypEnergyDensity;
+    default:                                                       return SurfaceFieldKind::Count;
+    }
+}
+
+// Whether the source is evaluated as a surface field (surface_field.h) whatever the GPU: all but the orbitals,
+// the densities and ELF and LOL
+static inline bool electronic_structure_source_is_surface_field(ElectronicStructureSource s) {
+    return electronic_structure_source_field_kind(s) != SurfaceFieldKind::Count &&
+           s != ElectronicStructureSource::ElectronLocalization && s != ElectronicStructureSource::LocalizedOrbitalLocator;
+}
+
+// Whether isosurface meshes can be extracted from the source (iso_meshes.h): the orbitals and densities, which
+// md_gto_iso evaluates. The others' isosurfaces are raycast through their volume, whatever the setting.
+static inline bool electronic_structure_source_meshable(ElectronicStructureSource s) {
+    return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
+           s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
+           s == ElectronicStructureSource::DensityProperty;
+}
+
+// What the isosurfaces of a field are, in the isosurface display (ElectronicStructureRepresentation::surface).
+// The field picked is the one shown whatever the display; on a surface that is either its own isosurface, or the
+// surface of the electron density where it is read (as the electrostatic potential and the local ionization energy
+// are, on rho = 0.001 au) and drawn as the colours of that surface.
+enum class ElectronicStructureSurface {
+    Isodensity,     // the electron density's isosurface at surface_density, coloured by the field
+    Own,            // the field's own isosurfaces at its isovalue
+    Count
+};
+
+inline const char* electronic_structure_surface_str[(int)ElectronicStructureSurface::Count] = {
+    "Isodensity",
+    "Isosurface of the field",
+};
+
+// Whether a source can be read on an isodensity surface: whether it is evaluated as a surface field
+static inline bool electronic_structure_source_on_isodensity_possible(ElectronicStructureSource s) {
+    return electronic_structure_source_field_kind(s) != SurfaceFieldKind::Count;
+}
+
+// The surface a source starts out on: where it is read (an isodensity surface) for what is read on one, its own
+// isosurfaces for ELF and LOL, whose shapes (the basins, the shells) are the point
+static inline ElectronicStructureSurface electronic_structure_default_surface(ElectronicStructureSource s) {
+    return electronic_structure_source_is_surface_field(s) ? ElectronicStructureSurface::Isodensity : ElectronicStructureSurface::Own;
+}
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_MolecularOrbital          = 1u << (int)ElectronicStructureSource::MolecularOrbital,
@@ -326,6 +410,14 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
     ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
     ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
+    ElectronicStructureSourceFlag_ElectrostaticPotential    = 1u << (int)ElectronicStructureSource::ElectrostaticPotential,
+    ElectronicStructureSourceFlag_EmbeddingPotential        = 1u << (int)ElectronicStructureSource::EmbeddingPotential,
+    ElectronicStructureSourceFlag_AverageLocalIonizationEnergy  = 1u << (int)ElectronicStructureSource::AverageLocalIonizationEnergy,
+    ElectronicStructureSourceFlag_LocalElectronAttachmentEnergy = 1u << (int)ElectronicStructureSource::LocalElectronAttachmentEnergy,
+    ElectronicStructureSourceFlag_DensityScaleLength        = 1u << (int)ElectronicStructureSource::DensityScaleLength,
+    ElectronicStructureSourceFlag_GostshypWallPotential     = 1u << (int)ElectronicStructureSource::GostshypWallPotential,
+    ElectronicStructureSourceFlag_GostshypEffectivePotential= 1u << (int)ElectronicStructureSource::GostshypEffectivePotential,
+    ElectronicStructureSourceFlag_GostshypEnergyDensity     = 1u << (int)ElectronicStructureSource::GostshypEnergyDensity,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -627,7 +719,8 @@ struct Volume {
 // the world. Defined in viamd.cpp because it is the half that touches GL.
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
 
-// How the isosurfaces of the electronic structure are drawn (Settings::isosurface_rendering)
+// How isosurfaces are drawn: a Field representation's (ElectronicStructureRepresentation::rendering), and the
+// panels of the Orbital Grid and Transition Analysis windows (Settings::isosurface_rendering)
 enum IsosurfaceRendering {
     IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (volume::render_isosurfaces)
     IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h, isomesh::render)
@@ -665,8 +758,11 @@ struct ElectronicStructureRepresentation {
     EsIsoMesh* iso_mesh = nullptr;     // owned: the mesh rendering mode's surfaces, made on first use
     VolumeResolution resolution = VolumeResolution::Mid;
 
-    // Shared for all electronic structure representations
+    // The isovalue of the orbitals and densities (a density's squared: electronic_structure_uses_density_iso_squared)
     double iso_value = 0.05;
+    // and of the other fields (electronic_structure_source_field_kind), in their unit: both signs of it for one about
+    // zero (electronic_structure_is_signed), else this one, which may be negative
+    double field_iso_value = 0.8;
 
     // These are default values for different volume types.
     md_float4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
@@ -720,6 +816,21 @@ struct ElectronicStructureRepresentation {
     // nothing at all.
     md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
 
+    // How its isosurfaces are drawn (IsosurfaceRendering): meshes only of what they can be made of (es_mesh_mode),
+    // the others raycast whatever this says
+    int rendering = IsosurfaceRendering_Raycast;
+
+    // The isosurface display: what the surfaces are (ElectronicStructureSurface), and for an isodensity surface the
+    // density it is at (electrons / bohr^3, not squared as the density's own isovalue is)
+    ElectronicStructureSurface surface = ElectronicStructureSurface::Own;
+    double surface_density = 0.001;
+
+    // The source evaluated as a surface field (electronic_structure_source_is_surface_field, and ELF and LOL without
+    // their kernel): all of the grid, taken into density_vol once complete; its values' spread (1st to 99th
+    // percentile, the extremes) for the isovalue's range and the colour map's
+    SurfaceFieldVolume source_vol = {};
+    ColorScaleSpan     source_span = {};
+
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
 
@@ -747,7 +858,10 @@ struct ElectronicStructureRepresentation {
     struct {
         TransferFunction tf = {};
         bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
+        bool  map_auto = false;        // ... and its range is to be taken from the values when they come (a potential's)
         int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
+        int   map_source = -1;         // ... and of this field where it is a range of its own (a surface field's source;
+                                       // -2 for the others, -1 as loaded: taken to be the field it is of)
         uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
         uint64_t tf_hash = 0;
         TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
@@ -785,10 +899,12 @@ enum class ElectronicStructureValueKind {
     Density,        // >= 0, largest at the nuclei
     Signed,         // an orbital, a difference: about 0
     Localization,   // in [0, 1]: ELF, LOL
+    Ranged,         // of a range of its own, set from the values, no value special: a potential that is not about
+                    // its sign, a length, an energy density
+    SignedRanged,   // likewise about 0, its sign the physics: an electrostatic potential
 };
 
-// ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
-// how it varies through space), so they are drawn as a volume or on a plane only.
+// ELF and LOL: in [0, 1] everywhere, of both spins together
 static inline bool electronic_structure_is_localization(const ElectronicStructureRepresentation& rep) {
     return rep.source == ElectronicStructureSource::ElectronLocalization ||
            rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
@@ -822,6 +938,10 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
     if (electronic_structure_is_density_property(rep)) {
         return false;
     }
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep.source);
+    if (fk != SurfaceFieldKind::Count) {
+        return surface_field_kind_info(fk).scale == SurfaceFieldScale::Diverging;
+    }
     if (rep.source == ElectronicStructureSource::TransitionDensity &&
         rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
         return true;
@@ -831,6 +951,9 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
 
 static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
+    if (electronic_structure_source_is_surface_field(rep.source)) {
+        return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::SignedRanged : ElectronicStructureValueKind::Ranged;
+    }
     return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
@@ -871,6 +994,11 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
     if (electronic_structure_is_density_property(rep)) {
         return "User-defined isosurfaces for arbitrary density-property volumes.";
     }
+    if (electronic_structure_source_field_kind(rep.source) != SurfaceFieldKind::Count) {
+        return electronic_structure_is_signed(rep) ?
+            "Where the surfaces are: the field at +isovalue and -isovalue, in its unit" :
+            "Where the surface is: the field at the isovalue, in its unit";
+    }
     if (electronic_structure_uses_density_iso_squared(rep)) {
         return electronic_structure_is_signed(rep) ?
             "Visual surface threshold. Signed density fields render both +isovalue^2 and -isovalue^2 surfaces." :
@@ -896,8 +1024,10 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         return;
     }
 
-    const float iso_value = (float)rep.iso_value;
-    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value : iso_value;
+    const bool field = electronic_structure_source_field_kind(rep.source) != SurfaceFieldKind::Count;
+    const float iso_value = field ? (float)rep.field_iso_value : (float)rep.iso_value;
+    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value :
+                                electronic_structure_is_signed(rep) ? fabsf(iso_value) : iso_value;
 
     if (electronic_structure_is_signed(rep)) {
         iso->count = 2;
@@ -936,6 +1066,27 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
     }
 }
 
+// Whether the representation shows its field on an isodensity surface (ElectronicStructureSurface::Isodensity)
+static inline bool electronic_structure_on_isodensity(const ElectronicStructureRepresentation& rep) {
+    return rep.display == ElectronicStructureDisplay::Isosurface && rep.surface == ElectronicStructureSurface::Isodensity &&
+           electronic_structure_source_on_isodensity_possible(rep.source);
+}
+
+// What the representation's volume and isosurfaces are of: itself; or showing its field on an isodensity surface,
+// the total electron density at surface_density, coloured by the field. What evaluates the volume, draws the
+// surfaces and evaluates the colours reads this, so the field picked is the one shown in every display.
+static inline ElectronicStructureRepresentation electronic_structure_geometry(const ElectronicStructureRepresentation& rep) {
+    ElectronicStructureRepresentation g = rep;
+    if (!electronic_structure_on_isodensity(rep)) return g;
+    g.field_kind    = electronic_structure_source_field_kind(rep.source);
+    g.coloring      = SurfaceColoring::Field;
+    g.source        = ElectronicStructureSource::ElectronDensity;
+    g.spin          = ElectronicStructureSpin::Total;
+    g.use_magnitude = false;
+    g.iso_value     = sqrt(fmax(rep.surface_density, 0.0));     // squared where it is drawn
+    return g;
+}
+
 static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
     return rep.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
 }
@@ -970,13 +1121,24 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         break;
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
-        // of both spins together, and drawn only as a volume or on a plane
+    case ElectronicStructureSource::ElectrostaticPotential:
+    case ElectronicStructureSource::EmbeddingPotential:
+    case ElectronicStructureSource::AverageLocalIonizationEnergy:
+    case ElectronicStructureSource::LocalElectronAttachmentEnergy:
+    case ElectronicStructureSource::DensityScaleLength:
+    case ElectronicStructureSource::GostshypWallPotential:
+    case ElectronicStructureSource::GostshypEffectivePotential:
+    case ElectronicStructureSource::GostshypEnergyDensity: {
+        // of the system as a whole, both spins together: an isovalue in its unit, and the surface it is shown on
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
-        if (rep->display == ElectronicStructureDisplay::Isosurface) {
-            rep->display = ElectronicStructureDisplay::Volume;
-        }
+        const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep->source);
+        rep->field_iso_value = surface_field_kind_info(fk).iso;
+        rep->surface = electronic_structure_default_surface(rep->source);
+        rep->surface_density = rep->source == ElectronicStructureSource::LocalElectronAttachmentEnergy ? 0.004 : 0.001;
+        rep->source_span = {};
         break;
+    }
     case ElectronicStructureSource::DensityProperty:
         rep->spin = ElectronicStructureSpin::None;
         rep->use_magnitude = false;
@@ -1069,13 +1231,9 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
             ElectronicStructureLegacyType::AttachmentDensity);
     case ElectronicStructureSource::ElectronDensity:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
-    case ElectronicStructureSource::DensityProperty:
-    case ElectronicStructureSource::ElectronLocalization:
-    case ElectronicStructureSource::LocalizedOrbitalLocator:
-        return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
-        MD_ASSERT(false);
-        return 0;
+        // nothing of the legacy types: the electron density, as the key has always said for what it did not know
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
     }
 }
 
@@ -1181,6 +1339,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
+    CavityRepresentation cavity = {};
     bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 
@@ -1224,7 +1383,7 @@ struct PickingRange {
 // past the end fails rather than aliasing, which costs those objects their picking, nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[16] = {};
+    PickingRange ranges[32] = {};
 };
 
 struct PickingReadbackSlot {
@@ -1684,6 +1843,19 @@ struct ApplicationState {
     PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
     PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
 
+    // The tessera of a cavity under the cursor (PickingDomain_Tessera): its representation's id and its index. Marked as
+    // its patch in the marks of the highlight (cavity_draw_marks). rep_id 0: none.
+    struct {
+        uint32_t rep_id  = 0;
+        uint32_t tessera = 0;
+    } cavity_hover;
+    // The same, hovered elsewhere than in the view (a row of the GOSTSHYP table): set by what draws it, every frame it
+    // is hovered. Marked in place of the one in the view.
+    struct {
+        uint32_t rep_id  = 0;
+        uint32_t tessera = 0;
+    } cavity_hover_ui;
+
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
     // --- ANIMATION ---
@@ -1939,7 +2111,8 @@ struct ApplicationState {
             decltype(visuals.tonemapping) tonemapping;
             decltype(visuals.dof)         dof;
         } look;
-        int  isosurface_rendering = 0;      // IsosurfaceRendering: raycast volumes or meshes of the fields (iso_meshes.h)
+        int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
+                                            // representation has its own: ElectronicStructureRepresentation::rendering)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
@@ -2656,14 +2829,14 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 #define ES_PLANE_IMAGES_REVISION "plane-images r5"
 // Whether it is: the planes display, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
+// Whether the representation's isosurfaces are drawn as meshes: its setting, for what meshes can be made of
+bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es);
+// The density an isodensity surface for the source starts out at (electrons / bohr^3): 0.001, 0.004 for the local
+// electron attachment energy, where the GOSTSHYP wall is for its fields (the median density its Gaussians see)
+double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource source);
 
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
 
-// The evaluations of ELF and LOL run as pool tasks (viamd.cpp, localization_poll), polled by the representations'
-// updates: those nobody wants any more are let go of here once they have stopped, once a frame; all of them (waited
-// for) at the shutdown, before the GPU device goes.
-void es_jobs_collect(ApplicationState* state);
-void es_jobs_shutdown(ApplicationState* state);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".

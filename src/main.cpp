@@ -589,6 +589,7 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
+static void draw_cavity_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
@@ -1045,8 +1046,6 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
-        // and what the ELF and LOL evaluations left (es_jobs_collect)
-        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1158,6 +1157,9 @@ int main(int argc, char** argv) {
                 viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
             }
         }
+
+        // Off the view, no tessera is under the cursor
+        if (!surface_state.hovered) state.cavity_hover = {};
 
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
@@ -1786,10 +1788,10 @@ int main(int argc, char** argv) {
         electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
         // what its field has under way holds the GPU stream and pool tasks: both still here
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
+        surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
     }
     gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
-    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
     // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
     density_cache_destroy(state.mold.density_cache);
@@ -2311,25 +2313,18 @@ static void draw_main_menu(ApplicationState* data) {
 
             if (prop::section("Isosurfaces", false)) {
                 int rendering = MD_CLAMP(data->settings.isosurface_rendering, 0, 1);
-                prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
-                                       "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
-                                       "field itself rather than from the volume, at a spacing set by the representation's resolution,\n"
-                                       "and drawn with stochastic transparency that is refined over the frames while the view\n"
-                                       "is still. Extraction runs when the surface changes (an isovalue, an orbital, a frame);\n"
-                                       "drawing is cheap. Volumes from scripts are always ray cast.");
+                prop::row("panels", "How the isosurfaces of the Orbital Grid and Transition Analysis panels are drawn\n"
+                                    "(a Field representation has its own, in its Surface section).\n"
+                                    "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
+                                    "Mesh: extracted as triangle meshes from the field itself, drawn with stochastic\n"
+                                    "transparency refined over the frames while the view is still.");
                 if (ImGui::Combo("##rendering", &rendering, "Ray Casting\0Mesh\0")) {
                     data->settings.isosurface_rendering = rendering;
                     app_settings::mark_dirty();
-                    // Their volumes are evaluated only when something draws from them
-                    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-                        if (data->representation.reps[i].type == RepresentationType::ElectronicStructure) {
-                            flag_representation_as_dirty(&data->representation.reps[i]);
-                        }
-                    }
                 }
                 // Also for the volumes that are ray cast in either mode (from scripts)
                 int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
-                prop::row("intersection", "How ray cast isosurfaces are found (with Mesh rendering: only those of volumes from scripts).\n"
+                prop::row("intersection", "How ray cast isosurfaces are found, of every representation and window that ray casts them.\n"
                                           "Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
                                           "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
                                           "a finer volume resolution makes both smaller.\n"
@@ -7772,9 +7767,12 @@ static void render(ApplicationState* state) {
     // it, nor in its history. Drawn again when they change, or the scene was made.
     const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
     const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool draw_marks = !selection_empty || !highlight_empty;
+    const bool cavity_hovered = state->cavity_hover.rep_id != 0 || state->cavity_hover_ui.rep_id != 0;
+    const bool draw_marks = !selection_empty || !highlight_empty || cavity_hovered;
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
+        marks_key = md_hash64(&state->cavity_hover, sizeof(state->cavity_hover), marks_key);
+        marks_key = md_hash64(&state->cavity_hover_ui, sizeof(state->cavity_hover_ui), marks_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
         marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
         marks_key = marks_key ? marks_key : 1;
@@ -7782,6 +7780,7 @@ static void render(ApplicationState* state) {
             PUSH_GPU_SECTION("Marks")
             gbuffer_marks_begin(&state->gbuffer);
             draw_representations_marks(state);
+            draw_cavity_marks(state);
             gbuffer_marks_end(&state->gbuffer);
             POP_GPU_SECTION()
             lazy.marks_key = marks_key;
@@ -8182,6 +8181,29 @@ static void draw_representations_opaque(ApplicationState* state) {
         args.picking_offset = gl_picking_offset_glyphs(*state);
         draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
     }
+
+    // The glyphs of the cavities' tesserae, ray cast by a pass of their own, picking as their tesserae
+    {
+        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+        for (size_t i = 0; i < num_representations; ++i) {
+            const Representation& rep = state->representation.reps[i];
+            if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+            const PickingRange* tess = space ? picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id) : nullptr;
+            if (!tess) continue;
+            cavity_draw_glyphs(rep.cavity, state->view.param, tess->beg);
+        }
+    }
+}
+
+// The glyph of the tessera hovered, into the marks of the highlight
+static void draw_cavity_marks(ApplicationState* state) {
+    const bool ui = state->cavity_hover_ui.rep_id != 0;
+    const uint32_t rep_id  = ui ? state->cavity_hover_ui.rep_id : state->cavity_hover.rep_id;
+    const uint32_t tessera = ui ? state->cavity_hover_ui.tessera : state->cavity_hover.tessera;
+    if (!rep_id) return;
+    const Representation* rep = find_representation(state, rep_id);
+    if (!rep || rep->type != RepresentationType::Cavity || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
+    cavity_draw_marks(rep->cavity, tessera, state->gbuffer, state->view.param);
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
@@ -8246,6 +8268,10 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             const float field_map[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
             h = md_hash64(field_map, sizeof(field_map), h);
         }
+        if (rep.type == RepresentationType::Cavity) {
+            const uint64_t c = cavity_hash(rep.cavity);
+            h = md_hash64(&c, sizeof(c), h);
+        }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
             h = md_hash64(&rep.dipole.dipole_index, sizeof(rep.dipole.dipole_index), h);
@@ -8276,16 +8302,19 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (es.display != ElectronicStructureDisplay::Isosurface) continue;
+        // the fields meshes are not made of: raycast (draw_representations_transparent)
+        if (!es_mesh_mode(state, es)) continue;
+        const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
 
         IsoDesc iso;
-        electronic_structure_iso_desc_init(&iso, es);
+        electronic_structure_iso_desc_init(&iso, g);
         const size_t n = electronic_structure_mesh_surfaces(surfaces + num_surfaces, MAX_SURFACES - num_surfaces, state, &rep, iso);
 
         // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
         // the colour volume spans the box of the density volume
         const md_float4x4_t world_to_volume = md_float4x4_inverse(es.density_vol.texture_to_world);
-        const bool use_field  = es.coloring == SurfaceColoring::Field;
-        const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
+        const bool use_field  = g.coloring == SurfaceColoring::Field;
+        const bool use_colors = g.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
         const IsolineDesc isolines = color_scale_isoline_desc(es.field_isolines, isoline_px_per_point(state));
         for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
@@ -8422,21 +8451,30 @@ static bool draw_representations_transparent(ApplicationState* state) {
     if (num_representations == 0) return false;
 
     iso_mesh_converged = true;
-    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
-        const bool meshes = draw_representations_transparent_mesh(state);
-        return draw_representations_volumes(state, meshes) || meshes;
-    }
-    isomesh::target_free(&iso_mesh_target);
-
     bool written = false;
+    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: as each
+    // representation has it, and whatever meshes are not made of (es_mesh_mode)
+    bool any_mesh = false;
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = state->representation.reps[i];
+        any_mesh |= representation_shown(*state, rep) && rep.type == RepresentationType::ElectronicStructure &&
+                    rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface && es_mesh_mode(state, rep.electronic_structure);
+    }
+    if (any_mesh) {
+        written = draw_representations_transparent_mesh(state);
+    } else {
+        isomesh::target_free(&iso_mesh_target);
+    }
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
         if (!representation_shown(*state, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface) {
-            const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
+        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface &&
+            !es_mesh_mode(state, rep.electronic_structure)) {
+            const ElectronicStructureRepresentation g = electronic_structure_geometry(rep.electronic_structure);
+            const bool use_field = g.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
-            electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
+            electronic_structure_iso_desc_init(&iso, g);
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
             flag_representation_as_dirty(&state->representation.reps[i]);
@@ -8471,7 +8509,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .values = iso.values,
                     .colors = iso.colors,
                     .optical_densities = iso.optical_densities,
-                    .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
+                    .use_color_volume = g.coloring == SurfaceColoring::AtomColors,
                     .use_field = use_field,
                     .exact = state->settings.exact_isosurfaces,
                 },

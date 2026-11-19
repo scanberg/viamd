@@ -1,6 +1,8 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <representation.h>
+#include <gostshyp.h>
+#include <field.h>
 
 #include <md_system.h>
 
@@ -277,6 +279,9 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
+    surface_field_invalidate(&rep->electronic_structure.source_vol);
+    // the cavity of the old one
+    cavity_invalidate(&rep->cavity);
     // and its meshes of the old one's basis
     electronic_structure_mesh_free(state, &rep->electronic_structure);
 
@@ -294,7 +299,10 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.color_vol.tex_id   = 0;
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
+    rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
+    rep->electronic_structure.source_span        = ColorScaleSpan{};
     rep->electronic_structure.iso_mesh           = nullptr;
+    rep->cavity.data                             = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -329,6 +337,8 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     OrbitalFrontier frontier = {};
     es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
     rep->electronic_structure.orbital_idx = MD_MAX(frontier.homo_idx, 0);
+    // as the windows' panels draw theirs, which was everyone's: an old workspace's surfaces look as they did
+    rep->electronic_structure.rendering = state->settings.isosurface_rendering;
     init_representation(state, rep);
 
     const uint32_t id = rep->node.id;
@@ -370,7 +380,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
         for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
     }
     surface_field_free(&rep.electronic_structure.field_vol);
+    surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
+    cavity_free(&rep.cavity);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -612,6 +624,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
         case RepresentationType::SimulationBox:
+        case RepresentationType::Cavity:
             return false;
         default:
             return true;
@@ -921,6 +934,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
+        break;
+    case RepresentationType::Cavity:
+        // Read and placed every frame as the picking is reserved (cavity_update), which follows the frame
+        rep->type_is_valid = cavity_available(sys);
         break;
     default:
         MD_ASSERT(false);
@@ -1903,9 +1920,16 @@ done:
         box->enabled = false;
     }
 
+    if (cavity_available(state->mold.sys)) {
+        // A run under pressure: the cavity the pressure was held by, coloured by the energy of its wall
+        Representation* cav = create_representation(state, RepresentationType::Cavity);
+        snprintf(cav->name, sizeof(cav->name), "cavity");
+        cav->enabled = true;
+    }
+
     if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
-        snprintf(rep->name, sizeof(rep->name), "electronic structure");
+        snprintf(rep->name, sizeof(rep->name), "field");
         rep->enabled = true;
         electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
 
@@ -1965,18 +1989,29 @@ done:
 // What an enum is kept as: the identifiers of its values
 static const char* const bond_color_names[]          = { "NearestAtom", "SmoothAtom", "Uniform" };
 static const char* const bond_dashes_names[]         = { "ByKind", "None", "All" };
+// The source by its index, as workspaces from before the paths of the fields (field.h) keep it
 static const char* const es_source_names[]           = { "MolecularOrbital", "NaturalTransitionOrbital", "TransitionDensity", "ElectronDensity",
-                                                         "DensityProperty", "ElectronLocalization", "LocalizedOrbitalLocator" };
+                                                         "DensityProperty", "ElectronLocalization", "LocalizedOrbitalLocator",
+                                                         "ElectrostaticPotential", "EmbeddingPotential", "AverageLocalIonizationEnergy",
+                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
+                                                         "GostshypEffectivePotential", "GostshypEnergyDensity" };
 static const char* const es_spin_names[]             = { "None", "Alpha", "Beta", "Total", "Difference" };
 static const char* const es_nto_component_names[]    = { "Particle", "Hole" };
 static const char* const es_transition_component_names[] = { "Attachment", "Detachment", "Difference" };
 static const char* const volume_resolution_names[]   = { "Low", "Mid", "High" };
 static const char* const surface_coloring_names[]    = { "Uniform", "AtomColors", "Field" };
 static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "ElectrostaticPotential", "AverageLocalIonizationEnergy",
-                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength" };
+                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
+                                                         "GostshypEffectivePotential", "GostshypEnergyDensity", "ElectronDensity",
+                                                         "ElectronLocalization", "LocalizedOrbitalLocator" };
+static const char* const es_surface_names[]          = { "Isodensity", "Own" };
+static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
+static const char* const cavity_shape_names[]        = { "Cylinder", "Sphere" };
+static const char* const cavity_attribute_names[]    = { "Constant", "Area", "DecayLength", "WallEnergyPerArea", "WallEnergy", "WallDensity",
+                                                         "Amplitude", "AmplitudePerArea", "Switching", "LebedevWeight" };
 static const char* const es_display_names[]          = { "Isosurface", "Volume", "Planes" };
 static const char* const plane_detail_names[]        = { "Coarse", "Fine", "Finest" };
-static const char* const es_value_kind_names[]       = { "Density", "Signed", "Localization" };
+static const char* const es_value_kind_names[]       = { "Density", "Signed", "Localization", "Ranged", "SignedRanged" };
 
 MD_STATIC_ASSERT(MD_COUNTOF(bond_color_names)         == (size_t)BondColorMode::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(bond_dashes_names)        == (size_t)BondDashes::Count, "a name for each value");
@@ -1989,7 +2024,10 @@ MD_STATIC_ASSERT(MD_COUNTOF(surface_coloring_names)   == (size_t)SurfaceColoring
 MD_STATIC_ASSERT(MD_COUNTOF(surface_field_kind_names) == (size_t)SurfaceFieldKind::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(es_display_names)         == (size_t)ElectronicStructureDisplay::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(plane_detail_names)       == (size_t)PlaneDetail::Count, "a name for each value");
-MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::Localization + 1, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::SignedRanged + 1, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(es_surface_names)         == (size_t)ElectronicStructureSurface::Count, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(cavity_shape_names)       == (size_t)CavityGlyphShape::Count, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(cavity_attribute_names)   == (size_t)CavityAttribute::Count, "a name for each value");
 
 // A colour scale. range_is_set: a range read is one somebody set, and turns the automatic range off. That is for the
 // scale of an attribute, whose range a workspace from before the range could follow the values kept without saying
@@ -2098,8 +2136,12 @@ static bool read_attribute_path(viamd::Entries& e, md_str_t path, md_attribute_i
     return true;
 }
 
-static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_attributes_t* attributes) {
-    viamd::write_enum(s, p("Source"), (int)es.source, viamd::enum_names(es_source_names));
+static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
+    const md_attributes_t* attributes = &sys.attributes;
+    // The field shown, by its path (field.h)
+    char path[FIELD_PATH_MAX];
+    const size_t path_len = field_path_of_source(path, sizeof(path), es.source, es.density_property_key, sys);
+    if (path_len > 0 && path_len < sizeof(path)) viamd::write_str(s, p("Path"), md_str_t{path, path_len});
     viamd::write_int(s, p("Orbital"), es.orbital_idx);
     viamd::write_int(s, p("ExcitedState"), es.excited_state_idx);
     viamd::write_int(s, p("NtoLambda"), es.nto_lambda_idx);
@@ -2109,6 +2151,10 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
     viamd::write_enum(s, p("TransitionDensityComponent"), (int)es.transition_density_component, viamd::enum_names(es_transition_component_names));
     viamd::write_enum(s, p("Resolution"), (int)es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::write_dbl(s, p("Iso"), es.iso_value);
+    viamd::write_dbl(s, p("FieldIso"), es.field_iso_value);
+    viamd::write_enum(s, p("Surface"), (int)es.surface, viamd::enum_names(es_surface_names));
+    viamd::write_dbl(s, p("SurfaceDensity"), es.surface_density);
+    viamd::write_enum(s, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
     viamd::write_vec4(s, c("Positive"),   es.col_psi_pos);
@@ -2124,7 +2170,9 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
     viamd::write_enum(s, p("Coloring"), (int)es.coloring, viamd::enum_names(surface_coloring_names));
     if (es.coloring == SurfaceColoring::Field) {
         viamd::PathPrefix f = p.sub("Field");
-        viamd::write_enum(s, f("Kind"), (int)es.field_kind, viamd::enum_names(surface_field_kind_names));
+        char field_path[FIELD_PATH_MAX];
+        const size_t len = field_path_of_kind(field_path, sizeof(field_path), es.field_kind);
+        if (len > 0 && len < sizeof(field_path)) viamd::write_str(s, f("Path"), md_str_t{field_path, len});
         write_color_scale(s, f, es.field_map);
         write_isolines(s, f, es.field_isolines);
     }
@@ -2185,9 +2233,19 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
             electronic_structure_set_legacy_type(&es, type);
         }
     }
-    // The source before what it sets up for itself (the spin, the display), which the fields after it may change
-    if (viamd::get_enum(e, p("Source"), es.source, viamd::enum_names(es_source_names))) {
+    // The field before what it sets up for itself (the spin, the display), which the fields after it may change: by
+    // its path (field.h), or as a workspace from before the paths has it, by its source
+    md_str_t path = {};
+    ElectronicStructureSource source;
+    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
+    if (viamd::get(e, p("Path"), path) && field_resolve(&source, &key, path)) {
+        es.source = source;
         electronic_structure_set_source_defaults(&es);
+        if (source == ElectronicStructureSource::DensityProperty) es.density_property_key = key;
+    } else if (viamd::get_enum(e, p("Source"), es.source, viamd::enum_names(es_source_names))) {
+        electronic_structure_set_source_defaults(&es);
+    } else if (!md_str_empty(path)) {
+        MD_LOG_INFO("Workspace: no field '" MD_STR_FMT "' (field.h); the representation shows what it did before", MD_STR_ARG(path));
     }
     if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("ElectronicStructureField"))) {
         int field;
@@ -2204,6 +2262,10 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     viamd::get_enum(e, p("TransitionDensityComponent"), es.transition_density_component, viamd::enum_names(es_transition_component_names));
     viamd::get_enum(e, p("Resolution"), es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::get(e, p("Iso"), es.iso_value);
+    viamd::get(e, p("FieldIso"), es.field_iso_value);
+    viamd::get_enum(e, p("Surface"), es.surface, viamd::enum_names(es_surface_names));
+    viamd::get(e, p("SurfaceDensity"), es.surface_density);
+    viamd::get_enum(e, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
     viamd::get(e, c("Positive"),   es.col_psi_pos);
@@ -2218,7 +2280,13 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
 
     viamd::get_enum(e, p("Coloring"), es.coloring, viamd::enum_names(surface_coloring_names));
     viamd::PathPrefix f = p.sub("Field");
-    viamd::get_enum(e, f("Kind"), es.field_kind, viamd::enum_names(surface_field_kind_names));
+    md_str_t field_path = {};
+    SurfaceFieldKind color_kind;
+    if (viamd::get(e, f("Path"), field_path) && field_resolve_kind(&color_kind, field_path)) {
+        es.field_kind = color_kind;
+    } else {
+        viamd::get_enum(e, f("Kind"), es.field_kind, viamd::enum_names(surface_field_kind_names));
+    }
     read_color_scale(e, f, es.field_map, false);
     read_isolines(e, f, es.field_isolines);
     // Of older workspaces: the isolines' count before their values were a list
@@ -2287,7 +2355,8 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     viamd::get_value(e, MD_STR_LIT("ElectronicStructureVolumeRampExponent"));
 }
 
-static void write_representation(viamd::serialization_state_t& s, const Representation& rep, const md_attributes_t* attributes) {
+static void write_representation(viamd::serialization_state_t& s, const Representation& rep, const md_system_t& sys) {
+    const md_attributes_t* attributes = &sys.attributes;
     viamd::PathPrefix p;
     // Kept as an older VIAMD keeps them, which reads them too
     viamd::write_str(s, p("Name"), md_str_from_cstr(rep.name));
@@ -2353,7 +2422,22 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
     }
 
     if (rep.type == RepresentationType::ElectronicStructure) {
-        write_electronic_structure(s, p.sub("ElectronicStructure"), rep.electronic_structure, attributes);
+        write_electronic_structure(s, p.sub("ElectronicStructure"), rep.electronic_structure, sys);
+    }
+
+    if (rep.type == RepresentationType::Cavity) {
+        const CavityRepresentation& cav = rep.cavity;
+        viamd::PathPrefix q = p.sub("Cavity");
+        viamd::write_enum(s, q("Shape"), (int)cav.shape, viamd::enum_names(cavity_shape_names));
+        viamd::PathPrefix r = q.sub("Radius");
+        viamd::write_enum(s, r("Attribute"), (int)cav.radius.attribute, viamd::enum_names(cavity_attribute_names));
+        viamd::write_flt(s, r("Scale"), cav.radius.scale);
+        viamd::PathPrefix h = q.sub("Height");
+        viamd::write_enum(s, h("Attribute"), (int)cav.height.attribute, viamd::enum_names(cavity_attribute_names));
+        viamd::write_flt(s, h("Scale"), cav.height.scale);
+        viamd::write_enum(s, q("Color"), (int)cav.color, viamd::enum_names(cavity_attribute_names));
+        write_color_scale(s, q, cav.scale);
+        viamd::write_bool(s, q("Unlit"), cav.unlit);
     }
 }
 
@@ -2528,6 +2612,19 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     }
 
     read_electronic_structure(e, p.sub("ElectronicStructure"), rep.electronic_structure);
+
+    CavityRepresentation& cav = rep.cavity;
+    viamd::PathPrefix q = p.sub("Cavity");
+    viamd::get_enum(e, q("Shape"), cav.shape, viamd::enum_names(cavity_shape_names));
+    viamd::PathPrefix r = q.sub("Radius");
+    viamd::get_enum(e, r("Attribute"), cav.radius.attribute, viamd::enum_names(cavity_attribute_names));
+    viamd::get(e, r("Scale"), cav.radius.scale);
+    viamd::PathPrefix h = q.sub("Height");
+    viamd::get_enum(e, h("Attribute"), cav.height.attribute, viamd::enum_names(cavity_attribute_names));
+    viamd::get(e, h("Scale"), cav.height.scale);
+    viamd::get_enum(e, q("Color"), cav.color, viamd::enum_names(cavity_attribute_names));
+    read_color_scale(e, q, cav.scale, true);
+    viamd::get(e, q("Unlit"), cav.unlit);
 }
 
 void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section) {
@@ -2555,7 +2652,7 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
 }
 
 void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
-    write_representation(state, rep, &app_state->mold.sys.attributes);
+    write_representation(state, rep, app_state->mold.sys);
 }
 
 static void serialize_representation(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
@@ -2661,8 +2758,10 @@ bool representations_deserialize(ApplicationState* app, md_str_t section, viamd:
 // How the isosurfaces of an electronic structure representation are coloured, as rows of its Color section: the
 // colouring, and for a field the field, its colour scale and its isolines. The atoms' colours are not offered for a
 // density property; a field is offered whenever the dataset has what one is made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode) {
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode, bool field_only) {
     bool update_rep = false;
+    if (field_only) goto scale;
+    {
 
     bool any_field = false;
     for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
@@ -2709,7 +2808,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     if (es.coloring != SurfaceColoring::Field) {
         return update_rep;
     }
-
+    }
+scale:
     // Where the field stands, on its label: how much of it has been evaluated, and where
     const SurfaceFieldVolume& vol = es.field_vol;
     char status[160] = "";
@@ -2720,19 +2820,23 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         snprintf(status, sizeof(status), "%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
-    prop::row("field", status);
-    if (ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
-        for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
-            const SurfaceFieldKind kind = (SurfaceFieldKind)k;
-            ImGui::BeginDisabled(!surface_field_available(kind, sys));
-            if (ImGui::Selectable(surface_field_kind_info(kind).label, es.field_kind == kind)) {
-                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
-                es.field_kind = kind;
-                update_rep = true;
-            }
-            ImGui::EndDisabled();
+    if (!field_only) prop::row("field", status);
+    if (!field_only) {
+        // the fields that are surface fields, by path (field.h)
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_array(FieldEntry) entries = nullptr;
+        const size_t n = field_catalog(&entries, sys, md_temp_allocator(temp));
+        char path[FIELD_PATH_MAX] = "";
+        field_path_of_kind(path, sizeof(path), es.field_kind);
+        const int picked = field_picker("color_field", surface_field_kind_info(es.field_kind).label, entries, n, md_str_from_cstr(path),
+                                        [](const FieldEntry& e) { return e.field_kind != SurfaceFieldKind::Count; });
+        if (picked >= 0) {
+            const SurfaceFieldKind kind = entries[picked].field_kind;
+            if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
+            es.field_kind = kind;
+            update_rep = true;
         }
-        ImGui::EndCombo();
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
         // What this dataset's potential is made of, since a polarizable run may or may not have kept its
@@ -2939,43 +3043,40 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
 static bool draw_representations_window_electronic_structure(ApplicationState* state, Representation& rep) {
     ElectronicStructureRepresentation& es = rep.electronic_structure;
 
-    // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
-    // with no label is named by its path's last segment already, which is the readable thing.
-    auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* prop) {
-        MD_ASSERT(buf);
-        MD_ASSERT(buf_cap > 0);
-        if (!prop || md_str_empty(prop->label)) {
-            snprintf(buf, buf_cap, "None");
-            return;
-        }
-        snprintf(buf, buf_cap, "%.*s", (int)prop->label.len, prop->label.ptr);
-    };
-
     bool update_rep = false;
-    const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-    const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
+    const bool mesh_mode = es_mesh_mode(state, es);
 
-    if (prop::section("Source")) {
-        prop::row("source");
-        if (ImGui::BeginCombo("##source", electronic_structure_source_str[(int)es.source])) {
-            for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
-                ElectronicStructureSource source = (ElectronicStructureSource)n;
-                bool is_selected = (es.source == source);
-                bool disabled = !electronic_structure_source_supported(source_mask, source);
-
-                if (disabled) ImGui::PushDisabled();
-                if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
-                    es.source = source;
-                    electronic_structure_set_source_defaults(&es);
-                    update_rep = true;
-                }
-                if (disabled) ImGui::PopDisabled();
-
-                if (is_selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
+    if (prop::section("Field")) {
+        prop::row("field", "The field over space that is shown, as a surface, a volume or on planes.\n"
+                           "On a surface the electrostatic potential, the local energies, the density scale length and the\n"
+                           "GOSTSHYP fields are shown on a surface of the electron density by default, as its colours.");
+        {
+            md_temp_scope_t temp = md_temp_begin();
+            MD_DEFER { md_temp_end(temp); };
+            md_array(FieldEntry) entries = nullptr;
+            const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
+            char path[FIELD_PATH_MAX] = "";
+            field_path_of_source(path, sizeof(path), es.source, es.density_property_key, state->mold.sys);
+            // what it is: its label, a density property's its own
+            md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.source]);
+            for (size_t i = 0; i < n; ++i) {
+                if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
             }
-            ImGui::EndCombo();
+            char preview_buf[128];
+            snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)preview.len, preview.ptr);
+            const int picked = field_picker("field", preview_buf, entries, n, md_str_from_cstr(path), nullptr);
+            if (picked >= 0) {
+                const FieldEntry& e = entries[picked];
+                if (e.source != es.source) {
+                    es.source = e.source;
+                    electronic_structure_set_source_defaults(&es);
+                    if (electronic_structure_source_on_isodensity_possible(e.source)) {
+                        es.surface_density = es_isodensity_default(state->mold.sys, e.source);
+                    }
+                }
+                if (e.source == ElectronicStructureSource::DensityProperty) es.density_property_key = e.density_property_key;
+                update_rep = true;
+            }
         }
 
         if (electronic_structure_is_density_property(es)) {
@@ -3000,27 +3101,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     update_rep = true;
                 }
 
-                char preview[256];
-                density_property_combo_label(preview, sizeof(preview), selected);
-                prop::row("property");
-                if (ImGui::BeginCombo("##property", preview)) {
-                    for (int n = 0; n < num_density_props; ++n) {
-                        char label[256];
-                        density_property_combo_label(label, sizeof(label), &density_props[n]);
-                        const bool is_selected = (es.density_property_key == density_props[n].key);
-                        if (ImGui::Selectable(label, is_selected)) {
-                            if (es.density_property_key != density_props[n].key) {
-                                es.density_property_key = density_props[n].key;
-                                update_rep = true;
-                            }
-                        }
-
-                        if (is_selected) {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
             } else {
                 prop::hint("no density properties in this dataset");
             }
@@ -3259,9 +3339,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
             for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
                 const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
-                // ELF and LOL are about how they vary through space, which a surface of one value does not show
-                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
-                ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
                     if (es.display == ElectronicStructureDisplay::Planes && es.slices.count == 0) {
@@ -3271,8 +3348,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // which would evaluate it again whatever (flag_representation_as_dirty)
                     rep.needs_update = true;
                 }
-                ImGui::EndDisabled();
-                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
                 if (es.display == d) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
@@ -3330,9 +3405,66 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             } else {
+                const bool field = electronic_structure_source_field_kind(es.source) != SurfaceFieldKind::Count;
+                {
+                    // meshes only of the orbitals and densities (an isodensity surface's too): the others raycast
+                    const bool meshable = electronic_structure_source_meshable(electronic_structure_geometry(es).source);
+                    prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame\n"
+                                           "(Fast or Exact: Settings, Isosurfaces).\n"
+                                           "Mesh: extracted as triangle meshes from the field itself rather than from the volume, at a\n"
+                                           "spacing set by the resolution, and drawn with stochastic transparency refined over the\n"
+                                           "frames while the view is still. Extraction runs when the surface changes; drawing is cheap.\n"
+                                           "Meshes are made of orbitals and densities only: other fields' own surfaces are ray cast.");
+                    int r = meshable ? MD_CLAMP(es.rendering, 0, 1) : (int)IsosurfaceRendering_Raycast;
+                    ImGui::BeginDisabled(!meshable);
+                    if (ImGui::Combo("##iso_rendering", &r, "Ray Casting\0Mesh\0")) {
+                        es.rendering = r;
+                        update_rep = true;
+                    }
+                    ImGui::EndDisabled();
+                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals and densities only");
+                }
+                if (electronic_structure_source_on_isodensity_possible(es.source)) {
+                    prop::row("surface", "What the surface is:\n"
+                                         "Isodensity: where the electron density is the value, coloured by the field (as the electrostatic\n"
+                                         "  potential is read on 0.001 au); evaluated only around it\n"
+                                         "Isosurface of the field: where the field is the isovalue");
+                    int sf = (int)es.surface;
+                    if (ImGui::Combo("##surface", &sf, electronic_structure_surface_str, (int)ElectronicStructureSurface::Count)) {
+                        es.surface = (ElectronicStructureSurface)sf;
+                        update_rep = true;
+                    }
+                }
                 // The band a field is evaluated in follows the isovalue
-                prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
-                update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                if (electronic_structure_on_isodensity(es)) {
+                    const double d_min = 1.0e-5, d_max = 0.1;
+                    prop::row("density", "The electron density of the surface, electrons / bohr^3 (au)");
+                    update_rep |= ImGui::SliderScalar("##surface_density", ImGuiDataType_Double, &es.surface_density, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
+                } else if (field) {
+                    // over the field's values: its spread once evaluated, [0, 1] for ELF and LOL, about its default before
+                    const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.source));
+                    const bool sgn = electronic_structure_is_signed(es);
+                    double lo = 0.0, hi = 1.0;
+                    if (!info.unit_interval) {
+                        const ColorScaleSpan& sp = es.source_span;
+                        if (sp.valid && sp.hi > sp.lo) {
+                            lo = sgn ? 0.0 : sp.lo;
+                            hi = sgn ? MD_MAX(fabs(sp.lo), fabs(sp.hi)) : sp.hi;
+                        } else {
+                            lo = info.iso < 0.0 ? 10.0 * info.iso : 0.0;
+                            hi = info.iso < 0.0 ? 0.0 : 10.0 * fabs(info.iso);
+                        }
+                    }
+                    char fmt[64];
+                    char unit[32] = "";
+                    md_unit_print(unit, sizeof(unit), info.unit);
+                    snprintf(fmt, sizeof(fmt), "%s%%.4g %s", sgn ? (const char*)u8"±" : "", unit);
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##field_isovalue", ImGuiDataType_Double, &es.field_iso_value, &lo, &hi, fmt) && es.coloring == SurfaceColoring::Field;
+                } else {
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                }
                 prop::row("optical density", "Optical density of the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             }
@@ -3345,18 +3477,21 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
         if (prop::section("Color")) {
             const bool density_property = electronic_structure_is_density_property(es);
-            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
-            if (es.coloring == SurfaceColoring::AtomColors) {
+            // on an isodensity surface the field shown is its colours: its colour map alone
+            const bool on_isodensity = electronic_structure_on_isodensity(es);
+            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode, on_isodensity);
+            if (!on_isodensity && es.coloring == SurfaceColoring::AtomColors) {
                 update_rep |= draw_representation_coloring(state, rep);
             }
 
             // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
+            const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
             if (!density_property) {
-                const bool tint = es.coloring != SurfaceColoring::Uniform;
-                const bool attachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-                const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const bool tint = g.coloring != SurfaceColoring::Uniform;
+                const bool attachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
                 const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
-                if (electronic_structure_is_signed(es)) {
+                if (electronic_structure_is_signed(g)) {
                     prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
                     prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
                     prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
@@ -3901,6 +4036,111 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
+// The cavity's own properties: what colours it, how, and what it is. Returns whether it needs updating.
+// A size of the glyphs from a quantity of the tesserae (cavity.h): which, and its scale
+static bool draw_cavity_mapping(const char* label, const char* id, CavityMapping* m, bool radius) {
+    bool changed = false;
+    prop::row(label, radius ?
+        "Constant: the scale in Å.\n"
+        "Area: the radius of a disc of the tessera's area, sqrt(a / pi), where its Gaussian is at half its peak; times the scale.\n"
+        "Decay length: as it is, times the scale.\n"
+        "Another quantity: its square root over that of its 99th percentile, so that the cross section goes with it; the scale in Å there." :
+        "Constant: the scale in Å.\n"
+        "Decay length: as it is, times the scale (how far the density reaches past the tessera).\n"
+        "Area: the radius of a disc of the tessera's area, times the scale.\n"
+        "Another quantity: over its 99th percentile, linearly; the scale in Å there.");
+    ImGui::PushID(id);
+    int a = (int)m->attribute;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+    if (ImGui::Combo("##attribute", &a, cavity_attribute_str, (int)CavityAttribute::Count)) {
+        const bool was_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
+        m->attribute = (CavityAttribute)a;
+        const bool is_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
+        // a factor and a size in Å are not the same scale: a sensible one for the new kind
+        if (was_length != is_length || m->attribute == CavityAttribute::Constant) {
+            m->scale = cavity_attribute_is_length(m->attribute) ? 1.0f : (radius ? 0.5f : 0.3f);
+            if (m->attribute == CavityAttribute::Constant) m->scale = radius ? 0.15f : 0.1f;
+        } else if (cavity_attribute_is_length(m->attribute)) {
+            m->scale = 1.0f;
+        }
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool factor = cavity_attribute_is_length(m->attribute);
+    changed |= ImGui::SliderFloat("##scale", &m->scale, factor ? 0.1f : 0.01f, factor ? 5.0f : 2.0f, factor ? "%.2f x" : "%.2f Å",
+                                  ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    ImGui::PopID();
+    return changed;
+}
+
+static bool draw_representation_cavity(Representation& rep) {
+    bool update_rep = false;
+    CavityRepresentation& cav = rep.cavity;
+    if (prop::section("Glyphs")) {
+        prop::row("shape", "A glyph per tessera of the GOSTSHYP cavity, picking as the tessera.\n"
+                           "Cylinder: from the tessera's point outward along its normal; its radius, height and colour.\n"
+                           "Sphere: centred on the point; its radius and colour.\n"
+                           "Never thinner than a pixel or two, so that the smallest tesserae can be hovered.\n"
+                           "The fields of the wall over space (its potential, the effective potential, its energy density)\n"
+                           "are in the electronic structure representation, as a source and as fields of its isosurfaces.");
+        int shape = (int)cav.shape;
+        if (ImGui::Combo("##cavity_shape", &shape, cavity_glyph_shape_str, (int)CavityGlyphShape::Count)) {
+            cav.shape = (CavityGlyphShape)shape;
+            update_rep = true;
+        }
+        update_rep |= draw_cavity_mapping("radius", "radius", &cav.radius, true);
+        if (cav.shape == CavityGlyphShape::Cylinder) {
+            update_rep |= draw_cavity_mapping("height", "height", &cav.height, false);
+        }
+        prop::row("unlit", "The colours as they are, not shaded");
+        update_rep |= ImGui::Checkbox("##cavity_unlit", &cav.unlit);
+        prop::section_end();
+    }
+    if (prop::section("Color")) {
+        prop::row("by", "Wall energy per area: P lambda_j, the energy p_j <rho|g_j> of the wall at a tessera over its area.\n"
+                        "Wall energy: P a_j lambda_j, at the tessera.\n"
+                        "Decay length: lambda_j = <rho|g_j> / (-d/dn <rho|g_j>), how far the density reaches past the wall.\n"
+                        "Wall density: <rho|g_j>, the density the tessera's Gaussian sees.\n"
+                        "Amplitude: p_j; per area, p_j / a_j = P / (-d/dn <rho|g_j>): the stiffer the density, the less.\n"
+                        "Switching: F_j, how much of its Lebedev share the switching left it.\n"
+                        "Area, Lebedev weight: what the discretization made of it (a = w R^2 F).");
+        int c = (int)cav.color;
+        if (ImGui::Combo("##cavity_color", &c, cavity_attribute_str, (int)CavityAttribute::Count)) {
+            cav.color = (CavityAttribute)c;
+            cav.scale.auto_range = true;
+            update_rep = true;
+        }
+        if (cav.color != CavityAttribute::Constant) {
+            if (cavity_attribute_unit_str[(int)cav.color][0]) {
+                prop::row("unit");
+                ImGui::TextUnformatted(cavity_attribute_unit_str[(int)cav.color]);
+            }
+            update_rep |= color_scale_draw_controls(&cav.scale, cavity_span(cav), md_unit_none(), "tesserae", "Over the tesserae: the 1st to 99th percentile");
+        }
+        prop::section_end();
+    }
+    CavitySummary sum = {};
+    if (cavity_summary(&sum, cav) && prop::section("Data", false)) {
+        prop::row("pressure");
+        ImGui::Text("%.3g GPa", sum.pressure_gpa);
+        prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
+        ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
+        prop::row("area", "The sum of the areas of the tesserae");
+        ImGui::Text("%.1f Å²", sum.tessera_area);
+        prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
+        ImGui::Text("%.1f kJ/mol", sum.wall_energy);
+        prop::row("volume", "sum_j a_j lambda_j: the wall energy over the pressure, the volume of the skin of density the wall holds");
+        ImGui::Text("%.1f Å³", sum.effective_volume);
+        prop::row("inside others", "Tesserae inside the sphere of another atom: the switching keeps them where the spheres overlap,\n"
+                                   "with small areas, so the cavity of the calculation is a smoothed union of the spheres.\n"
+                                   "Their share of the area of the tesserae.");
+        ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
+        prop::section_end();
+    }
+    return update_rep;
+}
+
 bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
     bool update_rep = false;
     // @TODO: Only display the representations which can be used for the current dataset
@@ -3914,6 +4154,7 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 // one, and a file without an SCF block can still carry density properties
                 if (es_source_mask(state->mold.sys) == 0) continue;
             }
+            if (i == (int)RepresentationType::Cavity && !cavity_available(state->mold.sys)) continue;
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
                 if (rep.type == RepresentationType::ElectronicStructure) {
@@ -4078,6 +4319,9 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             }
             prop::section_end();
         }
+        break;
+    case RepresentationType::Cavity:
+        update_rep |= draw_representation_cavity(rep);
         break;
     default:
         if (prop::section("Color")) {
@@ -4394,11 +4638,25 @@ void draw_representation_legends(ApplicationState& state) {
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
-            const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
-            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
+            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && electronic_structure_geometry(es).coloring == SurfaceColoring::Field;
+            if (colored && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
+        }
+
+        if (rep.type == RepresentationType::Cavity && rep.type_is_valid && rep.cavity.scale.show_legend && cavity_span(rep.cavity).valid &&
+            rep.cavity.color != CavityAttribute::Constant) {
+            char label[96];
+            const int c = (int)rep.cavity.color;
+            if (cavity_attribute_unit_str[c][0]) {
+                snprintf(label, sizeof(label), "%s (%s)", cavity_attribute_str[c], cavity_attribute_unit_str[c]);
+            } else {
+                snprintf(label, sizeof(label), "%s", cavity_attribute_str[c]);
+            }
+            color_scale_draw_legend(rep.cavity.scale, md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+            continue;
         }
 
         if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {

@@ -175,6 +175,9 @@ set(SRC_FILES
     src/display_units_settings.cpp
     src/surface_field.cpp
     src/gpu_job.cpp
+    src/gostshyp.cpp
+    src/field.cpp
+    src/cavity.cpp
     src/event.cpp
     src/file_list.cpp
     src/load_order.h
@@ -331,6 +334,8 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
     src/shaders/shadows/screen_space.frag
+    src/shaders/cavity/cavity_glyph.vert
+    src/shaders/cavity/cavity_glyph.frag
 )
 
 # Bake shaders into a single header file

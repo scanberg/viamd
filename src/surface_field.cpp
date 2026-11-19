@@ -1,5 +1,6 @@
 #include <surface_field.h>
 #include <density_cache.h>
+#include <gostshyp.h>
 
 #include <task_system.h>
 #include <gpu_job.h>
@@ -59,15 +60,26 @@ static const SurfaceFieldKindInfo* kind_table() {
     // made once: the units are functions of md_unit
     static const SurfaceFieldKindInfo table[(int)SurfaceFieldKind::Count] = {
         // EmbeddingPotential
-        { "Embedding Potential",     md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU },
+        { "Embedding Potential",     md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.02 },
         // ElectrostaticPotential
-        { "Electrostatic Potential", md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU },
+        { "Electrostatic Potential", md_unit_div(md_unit_hartree(), md_unit_elementary_charge()), SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.05 },
         // AverageLocalIonizationEnergy
-        { "Local Ionization Energy", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
+        { "Local Ionization Energy", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA,  0.5 },
         // LocalElectronAttachmentEnergy: never positive, 0 where nothing attracts; lowest (most reactive) dark, as above
-        { "Local Electron Attachment Energy", md_unit_hartree(),                                  SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
+        { "Local Electron Attachment Energy", md_unit_hartree(),                                  SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA,  -0.01 },
         // DensityScaleLength: short (stiff) dark, long (soft) bright
-        { "Density Scale Length",    md_unit_bohr_radius(),                                       SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS },
+        { "Density Scale Length",    md_unit_bohr_radius(),                                       SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 1.0 },
+        // GostshypWallPotential: >= 0, nothing special but zero
+        { "GOSTSHYP Wall Potential", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.1 },
+        // GostshypEffectivePotential: repulsive outward, attractive inward of the tesserae: its sign is the physics
+        { "GOSTSHYP Effective Potential", md_unit_hartree(),                                      SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.1 },
+        // GostshypEnergyDensity: >= 0
+        { "GOSTSHYP Energy Density", md_unit_div(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3)), SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 1.0e-4 },
+        // ElectronDensity: >= 0, largest at the nuclei
+        { "Electron Density",        md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3)), SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.001 },
+        // ElectronLocalization, LocalizedOrbitalLocator: in [0, 1]
+        { "Electron Localization (ELF)",     md_unit_none(),                                      SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.8, true },
+        { "Localized Orbital Locator (LOL)", md_unit_none(),                                      SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.5, true },
     };
     return table;
 }
@@ -87,6 +99,8 @@ ColorScale surface_field_default_scale(SurfaceFieldKind kind) {
     // until the first values say otherwise, in the field's unit
     scale.range_beg  = scale.symmetric ? -0.05f : 0.0f;
     scale.range_end  = scale.symmetric ?  0.05f : 1.0f;
+    // [0, 1] by definition: that is the range, whatever the values on a surface span
+    if (info.unit_interval) scale.auto_range = false;
     return scale;
 }
 
@@ -94,7 +108,11 @@ void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind from, Surf
     if (!scale) return;
     const SurfaceFieldKindInfo& next = surface_field_kind_info(to);
     scale->symmetric  = next.scale == SurfaceFieldScale::Diverging;
-    scale->auto_range = true;
+    scale->auto_range = !next.unit_interval;
+    if (next.unit_interval) {
+        scale->range_beg = 0.0f;
+        scale->range_end = 1.0f;
+    }
     if (scale->colormap == surface_field_kind_info(from).colormap) {
         scale->colormap = next.colormap;
     }
@@ -571,6 +589,16 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
         return basis_published(sys) && md_qm_attachment_available(&sys);
     case SurfaceFieldKind::DensityScaleLength:
         return basis_published(sys) && md_qm_density_available(&sys);
+    case SurfaceFieldKind::GostshypWallPotential:
+    case SurfaceFieldKind::GostshypEffectivePotential:
+        return gostshyp_available(sys);
+    case SurfaceFieldKind::GostshypEnergyDensity:
+        return gostshyp_available(sys) && basis_published(sys) && md_qm_density_available(&sys);
+    case SurfaceFieldKind::ElectronDensity:
+        return basis_published(sys) && md_qm_density_available(&sys);
+    case SurfaceFieldKind::ElectronLocalization:
+    case SurfaceFieldKind::LocalizedOrbitalLocator:
+        return basis_published(sys) && md_qm_kinetic_available(&sys);
     default:
         return false;
     }
@@ -639,17 +667,157 @@ static inline void bit_set(uint64_t* bits, size_t i)       { bits[i >> 6] |= (1u
 // started when it ends, unless a newer request has replaced it.
 // What a field is evaluated from: a charge distribution (the potentials, md_gto_int), or an orbital ratio (the
 // ionization and attachment energies, md_gto_iso)
+// ---------------------------------------------------------------------------
+// The electron density, ELF and LOL: product fields of the orbitals (md_gto_iso), in double on the CPU
+// ---------------------------------------------------------------------------
+// ELF has no floor of rho: it is a ratio of two vanishing quantities far from the atoms, taken as Multiwfn has it,
+// D + MD_QM_ELF_D_MIN (md_qm_elf), which goes to 0 smoothly by rho 1e-4. LOL is a plain ratio and goes to 0 there
+// itself.
+
+// The total density of the ground state, as products of its orbitals at the basis atoms (bohr)
+static md_gto_iso_field_t* density_field_create(md_gto_basis_t* basis, const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    double* rows = nullptr;
+    double* w = nullptr;
+    size_t num_ao = 0;
+    md_gto_iso_field_t* rho = nullptr;
+    const size_t n = md_qm_density_orbitals(&rows, &w, &num_ao, &sys, ESP_TOTAL_DENSITY_PATH, heap);
+    if (n && md_gto_basis_extract_attributes(basis, &sys.attributes, heap) && md_gto_basis_num_ao(basis) == num_ao &&
+        md_gto_basis_num_atoms(basis) <= num_atoms) {
+        rho = md_gto_iso_field_create_products(basis, (const float*)atom_xyz, 0, rows, nullptr, w, n, heap);
+    }
+    if (rows) md_free(heap, rows, sizeof(double) * n * num_ao);
+    if (w)    md_free(heap, w, sizeof(double) * n);
+    return rho;
+}
+
+// The densities and kinetic energy densities of the spins (one, the total, for a closed shell)
+struct LocalizationFields {
+    md_gto_basis_t      basis = {};
+    md_gto_basis_t      dbasis = {};    // the derivative basis
+    md_gto_iso_field_t* rho[2] = {};
+    md_gto_iso_field_t* tau[2] = {};
+    int                 num_spins = 0;  // 1: closed shell (the total density), 2: alpha and beta
+    bool                lol = false;
+};
+
+static void localization_destroy(LocalizationFields* f) {
+    if (!f) return;
+    md_allocator_i* heap = md_get_heap_allocator();
+    for (int i = 0; i < 2; ++i) {
+        if (f->rho[i]) md_gto_iso_field_destroy(f->rho[i]);
+        if (f->tau[i]) md_gto_iso_field_destroy(f->tau[i]);
+    }
+    md_gto_basis_free(&f->basis, heap);
+    md_gto_basis_free(&f->dbasis, heap);
+    delete f;
+}
+
+static LocalizationFields* localization_create(const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms, bool lol) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    md_allocator_i* alloc = md_temp_allocator(temp);
+    LocalizationFields* f = new LocalizationFields();
+    f->lol = lol;
+    if (!md_gto_basis_extract_attributes(&f->basis, &sys.attributes, heap) || md_gto_basis_num_atoms(&f->basis) > num_atoms) {
+        localization_destroy(f);
+        return nullptr;
+    }
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density
+    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
+    size_t ana = 0, bna = 0;
+    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &sys, ESP_ALPHA_DENSITY_PATH, alloc);
+    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &sys, ESP_BETA_DENSITY_PATH, alloc);
+    if (an == 0 && bn == 0) {
+        localization_destroy(f);
+        return nullptr;
+    }
+    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    // A spin without occupied orbitals has no density: it is left out, as md_qm_elf takes a spin of none
+    md_str_t paths[2];
+    int num = 0;
+    if (closed) {
+        paths[num++] = ESP_TOTAL_DENSITY_PATH;
+    } else {
+        if (an) paths[num++] = ESP_ALPHA_DENSITY_PATH;
+        if (bn) paths[num++] = ESP_BETA_DENSITY_PATH;
+    }
+    const float* xyz = (const float*)atom_xyz;
+    for (int i = 0; i < num; ++i) {
+        double *rr = nullptr, *rw = nullptr, *kr = nullptr, *kw = nullptr;
+        size_t rna = 0, kna = 0;
+        md_gto_basis_t dbasis = {};
+        const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &sys, paths[i], alloc);
+        const size_t kn = rn ? md_qm_kinetic_orbitals(&kr, &kw, &kna, &dbasis, &sys, paths[i], heap) : 0;
+        if (!rn || !kn) {
+            localization_destroy(f);
+            return nullptr;
+        }
+        if (i == 0) f->dbasis = dbasis; else md_gto_basis_free(&dbasis, heap);
+        f->rho[i] = md_gto_iso_field_create_products(&f->basis,  xyz, 0, rr, nullptr, rw, rn, heap);
+        f->tau[i] = md_gto_iso_field_create_products(&f->dbasis, xyz, 0, kr, nullptr, kw, kn, heap);
+        md_free(heap, kr, sizeof(double) * kn * kna);
+        md_free(heap, kw, sizeof(double) * kn);
+        if (!f->rho[i] || !f->tau[i]) {
+            localization_destroy(f);
+            return nullptr;
+        }
+    }
+    // Not the spin form with one spin's terms twice: closed is what says num_spins = 1 means the total
+    f->num_spins = closed ? 1 : num;
+    return f;
+}
+
+static inline double localization_value(bool lol, int num_spins, const double rho[2], const double g2[2], const double tau[2]) {
+    if (num_spins == 1) {   // a closed shell: two equal halves
+        const double r[2] = {0.5 * rho[0], 0.5 * rho[0]}, g[2] = {0.25 * g2[0], 0.25 * g2[0]}, t[2] = {0.5 * tau[0], 0.5 * tau[0]};
+        return localization_value(lol, 2, r, g, t);
+    }
+    if (lol) return md_qm_lol(rho[0], tau[0], rho[1], tau[1], 0.0);
+    return md_qm_elf(rho[0], g2[0], tau[0], rho[1], g2[1], tau[1], 0.0, MD_QM_ELF_D_MIN);
+}
+
+// At most 8 points (evaluate_points_range's step)
+static void localization_evaluate(double* out, const float* xyz, size_t n, const LocalizationFields* f) {
+    MD_ASSERT(n <= 8);
+    const int ns = f->num_spins;
+    double rho[2][8], grad[2][24], tau[2][8];
+    for (int s = 0; s < ns; ++s) {
+        md_gto_iso_field_evaluate(f->rho[s], xyz, n, 0, rho[s], grad[s]);
+        md_gto_iso_field_evaluate(f->tau[s], xyz, n, 0, tau[s], nullptr);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        double r[2] = {}, g2[2] = {}, t[2] = {};
+        for (int s = 0; s < ns; ++s) {
+            const double* g = grad[s] + 3 * i;
+            r[s]  = rho[s][i];
+            g2[s] = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+            t[s]  = tau[s][i];
+        }
+        out[i] = localization_value(f->lol, ns, r, g2, t);
+    }
+}
+
 struct FieldData {
     md_gto_int_charges_t* charges = nullptr;
     OrbitalRatio*         ratio = nullptr;
+    GostshypWall*         wall = nullptr;       // the GOSTSHYP potentials: analytic, on the CPU
+    GostshypField         wall_field = GostshypField::WallPotential;
+    md_gto_iso_field_t*   rho = nullptr;        // the electron density; with the wall, the energy density rho V1
+    md_gto_basis_t*       rho_basis = nullptr;  // its basis, owned
+    LocalizationFields*   loc = nullptr;        // ELF or LOL
 };
 
-static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio; }
+static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio || d.wall || d.rho || d.loc; }
 
 // What a point costs on the CPU, roughly, for the size of a pool task's grain
 static uint64_t field_data_work_per_point(const FieldData& d) {
     if (d.charges) return md_gto_int_charges_work_per_point(d.charges);
     if (d.ratio)   return 64 * (uint64_t)(d.ratio->num_orbitals + 16);  // two fields, ~64 AOs reaching a point
+    if (d.loc)     return 512;                                          // a density with its gradient and tau, per spin
+    if (d.rho)     return 128;
+    if (d.wall)    return 64;                                           // tens of Gaussians reach a point
     return 1;
 }
 
@@ -659,8 +827,26 @@ static uint64_t field_data_work_per_point(const FieldData& d) {
 static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, uint32_t end, const FieldData& d) {
     for (uint32_t b = beg; b < end && !task_system::cancelled(); b += 8) {
         const uint32_t e = MD_MIN(b + 8, end);
-        if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, d.charges);
-        else if (d.ratio) ratio_evaluate(out + b, xyz + 3 * (size_t)b, e - b, d.ratio);
+        const float* p = xyz + 3 * (size_t)b;
+        if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, p, e - b, 0, d.charges);
+        else if (d.ratio) ratio_evaluate(out + b, p, e - b, d.ratio);
+        else if (d.loc)   localization_evaluate(out + b, p, e - b, d.loc);
+        else if (d.wall && d.rho) {
+            // rho V1, the density only where the wall reaches: zero elsewhere
+            gostshyp_wall_evaluate(d.wall, GostshypField::WallPotential, p, e - b, out + b);
+            float q[3 * 8];
+            double r[8];
+            uint32_t at[8], m = 0;
+            for (uint32_t i = 0; i < e - b; ++i) {
+                if (out[b + i] == 0.0) continue;
+                md_memcpy(q + 3 * m, p + 3 * i, sizeof(float) * 3);
+                at[m++] = i;
+            }
+            if (m) md_gto_iso_field_evaluate(d.rho, q, m, 0, r, nullptr);
+            for (uint32_t k = 0; k < m; ++k) out[b + at[k]] *= r[k];
+        }
+        else if (d.wall)  gostshyp_wall_evaluate(d.wall, d.wall_field, p, e - b, out + b);
+        else if (d.rho)   md_gto_iso_field_evaluate(d.rho, p, e - b, 0, out + b, nullptr);
     }
 }
 
@@ -695,6 +881,13 @@ static void charges_destroy(md_gto_int_charges_t* q) {
 static void field_data_destroy(FieldData* d) {
     charges_destroy(d->charges);
     ratio_destroy(d->ratio);
+    gostshyp_wall_destroy(d->wall);
+    if (d->rho) md_gto_iso_field_destroy(d->rho);
+    if (d->rho_basis) {
+        md_gto_basis_free(d->rho_basis, md_get_heap_allocator());
+        delete d->rho_basis;
+    }
+    localization_destroy(d->loc);
     *d = FieldData{};
 }
 
@@ -774,6 +967,29 @@ static void build_run(FieldBuild* b) {
             b->stream = nullptr;
         }
 #endif
+    } else if (b->kind == SurfaceFieldKind::GostshypWallPotential || b->kind == SurfaceFieldKind::GostshypEffectivePotential ||
+               b->kind == SurfaceFieldKind::GostshypEnergyDensity) {
+        // The tesserae placed on the QM atoms where the basis is (bohr)
+        GostshypTesserae t;
+        GostshypPlacement pl;
+        if (gostshyp_read(&t, *b->sys) &&
+            gostshyp_place(&pl, t, b->basis_atom_xyz, b->num_basis_atoms, nullptr, 1.0 / 0.52917721092)) {
+            b->data.wall = gostshyp_wall_create(t, pl);
+            b->data.wall_field = b->kind == SurfaceFieldKind::GostshypEffectivePotential ? GostshypField::EffectivePotential : GostshypField::WallPotential;
+        }
+        if (b->kind == SurfaceFieldKind::GostshypEnergyDensity && b->data.wall) {
+            b->data.rho_basis = new md_gto_basis_t{};
+            b->data.rho = density_field_create(b->data.rho_basis, *b->sys, b->basis_atom_xyz, b->num_basis_atoms);
+            if (!b->data.rho) MD_LOG_ERROR("GOSTSHYP energy density: no ground state density to make it of");
+        }
+        b->ok = b->data.wall != nullptr && (b->kind != SurfaceFieldKind::GostshypEnergyDensity || b->data.rho);
+    } else if (b->kind == SurfaceFieldKind::ElectronDensity) {
+        b->data.rho_basis = new md_gto_basis_t{};
+        b->data.rho = density_field_create(b->data.rho_basis, *b->sys, b->basis_atom_xyz, b->num_basis_atoms);
+        b->ok = b->data.rho != nullptr;
+    } else if (b->kind == SurfaceFieldKind::ElectronLocalization || b->kind == SurfaceFieldKind::LocalizedOrbitalLocator) {
+        b->data.loc = localization_create(*b->sys, b->basis_atom_xyz, b->num_basis_atoms, b->kind == SurfaceFieldKind::LocalizedOrbitalLocator);
+        b->ok = b->data.loc != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
         md_memset(q, 0, sizeof(*q));
         if (build_charges(q, desc, heap)) {
@@ -1002,6 +1218,7 @@ struct SurfaceFieldWork {
     SurfaceFieldKind kind = SurfaceFieldKind::EmbeddingPotential;
     FieldSource   source;
 
+    bool     full = false;          // all of the grid wanted, no surfaces: the span is over all the values
     uint8_t* want = nullptr;        // [num_voxels] the voxels the surfaces of the last update can sample
     size_t   num_left = 0;          // of those, holding no value yet
     float*   samples = nullptr;     // [3 * num_samples] where the surfaces cross the density grid's edges,
@@ -1273,15 +1490,25 @@ static void surface_samples_collect(SurfaceFieldWork* w, const SurfaceFieldVolum
     }
 }
 
-// The spread of the field over the samples that have values
+// The spread of the field over the samples that have values; for all of the grid (w.full), over its values that are
+// there and not exactly zero (where a field of a cutoff does not reach), every so many of them for a large grid
 static void surface_statistics(SurfaceFieldVolume* vol, const SurfaceFieldWork& w) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
-    float* samples = (float*)md_temp_alloc(temp, sizeof(float) * MD_MAX(w.num_samples, (size_t)1));
     size_t count = 0;
-    for (size_t i = 0; samples && i < w.num_samples; ++i) {
-        float v;
-        if (field_sample(&v, *vol, w.samples + 3 * i)) samples[count++] = v;
+    float* samples = nullptr;
+    if (w.full) {
+        const size_t stride = MD_MAX((size_t)1, vol->num_voxels / (1u << 20));
+        samples = (float*)md_temp_alloc(temp, sizeof(float) * MD_MAX(vol->num_voxels / stride + 1, (size_t)1));
+        for (size_t i = 0; samples && i < vol->num_voxels; i += stride) {
+            if (bit_get(vol->done, i) && vol->values[i] != 0.0f) samples[count++] = vol->values[i];
+        }
+    } else {
+        samples = (float*)md_temp_alloc(temp, sizeof(float) * MD_MAX(w.num_samples, (size_t)1));
+        for (size_t i = 0; samples && i < w.num_samples; ++i) {
+            float v;
+            if (field_sample(&v, *vol, w.samples + 3 * i)) samples[count++] = v;
+        }
     }
     vol->num_surface_samples = count;
     if (count == 0) {
@@ -1528,6 +1755,8 @@ static void field_upload(SurfaceFieldVolume* vol) {
 // The values, the span over the surfaces, the texture: after new values or a new band
 static void field_publish(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     surface_statistics(vol, *w);
+    // all of the grid: for its owner to take whole, once complete (no texture of its own)
+    if (w->full) return;
     if (!vol->tex_id || vol->num_uploaded != vol->num_evaluated) {
         field_upload(vol);
     }
@@ -1681,7 +1910,6 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
     MD_ASSERT(vol);
     MD_ASSERT(desc.sys);
     MD_ASSERT(desc.grid);
-    MD_ASSERT(desc.density);
 
     if (!vol->work) vol->work = new SurfaceFieldWork();
     SurfaceFieldWork* w = vol->work;
@@ -1709,6 +1937,19 @@ bool surface_field_update(SurfaceFieldVolume* vol, const SurfaceFieldDesc& desc)
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
+
+    // All of it: no band, no surfaces
+    w->full = desc.density == nullptr;
+    if (w->full) {
+        md_memset(w->want, 1, vol->num_voxels);
+        w->num_samples = 0;
+        count_left(vol, w);
+        vol->band_hash = desc.band_hash;
+        if (w->num_left > 0) source_request(&w->source, desc);
+        surface_field_poll(vol);
+        field_publish(vol, w);
+        return true;
+    }
 
     // The band on the density grid, which the surfaces are drawn from, and the voxels of the field grid
     // it needs
