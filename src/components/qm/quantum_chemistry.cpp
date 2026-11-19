@@ -10091,57 +10091,74 @@ struct QuantumChemistry : viamd::EventHandler {
         pending_groups.atoms_initialized = true;
     }
 
-    // The windows and the flow, one list to write and read them by (serialization_utils.h, Visitor). The groups are
-    // records after them, each a GroupLabel and what follows it (deserialize_workspace).
-    void visit_settings(viamd::Visitor& v) {
-        static const char* const route_names[] = { "Fragments", "Orbitals" };
-        static const char* const order_names[] = { "Weight", "Barycentre", "Graph" };
-        MD_STATIC_ASSERT(MD_COUNTOF(route_names) == FLOW_MODE_COUNT, "a name for each route");
-        MD_STATIC_ASSERT(MD_COUNTOF(order_names) == FLOW_ORDER_GRAPH + 1, "a name for each order");
+    static constexpr const char* const flow_route_names[] = { "Fragments", "Orbitals" };
+    static constexpr const char* const flow_order_names[] = { "Weight", "Barycentre", "Graph" };
+    MD_STATIC_ASSERT(MD_COUNTOF(flow_route_names) == FLOW_MODE_COUNT, "a name for each route");
+    MD_STATIC_ASSERT(MD_COUNTOF(flow_order_names) == FLOW_ORDER_GRAPH + 1, "a name for each order");
 
-        v.field("ShowTransitionAnalysis", nto.show_window);
-        v.field("ShowChargeTransfer", flow.show_window);
-        if (v.block("Flow")) {
-            v.field("Route", flow.mode, viamd::enum_names(route_names));
-            if (v.field("Rows", flow.max_rows)) flow.max_rows = MD_CLAMP(flow.max_rows, 2, 40);
-            v.field("Threshold", flow.cut.threshold);
-            v.field("OthersCap", flow.cut.other_max);
-            v.field("SizeNormalize", flow.size_normalize);
-            int expanded = (int)flow.cut.other_expanded;
-            if (v.field("OthersExpanded", expanded)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, expanded);
-            if (v.field("BarWidth", flow.params.node_thickness)) flow.bar_width = flow.params.node_thickness;
-            v.field("NodeGap", flow.params.node_gap);
-            v.field("RibbonOpacity", flow.style.ribbon_alpha);
-            v.field("RibbonCurvature", flow.style.ribbon_curvature);
-            v.field("Order", flow.params.order, viamd::enum_names(order_names));
-            int sweeps = (int)flow.params.barycentre_sweeps;
-            if (v.field("Sweeps", sweeps)) flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
-            v.field("RibbonMinPx", flow.style.ribbon_min_px);
-            v.field("NodeTint", flow.style.node_fill_tint);
-            v.field("NodeBorder", flow.style.border_width);
-            v.field("ColorLabels", flow.style.color_labels);
-            v.field("ColorBySide", flow.style.color_by_side);
-            v.field("RibbonLabels", flow.style.show_ribbon_labels);
-            v.field("Legend", flow.show_legend);
-            v.end();
-        }
+    // The windows and the flow, by path (serialization_utils.h)
+    void write_settings(viamd::serialization_state_t& s) {
+        viamd::PathPrefix p;
+        viamd::write_bool(s, p("ShowTransitionAnalysis"), nto.show_window);
+        viamd::write_bool(s, p("ShowChargeTransfer"), flow.show_window);
+        viamd::PathPrefix f = p.sub("Flow");
+        viamd::write_enum(s, f("Route"), (int)flow.mode, viamd::enum_names(flow_route_names));
+        viamd::write_int(s, f("Rows"), flow.max_rows);
+        viamd::write_flt(s, f("Threshold"), flow.cut.threshold);
+        viamd::write_int(s, f("OthersCap"), flow.cut.other_max);
+        viamd::write_bool(s, f("SizeNormalize"), flow.size_normalize);
+        viamd::write_int(s, f("OthersExpanded"), (int)flow.cut.other_expanded);
+        viamd::write_flt(s, f("BarWidth"), flow.params.node_thickness);
+        viamd::write_flt(s, f("NodeGap"), flow.params.node_gap);
+        viamd::write_flt(s, f("RibbonOpacity"), flow.style.ribbon_alpha);
+        viamd::write_flt(s, f("RibbonCurvature"), flow.style.ribbon_curvature);
+        viamd::write_enum(s, f("Order"), (int)flow.params.order, viamd::enum_names(flow_order_names));
+        viamd::write_int(s, f("Sweeps"), (int)flow.params.barycentre_sweeps);
+        viamd::write_flt(s, f("RibbonMinPx"), flow.style.ribbon_min_px);
+        viamd::write_flt(s, f("NodeTint"), flow.style.node_fill_tint);
+        viamd::write_flt(s, f("NodeBorder"), flow.style.border_width);
+        viamd::write_bool(s, f("ColorLabels"), flow.style.color_labels);
+        viamd::write_bool(s, f("ColorBySide"), flow.style.color_by_side);
+        viamd::write_bool(s, f("RibbonLabels"), flow.style.show_ribbon_labels);
+        viamd::write_bool(s, f("Legend"), flow.show_legend);
     }
 
-    // The keys of workspaces from before the paths whose meaning changed
-    bool read_legacy(md_str_t key, md_str_t arg) {
-        if (md_str_eq_cstr(key, "FlowMode")) {
+    void read_settings(viamd::Entries& e) {
+        viamd::PathPrefix p;
+        viamd::get(e, p("ShowTransitionAnalysis"), nto.show_window);
+        viamd::get(e, p("ShowChargeTransfer"), flow.show_window);
+        viamd::PathPrefix f = p.sub("Flow");
+        viamd::get_enum(e, f("Route"), flow.mode, viamd::enum_names(flow_route_names));
+        if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("FlowMode"))) {
             // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
             int mode = 0;
-            if (viamd::extract_int(mode, arg)) {
-                flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
-            }
-        } else if (md_str_eq_cstr(key, "FlowNodeThickness") || md_str_eq_cstr(key, "FlowRibbonAlpha") ||
-                   md_str_eq_cstr(key, "FlowNodeFillTint") || md_str_eq_cstr(key, "FlowBorderWidth")) {
-            // the boxed style's settings: they do not carry over to the bars
-        } else {
-            return false;
+            if (viamd::extract_int(mode, *v)) flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
         }
-        return true;
+        if (viamd::get(e, f("Rows"), flow.max_rows)) flow.max_rows = MD_CLAMP(flow.max_rows, 2, 40);
+        viamd::get(e, f("Threshold"), flow.cut.threshold);
+        viamd::get(e, f("OthersCap"), flow.cut.other_max);
+        viamd::get(e, f("SizeNormalize"), flow.size_normalize);
+        int expanded = 0;
+        if (viamd::get(e, f("OthersExpanded"), expanded)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, expanded);
+        if (viamd::get(e, f("BarWidth"), flow.params.node_thickness)) flow.bar_width = flow.params.node_thickness;
+        viamd::get(e, f("NodeGap"), flow.params.node_gap);
+        viamd::get(e, f("RibbonOpacity"), flow.style.ribbon_alpha);
+        viamd::get(e, f("RibbonCurvature"), flow.style.ribbon_curvature);
+        viamd::get_enum(e, f("Order"), flow.params.order, viamd::enum_names(flow_order_names));
+        int sweeps = 0;
+        if (viamd::get(e, f("Sweeps"), sweeps)) flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
+        viamd::get(e, f("RibbonMinPx"), flow.style.ribbon_min_px);
+        viamd::get(e, f("NodeTint"), flow.style.node_fill_tint);
+        viamd::get(e, f("NodeBorder"), flow.style.border_width);
+        viamd::get(e, f("ColorLabels"), flow.style.color_labels);
+        viamd::get(e, f("ColorBySide"), flow.style.color_by_side);
+        viamd::get(e, f("RibbonLabels"), flow.style.show_ribbon_labels);
+        viamd::get(e, f("Legend"), flow.show_legend);
+        // the boxed style's settings: they do not carry over to the bars
+        viamd::get_value(e, MD_STR_LIT("FlowNodeThickness"));
+        viamd::get_value(e, MD_STR_LIT("FlowRibbonAlpha"));
+        viamd::get_value(e, MD_STR_LIT("FlowNodeFillTint"));
+        viamd::get_value(e, MD_STR_LIT("FlowBorderWidth"));
     }
 
     void serialize_workspace(viamd::serialization_state_t& ser) {
@@ -10156,17 +10173,16 @@ struct QuantumChemistry : viamd::EventHandler {
         // compatibility branch that has to be carried forever.
         viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
 
-        viamd::Visitor v = viamd::Visitor::writer(ser, MD_STR_LIT("QuantumChemistry"));
-        visit_settings(v);
+        write_settings(ser);
 
-        viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
-
-        // One bitfield per group rather than one index per atom: the same information, but it
-        // survives being looked at in a text editor.
+        // One set of atoms per group rather than one index per atom: the same information, but it survives being
+        // looked at in a text editor
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
+        viamd::PathPrefix p;
+        viamd::write_int(ser, p("Group"), (int64_t)nto.group.count);
         for (size_t g = 0; g < nto.group.count; ++g) {
             md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, temp_alloc);
             for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
@@ -10175,9 +10191,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             const md_bitset_t mask = md_bitmask_view(&b);
-            viamd::write_str(ser, MD_STR_LIT("GroupLabel"), md_str_from_cstr(nto.group.label[g]));
-            viamd::write_vec4(ser, MD_STR_LIT("GroupColor"), nto.group.color[g]);
-            viamd::write_bitset(ser, MD_STR_LIT("GroupAtoms"), &mask);
+            viamd::PathPrefix q = p.sub("Group", (int)g);
+            viamd::write_str(ser, q("Label"), md_str_from_cstr(nto.group.label[g]));
+            viamd::write_vec4(ser, q("Color"), nto.group.color[g]);
+            viamd::write_bitset(ser, q("Atoms"), &mask);
         }
     }
 
@@ -10215,37 +10232,50 @@ struct QuantumChemistry : viamd::EventHandler {
             { "FlowLegend",          "Flow.Legend" },
         };
 
-        // 'GroupLabel' opens a group; the color and atom entries that follow belong to it. The
-        // index only advances on a label, so a malformed section cannot walk off the end.
-        int64_t group_idx = -1;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        viamd::Entries e = viamd::read_entries(deser, aliases, md_temp_allocator(temp));
+        read_settings(e);
 
-        viamd::read_section(deser, MD_STR_LIT("QuantumChemistry"), [&](md_str_t path, md_str_t arg) {
-            if (md_str_eq_cstr(path, "GroupCount")) {
-                int count = 0;
-                if (viamd::extract_int(count, arg)) {
-                    pending_groups.count = (size_t)MD_CLAMP(count, 0, MAX_NTO_GROUPS);
-                }
-            } else if (md_str_eq_cstr(path, "GroupLabel")) {
+        viamd::PathPrefix p;
+        int count = 0;
+        viamd::get_count(e, p("Group"), count, MAX_NTO_GROUPS);
+        for (int g = 0; g < count; ++g) {
+            viamd::PathPrefix q = p.sub("Group", g);
+            viamd::get(e, q("Label"), pending_groups.label[g], sizeof(pending_groups.label[0]));
+            viamd::get(e, q("Color"), pending_groups.color[g]);
+            if (const md_str_t* v = viamd::get_value(e, q("Atoms"))) {
+                md_bitset_free(&pending_groups.atoms[g], md_get_heap_allocator());
+                viamd::extract_bitset(&pending_groups.atoms[g], *v, md_get_heap_allocator());
+            }
+        }
+        // An older workspace's groups, a GroupLabel each and what follows it, in the order of the file
+        int64_t group_idx = count - 1;
+        for (size_t i = 0; i < e.count; ++i) {
+            viamd::Entry& entry = e.items[i];
+            const md_str_t arg = entry.value;
+            if (md_str_eq_cstr(entry.path, "GroupCount")) {
+                int n = 0;
+                if (viamd::extract_int(n, arg)) count = MD_MAX(count, MD_CLAMP(n, 0, MAX_NTO_GROUPS));
+            } else if (md_str_eq_cstr(entry.path, "GroupLabel")) {
                 group_idx += 1;
                 if (group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
                 }
-            } else if (md_str_eq_cstr(path, "GroupColor")) {
-                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
-                    viamd::extract_vec4(pending_groups.color[group_idx], arg);
-                }
-            } else if (md_str_eq_cstr(path, "GroupAtoms")) {
+            } else if (md_str_eq_cstr(entry.path, "GroupColor")) {
+                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) viamd::extract_vec4(pending_groups.color[group_idx], arg);
+            } else if (md_str_eq_cstr(entry.path, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
                     viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
                 }
             } else {
-                return viamd::read_entry(path, arg, aliases,
-                    [&](viamd::Visitor& v) { visit_settings(v); },
-                    [&](md_str_t key, md_str_t val) { return read_legacy(key, val); });
+                continue;
             }
-            return true;
-        });
+            entry.read = true;
+        }
+        viamd::entries_unread(e, MD_STR_LIT("QuantumChemistry"));
+        pending_groups.count = (size_t)count;
 
         // Trust the labels actually present over a GroupCount that disagrees with them.
         pending_groups.count = MD_MAX(pending_groups.count, (size_t)(group_idx + 1));

@@ -169,15 +169,14 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, ApplicationS
 
 // --- Workspace ---
 
-// [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it. The fields of an
-// electronic structure are in a section of their own after its representation's, [Representation.ElectronicStructure].
+// [RepresentationGroup] and [Representation] sections, depth first: a group before what is within it. A
+// representation's keys are paths within it (ElectronicStructure.Slice.0.Opacity, serialization_utils.h).
 void representations_serialize(viamd::serialization_state_t& state, const ApplicationState* app);
-// The fields of a representation, all but where it is in the tree (Group), into the current section, which is
-// 'section': what is in a section of its own is written after it, as [section.Name].
-void representation_write_entries(viamd::serialization_state_t& state, md_str_t section, const ApplicationState* app, const Representation& rep);
-// One of them read, by its path within the representation (viamd::read_section gives the paths of a section and of
-// those continuing it), or by its key in a workspace from before the paths: false when it is not one of them
-bool representation_read_entry(Representation* rep, md_str_t path, md_str_t arg);
+// The fields of a representation, all but where it is in the tree (Group), into the current section
+void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app, const Representation& rep);
+// Reads them, from the entries of the current section up to the next header (section: its name, for the log), and the
+// keys of a workspace from before the paths
+void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section);
 // True when the section was one of the above, which it has then read
 bool representations_deserialize(ApplicationState* app, md_str_t section, viamd::deserialization_state_t& state);
 

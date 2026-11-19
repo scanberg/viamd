@@ -19,7 +19,7 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 
 | Unit | Covered by |
 |---|---|
-| `src/serialization_utils.cpp` | `test_serialization.cpp` — the workspace text format; `test_serialization_visitor.cpp` — paths, the sections continuing a section, the Visitor, the aliases of older keys |
+| `src/serialization_utils.cpp` | `test_serialization.cpp` — the workspace text format; `test_serialization_paths.cpp` — paths, the entries of a section read by path, arrays and lists, the aliases of older keys |
 | `src/event.cpp` | `test_event.cpp` — delivery, ordering, delays |
 | `src/task_system.cpp` | `test_task_system.cpp` — range partitioning, dependencies |
 | `src/color_utils.h` | `test_color_utils.cpp` — the colour space conversions, which are header only |
