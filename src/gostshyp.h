@@ -25,8 +25,8 @@ struct md_system_t;
 //                       dependence: a p-type term of prefactor p_j lambda_j. To first order each Gaussian moved
 //                       outward by its decay length; negative more than 1 / (2 zeta_j lambda_j) inward of a
 //                       tessera. Hartree
-//   EnergyDensity       rho(r) V1(r): where the energy of the wall is, integrating to E. Hartree / bohr^3. On an
-//                       isodensity surface it is the isovalue times V1, so it is offered as a volume only
+// and rho(r) V1(r), where the energy of the wall is (integrating to E, Hartree / bohr^3), which takes the density too:
+// a surface field of its own (surface_field.h, GostshypEnergyDensity), V1 times the density where the wall reaches.
 //
 // UNITS: the tesserae as published, in Angstrom; the fields over positions in bohr, as the grids of the volumes.
 
@@ -73,14 +73,7 @@ bool gostshyp_place(GostshypPlacement* out, const GostshypTesserae& t, const md_
 enum class GostshypField : int {
     WallPotential,
     EffectivePotential,
-    EnergyDensity,
     Count
-};
-
-inline const char* gostshyp_field_str[(int)GostshypField::Count] = {
-    "Wall potential",
-    "Effective potential",
-    "Wall energy density",
 };
 
 // The Gaussians, placed in bohr and binned for evaluation at many points
@@ -88,8 +81,7 @@ struct GostshypWall;
 GostshypWall* gostshyp_wall_create(const GostshypTesserae& t, const GostshypPlacement& bohr_placement);
 void          gostshyp_wall_destroy(GostshypWall* w);
 
-// V1 or v at n points (bohr, packed float3) into out (Hartree). Thread safe. EnergyDensity is not of the wall alone
-// (see gostshyp_energy_density_evaluate).
+// V1 or v at n points (bohr, packed float3) into out (Hartree). Thread safe.
 void gostshyp_wall_evaluate(const GostshypWall* w, GostshypField field, const float* xyz, size_t n, double* out);
 
 // Whether V1 is zero at the point to the cutoff of the Gaussians: nothing of the wall reaches it

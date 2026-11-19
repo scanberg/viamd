@@ -1038,8 +1038,6 @@ int main(int argc, char** argv) {
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
-        // and what the ELF and LOL evaluations left (es_jobs_collect)
-        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1782,9 +1780,9 @@ int main(int argc, char** argv) {
         electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
         // what its field has under way holds the GPU stream and pool tasks: both still here
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
+        surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
     }
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
-    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
@@ -8239,16 +8237,19 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (es.display != ElectronicStructureDisplay::Isosurface) continue;
+        // the fields meshes are not made of: raycast (draw_representations_transparent)
+        if (!es_mesh_mode(state, es)) continue;
+        const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
 
         IsoDesc iso;
-        electronic_structure_iso_desc_init(&iso, es);
+        electronic_structure_iso_desc_init(&iso, g);
         const size_t n = electronic_structure_mesh_surfaces(surfaces + num_surfaces, MAX_SURFACES - num_surfaces, state, &rep, iso);
 
         // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
         // the colour volume spans the box of the density volume
         const md_f32x4x4_t world_to_volume = md_f32x4x4_inverse(es.density_vol.texture_to_world);
-        const bool use_field  = es.coloring == SurfaceColoring::Field;
-        const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
+        const bool use_field  = g.coloring == SurfaceColoring::Field;
+        const bool use_colors = g.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
         const IsolineDesc isolines = color_scale_isoline_desc(es.field_isolines, isoline_px_per_point(state));
         for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
@@ -8385,21 +8386,24 @@ static bool draw_representations_transparent(ApplicationState* state) {
     if (num_representations == 0) return false;
 
     iso_mesh_converged = true;
-    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
-        const bool meshes = draw_representations_transparent_mesh(state);
-        return draw_representations_volumes(state, meshes) || meshes;
-    }
-    isomesh::target_free(&iso_mesh_target);
-
     bool written = false;
+    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: the setting's,
+    // and whatever meshes are not made of (es_mesh_mode)
+    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
+        written = draw_representations_transparent_mesh(state);
+    } else {
+        isomesh::target_free(&iso_mesh_target);
+    }
 
     for (size_t i = 0; i < num_representations; ++i) {
         Representation& rep = state->representation.reps[i];
         if (!representation_shown(*state, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface) {
-            const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
+        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface &&
+            !es_mesh_mode(state, rep.electronic_structure)) {
+            const ElectronicStructureRepresentation g = electronic_structure_geometry(rep.electronic_structure);
+            const bool use_field = g.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
-            electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
+            electronic_structure_iso_desc_init(&iso, g);
 
 #if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
             flag_representation_as_dirty(&state->representation.reps[i]);
@@ -8434,7 +8438,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .values = iso.values,
                     .colors = iso.colors,
                     .optical_densities = iso.optical_densities,
-                    .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
+                    .use_color_volume = g.coloring == SurfaceColoring::AtomColors,
                     .use_field = use_field,
                     .exact = state->settings.exact_isosurfaces,
                 },

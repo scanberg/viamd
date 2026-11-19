@@ -279,6 +279,7 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
+    surface_field_invalidate(&rep->electronic_structure.source_vol);
     // the cavity of the old one
     cavity_invalidate(&rep->cavity);
     // and its meshes of the old one's basis
@@ -298,6 +299,8 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.color_vol.tex_id   = 0;
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
+    rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
+    rep->electronic_structure.source_span        = ColorScaleSpan{};
     rep->electronic_structure.iso_mesh           = nullptr;
     rep->cavity.data                             = nullptr;
 }
@@ -375,6 +378,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
         for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
     }
     surface_field_free(&rep.electronic_structure.field_vol);
+    surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
     cavity_free(&rep.cavity);
 
@@ -2153,12 +2157,16 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureType"))) {
         int type;
         if (viamd::extract_int(type, arg)) electronic_structure_set_legacy_type(&rep->electronic_structure, type);
-    } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureGostshypField"))) {
-        int f = 0;
-        if (viamd::extract_int(f, arg)) rep->electronic_structure.gostshyp_field = MD_CLAMP(f, 0, (int)GostshypField::Count - 1);
+    } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureFieldIso"))) {
+        viamd::extract_dbl(rep->electronic_structure.field_iso_value, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureSurface"))) {
+        int v = 0;
+        if (viamd::extract_int(v, arg) && v >= 0 && v < (int)ElectronicStructureSurface::Count) rep->electronic_structure.surface = (ElectronicStructureSurface)v;
+    } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureSurfaceDensity"))) {
+        viamd::extract_dbl(rep->electronic_structure.surface_density, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureSource"))) {
         int source;
-        if (viamd::extract_int(source, arg)) {
+        if (viamd::extract_int(source, arg) && source >= 0 && source < (int)ElectronicStructureSource::Count) {
             rep->electronic_structure.source = (ElectronicStructureSource)source;
             electronic_structure_set_source_defaults(&rep->electronic_structure);
         }
@@ -2242,7 +2250,7 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
-        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::SignedPotential) {
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::SignedRanged) {
             rep->electronic_structure.volume.map_kind = kind;
             rep->electronic_structure.volume.map_init = true;
         }
@@ -2453,7 +2461,6 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         }
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureType"),     electronic_structure_legacy_type(rep.electronic_structure));
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureSource"),   (int)rep.electronic_structure.source);
-        viamd::write_int(state,  MD_STR_LIT("ElectronicStructureGostshypField"), rep.electronic_structure.gostshyp_field);
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureField"),    (int)electronic_structure_legacy_field(rep.electronic_structure));
         viamd::write_bool(state, MD_STR_LIT("ElectronicStructureUseMagnitude"), rep.electronic_structure.use_magnitude);
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureSpin"),     (int)rep.electronic_structure.spin);
@@ -2461,6 +2468,9 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureTransitionDensityComponent"), (int)rep.electronic_structure.transition_density_component);
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureRes"), (int)rep.electronic_structure.resolution);
         viamd::write_dbl(state,  MD_STR_LIT("ElectronicStructureIso"),      rep.electronic_structure.iso_value);
+        viamd::write_dbl(state,  MD_STR_LIT("ElectronicStructureFieldIso"), rep.electronic_structure.field_iso_value);
+        viamd::write_int(state,  MD_STR_LIT("ElectronicStructureSurface"),  (int)rep.electronic_structure.surface);
+        viamd::write_dbl(state,  MD_STR_LIT("ElectronicStructureSurfaceDensity"), rep.electronic_structure.surface_density);
         viamd::write_vec4(state, MD_STR_LIT("ElectronicStructureColPos"),   rep.electronic_structure.col_psi_pos);
         viamd::write_vec4(state, MD_STR_LIT("ElectronicStructureColNeg"),   rep.electronic_structure.col_psi_neg);
         viamd::write_vec4(state, MD_STR_LIT("ElectronicStructureColDen"),   rep.electronic_structure.col_den);
@@ -2650,8 +2660,10 @@ bool representations_deserialize(ApplicationState* app, md_str_t section, viamd:
 // How the isosurfaces of an electronic structure representation are coloured, as rows of its Color section: the
 // colouring, and for a field the field, its colour scale and its isolines. The atoms' colours are not offered for a
 // density property; a field is offered whenever the dataset has what one is made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode) {
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode, bool field_only) {
     bool update_rep = false;
+    if (field_only) goto scale;
+    {
 
     bool any_field = false;
     for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
@@ -2698,7 +2710,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     if (es.coloring != SurfaceColoring::Field) {
         return update_rep;
     }
-
+    }
+scale:
     // Where the field stands, on its label: how much of it has been evaluated, and where
     const SurfaceFieldVolume& vol = es.field_vol;
     char status[160] = "";
@@ -2709,8 +2722,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         snprintf(status, sizeof(status), "%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
-    prop::row("field", status);
-    if (ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
+    if (!field_only) prop::row("field", status);
+    if (!field_only && ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
         for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
             const SurfaceFieldKind kind = (SurfaceFieldKind)k;
             ImGui::BeginDisabled(!surface_field_available(kind, sys));
@@ -2941,21 +2954,28 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     };
 
     bool update_rep = false;
-    const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+    const bool mesh_mode = es_mesh_mode(state, es);
     const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
 
-    if (prop::section("Source")) {
-        prop::row("source");
+    if (prop::section("Field")) {
+        prop::row("field", "The field over space that is shown, as a surface, a volume or on planes.\n"
+                           "On a surface the electrostatic potential, the local energies, the density scale length and the\n"
+                           "GOSTSHYP fields are shown on a surface of the electron density by default, as its colours.");
         if (ImGui::BeginCombo("##source", electronic_structure_source_str[(int)es.source])) {
             for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
                 ElectronicStructureSource source = (ElectronicStructureSource)n;
                 bool is_selected = (es.source == source);
                 bool disabled = !electronic_structure_source_supported(source_mask, source);
+                // the fields of the system as a whole apart from the orbitals and densities
+                if (source == ElectronicStructureSource::ElectronLocalization) ImGui::Separator();
 
                 if (disabled) ImGui::PushDisabled();
                 if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
                     es.source = source;
                     electronic_structure_set_source_defaults(&es);
+                    if (electronic_structure_source_on_isodensity_possible(source)) {
+                        es.surface_density = es_isodensity_default(state->mold.sys, source);
+                    }
                     update_rep = true;
                 }
                 if (disabled) ImGui::PopDisabled();
@@ -2965,21 +2985,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 }
             }
             ImGui::EndCombo();
-        }
-
-        if (es.source == ElectronicStructureSource::GostshypField) {
-            prop::row("field", "The fields of the GOSTSHYP wall of the run under pressure, from its tesserae's Gaussians:\n"
-                               "Wall potential: V1 = sum_j p_j g_j, whose expectation value is the wall's energy.\n"
-                               "Effective potential: what the electrons feel, the Fock operator's V1 - V2,\n"
-                               "  sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j.(r - c_j)): each Gaussian, to first order, moved\n"
-                               "  outward by its decay length; attractive inward of the tesserae.\n"
-                               "Wall energy density: rho V1, where the wall's energy is (it integrates to it).\n"
-                               "Hartree (the energy density: Hartree / bohr^3). Evaluated on the CPU.");
-            int f = MD_CLAMP(es.gostshyp_field, 0, (int)GostshypField::Count - 1);
-            if (ImGui::Combo("##gostshyp_field", &f, gostshyp_field_str, (int)GostshypField::Count)) {
-                es.gostshyp_field = f;
-                update_rep = true;
-            }
         }
 
         if (electronic_structure_is_density_property(es)) {
@@ -3263,9 +3268,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
             for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
                 const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
-                // ELF and LOL are about how they vary through space, which a surface of one value does not show
-                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
-                ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
                     if (es.display == ElectronicStructureDisplay::Planes && es.slices.count == 0) {
@@ -3275,8 +3277,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // which would evaluate it again whatever (flag_representation_as_dirty)
                     rep.needs_update = true;
                 }
-                ImGui::EndDisabled();
-                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
                 if (es.display == d) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
@@ -3334,9 +3334,48 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             } else {
+                const bool field = electronic_structure_source_field_kind(es.source) != SurfaceFieldKind::Count;
+                if (electronic_structure_source_on_isodensity_possible(es.source)) {
+                    prop::row("surface", "What the surface is:\n"
+                                         "Isodensity: where the electron density is the value, coloured by the field (as the electrostatic\n"
+                                         "  potential is read on 0.001 au); evaluated only around it\n"
+                                         "Isosurface of the field: where the field is the isovalue");
+                    int sf = (int)es.surface;
+                    if (ImGui::Combo("##surface", &sf, electronic_structure_surface_str, (int)ElectronicStructureSurface::Count)) {
+                        es.surface = (ElectronicStructureSurface)sf;
+                        update_rep = true;
+                    }
+                }
                 // The band a field is evaluated in follows the isovalue
-                prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
-                update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                if (electronic_structure_on_isodensity(es)) {
+                    const double d_min = 1.0e-5, d_max = 0.1;
+                    prop::row("density", "The electron density of the surface, electrons / bohr^3 (au)");
+                    update_rep |= ImGui::SliderScalar("##surface_density", ImGuiDataType_Double, &es.surface_density, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
+                } else if (field) {
+                    // over the field's values: its spread once evaluated, [0, 1] for ELF and LOL, about its default before
+                    const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.source));
+                    const bool sgn = electronic_structure_is_signed(es);
+                    double lo = 0.0, hi = 1.0;
+                    if (!info.unit_interval) {
+                        const ColorScaleSpan& sp = es.source_span;
+                        if (sp.valid && sp.hi > sp.lo) {
+                            lo = sgn ? 0.0 : sp.lo;
+                            hi = sgn ? MD_MAX(fabs(sp.lo), fabs(sp.hi)) : sp.hi;
+                        } else {
+                            lo = info.iso < 0.0 ? 10.0 * info.iso : 0.0;
+                            hi = info.iso < 0.0 ? 0.0 : 10.0 * fabs(info.iso);
+                        }
+                    }
+                    char fmt[64];
+                    char unit[32] = "";
+                    md_unit_print(unit, sizeof(unit), info.unit);
+                    snprintf(fmt, sizeof(fmt), "%s%%.4g %s", sgn ? (const char*)u8"±" : "", unit);
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##field_isovalue", ImGuiDataType_Double, &es.field_iso_value, &lo, &hi, fmt) && es.coloring == SurfaceColoring::Field;
+                } else {
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                }
                 prop::row("optical density", "Optical density of the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             }
@@ -3349,18 +3388,21 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
         if (prop::section("Color")) {
             const bool density_property = electronic_structure_is_density_property(es);
-            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
-            if (es.coloring == SurfaceColoring::AtomColors) {
+            // on an isodensity surface the field shown is its colours: its colour map alone
+            const bool on_isodensity = electronic_structure_on_isodensity(es);
+            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode, on_isodensity);
+            if (!on_isodensity && es.coloring == SurfaceColoring::AtomColors) {
                 update_rep |= draw_representation_coloring(state, rep);
             }
 
             // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
+            const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
             if (!density_property) {
-                const bool tint = es.coloring != SurfaceColoring::Uniform;
-                const bool attachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-                const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const bool tint = g.coloring != SurfaceColoring::Uniform;
+                const bool attachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
                 const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
-                if (electronic_structure_is_signed(es)) {
+                if (electronic_structure_is_signed(g)) {
                     prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
                     prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
                     prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
@@ -4507,8 +4549,9 @@ void draw_representation_legends(ApplicationState& state) {
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
-            const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
-            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
+            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && electronic_structure_geometry(es).coloring == SurfaceColoring::Field;
+            if (colored && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }

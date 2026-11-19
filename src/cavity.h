@@ -16,8 +16,9 @@ struct CavityData;
 //
 // The tesserae of the GOSTSHYP cavity of a VeloxChem run under pressure (gostshyp.h), drawn as what they are: points
 // with a normal and quantities of their own, one glyph each. The fields the wall makes over R^3 - its potential, the
-// potential the electrons feel, its energy density - are drawn by the electronic structure representation (a source
-// of its own, and fields an isosurface is coloured by): there is no surface of the cavity here, as GOSTSHYP has none.
+// potential the electrons feel, its energy density - are fields of the electronic structure representation, drawn as
+// any other field is (an isosurface, an isodensity surface coloured by one, a volume, planes): there is no surface
+// of the cavity here, as GOSTSHYP has none.
 //
 // THE GLYPHS stand on their tessera's point along its normal and pick as the tessera (PickingDomain_Tessera): hovering
 // one shows its tooltip and marks it, and follows it in the GOSTSHYP window's table. Two shapes:
