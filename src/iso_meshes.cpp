@@ -196,18 +196,6 @@ static void job_cancel(IsoMeshes* m) {
 // made (iso_field_release) goes when that task ends. A task whose result is no longer wanted is orphaned and
 // cleaned up once it ends (iso_meshes_collect); nothing here waits for one, but iso_meshes_shutdown.
 
-// What an electronic structure representation's field is of, copied for the task that makes it
-struct IsoFieldSpec {
-    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
-    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
-    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
-    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
-    int orbital_idx = 0;
-    int excited_state_idx = 0;
-    int nto_lambda_idx = 0;
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
-};
-
 struct IsoBuild {
     enum Kind { Field, Set } kind = Field;
     task_system::Job task;       // a cancelled one (a load) made nothing to be taken
@@ -218,7 +206,7 @@ struct IsoBuild {
     md_float3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
     // Field
-    IsoFieldSpec spec = {};
+    FieldRef spec = {};
     md_gto_iso_field_t* field = nullptr;
     // Set
     const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS] = {};
@@ -238,7 +226,7 @@ static uint32_t  g_num_builds = 0;
 static md_gto_iso_field_t* g_dead_fields[256];   // let go of while a set of them was being made
 static uint32_t  g_num_dead = 0;
 
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec);
 
 static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
@@ -794,7 +782,7 @@ static bool iso_meshes_busy(const IsoMeshes* m) {
 struct EsIsoMesh {
     uint64_t field_key = 0;
     md_gto_iso_field_t* field = nullptr;
-    IsoFieldSpec field_spec = {};   // what it is of
+    FieldRef field_spec = {};   // what it is of
     bool field_failed = false;
     md_float3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
@@ -807,29 +795,22 @@ struct EsIsoMesh {
     ColorScaleSpan span = {};
 };
 
-static bool field_spec_equal(const IsoFieldSpec& a, const IsoFieldSpec& b) {
+static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
            a.transition_density_component == b.transition_density_component && a.orbital_idx == b.orbital_idx &&
            a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx &&
            a.density_property_key == b.density_property_key;
 }
 
-static IsoFieldSpec field_spec_of(const ElectronicStructureRepresentation& es) {
-    IsoFieldSpec f;
-    f.source = es.source;
-    f.spin = es.spin;
-    f.nto_component = es.nto_component;
-    f.transition_density_component = es.transition_density_component;
-    f.orbital_idx = es.orbital_idx;
-    f.excited_state_idx = es.excited_state_idx;
-    f.nto_lambda_idx = es.nto_lambda_idx;
-    f.density_property_key = es.density_property_key;
-    return f;
+// What a representation's field is of, copied for the task that makes it: the field (FieldRef), as that is all a
+// field of the electronic structure is
+static FieldRef field_spec_of(const ElectronicStructureRepresentation& es) {
+    return es.shown;
 }
 
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& es) {
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -875,14 +856,14 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
     uint64_t h = 0x150;
     const md_system_state_t& st = state->mold.state;
     if (st.xyz && st.num_atoms) h = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, h);
-    h = md_hash64(&es.source, sizeof(es.source), h);
-    h = md_hash64(&es.spin, sizeof(es.spin), h);
-    h = md_hash64(&es.nto_component, sizeof(es.nto_component), h);
-    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
-    h = md_hash64(&es.orbital_idx, sizeof(es.orbital_idx), h);
-    h = md_hash64(&es.excited_state_idx, sizeof(es.excited_state_idx), h);
-    h = md_hash64(&es.nto_lambda_idx, sizeof(es.nto_lambda_idx), h);
-    h = md_hash64(&es.density_property_key, sizeof(es.density_property_key), h);
+    h = md_hash64(&es.shown.source, sizeof(es.shown.source), h);
+    h = md_hash64(&es.shown.spin, sizeof(es.shown.spin), h);
+    h = md_hash64(&es.shown.nto_component, sizeof(es.shown.nto_component), h);
+    h = md_hash64(&es.shown.transition_density_component, sizeof(es.shown.transition_density_component), h);
+    h = md_hash64(&es.shown.orbital_idx, sizeof(es.shown.orbital_idx), h);
+    h = md_hash64(&es.shown.excited_state_idx, sizeof(es.shown.excited_state_idx), h);
+    h = md_hash64(&es.shown.nto_lambda_idx, sizeof(es.shown.nto_lambda_idx), h);
+    h = md_hash64(&es.shown.density_property_key, sizeof(es.shown.density_property_key), h);
     return h ? h : 1;
 }
 
@@ -902,7 +883,7 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // one shown is (so after the meshes' update, which begins that): for a large density each is seconds of the CPU and
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
-static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const IsoFieldSpec& spec) {
+static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const FieldRef& spec) {
     if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
         // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
         (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
@@ -933,7 +914,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     // field that will itself be out of date by the time its mesh is would, on a trajectory played faster than
     // a mesh is made, leave the surface where it was. A field of something else (another orbital) is not taken.
     const uint64_t field_key = electronic_structure_field_key(state, g);
-    const IsoFieldSpec spec = field_spec_of(g);
+    const FieldRef spec = field_spec_of(g);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
         !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
@@ -969,7 +950,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // One slot per distinct isovalue, its sheets those of the entries that share it: the + and - surfaces of
     // an orbital are the two sheets of one slot. A magnitude |f| = v is both sheets of f at v.
-    const bool magnitude = electronic_structure_uses_magnitude_toggle(g) && g.use_magnitude;
+    const bool magnitude = electronic_structure_uses_magnitude_toggle(g) && g.shown.use_magnitude;
     IsoMeshSlot slots[ISO_MESHES_MAX_SLOTS];
     uint32_t num_slots = 0;
     int      entry_slot[8];

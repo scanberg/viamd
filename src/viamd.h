@@ -378,28 +378,29 @@ static inline bool electronic_structure_source_meshable(ElectronicStructureSourc
 
 // What the isosurfaces of a field are, in the isosurface display (ElectronicStructureRepresentation::surface).
 // The field picked is the one shown whatever the display; on a surface that is either its own isosurface, or the
-// surface of the electron density where it is read (as the electrostatic potential and the local ionization energy
-// are, on rho = 0.001 au) and drawn as the colours of that surface.
+// isosurface of another field (surface_field at surface_value), where it is read and drawn as the colours of that
+// surface: the electrostatic potential and the local ionization energy on the electron density at 0.001 au.
 enum class ElectronicStructureSurface {
-    Isodensity,     // the electron density's isosurface at surface_density, coloured by the field
+    Other,          // the isosurface of surface_field at surface_value, coloured by the field
     Own,            // the field's own isosurfaces at its isovalue
     Count
 };
 
 inline const char* electronic_structure_surface_str[(int)ElectronicStructureSurface::Count] = {
-    "Isodensity",
+    "Surface of another field",
     "Isosurface of the field",
 };
 
-// Whether a source can be read on an isodensity surface: whether it is evaluated as a surface field
-static inline bool electronic_structure_source_on_isodensity_possible(ElectronicStructureSource s) {
+// Whether a source can be shown on the surface of another field: whether it is evaluated as a surface field, which is
+// what colours a surface
+static inline bool electronic_structure_source_on_other_surface_possible(ElectronicStructureSource s) {
     return electronic_structure_source_field_kind(s) != SurfaceFieldKind::Count;
 }
 
-// The surface a source starts out on: where it is read (an isodensity surface) for what is read on one, its own
-// isosurfaces for ELF and LOL, whose shapes (the basins, the shells) are the point
+// The surface a source starts out on: where it is read (the density's) for what is read on one, its own isosurfaces
+// for ELF and LOL, whose shapes (the basins, the shells) are the point
 static inline ElectronicStructureSurface electronic_structure_default_surface(ElectronicStructureSource s) {
-    return electronic_structure_source_is_surface_field(s) ? ElectronicStructureSurface::Isodensity : ElectronicStructureSurface::Own;
+    return electronic_structure_source_is_surface_field(s) ? ElectronicStructureSurface::Other : ElectronicStructureSurface::Own;
 }
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -752,6 +753,25 @@ struct ElectronicStructurePlaneImage {
     float     ms = 0.0f;
 };
 
+// A field over R^3 of the electronic structure: what it is (its path, field.h, names the source and a density
+// property's attribute) and the parameters that tell the fields of one family apart. What a representation shows,
+// and the field whose isosurface it is shown on, are each one.
+struct FieldRef {
+    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
+    bool use_magnitude = false;
+    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
+    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
+    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+
+    int orbital_idx = 0;
+    int excited_state_idx = 0;
+    int nto_lambda_idx = 0;
+    // The density property, named by the id of its attribute rather than by a position in a list. An index silently
+    // re-points at a different property whenever the set changes across a reload; an id is derived from the path, so
+    // it names the same thing or nothing at all.
+    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+};
+
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
@@ -801,29 +821,19 @@ struct ElectronicStructureRepresentation {
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
     md_grid_t grid = {};
 
-    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
-    bool use_magnitude = false;
-    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
-    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
-    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
-
-    int orbital_idx = 0;
-    int excited_state_idx = 0;
-    int nto_lambda_idx = 0;
-    // The density property this representation draws, named by the id of its attribute rather than
-    // by a position in a list. An index silently re-points at a different property whenever the set
-    // changes across a reload; an id is derived from the path, so it names the same thing or
-    // nothing at all.
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+    // The field shown (FieldRef): in the isosurface display on its own isosurfaces, or as the colours of the surface of
+    // surface_field (ElectronicStructureSurface)
+    FieldRef shown;
 
     // How its isosurfaces are drawn (IsosurfaceRendering): meshes only of what they can be made of (es_mesh_mode),
     // the others raycast whatever this says
     int rendering = IsosurfaceRendering_Raycast;
 
-    // The isosurface display: what the surfaces are (ElectronicStructureSurface), and for an isodensity surface the
-    // density it is at (electrons / bohr^3, not squared as the density's own isovalue is)
+    // The isosurface display: what the surfaces are (ElectronicStructureSurface); for the surface of another field,
+    // that field and the value where it is, in its unit (a density's not squared, as its own isovalue is)
     ElectronicStructureSurface surface = ElectronicStructureSurface::Own;
-    double surface_density = 0.001;
+    FieldRef surface_field = { .source = ElectronicStructureSource::ElectronDensity, .spin = ElectronicStructureSpin::Total };
+    double surface_value = 0.001;
 
     // The source evaluated as a surface field (electronic_structure_source_is_surface_field, and ELF and LOL without
     // their kernel): all of the grid, taken into density_vol once complete; its values' spread (1st to 99th
@@ -891,7 +901,7 @@ static inline bool electronic_structure_source_supported(ElectronicStructureSour
 }
 
 static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::DensityProperty;
+    return rep.shown.source == ElectronicStructureSource::DensityProperty;
 }
 
 // What the values of a representation's field are, which its colour map is set up for (es_volume_map_update)
@@ -906,60 +916,60 @@ enum class ElectronicStructureValueKind {
 
 // ELF and LOL: in [0, 1] everywhere, of both spins together
 static inline bool electronic_structure_is_localization(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::ElectronLocalization ||
-           rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
+    return rep.shown.source == ElectronicStructureSource::ElectronLocalization ||
+           rep.shown.source == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital;
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital;
 }
 
 static inline bool electronic_structure_uses_excited_state_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
-           rep.source == ElectronicStructureSource::TransitionDensity;
+    return rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           rep.shown.source == ElectronicStructureSource::TransitionDensity;
 }
 
 static inline bool electronic_structure_uses_nto_lambda_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital;
+    return rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital;
 }
 
 static inline bool electronic_structure_uses_magnitude_toggle(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital ||
-           rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
-           (rep.source == ElectronicStructureSource::ElectronDensity && rep.spin == ElectronicStructureSpin::Difference);
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           (rep.shown.source == ElectronicStructureSource::ElectronDensity && rep.shown.spin == ElectronicStructureSpin::Difference);
 }
 
 static inline bool electronic_structure_uses_spin(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital ||
-           rep.source == ElectronicStructureSource::ElectronDensity;
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.shown.source == ElectronicStructureSource::ElectronDensity;
 }
 
 static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_density_property(rep)) {
         return false;
     }
-    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep.source);
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep.shown.source);
     if (fk != SurfaceFieldKind::Count) {
         return surface_field_kind_info(fk).scale == SurfaceFieldScale::Diverging;
     }
-    if (rep.source == ElectronicStructureSource::TransitionDensity &&
-        rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
+    if (rep.shown.source == ElectronicStructureSource::TransitionDensity &&
+        rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
         return true;
     }
-    return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+    return electronic_structure_uses_magnitude_toggle(rep) && !rep.shown.use_magnitude;
 }
 
 static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
-    if (electronic_structure_source_is_surface_field(rep.source)) {
+    if (electronic_structure_source_is_surface_field(rep.shown.source)) {
         return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::SignedRanged : ElectronicStructureValueKind::Ranged;
     }
     return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
 static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::TransitionDensity ||
-           rep.source == ElectronicStructureSource::ElectronDensity;
+    return rep.shown.source == ElectronicStructureSource::TransitionDensity ||
+           rep.shown.source == ElectronicStructureSource::ElectronDensity;
 }
 
 static inline md_float4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
@@ -994,7 +1004,7 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
     if (electronic_structure_is_density_property(rep)) {
         return "User-defined isosurfaces for arbitrary density-property volumes.";
     }
-    if (electronic_structure_source_field_kind(rep.source) != SurfaceFieldKind::Count) {
+    if (electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count) {
         return electronic_structure_is_signed(rep) ?
             "Where the surfaces are: the field at +isovalue and -isovalue, in its unit" :
             "Where the surface is: the field at the isovalue, in its unit";
@@ -1024,7 +1034,7 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         return;
     }
 
-    const bool field = electronic_structure_source_field_kind(rep.source) != SurfaceFieldKind::Count;
+    const bool field = electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count;
     const float iso_value = field ? (float)rep.field_iso_value : (float)rep.iso_value;
     const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value :
                                 electronic_structure_is_signed(rep) ? fabsf(iso_value) : iso_value;
@@ -1046,17 +1056,17 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         iso->count = 1;
         iso->values[0] = iso_threshold;
         if (rep.coloring != SurfaceColoring::Uniform) {
-            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+            if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 iso->colors[0] = rep.tint_att;
-            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+            } else if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                 iso->colors[0] = rep.tint_det;
             } else {
                 iso->colors[0] = rep.tint_den;
             }
         } else {
-            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+            if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 iso->colors[0] = rep.col_att;
-            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+            } else if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                 iso->colors[0] = rep.col_det;
             } else {
                 iso->colors[0] = rep.col_den;
@@ -1066,94 +1076,85 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
     }
 }
 
-// Whether the representation shows its field on an isodensity surface (ElectronicStructureSurface::Isodensity)
-static inline bool electronic_structure_on_isodensity(const ElectronicStructureRepresentation& rep) {
-    return rep.display == ElectronicStructureDisplay::Isosurface && rep.surface == ElectronicStructureSurface::Isodensity &&
-           electronic_structure_source_on_isodensity_possible(rep.source);
+// Whether the representation shows its field on the surface of another (ElectronicStructureSurface::Other)
+static inline bool electronic_structure_on_other_surface(const ElectronicStructureRepresentation& rep) {
+    return rep.display == ElectronicStructureDisplay::Isosurface && rep.surface == ElectronicStructureSurface::Other &&
+           electronic_structure_source_on_other_surface_possible(rep.shown.source);
 }
 
-// What the representation's volume and isosurfaces are of: itself; or showing its field on an isodensity surface,
-// the total electron density at surface_density, coloured by the field. What evaluates the volume, draws the
-// surfaces and evaluates the colours reads this, so the field picked is the one shown in every display.
+// What the representation's volume and isosurfaces are of: itself; or showing its field on the surface of another,
+// that field at surface_value, coloured by the field shown. What evaluates the volume, draws the surfaces and
+// evaluates the colours reads this, so the field picked is the one shown in every display.
 static inline ElectronicStructureRepresentation electronic_structure_geometry(const ElectronicStructureRepresentation& rep) {
     ElectronicStructureRepresentation g = rep;
-    if (!electronic_structure_on_isodensity(rep)) return g;
-    g.field_kind    = electronic_structure_source_field_kind(rep.source);
-    g.coloring      = SurfaceColoring::Field;
-    g.source        = ElectronicStructureSource::ElectronDensity;
-    g.spin          = ElectronicStructureSpin::Total;
-    g.use_magnitude = false;
-    g.iso_value     = sqrt(fmax(rep.surface_density, 0.0));     // squared where it is drawn
+    if (!electronic_structure_on_other_surface(rep)) return g;
+    g.field_kind = electronic_structure_source_field_kind(rep.shown.source);
+    g.coloring   = SurfaceColoring::Field;
+    g.shown      = rep.surface_field;
+    g.surface    = ElectronicStructureSurface::Own;
+    // the value in the isovalue the surface field is drawn at: a density's squared where it is drawn
+    if (electronic_structure_source_field_kind(g.shown.source) != SurfaceFieldKind::Count) {
+        g.field_iso_value = rep.surface_value;
+    } else if (electronic_structure_uses_density_iso_squared(g)) {
+        g.iso_value = sqrt(fmax(rep.surface_value, 0.0));
+    } else {
+        g.iso_value = rep.surface_value;
+    }
     return g;
 }
 
 static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
-    return rep.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
+    return rep.shown.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
 }
 
 static inline void electronic_structure_set_legacy_field(ElectronicStructureRepresentation* rep, int field) {
     MD_ASSERT(rep);
-    rep->use_magnitude = (rep->source == ElectronicStructureSource::MolecularOrbital ||
-                          rep->source == ElectronicStructureSource::NaturalTransitionOrbital) &&
+    rep->shown.use_magnitude = (rep->shown.source == ElectronicStructureSource::MolecularOrbital ||
+                          rep->shown.source == ElectronicStructureSource::NaturalTransitionOrbital) &&
                          (ElectronicStructureField)field == ElectronicStructureField::Density;
 }
 
-static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
-    MD_ASSERT(rep);
-    switch (rep->source) {
+// What a field of its source starts out with: the spin it is of, and its magnitude off
+static inline void field_ref_set_defaults(FieldRef* f) {
+    MD_ASSERT(f);
+    f->use_magnitude = false;
+    switch (f->source) {
     case ElectronicStructureSource::MolecularOrbital:
-        if (rep->spin != ElectronicStructureSpin::Alpha && rep->spin != ElectronicStructureSpin::Beta) {
-            rep->spin = ElectronicStructureSpin::Alpha;
+        if (f->spin != ElectronicStructureSpin::Alpha && f->spin != ElectronicStructureSpin::Beta) {
+            f->spin = ElectronicStructureSpin::Alpha;
         }
-        rep->use_magnitude = false;
-        break;
-    case ElectronicStructureSource::NaturalTransitionOrbital:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        break;
-    case ElectronicStructureSource::TransitionDensity:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
         break;
     case ElectronicStructureSource::ElectronDensity:
-        rep->spin = ElectronicStructureSpin::Total;
-        rep->use_magnitude = false;
+        f->spin = ElectronicStructureSpin::Total;
         break;
-    case ElectronicStructureSource::ElectronLocalization:
-    case ElectronicStructureSource::LocalizedOrbitalLocator:
-    case ElectronicStructureSource::ElectrostaticPotential:
-    case ElectronicStructureSource::EmbeddingPotential:
-    case ElectronicStructureSource::AverageLocalIonizationEnergy:
-    case ElectronicStructureSource::LocalElectronAttachmentEnergy:
-    case ElectronicStructureSource::DensityScaleLength:
-    case ElectronicStructureSource::GostshypWallPotential:
-    case ElectronicStructureSource::GostshypEffectivePotential:
-    case ElectronicStructureSource::GostshypEnergyDensity: {
-        // of the system as a whole, both spins together: an isovalue in its unit, and the surface it is shown on
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep->source);
-        rep->field_iso_value = surface_field_kind_info(fk).iso;
-        rep->surface = electronic_structure_default_surface(rep->source);
-        rep->surface_density = rep->source == ElectronicStructureSource::LocalElectronAttachmentEnergy ? 0.004 : 0.001;
-        rep->source_span = {};
+    default:
+        // of no spin, or of both together
+        f->spin = ElectronicStructureSpin::None;
         break;
     }
-    case ElectronicStructureSource::DensityProperty:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        // The atoms' colours are not offered for a density property; a field is, as it is
-        // evaluated on the same grid
+}
+
+// What the representation starts out with for the field it shows: the field's defaults, and its isovalue and surface
+static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
+    MD_ASSERT(rep);
+    field_ref_set_defaults(&rep->shown);
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep->shown.source);
+    if (fk != SurfaceFieldKind::Count) {
+        // a field of the system as a whole: an isovalue in its unit, and the surface it is shown on
+        rep->field_iso_value = surface_field_kind_info(fk).iso;
+        rep->surface = electronic_structure_default_surface(rep->shown.source);
+        rep->surface_field = FieldRef{ .source = ElectronicStructureSource::ElectronDensity, .spin = ElectronicStructureSpin::Total };
+        rep->surface_value = rep->shown.source == ElectronicStructureSource::LocalElectronAttachmentEnergy ? 0.004 : 0.001;
+        rep->source_span = {};
+    }
+    if (rep->shown.source == ElectronicStructureSource::DensityProperty) {
+        // The atoms' colours are not offered for a density property; a field is, as it is evaluated on the same grid
         if (rep->coloring == SurfaceColoring::AtomColors) {
             rep->coloring = SurfaceColoring::Uniform;
         }
         if (rep->density_property.num_isos <= 0) {
             electronic_structure_density_property_init_defaults(rep);
         }
-        break;
-    default:
-        MD_ASSERT(false);
-        break;
     }
 }
 
@@ -1161,47 +1162,47 @@ static inline void electronic_structure_set_legacy_type(ElectronicStructureRepre
     MD_ASSERT(rep);
     switch ((ElectronicStructureLegacyType)type) {
     case ElectronicStructureLegacyType::MolecularOrbital:
-        rep->source = ElectronicStructureSource::MolecularOrbital;
-        rep->use_magnitude = false;
+        rep->shown.source = ElectronicStructureSource::MolecularOrbital;
+        rep->shown.use_magnitude = false;
         break;
     case ElectronicStructureLegacyType::MolecularOrbitalDensity:
-        rep->source = ElectronicStructureSource::MolecularOrbital;
-        rep->use_magnitude = true;
+        rep->shown.source = ElectronicStructureSource::MolecularOrbital;
+        rep->shown.use_magnitude = true;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = false;
-        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = false;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Particle;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalHole:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = false;
-        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = false;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Hole;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = true;
-        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = true;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Particle;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = true;
-        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = true;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Hole;
         break;
     case ElectronicStructureLegacyType::AttachmentDensity:
-        rep->source = ElectronicStructureSource::TransitionDensity;
-        rep->use_magnitude = false;
-        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+        rep->shown.source = ElectronicStructureSource::TransitionDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
         break;
     case ElectronicStructureLegacyType::DetachmentDensity:
-        rep->source = ElectronicStructureSource::TransitionDensity;
-        rep->use_magnitude = false;
-        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
+        rep->shown.source = ElectronicStructureSource::TransitionDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
         break;
     case ElectronicStructureLegacyType::ElectronDensity:
-        rep->source = ElectronicStructureSource::ElectronDensity;
-        rep->use_magnitude = false;
-        rep->spin = ElectronicStructureSpin::Total;
+        rep->shown.source = ElectronicStructureSource::ElectronDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.spin = ElectronicStructureSpin::Total;
         break;
     default:
         MD_ASSERT(false);
@@ -1211,22 +1212,22 @@ static inline void electronic_structure_set_legacy_type(ElectronicStructureRepre
 
 
 static inline int electronic_structure_legacy_type(const ElectronicStructureRepresentation& rep) {
-    switch (rep.source) {
+    switch (rep.shown.source) {
     case ElectronicStructureSource::MolecularOrbital:
-        return (int)(!rep.use_magnitude ?
+        return (int)(!rep.shown.use_magnitude ?
             ElectronicStructureLegacyType::MolecularOrbital :
             ElectronicStructureLegacyType::MolecularOrbitalDensity);
     case ElectronicStructureSource::NaturalTransitionOrbital:
-        if (!rep.use_magnitude) {
-            return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+        if (!rep.shown.use_magnitude) {
+            return (int)(rep.shown.nto_component == ElectronicStructureNtoComponent::Particle ?
                 ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle :
                 ElectronicStructureLegacyType::NaturalTransitionOrbitalHole);
         }
-        return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+        return (int)(rep.shown.nto_component == ElectronicStructureNtoComponent::Particle ?
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle :
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole);
     case ElectronicStructureSource::TransitionDensity:
-        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
+        return (int)(rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
             ElectronicStructureLegacyType::DetachmentDensity :
             ElectronicStructureLegacyType::AttachmentDensity);
     case ElectronicStructureSource::ElectronDensity:

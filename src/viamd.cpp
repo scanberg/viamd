@@ -4328,10 +4328,10 @@ static bool es_attribute_exists(const md_system_t& sys, md_str_t path) {
 // (all of it: num_idx 0). False for the orbitals, and for a density property the system no longer has.
 static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slice, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
     *out_slice = md_attribute_slice_all();
-    switch (es.source) {
+    switch (es.shown.source) {
     case ElectronicStructureSource::TransitionDensity: {
         md_str_t path = es_path::attachment_density;
-        switch (es.transition_density_component) {
+        switch (es.shown.transition_density_component) {
         case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
         case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
         case ElectronicStructureTransitionDensityComponent::Attachment:
@@ -4340,14 +4340,14 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
         // These are VIRTUAL: the slice is what tells the provider to reconstruct one state rather
         // than all of them, and it is the only reason asking for one is affordable.
         *out_path  = path;
-        *out_slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
+        *out_slice = md_attribute_slice_1((uint32_t)es.shown.excited_state_idx);
         return true;
     }
     case ElectronicStructureSource::ElectronDensity:
-        *out_path = es_electron_density_path(es.spin);
+        *out_path = es_electron_density_path(es.shown.spin);
         return true;
     case ElectronicStructureSource::DensityProperty: {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.density_property_key);
+        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.shown.density_property_key);
         if (!attr) return false;
         *out_path = attr->path;
         return true;
@@ -4545,18 +4545,18 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
 // What the representation's source is, evaluated over grid into tex_id (a GL 3D texture of the grid's dims): the
 // volume, or the image of a plane (one layer). On the GPU, written to the scratch gpu_eval_target and read back.
 static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid) {
-    switch (es.source) {
+    switch (es.shown.source) {
     case ElectronicStructureSource::MolecularOrbital: {
-        const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
-        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.orbital_idx);
-        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
+        const md_str_t path = (es.shown.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.shown.orbital_idx);
+        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.shown.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
     }
     case ElectronicStructureSource::NaturalTransitionOrbital: {
-        const md_str_t path = (es.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
+        const md_str_t path = (es.shown.nto_component == ElectronicStructureNtoComponent::Particle) ? es_path::nto_particle : es_path::nto_hole;
         // {S,L,A}: the excited state and then the lambda pair within it. Two indices instead of the
         // one an ordinary orbital takes, which is exactly what a slice is for.
-        const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.excited_state_idx, (uint32_t)es.nto_lambda_idx);
-        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
+        const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)es.shown.excited_state_idx, (uint32_t)es.shown.nto_lambda_idx);
+        return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.shown.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
     }
     case ElectronicStructureSource::TransitionDensity:
     case ElectronicStructureSource::ElectronDensity:
@@ -4567,7 +4567,7 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
             return false;
         }
         // A spin difference is signed, so it is the one density the magnitude toggle applies to.
-        const bool magnitude = es.source == ElectronicStructureSource::ElectronDensity && es.spin == ElectronicStructureSpin::Difference && es.use_magnitude;
+        const bool magnitude = es.shown.source == ElectronicStructureSource::ElectronDensity && es.shown.spin == ElectronicStructureSpin::Difference && es.shown.use_magnitude;
         return density_evaluate(state, tex_id, grid, path, slice.num_idx > 0 ? &slice : nullptr, es_gto_op(magnitude), true);
     }
     case ElectronicStructureSource::ElectronLocalization:
@@ -4575,7 +4575,7 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
 #if MD_ENABLE_GPU
         // by their kernel when what it reads is there (the update waits for it); else as a surface field on the CPU,
         // which fills the volume itself (es_source_volume_poll)
-        return localization_gpu_evaluate(state, tex_id, grid, es.source == ElectronicStructureSource::LocalizedOrbitalLocator);
+        return localization_gpu_evaluate(state, tex_id, grid, es.shown.source == ElectronicStructureSource::LocalizedOrbitalLocator);
 #else
         return false;
 #endif
@@ -5421,7 +5421,7 @@ static void es_volume_map_range(ElectronicStructureRepresentation& es) {
 static void es_volume_map_update(ElectronicStructureRepresentation& es) {
     const ElectronicStructureValueKind kind = electronic_structure_value_kind(es);
     // a field of a range of its own is set up again for another one of the same kind (one potential for another)
-    const int src = electronic_structure_source_is_surface_field(es.source) ? (int)es.source : -2;
+    const int src = electronic_structure_source_is_surface_field(es.shown.source) ? (int)es.shown.source : -2;
     if (es.volume.map_init && es.volume.map_kind == (int)kind) {
         if (es.volume.map_source == -1) es.volume.map_source = src;
         if (es.volume.map_source == src) return;
@@ -5470,7 +5470,7 @@ static void es_volume_map_update(ElectronicStructureRepresentation& es) {
         break;
     }
     // a field of a colour map of its own (surface_field.h) on it, rather than the default of its value kind
-    const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.source);
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.shown.source);
     if (fk != SurfaceFieldKind::Count) tf.colormap = surface_field_kind_info(fk).colormap;
     es.volume.view.fit = 1;
     es.volume.map_init = true;
@@ -5483,15 +5483,15 @@ static void es_volume_map_update(ElectronicStructureRepresentation& es) {
 // What the representation's source is, of the frame: what an evaluation of it, on any grid, depends on
 static uint64_t es_source_hash(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
     uint64_t h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
-    h = md_hash64(&es.source,                       sizeof(es.source), h);
-    h = md_hash64(&es.use_magnitude,                sizeof(es.use_magnitude), h);
-    h = md_hash64(&es.spin,                         sizeof(es.spin), h);
-    h = md_hash64(&es.nto_component,                sizeof(es.nto_component), h);
-    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
-    h = md_hash64(&es.orbital_idx,                  sizeof(es.orbital_idx), h);
-    h = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), h);
-    h = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), h);
-    h = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), h);
+    h = md_hash64(&es.shown.source,                       sizeof(es.shown.source), h);
+    h = md_hash64(&es.shown.use_magnitude,                sizeof(es.shown.use_magnitude), h);
+    h = md_hash64(&es.shown.spin,                         sizeof(es.shown.spin), h);
+    h = md_hash64(&es.shown.nto_component,                sizeof(es.shown.nto_component), h);
+    h = md_hash64(&es.shown.transition_density_component, sizeof(es.shown.transition_density_component), h);
+    h = md_hash64(&es.shown.orbital_idx,                  sizeof(es.shown.orbital_idx), h);
+    h = md_hash64(&es.shown.excited_state_idx,            sizeof(es.shown.excited_state_idx), h);
+    h = md_hash64(&es.shown.nto_lambda_idx,               sizeof(es.shown.nto_lambda_idx), h);
+    h = md_hash64(&es.shown.density_property_key,         sizeof(es.shown.density_property_key), h);
     return h;
 }
 
@@ -5506,8 +5506,8 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
     md_attribute_slice_t slice = {};
     if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_pack_prepare(state, path, &slice)) return 0;
 #endif
-    if (es.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.excited_state_idx)) return 0;
-    if (electronic_structure_source_is_surface_field(es.source)) return -1;   // as a surface field, into the volume
+    if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.shown.excited_state_idx)) return 0;
+    if (electronic_structure_source_is_surface_field(es.shown.source)) return -1;   // as a surface field, into the volume
     if (electronic_structure_is_localization(es)) {
 #if MD_ENABLE_GPU
         const int g = localization_gpu_prepare(state);
@@ -5524,7 +5524,7 @@ bool es_plane_images_supported(ApplicationState* state, const ElectronicStructur
     if (es.display != ElectronicStructureDisplay::Planes) return false;
     if (!gpu_evaluation_ready(state) || !state->gpu_plane) return false;
     // the fields evaluated as surface fields, and ELF and LOL without their kernel: into the volume, whole
-    if (electronic_structure_source_is_surface_field(es.source)) return false;
+    if (electronic_structure_source_is_surface_field(es.shown.source)) return false;
     return !electronic_structure_is_localization(es) || localization_gpu_prepare(state) >= 0;
 #else
     (void)state; (void)es;
@@ -5620,7 +5620,7 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 static int es_source_volume_poll(ApplicationState* state, Representation* rep, const ElectronicStructureRepresentation& g) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     const md_system_t& sys = state->mold.sys;
-    const SurfaceFieldKind kind = electronic_structure_source_field_kind(g.source);
+    const SurfaceFieldKind kind = electronic_structure_source_field_kind(g.shown.source);
     if (kind == SurfaceFieldKind::Count || !surface_field_available(kind, sys)) return -1;
 
     md_grid_t grid = {};
@@ -5664,7 +5664,7 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
 bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
     (void)state;
     return es.rendering == IsosurfaceRendering_Mesh &&
-           electronic_structure_source_meshable(electronic_structure_geometry(es).source);
+           electronic_structure_source_meshable(electronic_structure_geometry(es).shown.source);
 }
 
 double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource source) {
@@ -5696,8 +5696,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     ElectronicStructureRepresentation& es = rep->electronic_structure;
 
     // On an isodensity surface the field shown is what colours it: its colour scale follows it
-    if (electronic_structure_on_isodensity(es)) {
-        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.source);
+    if (electronic_structure_on_other_surface(es)) {
+        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.shown.source);
         if (es.field_kind != fk) {
             surface_field_scale_for_kind(&es.field_map, es.field_kind, fk);
             es.field_kind = fk;
@@ -5749,13 +5749,13 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
         }
 #endif
         // a natural transition orbital whose state is being read on a worker thread
-        if (ready && needs_volume && g.source == ElectronicStructureSource::NaturalTransitionOrbital) {
-            ready = es_nto_ready(state, (size_t)g.excited_state_idx);
+        if (ready && needs_volume && g.shown.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+            ready = es_nto_ready(state, (size_t)g.shown.excited_state_idx);
         }
         // The fields of the system as a whole, and ELF and LOL without their kernel: as a surface field, all of the
         // grid, put in the volume once it is there. ELF and LOL on the GPU once what their kernel reads is made (by a
         // pool task). Until then the volume shown stays (a failure is taken as done, not tried again every frame).
-        bool as_field = needs_volume && electronic_structure_source_is_surface_field(g.source);
+        bool as_field = needs_volume && electronic_structure_source_is_surface_field(g.shown.source);
         if (ready && needs_volume && electronic_structure_is_localization(g)) {
 #if MD_ENABLE_GPU
             const int k = localization_gpu_prepare(state);
@@ -5847,11 +5847,11 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
         return false;
     }
 
-    if (!electronic_structure_source_supported(mask, es->source)) {
+    if (!electronic_structure_source_supported(mask, es->shown.source)) {
         for (int n = 0; n < (int)ElectronicStructureSource::Count; ++n) {
             const ElectronicStructureSource source = (ElectronicStructureSource)n;
             if (electronic_structure_source_supported(mask, source)) {
-                es->source = source;
+                es->shown.source = source;
                 electronic_structure_set_source_defaults(es);
                 break;
             }
@@ -5860,18 +5860,18 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
 
     // The same rule the representation window applies when it draws: a key naming none of the
     // properties this system has is replaced by the first one.
-    if (es->source == ElectronicStructureSource::DensityProperty) {
+    if (es->shown.source == ElectronicStructureSource::DensityProperty) {
         DensityProperty props[DensityProperty::MaxCount];
         const size_t num_props = MD_MIN(density_properties_gather(props, MD_COUNTOF(props), sys), MD_COUNTOF(props));
         bool found = false;
         for (size_t i = 0; i < num_props; ++i) {
-            if (props[i].key == es->density_property_key) {
+            if (props[i].key == es->shown.density_property_key) {
                 found = true;
                 break;
             }
         }
         if (!found && num_props > 0) {
-            es->density_property_key = props[0].key;
+            es->shown.density_property_key = props[0].key;
         }
     }
 

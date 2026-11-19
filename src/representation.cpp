@@ -336,7 +336,7 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
     OrbitalFrontier frontier = {};
     es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
-    rep->electronic_structure.orbital_idx = MD_MAX(frontier.homo_idx, 0);
+    rep->electronic_structure.shown.orbital_idx = MD_MAX(frontier.homo_idx, 0);
     // as the windows' panels draw theirs, which was everyone's: an old workspace's surfaces look as they did
     rep->electronic_structure.rendering = state->settings.isosurface_rendering;
     init_representation(state, rep);
@@ -920,7 +920,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid |= rep->sphere_fallback;
         break;
     case RepresentationType::ElectronicStructure:
-        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
+        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.shown.source);
         if (rep->type_is_valid) {
             // what it waits for without blocking, asked again next frame
             again = !electronic_structure_representation_update(state, rep, colors);
@@ -1976,7 +1976,8 @@ done:
 //     Type=5                              as an older VIAMD writes and reads it
 //     Bonds.Color=NearestAtom
 //     Attribute.Path=atom/charge
-//     ElectronicStructure.Source=MolecularOrbital
+//     ElectronicStructure.Path=es/orbital         the field shown (field.h) and its parameters
+//     ElectronicStructure.Orbital=73
 //     ElectronicStructure.Field.Range=-0.0500000007,0.0500000007
 //     ElectronicStructure.Slice=1
 //     ElectronicStructure.Slice.0.Opacity=1
@@ -2004,7 +2005,7 @@ static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "
                                                          "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
                                                          "GostshypEffectivePotential", "GostshypEnergyDensity", "ElectronDensity",
                                                          "ElectronLocalization", "LocalizedOrbitalLocator" };
-static const char* const es_surface_names[]          = { "Isodensity", "Own" };
+static const char* const es_surface_names[]          = { "Other", "Own" };
 static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
 static const char* const cavity_shape_names[]        = { "Cylinder", "Sphere" };
 static const char* const cavity_attribute_names[]    = { "Constant", "Area", "DecayLength", "WallEnergyPerArea", "WallEnergy", "WallDensity",
@@ -2136,24 +2137,64 @@ static bool read_attribute_path(viamd::Entries& e, md_str_t path, md_attribute_i
     return true;
 }
 
+// A field (FieldRef): its path (field.h) and the parameters of its family
+static void write_field_ref(viamd::serialization_state_t& s, viamd::PathPrefix p, const FieldRef& f, const md_system_t& sys) {
+    char path[FIELD_PATH_MAX];
+    const size_t path_len = field_path_of_source(path, sizeof(path), f.source, f.density_property_key, sys);
+    if (path_len > 0 && path_len < sizeof(path)) viamd::write_str(s, p("Path"), md_str_t{path, path_len});
+    // the parameters its family has: the others are its defaults as it is read
+    const bool orbital = f.source == ElectronicStructureSource::MolecularOrbital;
+    const bool nto     = f.source == ElectronicStructureSource::NaturalTransitionOrbital;
+    const bool td      = f.source == ElectronicStructureSource::TransitionDensity;
+    const bool density = f.source == ElectronicStructureSource::ElectronDensity;
+    if (orbital) viamd::write_int(s, p("Orbital"), f.orbital_idx);
+    if (nto || td) viamd::write_int(s, p("ExcitedState"), f.excited_state_idx);
+    if (nto) viamd::write_int(s, p("NtoLambda"), f.nto_lambda_idx);
+    if (orbital || nto || density) viamd::write_bool(s, p("UseMagnitude"), f.use_magnitude);
+    if (orbital || density) viamd::write_enum(s, p("Spin"), (int)f.spin, viamd::enum_names(es_spin_names));
+    if (nto) viamd::write_enum(s, p("NtoComponent"), (int)f.nto_component, viamd::enum_names(es_nto_component_names));
+    if (td) viamd::write_enum(s, p("TransitionDensityComponent"), (int)f.transition_density_component, viamd::enum_names(es_transition_component_names));
+}
+
+// The path of a field into f, its defaults set: false when there is none, or no field has it
+static bool read_field_path(viamd::Entries& e, viamd::PathPrefix p, FieldRef& f) {
+    md_str_t path = {};
+    ElectronicStructureSource source;
+    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
+    if (!viamd::get(e, p("Path"), path)) return false;
+    if (!field_resolve(&source, &key, path)) {
+        MD_LOG_INFO("Workspace: no field '" MD_STR_FMT "' (field.h); it is left as it was", MD_STR_ARG(path));
+        return false;
+    }
+    f.source = source;
+    field_ref_set_defaults(&f);
+    if (source == ElectronicStructureSource::DensityProperty) f.density_property_key = key;
+    return true;
+}
+
+// The parameters of a field, after its path
+static void read_field_params(viamd::Entries& e, viamd::PathPrefix p, FieldRef& f) {
+    viamd::get(e, p("Orbital"), f.orbital_idx);
+    viamd::get(e, p("ExcitedState"), f.excited_state_idx);
+    viamd::get(e, p("NtoLambda"), f.nto_lambda_idx);
+    viamd::get(e, p("UseMagnitude"), f.use_magnitude);
+    viamd::get_enum(e, p("Spin"), f.spin, viamd::enum_names(es_spin_names));
+    viamd::get_enum(e, p("NtoComponent"), f.nto_component, viamd::enum_names(es_nto_component_names));
+    viamd::get_enum(e, p("TransitionDensityComponent"), f.transition_density_component, viamd::enum_names(es_transition_component_names));
+}
+
 static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
     const md_attributes_t* attributes = &sys.attributes;
-    // The field shown, by its path (field.h)
-    char path[FIELD_PATH_MAX];
-    const size_t path_len = field_path_of_source(path, sizeof(path), es.source, es.density_property_key, sys);
-    if (path_len > 0 && path_len < sizeof(path)) viamd::write_str(s, p("Path"), md_str_t{path, path_len});
-    viamd::write_int(s, p("Orbital"), es.orbital_idx);
-    viamd::write_int(s, p("ExcitedState"), es.excited_state_idx);
-    viamd::write_int(s, p("NtoLambda"), es.nto_lambda_idx);
-    viamd::write_bool(s, p("UseMagnitude"), es.use_magnitude);
-    viamd::write_enum(s, p("Spin"), (int)es.spin, viamd::enum_names(es_spin_names));
-    viamd::write_enum(s, p("NtoComponent"), (int)es.nto_component, viamd::enum_names(es_nto_component_names));
-    viamd::write_enum(s, p("TransitionDensityComponent"), (int)es.transition_density_component, viamd::enum_names(es_transition_component_names));
+    // The field shown, its keys those of the representation's block
+    write_field_ref(s, p, es.shown, sys);
     viamd::write_enum(s, p("Resolution"), (int)es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::write_dbl(s, p("Iso"), es.iso_value);
     viamd::write_dbl(s, p("FieldIso"), es.field_iso_value);
     viamd::write_enum(s, p("Surface"), (int)es.surface, viamd::enum_names(es_surface_names));
-    viamd::write_dbl(s, p("SurfaceDensity"), es.surface_density);
+    if (es.surface == ElectronicStructureSurface::Other) {
+        write_field_ref(s, p.sub("SurfaceField"), es.surface_field, sys);
+        viamd::write_dbl(s, p("SurfaceValue"), es.surface_value);
+    }
     viamd::write_enum(s, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
@@ -2211,11 +2252,11 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
 
     // The density property it draws and its isosurfaces, as many as there are whenever there could be some: a
     // DensityProperty source sets some up for itself when it has none, which an empty list read after it undoes
-    const bool has_property = (attributes && md_attributes_get(attributes, es.density_property_key)) ||
-                              es.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
+    const bool has_property = (attributes && md_attributes_get(attributes, es.shown.density_property_key)) ||
+                              es.shown.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
     if (has_property) {
         viamd::PathPrefix d = p.sub("DensityProperty");
-        write_attribute_path(s, d("Path"), attributes, es.density_property_key);
+        write_attribute_path(s, d("Path"), attributes, es.shown.density_property_key);
         viamd::write_int(s, d("Iso"), es.density_property.num_isos);
         for (int i = 0; i < es.density_property.num_isos; ++i) {
             viamd::PathPrefix q = d.sub("Iso", i);
@@ -2235,17 +2276,12 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     }
     // The field before what it sets up for itself (the spin, the display), which the fields after it may change: by
     // its path (field.h), or as a workspace from before the paths has it, by its source
-    md_str_t path = {};
-    ElectronicStructureSource source;
-    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
-    if (viamd::get(e, p("Path"), path) && field_resolve(&source, &key, path)) {
-        es.source = source;
+    FieldRef shown = es.shown;
+    if (read_field_path(e, p, shown)) {
+        es.shown = shown;
         electronic_structure_set_source_defaults(&es);
-        if (source == ElectronicStructureSource::DensityProperty) es.density_property_key = key;
-    } else if (viamd::get_enum(e, p("Source"), es.source, viamd::enum_names(es_source_names))) {
+    } else if (viamd::get_enum(e, p("Source"), es.shown.source, viamd::enum_names(es_source_names))) {
         electronic_structure_set_source_defaults(&es);
-    } else if (!md_str_empty(path)) {
-        MD_LOG_INFO("Workspace: no field '" MD_STR_FMT "' (field.h); the representation shows what it did before", MD_STR_ARG(path));
     }
     if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("ElectronicStructureField"))) {
         int field;
@@ -2253,18 +2289,14 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
             electronic_structure_set_legacy_field(&es, field);
         }
     }
-    viamd::get(e, p("Orbital"), es.orbital_idx);
-    viamd::get(e, p("ExcitedState"), es.excited_state_idx);
-    viamd::get(e, p("NtoLambda"), es.nto_lambda_idx);
-    viamd::get(e, p("UseMagnitude"), es.use_magnitude);
-    viamd::get_enum(e, p("Spin"), es.spin, viamd::enum_names(es_spin_names));
-    viamd::get_enum(e, p("NtoComponent"), es.nto_component, viamd::enum_names(es_nto_component_names));
-    viamd::get_enum(e, p("TransitionDensityComponent"), es.transition_density_component, viamd::enum_names(es_transition_component_names));
+    read_field_params(e, p, es.shown);
     viamd::get_enum(e, p("Resolution"), es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::get(e, p("Iso"), es.iso_value);
     viamd::get(e, p("FieldIso"), es.field_iso_value);
     viamd::get_enum(e, p("Surface"), es.surface, viamd::enum_names(es_surface_names));
-    viamd::get(e, p("SurfaceDensity"), es.surface_density);
+    viamd::PathPrefix sf = p.sub("SurfaceField");
+    if (read_field_path(e, sf, es.surface_field)) read_field_params(e, sf, es.surface_field);
+    viamd::get(e, p("SurfaceValue"), es.surface_value);
     viamd::get_enum(e, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
@@ -2339,7 +2371,7 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     }
 
     viamd::PathPrefix d = p.sub("DensityProperty");
-    read_attribute_path(e, d("Path"), es.density_property_key);
+    read_attribute_path(e, d("Path"), es.shown.density_property_key);
     viamd::get_count(e, d("Iso"), es.density_property.num_isos, (int)MD_COUNTOF(es.density_property.values));
     for (int i = 0; i < es.density_property.num_isos; ++i) {
         viamd::PathPrefix q = d.sub("Iso", i);
@@ -3056,9 +3088,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             md_array(FieldEntry) entries = nullptr;
             const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
             char path[FIELD_PATH_MAX] = "";
-            field_path_of_source(path, sizeof(path), es.source, es.density_property_key, state->mold.sys);
+            field_path_of_source(path, sizeof(path), es.shown.source, es.shown.density_property_key, state->mold.sys);
             // what it is: its label, a density property's its own
-            md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.source]);
+            md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.shown.source]);
             for (size_t i = 0; i < n; ++i) {
                 if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
             }
@@ -3067,14 +3099,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             const int picked = field_picker("field", preview_buf, entries, n, md_str_from_cstr(path), nullptr);
             if (picked >= 0) {
                 const FieldEntry& e = entries[picked];
-                if (e.source != es.source) {
-                    es.source = e.source;
+                if (e.source != es.shown.source) {
+                    es.shown.source = e.source;
                     electronic_structure_set_source_defaults(&es);
-                    if (electronic_structure_source_on_isodensity_possible(e.source)) {
-                        es.surface_density = es_isodensity_default(state->mold.sys, e.source);
+                    if (es.surface_field.source == ElectronicStructureSource::ElectronDensity) {
+                        es.surface_value = es_isodensity_default(state->mold.sys, e.source);
                     }
                 }
-                if (e.source == ElectronicStructureSource::DensityProperty) es.density_property_key = e.density_property_key;
+                if (e.source == ElectronicStructureSource::DensityProperty) es.shown.density_property_key = e.density_property_key;
                 update_rep = true;
             }
         }
@@ -3090,14 +3122,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 // than drawing nothing.
                 const DensityProperty* selected = nullptr;
                 for (int n = 0; n < num_density_props; ++n) {
-                    if (density_props[n].key == es.density_property_key) {
+                    if (density_props[n].key == es.shown.density_property_key) {
                         selected = &density_props[n];
                         break;
                     }
                 }
                 if (!selected) {
                     selected = &density_props[0];
-                    es.density_property_key = selected->key;
+                    es.shown.density_property_key = selected->key;
                     update_rep = true;
                 }
 
@@ -3112,22 +3144,22 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // only checked that the column existed - so the selector appeared and toggled between two
             // names for one datum.
             const bool has_beta = es_has_distinct_beta_orbitals(state->mold.sys);
-            if (es.source == ElectronicStructureSource::MolecularOrbital) {
-                if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
-                    es.spin = ElectronicStructureSpin::Alpha;
+            if (es.shown.source == ElectronicStructureSource::MolecularOrbital) {
+                if (es.shown.spin != ElectronicStructureSpin::Alpha && es.shown.spin != ElectronicStructureSpin::Beta) {
+                    es.shown.spin = ElectronicStructureSpin::Alpha;
                     update_rep = true;
                 }
                 if (has_beta) {
                     const char* spin_options[] = { "Alpha", "Beta" };
-                    int spin_idx = es.spin == ElectronicStructureSpin::Beta ? 1 : 0;
+                    int spin_idx = es.shown.spin == ElectronicStructureSpin::Beta ? 1 : 0;
                     prop::row("spin");
                     if (ImGui::Combo("##spin", &spin_idx, spin_options, IM_ARRAYSIZE(spin_options))) {
-                        es.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
+                        es.shown.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
                         update_rep = true;
                     }
                 }
             }
-            else if (es.source == ElectronicStructureSource::ElectronDensity) {
+            else if (es.shown.source == ElectronicStructureSource::ElectronDensity) {
                 if (has_beta) {
                     const ElectronicStructureSpin spin_options[] = {
                         ElectronicStructureSpin::Total,
@@ -3138,53 +3170,53 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     const char* spin_labels[] = { "Total", "Alpha", "Beta", "Difference" };
                     int spin_idx = 0;
                     for (int i = 0; i < (int)IM_ARRAYSIZE(spin_options); ++i) {
-                        if (es.spin == spin_options[i]) {
+                        if (es.shown.spin == spin_options[i]) {
                             spin_idx = i;
                             break;
                         }
                     }
-                    if (es.spin != spin_options[spin_idx]) {
-                        es.spin = spin_options[spin_idx];
+                    if (es.shown.spin != spin_options[spin_idx]) {
+                        es.shown.spin = spin_options[spin_idx];
                         update_rep = true;
                     }
                     prop::row("spin");
                     if (ImGui::Combo("##spin", &spin_idx, spin_labels, IM_ARRAYSIZE(spin_labels))) {
-                        es.spin = spin_options[spin_idx];
-                        if (es.spin != ElectronicStructureSpin::Difference) {
-                            es.use_magnitude = false;
+                        es.shown.spin = spin_options[spin_idx];
+                        if (es.shown.spin != ElectronicStructureSpin::Difference) {
+                            es.shown.use_magnitude = false;
                         }
                         update_rep = true;
                     }
-                } else if (es.spin != ElectronicStructureSpin::Total) {
-                    es.spin = ElectronicStructureSpin::Total;
-                    es.use_magnitude = false;
+                } else if (es.shown.spin != ElectronicStructureSpin::Total) {
+                    es.shown.spin = ElectronicStructureSpin::Total;
+                    es.shown.use_magnitude = false;
                     update_rep = true;
                 }
             }
         }
 
-        if (es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+        if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital) {
             prop::row("component");
-            if (ImGui::Combo("##component", (int*)&es.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
+            if (ImGui::Combo("##component", (int*)&es.shown.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
                 update_rep = true;
             }
         }
 
-        if (es.source == ElectronicStructureSource::TransitionDensity) {
+        if (es.shown.source == ElectronicStructureSource::TransitionDensity) {
             prop::row("component");
-            if (ImGui::Combo("##component", (int*)&es.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
+            if (ImGui::Combo("##component", (int*)&es.shown.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
                 update_rep = true;
             }
         }
 
         if (electronic_structure_uses_orbital_idx(es)) {
             // The (homo)/(lumo) markers sit at different indices for the two spins in an unrestricted
-            // calculation, and the rendered volume already follows es.spin - so the frontier has to
+            // calculation, and the rendered volume already follows es.shown.spin - so the frontier has to
             // follow it too, or the entry marked (homo) under spin=Beta is alpha's HOMO index.
             //
             // Formatted here rather than read out of a precomputed list: it is an index, an energy and
             // two markers, and a copy of it would be one more thing to keep in step with the table.
-            const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
+            const bool use_beta = (es.shown.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
 
             size_t num_orbitals = 0;
             OrbitalFrontier frontier = {};
@@ -3215,10 +3247,10 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     }
                 };
 
-                es.orbital_idx = MD_CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
+                es.shown.orbital_idx = MD_CLAMP(es.shown.orbital_idx, 0, (int)num_orbitals - 1);
 
                 char preview[48];
-                orbital_label(preview, sizeof(preview), es.orbital_idx, 0, 0);
+                orbital_label(preview, sizeof(preview), es.shown.orbital_idx, 0, 0);
                 prop::row("orbital", energy ? "The orbitals by index and energy (Ha), highest first" : nullptr);
                 if (ImGui::BeginCombo("##orbital", preview)) {
                     // Highest index first, so the lowest lying orbital sits at the bottom - the
@@ -3227,14 +3259,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // index IS descending energy; sorting on the energies instead would only differ for
                     // a non-aufbau set, and would then disagree with that table.
                     for (int n = (int)num_orbitals - 1; n >= 0; n--) {
-                        bool is_selected = (es.orbital_idx == n);
+                        bool is_selected = (es.shown.orbital_idx == n);
                         char label[48];
                         orbital_label(label, sizeof(label), n, idx_width, 10);
                         if (ImGui::Selectable(label, is_selected)) {
-                            if (es.orbital_idx != n) {
+                            if (es.shown.orbital_idx != n) {
                                 update_rep = true;
                             }
-                            es.orbital_idx = n;
+                            es.shown.orbital_idx = n;
                         }
 
                         if (is_selected) {
@@ -3249,20 +3281,20 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (electronic_structure_uses_excited_state_idx(es)) {
             const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
             if (num_excited_states > 0) {
-                es.excited_state_idx = MD_CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
+                es.shown.excited_state_idx = MD_CLAMP(es.shown.excited_state_idx, 0, num_excited_states - 1);
                 char preview[16];
-                snprintf(preview, sizeof(preview), "%i", es.excited_state_idx + 1);
+                snprintf(preview, sizeof(preview), "%i", es.shown.excited_state_idx + 1);
                 prop::row("state", "The excited state");
                 if (ImGui::BeginCombo("##state", preview)) {
                     for (int n = 0; n < num_excited_states; n++) {
-                        const bool is_selected = (es.excited_state_idx == n);
+                        const bool is_selected = (es.shown.excited_state_idx == n);
                         char label[16];
                         snprintf(label, sizeof(label), "%i", n + 1);
                         if (ImGui::Selectable(label, is_selected)) {
-                            if (es.excited_state_idx != n) {
+                            if (es.shown.excited_state_idx != n) {
                                 update_rep = true;
                             }
-                            es.excited_state_idx = n;
+                            es.shown.excited_state_idx = n;
                         }
 
                         if (is_selected) {
@@ -3276,15 +3308,15 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // tail of the ragged lambda axis stops it.
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
-                    const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
+                    const bool nto_ready = es_nto_ready(state, (size_t)es.shown.excited_state_idx);
                     const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), state->mold.sys,
-                                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
+                                                                            (size_t)es.shown.excited_state_idx, LAMBDA_CUTOFF) : 0;
                     if (!nto_ready) {
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
                         ImGui::TextDisabled("computing...");
                     }
                     if (num_lambdas > 0) {
-                        es.nto_lambda_idx = MD_CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
+                        es.shown.nto_lambda_idx = MD_CLAMP(es.shown.nto_lambda_idx, 0, num_lambdas - 1);
 
                         auto lambda_label = [&lambdas](char* buf, size_t cap, int n) {
                             // The bytes rather than a u8 literal: u8"" is const char8_t* in C++20 and
@@ -3293,18 +3325,18 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         };
 
                         char preview_lambda[32];
-                        lambda_label(preview_lambda, sizeof(preview_lambda), es.nto_lambda_idx);
+                        lambda_label(preview_lambda, sizeof(preview_lambda), es.shown.nto_lambda_idx);
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
                         if (ImGui::BeginCombo("##lambda", preview_lambda)) {
                             for (int n = 0; n < num_lambdas; n++) {
-                                const bool is_selected = (es.nto_lambda_idx == n);
+                                const bool is_selected = (es.shown.nto_lambda_idx == n);
                                 char label[32];
                                 lambda_label(label, sizeof(label), n);
                                 if (ImGui::Selectable(label, is_selected)) {
-                                    if (es.nto_lambda_idx != n) {
+                                    if (es.shown.nto_lambda_idx != n) {
                                         update_rep = true;
                                     }
-                                    es.nto_lambda_idx = n;
+                                    es.shown.nto_lambda_idx = n;
                                 }
 
                                 if (is_selected) {
@@ -3319,9 +3351,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         }
 
         if (electronic_structure_uses_magnitude_toggle(es)) {
-            const bool density = es.source == ElectronicStructureSource::ElectronDensity;
+            const bool density = es.shown.source == ElectronicStructureSource::ElectronDensity;
             prop::row("magnitude", density ? (const char*)u8"The surfaces of |ρ| instead of ρ" : (const char*)u8"The surfaces of |Ψ| instead of Ψ");
-            update_rep |= ImGui::Checkbox("##magnitude", &es.use_magnitude);
+            update_rep |= ImGui::Checkbox("##magnitude", &es.shown.use_magnitude);
         }
         // How it is drawn, with what is drawn: a row, not a section of one
         prop::row("display", "How the field is drawn:\n"
@@ -3403,10 +3435,10 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             } else {
-                const bool field = electronic_structure_source_field_kind(es.source) != SurfaceFieldKind::Count;
+                const bool field = electronic_structure_source_field_kind(es.shown.source) != SurfaceFieldKind::Count;
                 {
                     // meshes only of the orbitals and densities (an isodensity surface's too): the others raycast
-                    const bool meshable = electronic_structure_source_meshable(electronic_structure_geometry(es).source);
+                    const bool meshable = electronic_structure_source_meshable(electronic_structure_geometry(es).shown.source);
                     prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame\n"
                                            "(Fast or Exact: Settings, Isosurfaces).\n"
                                            "Mesh: extracted as triangle meshes from the field itself rather than from the volume, at a\n"
@@ -3422,11 +3454,11 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     ImGui::EndDisabled();
                     if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals and densities only");
                 }
-                if (electronic_structure_source_on_isodensity_possible(es.source)) {
+                if (electronic_structure_source_on_other_surface_possible(es.shown.source)) {
                     prop::row("surface", "What the surface is:\n"
-                                         "Isodensity: where the electron density is the value, coloured by the field (as the electrostatic\n"
-                                         "  potential is read on 0.001 au); evaluated only around it\n"
-                                         "Isosurface of the field: where the field is the isovalue");
+                                         "Surface of another field: where that field is the value, coloured by this one (as the\n"
+                                         "  electrostatic potential is read on the electron density at 0.001 au); evaluated only around it\n"
+                                         "Isosurface of the field: where this field is the isovalue");
                     int sf = (int)es.surface;
                     if (ImGui::Combo("##surface", &sf, electronic_structure_surface_str, (int)ElectronicStructureSurface::Count)) {
                         es.surface = (ElectronicStructureSurface)sf;
@@ -3434,13 +3466,54 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     }
                 }
                 // The band a field is evaluated in follows the isovalue
-                if (electronic_structure_on_isodensity(es)) {
-                    const double d_min = 1.0e-5, d_max = 0.1;
-                    prop::row("density", "The electron density of the surface, electrons / bohr^3 (au)");
-                    update_rep |= ImGui::SliderScalar("##surface_density", ImGuiDataType_Double, &es.surface_density, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
+                if (electronic_structure_on_other_surface(es)) {
+                    // The field the surface is of: the electron density, or a field of the system as a whole (one
+                    // without an index or a state to pick)
+                    md_temp_scope_t temp = md_temp_begin();
+                    MD_DEFER { md_temp_end(temp); };
+                    md_array(FieldEntry) entries = nullptr;
+                    const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
+                    char path[FIELD_PATH_MAX] = "";
+                    field_path_of_source(path, sizeof(path), es.surface_field.source, es.surface_field.density_property_key, state->mold.sys);
+                    md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.surface_field.source]);
+                    for (size_t i = 0; i < n; ++i) {
+                        if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
+                    }
+                    char preview_buf[128];
+                    snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)preview.len, preview.ptr);
+                    prop::row("of", "The field the surface is an isosurface of");
+                    const int picked = field_picker("surface_field", preview_buf, entries, n, md_str_from_cstr(path), [](const FieldEntry& e) {
+                        return e.source == ElectronicStructureSource::ElectronDensity || electronic_structure_source_is_surface_field(e.source) ||
+                               e.source == ElectronicStructureSource::ElectronLocalization || e.source == ElectronicStructureSource::LocalizedOrbitalLocator;
+                    });
+                    if (picked >= 0 && entries[picked].source != es.surface_field.source) {
+                        es.surface_field = FieldRef{ .source = entries[picked].source };
+                        field_ref_set_defaults(&es.surface_field);
+                        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.surface_field.source);
+                        es.surface_value = fk != SurfaceFieldKind::Count ? fabs(surface_field_kind_info(fk).iso) : es_isodensity_default(state->mold.sys, es.shown.source);
+                        update_rep = true;
+                    }
+                    const SurfaceFieldKind sk = electronic_structure_source_field_kind(es.surface_field.source);
+                    if (sk == SurfaceFieldKind::Count) {
+                        // the electron density: decades of it
+                        const double d_min = 1.0e-5, d_max = 0.1;
+                        prop::row("value", "The electron density of the surface, electrons / bohr^3 (au)");
+                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
+                    } else {
+                        // a field in its unit: about where it starts, [0, 1] for ELF and LOL
+                        const SurfaceFieldKindInfo& info = surface_field_kind_info(sk);
+                        const double d = info.iso;
+                        double lo = info.unit_interval ? 0.0 : (d < 0.0 ? 10.0 * d : 0.0);
+                        double hi = info.unit_interval ? 1.0 : (d < 0.0 ? 0.0 : 10.0 * fabs(d));
+                        char fmt[64], unit[32] = "";
+                        md_unit_print(unit, sizeof(unit), info.unit);
+                        snprintf(fmt, sizeof(fmt), "%s%%.4g %s", info.scale == SurfaceFieldScale::Diverging ? (const char*)u8"±" : "", unit);
+                        prop::row("value", "Where the surface is: that field at this value, in its unit");
+                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &lo, &hi, fmt);
+                    }
                 } else if (field) {
                     // over the field's values: its spread once evaluated, [0, 1] for ELF and LOL, about its default before
-                    const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.source));
+                    const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.shown.source));
                     const bool sgn = electronic_structure_is_signed(es);
                     double lo = 0.0, hi = 1.0;
                     if (!info.unit_interval) {
@@ -3476,7 +3549,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (prop::section("Color")) {
             const bool density_property = electronic_structure_is_density_property(es);
             // on an isodensity surface the field shown is its colours: its colour map alone
-            const bool on_isodensity = electronic_structure_on_isodensity(es);
+            const bool on_isodensity = electronic_structure_on_other_surface(es);
             update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode, on_isodensity);
             if (!on_isodensity && es.coloring == SurfaceColoring::AtomColors) {
                 update_rep |= draw_representation_coloring(state, rep);
@@ -3486,8 +3559,8 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
             if (!density_property) {
                 const bool tint = g.coloring != SurfaceColoring::Uniform;
-                const bool attachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-                const bool detachment = g.source == ElectronicStructureSource::TransitionDensity && g.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const bool attachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
                 const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
                 if (electronic_structure_is_signed(g)) {
                     prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
