@@ -39,6 +39,7 @@ static const md_str_t pressure     = MD_STR_INIT("vlx/scf/gostshyp/pressure");
 static const md_str_t discretization = MD_STR_INIT("vlx/scf/gostshyp/discretization");
 static const md_str_t num_lebedev  = MD_STR_INIT("vlx/scf/gostshyp/num_lebedev_points");
 static const md_str_t r_ext        = MD_STR_INIT("vlx/scf/gostshyp/r_ext");
+static const md_str_t switching    = MD_STR_INIT("vlx/scf/gostshyp/tessera/switching");
 static const md_str_t qm_coord     = MD_STR_INIT("qm/atom/coordinate");
 static const md_str_t qm_map       = MD_STR_INIT("qm/atom/system_index");
 }
@@ -104,6 +105,7 @@ struct CavityData {
     // The switching of VeloxChem's 'swig' (cavity_geometry.frag): available when the file says the cavity was made so,
     // and the spheres around each sphere within reach of its switching
     bool  has_switching = false;
+    std::vector<float> file_switching;  // F_j as the file has it, where it does (newer VeloxChem); else empty
     float sw_gamma = 0, sw_alpha = 0, sw_r_ext = 0;
     std::vector<uint32_t> nbr_off;  // [spheres + 1]
     std::vector<uint32_t> nbr;
@@ -172,7 +174,7 @@ bool cavity_available(const md_system_t& sys) {
 static uint64_t source_hash(const md_system_t& sys) {
     const md_str_t paths[] = {cavity_path::coordinate, cavity_path::normal, cavity_path::area, cavity_path::amplitude, cavity_path::exponent,
                               cavity_path::decay_length, cavity_path::atom_index, cavity_path::radius, cavity_path::pressure, cavity_path::qm_coord, cavity_path::qm_map,
-                              cavity_path::discretization, cavity_path::num_lebedev, cavity_path::r_ext};
+                              cavity_path::discretization, cavity_path::num_lebedev, cavity_path::r_ext, cavity_path::switching};
     uint64_t h = 0x9e3779b97f4a7c15ull;
     for (const md_str_t& p : paths) {
         const md_attribute_t* a = find(sys, p);
@@ -214,6 +216,8 @@ static bool read_source(CavityData* d, const md_system_t& sys) {
     d->has_lambda = lam != nullptr;
     d->lambda.assign(n, 0.0);
     if (lam) d->lambda.assign(lam, lam + n);
+    d->file_switching.clear();
+    if (const double* F = view<double>(sys, cavity_path::switching, MD_ATTRIBUTE_TYPE_F64, 1, n)) d->file_switching.assign(F, F + n);
     d->atom.assign(atom, atom + n);
     for (uint32_t j = 0; j < n; ++j) {
         if (d->atom[j] >= num_atoms) {
@@ -297,6 +301,29 @@ static inline float smoothstep5(float t) {
 }
 
 // The switching of the point of sphere i in the direction n (cavity_geometry.frag)
+static float switching(const CavityData& d, uint32_t i, const float n[3]);
+
+// The switching viamd evaluates (the mask, the weights of the fits) against the file's at the tesserae, where the file
+// has it: VeloxChem's formula is reimplemented here, and this is what tells when it no longer matches
+static void check_switching(const CavityData& d) {
+    if (!d.has_switching || d.file_switching.size() != d.num_tess) return;
+    float worst = 0;
+    for (uint32_t j = 0; j < d.num_tess; ++j) {
+        const float* s = &d.sph[4 * d.atom[j]];
+        float n[3] = {d.pos[3 * j] - s[0], d.pos[3 * j + 1] - s[1], d.pos[3 * j + 2] - s[2]};
+        const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len <= 0) continue;
+        for (float& v : n) v /= len;
+        worst = MD_MAX(worst, fabsf(switching(d, d.atom[j], n) - d.file_switching[j]));
+    }
+    if (worst > 1e-4f) {
+        MD_LOG_ERROR("Cavity: the switching evaluated here differs from the file's by up to %.3g: the weights drawn and fitted are not "
+                     "VeloxChem's (its formula changed?)", worst);
+    } else {
+        MD_LOG_DEBUG("Cavity: the switching evaluated here matches the file's to %.2g", worst);
+    }
+}
+
 static float switching(const CavityData& d, uint32_t i, const float n[3]) {
     const float* s = &d.sph[4 * i];
     const float pe[3] = {s[0] + n[0] * (s[3] + d.sw_r_ext), s[1] + n[1] * (s[3] + d.sw_r_ext), s[2] + n[2] * (s[3] + d.sw_r_ext)};
@@ -858,7 +885,9 @@ static void upload_kernel(CavityData* d) {
         const double full = d->full_share * 4.0 * M_PI * R * R;
         gl[4 * j + 0] = d->zeta[j] > 0 ? (float)sqrt(log(2.0) / d->zeta[j]) : (float)sqrt(d->area[j] / M_PI);
         gl[4 * j + 1] = (float)d->lambda[j];
-        if (d->has_switching) {
+        if (d->file_switching.size() == n) {
+            gl[4 * j + 2] = d->file_switching[j];
+        } else if (d->has_switching) {
             const float* s = &d->sph[4 * d->atom[j]];
             float n[3] = {d->pos[3 * j] - s[0], d->pos[3 * j + 1] - s[1], d->pos[3 * j + 2] - s[2]};
             const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
@@ -996,6 +1025,7 @@ bool cavity_update(CavityRepresentation* cav, const md_system_t& sys, const md_s
             return false;
         }
         d->source_hash = h;
+        check_switching(*d);
     }
     if (d->num_tess == 0) return false;
 
