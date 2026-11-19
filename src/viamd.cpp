@@ -5790,7 +5790,8 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
 }
 
 bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
-    return state->settings.isosurface_rendering == IsosurfaceRendering_Mesh &&
+    (void)state;
+    return es.rendering == IsosurfaceRendering_Mesh &&
            electronic_structure_source_meshable(electronic_structure_geometry(es).source);
 }
 

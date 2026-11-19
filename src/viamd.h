@@ -283,7 +283,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ball And Stick",
     "Ribbons",
     "Cartoon",
-    "Electronic Structure",
+    "Field",
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
@@ -719,7 +719,8 @@ struct Volume {
 // the world. Defined in viamd.cpp because it is the half that touches GL.
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
 
-// How the isosurfaces of the electronic structure are drawn (Settings::isosurface_rendering)
+// How isosurfaces are drawn: a Field representation's (ElectronicStructureRepresentation::rendering), and the
+// panels of the Orbital Grid and Transition Analysis windows (Settings::isosurface_rendering)
 enum IsosurfaceRendering {
     IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (volume::render_isosurfaces)
     IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h, isomesh::render)
@@ -814,6 +815,10 @@ struct ElectronicStructureRepresentation {
     // changes across a reload; an id is derived from the path, so it names the same thing or
     // nothing at all.
     md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+
+    // How its isosurfaces are drawn (IsosurfaceRendering): meshes only of what they can be made of (es_mesh_mode),
+    // the others raycast whatever this says
+    int rendering = IsosurfaceRendering_Raycast;
 
     // The isosurface display: what the surfaces are (ElectronicStructureSurface), and for an isodensity surface the
     // density it is at (electrons / bohr^3, not squared as the density's own isovalue is)
@@ -2104,7 +2109,8 @@ struct ApplicationState {
             decltype(visuals.tonemapping) tonemapping;
             decltype(visuals.dof)         dof;
         } look;
-        int  isosurface_rendering = 0;      // IsosurfaceRendering: raycast volumes or meshes of the fields (iso_meshes.h)
+        int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
+                                            // representation has its own: ElectronicStructureRepresentation::rendering)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
@@ -2819,7 +2825,7 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 #define ES_PLANE_IMAGES_REVISION "plane-images r5"
 // Whether it is: the planes display, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
-// Whether the representation's isosurfaces are drawn as meshes: the setting, for what meshes can be made of
+// Whether the representation's isosurfaces are drawn as meshes: its setting, for what meshes can be made of
 bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es);
 // The density an isodensity surface for the source starts out at (electrons / bohr^3): 0.001, 0.004 for the local
 // electron attachment energy, where the GOSTSHYP wall is for its fields (the median density its Gaussians see)

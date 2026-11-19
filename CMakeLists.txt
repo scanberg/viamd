@@ -174,6 +174,7 @@ set(SRC_FILES
     src/display_units_settings.cpp
     src/surface_field.cpp
     src/gostshyp.cpp
+    src/field.cpp
     src/cavity.cpp
     src/event.cpp
     src/file_list.cpp

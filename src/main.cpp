@@ -2301,25 +2301,18 @@ static void draw_main_menu(ApplicationState* data) {
 
             if (prop::section("Isosurfaces", false)) {
                 int rendering = MD_CLAMP(data->settings.isosurface_rendering, 0, 1);
-                prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
-                                       "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
-                                       "field itself rather than from the volume, at a spacing set by the representation's resolution,\n"
-                                       "and drawn with stochastic transparency that is refined over the frames while the view\n"
-                                       "is still. Extraction runs when the surface changes (an isovalue, an orbital, a frame);\n"
-                                       "drawing is cheap. Volumes from scripts are always ray cast.");
+                prop::row("panels", "How the isosurfaces of the Orbital Grid and Transition Analysis panels are drawn\n"
+                                    "(a Field representation has its own, in its Surface section).\n"
+                                    "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
+                                    "Mesh: extracted as triangle meshes from the field itself, drawn with stochastic\n"
+                                    "transparency refined over the frames while the view is still.");
                 if (ImGui::Combo("##rendering", &rendering, "Ray Casting\0Mesh\0")) {
                     data->settings.isosurface_rendering = rendering;
                     app_settings::mark_dirty();
-                    // Their volumes are evaluated only when something draws from them
-                    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-                        if (data->representation.reps[i].type == RepresentationType::ElectronicStructure) {
-                            flag_representation_as_dirty(&data->representation.reps[i]);
-                        }
-                    }
                 }
                 // Also for the volumes that are ray cast in either mode (from scripts)
                 int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
-                prop::row("intersection", "How ray cast isosurfaces are found (with Mesh rendering: only those of volumes from scripts).\n"
+                prop::row("intersection", "How ray cast isosurfaces are found, of every representation and window that ray casts them.\n"
                                           "Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
                                           "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
                                           "a finer volume resolution makes both smaller.\n"
@@ -8387,9 +8380,15 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
     iso_mesh_converged = true;
     bool written = false;
-    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: the setting's,
-    // and whatever meshes are not made of (es_mesh_mode)
-    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
+    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: as each
+    // representation has it, and whatever meshes are not made of (es_mesh_mode)
+    bool any_mesh = false;
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = state->representation.reps[i];
+        any_mesh |= representation_shown(*state, rep) && rep.type == RepresentationType::ElectronicStructure &&
+                    rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface && es_mesh_mode(state, rep.electronic_structure);
+    }
+    if (any_mesh) {
         written = draw_representations_transparent_mesh(state);
     } else {
         isomesh::target_free(&iso_mesh_target);
