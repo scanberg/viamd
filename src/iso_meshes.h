@@ -9,7 +9,9 @@
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
 // job (md_gto_iso_gpu_job_t, run as a GpuJob: gpu_job.h) advanced once a frame: the mesh shown stays the
 // previous one until the job is done, so a long extraction never stalls the frame (the overlay tells how
-// far it is). The CPU path blocks.
+// far it is). The CPU path is a pool task, likewise: the mesh shown stays until it is done. It takes what the GPU's
+// cannot: no device, fields the GPU path does not take, or a GPU extraction that failed (out of device memory,
+// surfaces wider than its lattice).
 //
 // Before a job, the fields go to the device (md_gto_iso_gpu_set_t), which for a large density is seconds of CPU
 // (its density matrix): a pool task does it, on a GPU stream of its own, while the mesh shown stays. The fields
@@ -77,12 +79,17 @@ struct IsoMeshes {
     uint64_t job_key = 0;
     uint32_t job_slots = 0;
     int64_t  job_start = 0;     // md_tick_t: when it began
+    uint64_t gpu_failed_key = 0;    // the slots whose GPU extraction failed (logged): not tried again, on the CPU
 
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;
     void*    gpu_set = nullptr;     // md_gto_iso_gpu_set_t
     void*    set_build = nullptr;   // the set being made on a worker thread (of these fields, or of the ones before)
     uint64_t set_failed_key = 0;    // the fields no set could be made of: extracted on the CPU
+    // The extraction on the CPU under way, on a worker thread (without a device, for fields the GPU path does not
+    // take, or where the GPU's failed): until it is done the mesh above is the previous one. It holds the caches
+    // below while it runs.
+    void*    mesh_build = nullptr;
     struct Cache {
         const md_gto_iso_field_t* field = nullptr;
         md_gto_iso_cache_t* cache = nullptr;

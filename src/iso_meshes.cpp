@@ -189,12 +189,14 @@ static void job_cancel(IsoMeshes* m) {
 // A large density's field and its set on the device take seconds of CPU: the orbitals copied, the field made
 // of them, and for a set of more functions than the factored kernels take the density matrix D = C W C^T and
 // its upload (md_gto_iso_gpu_set_create). They are made by pool tasks, the set on a stream of its own that the
-// task destroys once its uploads are done, while the meshes shown stay what they were.
+// task destroys once its uploads are done, while the meshes shown stay what they were. So is a mesh extracted on
+// the CPU (Mesh): a large system's at a fine spacing is minutes of it.
 //
 // What a task reads must outlive it: the system's attributes do (a load waits for the pool), the positions are
-// its own copy, and the fields a set is made of are held for it - a field let go of while a set of it is being
-// made (iso_field_release) goes when that task ends. A task whose result is no longer wanted is orphaned and
-// cleaned up once it ends (iso_meshes_collect); nothing here waits for one, but iso_meshes_shutdown.
+// its own copy, and the fields a set or a mesh is made of are held for it - a field let go of while a set or a
+// mesh of it is being made (iso_field_release) goes when that task ends. A task whose result is no longer wanted
+// is orphaned and cleaned up once it ends (iso_meshes_collect); nothing here waits for one, but
+// iso_meshes_shutdown.
 
 // What an electronic structure representation's field is of, copied for the task that makes it
 struct IsoFieldSpec {
@@ -209,7 +211,7 @@ struct IsoFieldSpec {
 };
 
 struct IsoBuild {
-    enum Kind { Field, Set } kind = Field;
+    enum Kind { Field, Set, Mesh } kind = Field;
     task_system::Job task;       // a cancelled one (a load) made nothing to be taken
     bool      orphan = false;    // nobody wants what it makes
     md_tick_t t0 = 0;
@@ -220,9 +222,25 @@ struct IsoBuild {
     // Field
     IsoFieldSpec spec = {};
     md_gto_iso_field_t* field = nullptr;
-    // Set
+    // Set, Mesh: the fields, held (iso_field_release)
     const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS] = {};
     uint32_t  num_fields = 0;
+    // Mesh: the slots (fields[k] at iso[k], sheets[k]) at cell_size, with the caches of the meshes' fields it was
+    // given (IsoMeshes::cache, of fields_key) and gives back; what it made, the slots' meshes one after another
+    // with their ranges (ok: made, and whole)
+    double    iso[ISO_MESHES_MAX_SLOTS] = {};
+    uint32_t  sheets[ISO_MESHES_MAX_SLOTS] = {};
+    double    cell_size = 0.0;
+    uint64_t  fields_key = 0;
+    IsoMeshes::Cache cache[ISO_MESHES_MAX_SLOTS] = {};
+    double    cache_cell_size = 0.0;
+    float*    pos = nullptr;      // 3 per vertex
+    float*    nrm = nullptr;
+    uint32_t* idx = nullptr;
+    uint32_t  nv = 0, ni = 0;
+    uint32_t  offset[ISO_MESHES_MAX_SLOTS][2] = {}, count[ISO_MESHES_MAX_SLOTS][2] = {};
+    bool      ok = false;
+    double    seconds = 0.0;
 #if MD_ENABLE_GPU
     // The stream the set is made on, the task's; destroyed by the task once its work is done (giving back its
     // staging, the density matrix's upload: tens of ms on the GL thread). The GL thread's stream frees a set
@@ -239,6 +257,7 @@ static md_gto_iso_field_t* g_dead_fields[256];   // let go of while a set of the
 static uint32_t  g_num_dead = 0;
 
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
+static void extract_cpu_run(IsoBuild* b);
 
 static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
@@ -269,6 +288,10 @@ static bool build_made(const IsoBuild* b) {
 
 // On a worker thread
 static void build_run(IsoBuild* b) {
+    if (b->kind == IsoBuild::Mesh) {
+        extract_cpu_run(b);
+        return;
+    }
     IsoFieldGeometry g;
     g.sys = b->sys;
     g.atom_xyz = b->xyz;
@@ -292,14 +315,16 @@ static void build_run(IsoBuild* b) {
 static void build_start(IsoBuild* b) {
     // listed while it runs (a protein's density is seconds of it), and the worker's temp arenas given back after: a
     // density's orbitals are read there, hundreds of MB that a pool thread would otherwise hold until it exits
-    b->task.start(b->kind == IsoBuild::Field ? MD_STR_LIT("Isosurface field: preparing") : MD_STR_LIT("Isosurface mesh: preparing"),
-                  [b]() { build_run(b); md_temp_trim(); });
+    const md_str_t label = b->kind == IsoBuild::Field ? MD_STR_LIT("Isosurface field: preparing")
+                         : b->kind == IsoBuild::Set ? MD_STR_LIT("Isosurface mesh: preparing")
+                         : MD_STR_LIT("Isosurface mesh (CPU)");
+    b->task.start(label, [b]() { build_run(b); md_temp_trim(); });
 }
 
 static bool field_held(const md_gto_iso_field_t* f) {
     for (uint32_t i = 0; i < g_num_builds; ++i) {
         const IsoBuild* b = g_builds[i];
-        if (b->kind != IsoBuild::Set || !build_running(b)) continue;
+        if (b->kind == IsoBuild::Field || !build_running(b)) continue;
         for (uint32_t k = 0; k < b->num_fields; ++k) if (b->fields[k] == f) return true;
     }
     return false;
@@ -324,9 +349,20 @@ void iso_field_release(md_gto_iso_field_t* field) {
     field_destroy(field);
 }
 
+static void caches_free(IsoMeshes::Cache* cache) {
+    for (uint32_t k = 0; k < ISO_MESHES_MAX_SLOTS; ++k) {
+        md_gto_iso_cache_destroy(cache[k].cache);
+        cache[k] = {};
+    }
+}
+
 // What a finished build made, dropped
 static void build_destroy(IsoBuild* b) {
     if (b->field) field_destroy(b->field);
+    caches_free(b->cache);
+    free(b->pos);
+    free(b->nrm);
+    free(b->idx);
 #if MD_ENABLE_GPU
     if (b->set) md_gto_iso_gpu_set_destroy(b->gl_stream, (md_gto_iso_gpu_set_t*)b->set);
     if (b->stream) md_gpu_stream_destroy(b->stream);   // of a task cancelled before it ran: nothing on it
@@ -395,10 +431,8 @@ static void release_extraction_state(IsoMeshes* m, ApplicationState* state) {
     // a set under way of the fields that were stays m->set_build: set_ensure lets it end before it begins another
     m->set_failed_key = 0;
     m->gpu_set = nullptr;
-    for (auto& c : m->cache) {
-        md_gto_iso_cache_destroy(c.cache);
-        c = {};
-    }
+    // a CPU extraction under way holds the caches it was given: they go with it when it is taken or orphaned
+    caches_free(m->cache);
     m->cache_cell_size = 0.0;
     m->fields_key = 0;
 }
@@ -435,6 +469,10 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
     MD_ASSERT(m);
     release_extraction_state(m, state);
     build_orphan((IsoBuild*)m->set_build);
+    if (IsoBuild* b = (IsoBuild*)m->mesh_build) {
+        b->task.cancel();       // stops at its next brick chunk; what it made is dropped when it ends
+        build_orphan(b);
+    }
     drop_gpu_xyz(m, state);
     isomesh::mesh_free(&m->mesh);
     free(m->xyz);
@@ -572,18 +610,16 @@ static int job_poll(IsoMeshes* m, ApplicationState* state) {
 
 #endif
 
-// The cache of a field that serves 'iso' at this spacing, made if there is none: over [iso/2, 4 iso], so a
-// value dragged within that range costs only the mesh
-static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* field, double iso, double cell_size) {
-    if (m->cache_cell_size != cell_size) {
-        for (auto& c : m->cache) {
-            md_gto_iso_cache_destroy(c.cache);
-            c = {};
-        }
-        m->cache_cell_size = cell_size;
+// On a worker thread (a Mesh build): the cache of a field that serves 'iso' at this spacing, of the build's caches,
+// made if there is none: over [iso/2, 4 iso], so a value dragged within that range costs only the mesh. NULL when it
+// cannot be made, or the build was cancelled while its corners were evaluated (a cache is kept only whole).
+static md_gto_iso_cache_t* cpu_cache(IsoBuild* b, const md_gto_iso_field_t* field, double iso, double cell_size) {
+    if (b->cache_cell_size != cell_size) {
+        caches_free(b->cache);
+        b->cache_cell_size = cell_size;
     }
     IsoMeshes::Cache* slot = nullptr;
-    for (auto& c : m->cache) {
+    for (auto& c : b->cache) {
         if (c.field == field && c.cache) {
             if (iso >= c.lo && iso <= c.hi) return c.cache;
             slot = &c;  // the field's, rebuilt for the new range
@@ -591,7 +627,7 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
         }
     }
     if (!slot) {
-        for (auto& c : m->cache) {
+        for (auto& c : b->cache) {
             if (!c.cache) { slot = &c; break; }
         }
     }
@@ -607,11 +643,13 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
     md_gto_iso_cache_t* cache = md_gto_iso_cache_create(field, &desc, md_get_heap_allocator());
     if (!cache) return nullptr;
 
-    // The corner values are the expensive part, and the bricks are independent
+    // The corner values are the expensive part, and the bricks are independent: in chunks, which a cancel stops
     md_gto_iso_cache_info_t info = {};
     md_gto_iso_cache_info(&info, cache);
-    if (info.num_bricks > 0) {
-        task_system::parallel_for(info.num_bricks, 16, [cache](uint32_t beg, uint32_t end) { md_gto_iso_cache_evaluate(cache, beg, end - beg); });
+    if (info.num_bricks > 0 &&
+        !task_system::parallel_for(info.num_bricks, 16, [cache](uint32_t beg, uint32_t end) { md_gto_iso_cache_evaluate(cache, beg, end - beg); })) {
+        md_gto_iso_cache_destroy(cache);
+        return nullptr;
     }
 
     slot->field = field;
@@ -621,55 +659,100 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
     return cache;
 }
 
-static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, double cell_size) {
+// On a worker thread: the build's slots extracted on the CPU, one mesh after another into b->pos, nrm, idx
+static void extract_cpu_run(IsoBuild* b) {
+    const md_tick_t t0 = md_tick_now();
+    const uint32_t n = b->num_fields;
     md_gto_iso_mesh_t meshes[ISO_MESHES_MAX_SLOTS] = {};
-    uint32_t offset[ISO_MESHES_MAX_SLOTS][2] = {}, count[ISO_MESHES_MAX_SLOTS][2] = {};
     size_t nv = 0, ni = 0;
     bool ok = true;
     for (uint32_t k = 0; k < n && ok; ++k) {
-        md_gto_iso_cache_t* cache = cpu_cache(m, slots[k].field, slots[k].iso, cell_size);
+        md_gto_iso_cache_t* cache = task_system::cancelled() ? nullptr : cpu_cache(b, b->fields[k], b->iso[k], b->cell_size);
         md_gto_iso_mesh_desc_t desc = {};
-        desc.iso = slots[k].iso;
-        desc.sheets = slots[k].sheets;
+        desc.iso = b->iso[k];
+        desc.sheets = b->sheets[k];
         desc.project_iterations = PROJECT_ITERATIONS;
         desc.relax_iterations = RELAX_ITERATIONS;
         ok = cache && md_gto_iso_mesh_extract(&meshes[k], cache, &desc, md_get_heap_allocator());
         if (ok) {
             for (int s = 0; s < 2; ++s) {
-                offset[k][s] = (uint32_t)ni + meshes[k].sheet_index_offset[s];
-                count[k][s]  = meshes[k].sheet_index_count[s];
+                b->offset[k][s] = (uint32_t)ni + meshes[k].sheet_index_offset[s];
+                b->count[k][s]  = meshes[k].sheet_index_count[s];
             }
             nv += meshes[k].vertex_count;
             ni += meshes[k].index_count;
         }
     }
-    if (ok) {
-        float*    pos = (float*)calloc(3 * (nv + 1), sizeof(float));
-        float*    nrm = (float*)calloc(3 * (nv + 1), sizeof(float));
-        uint32_t* idx = (uint32_t*)calloc(ni + 1, sizeof(uint32_t));
+    if (ok && !task_system::cancelled()) {
+        b->pos = (float*)calloc(3 * (nv + 1), sizeof(float));
+        b->nrm = (float*)calloc(3 * (nv + 1), sizeof(float));
+        b->idx = (uint32_t*)calloc(ni + 1, sizeof(uint32_t));
+        ok = b->pos && b->nrm && b->idx;
         size_t v0 = 0, i0 = 0;
-        for (uint32_t k = 0; k < n && pos && nrm && idx; ++k) {
+        for (uint32_t k = 0; k < n && ok; ++k) {
             const md_gto_iso_mesh_t& mk = meshes[k];
-            md_memcpy(pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
-            md_memcpy(nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
-            for (uint32_t i = 0; i < mk.index_count; ++i) idx[i0 + i] = mk.index[i] + (uint32_t)v0;
+            md_memcpy(b->pos + 3 * v0, mk.position, sizeof(float) * 3 * mk.vertex_count);
+            md_memcpy(b->nrm + 3 * v0, mk.normal,   sizeof(float) * 3 * mk.vertex_count);
+            for (uint32_t i = 0; i < mk.index_count; ++i) b->idx[i0 + i] = mk.index[i] + (uint32_t)v0;
             v0 += mk.vertex_count;
             i0 += mk.index_count;
         }
-        ok = pos && nrm && idx && isomesh::mesh_upload(&m->mesh, pos, nrm, 3, (uint32_t)nv, idx, (uint32_t)ni);
-        if (ok) {
-            set_ranges(m, n, offset, count);
-            keep_xyz(m, pos, 3, (uint32_t)nv);
-            keep_index(m, idx, (uint32_t)ni);
-        }
-        free(pos);
-        free(nrm);
-        free(idx);
+        b->nv = (uint32_t)nv;
+        b->ni = (uint32_t)ni;
+    } else {
+        ok = false;
     }
     for (uint32_t k = 0; k < n; ++k) {
         if (meshes[k].alloc) md_gto_iso_mesh_free(&meshes[k]);
     }
+    b->ok = ok;
+    b->seconds = md_tick_to_seconds(md_tick_now() - t0);
+}
+
+// On the GL thread: what a Mesh build made, the mesh shown
+static bool mesh_take(IsoMeshes* m, IsoBuild* b) {
+    const bool ok = b->ok && isomesh::mesh_upload(&m->mesh, b->pos, b->nrm, 3, b->nv, b->idx, b->ni);
+    if (ok) {
+        set_ranges(m, b->num_fields, b->offset, b->count);
+        keep_xyz(m, b->pos, 3, b->nv);
+        keep_index(m, b->idx, b->ni);
+    }
     return ok;
+}
+
+// The CPU extraction under way (m->mesh_build): 1 while it runs - of these slots (key), or of others, cancelled
+// and winding down -, else 0: done and taken (the mesh shown, m->key its key) if of these slots and not cancelled,
+// dropped otherwise. Its caches come back to the meshes if of their fields.
+static int mesh_build_poll(IsoMeshes* m, ApplicationState* state, uint64_t key) {
+    IsoBuild* b = (IsoBuild*)m->mesh_build;
+    if (!b) return 0;
+    if (build_running(b)) {
+        if (b->key != key) b->task.cancel();
+        return 1;
+    }
+    m->mesh_build = nullptr;
+    build_remove(b);
+    if (b->fields_key == m->fields_key) {
+        caches_free(m->cache);      // none: they were the build's
+        for (uint32_t k = 0; k < ISO_MESHES_MAX_SLOTS; ++k) { m->cache[k] = b->cache[k]; b->cache[k] = {}; }
+        m->cache_cell_size = b->cache_cell_size;
+    }
+    if (b->key == key && build_made(b)) {
+        drop_gpu_xyz(m, state);
+        const bool ok = mesh_take(m, b);
+        m->key = key;
+        m->ok = ok;
+        m->on_gpu = false;
+        m->seconds = b->seconds;
+        if (ok) {
+            MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (CPU, on a worker thread)", b->num_fields,
+                         m->mesh.vertex_count, m->mesh.index_count / 3, b->seconds * 1.0e3);
+        } else {
+            MD_LOG_ERROR("Isosurface meshes: the extraction failed");
+        }
+    }
+    build_destroy(b);
+    return 0;
 }
 
 static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key);
@@ -703,17 +786,21 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
     }
     const uint64_t key = iso_meshes_slots_key(slots, n, cell_size, fields_key);
     fkey = fkey ? fkey : 1;
+    // A CPU extraction under way: taken once done if it makes what is wanted, else cancelled (it winds down while
+    // the GPU takes these slots; a CPU extraction of them waits for it to end)
+    const bool cpu_on_these = mesh_build_poll(m, state, key) != 0 && ((const IsoBuild*)m->mesh_build)->key == key;
 #if MD_ENABLE_GPU
     // A job under way: on with it if it makes what is wanted, else dropped (the mesh shown stays until the
     // next one is done)
     if (m->job && m->job_key != key) job_cancel(m);
     if (m->job) {
         if (job_poll(m, state) != 0) return m->ok;
-        // it failed: extracted now (the CPU path)
+        // it failed (logged): on the CPU, as a pool task
+        m->gpu_failed_key = key;
         return extract_now(m, state, slots, n, cell_size, key);
     }
 #endif
-    if (key == m->key) return m->ok;
+    if (key == m->key || cpu_on_these) return m->ok;
 
     for (uint32_t k = 0; k < n; ++k) {
         if (!slots[k].field || !(slots[k].iso > 0.0)) {
@@ -735,10 +822,13 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
         const int set = set_ensure(m, state, slots, n, g);
         md_temp_end(temp);
         if (set == 0) return m->ok;     // being made: the meshes shown stay
-        if (set > 0 && job_start(m, state, slots, n, cell_size, key)) {
-            if (job_poll(m, state) != 0) return m->ok;
+        if (set > 0 && key != m->gpu_failed_key) {
+            if (job_start(m, state, slots, n, cell_size, key)) {
+                if (job_poll(m, state) != 0) return m->ok;
+            }
+            m->gpu_failed_key = key;    // refused (logged: md_gto_iso_gpu_job_begin), or failed at once
         }
-        // no set or no job: on the CPU
+        // no set, or the GPU's extraction of these failed: on the CPU
         return extract_now(m, state, slots, n, cell_size, key);
     }
 #else
@@ -747,33 +837,48 @@ bool iso_meshes_update(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot*
     return extract_now(m, state, slots, n, cell_size, key);
 }
 
-// Extracts the slots on the CPU before it returns: without a device, or for fields the GPU path does not take.
-// The mesh becomes the slots' (m->key = key) whatever comes of it.
+// Extracts the slots on the CPU: without a device, for fields the GPU path does not take, or where the GPU's
+// extraction failed. No slots at once; else as a pool task (a Mesh build, with the caches of these fields) whose
+// mesh becomes the slots' (m->key = key) whatever comes of it once it is done (mesh_build_poll): the mesh shown
+// stays until then. One at a time: while another is under way (cancelled, winding down) it is begun once that one
+// has ended.
 static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key) {
-    m->key = key;
-    m->ok  = false;
-    drop_gpu_xyz(m, state);
-
-    const md_tick_t t0 = md_tick_now();
-    bool ok = false;
     if (n == 0) {
-        ok = isomesh::mesh_upload(&m->mesh, nullptr, nullptr, 3, 0, nullptr, 0);
+        m->key = key;
+        drop_gpu_xyz(m, state);
+        m->ok = isomesh::mesh_upload(&m->mesh, nullptr, nullptr, 3, 0, nullptr, 0);
         set_ranges(m, 0, nullptr, nullptr);
         keep_xyz(m, nullptr, 3, 0);
         keep_index(m, nullptr, 0);
-    } else {
-        ok = extract_cpu(m, slots, n, cell_size);
+        m->seconds = 0.0;
+        m->on_gpu = false;
+        return m->ok;
     }
-    m->seconds = md_tick_to_milliseconds(md_tick_now() - t0) * 1.0e-3;
-    m->ok = ok;
-    m->on_gpu = false;
-    if (ok) {
-        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (CPU)", n, m->mesh.vertex_count, m->mesh.index_count / 3,
-                     m->seconds * 1.0e3);
-    } else {
-        MD_LOG_ERROR("Isosurface meshes: the extraction failed");
+    if (m->mesh_build) return m->ok;
+    IsoBuild* b = build_new(IsoBuild::Mesh, key, nullptr, nullptr, 0);
+    if (!b) {
+        m->key = key;
+        m->ok = false;
+        MD_LOG_ERROR("Isosurface meshes: too many tasks under way to extract on the CPU");
+        return false;
     }
-    return ok;
+    b->num_fields = n;
+    for (uint32_t k = 0; k < n; ++k) {
+        b->fields[k] = slots[k].field;      // held: iso_field_release
+        b->iso[k] = slots[k].iso;
+        b->sheets[k] = slots[k].sheets;
+    }
+    b->cell_size = cell_size;
+    b->fields_key = m->fields_key;
+    for (uint32_t k = 0; k < ISO_MESHES_MAX_SLOTS; ++k) {
+        b->cache[k] = m->cache[k];
+        m->cache[k] = {};
+    }
+    b->cache_cell_size = m->cache_cell_size;
+    m->cache_cell_size = 0.0;
+    m->mesh_build = b;
+    build_start(b);
+    return m->ok;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -786,9 +891,9 @@ static void iso_meshes_drop_fields(IsoMeshes* m, ApplicationState* state) {
     release_extraction_state(m, state);
 }
 
-// Whether a mesh is being made: its fields' set on a worker thread, or a job on the GPU
+// Whether a mesh is being made: its fields' set or the mesh itself on a worker thread, or a job on the GPU
 static bool iso_meshes_busy(const IsoMeshes* m) {
-    return m->job || build_running((const IsoBuild*)m->set_build);
+    return m->job || build_running((const IsoBuild*)m->set_build) || build_running((const IsoBuild*)m->mesh_build);
 }
 
 struct EsIsoMesh {
