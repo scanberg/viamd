@@ -1,23 +1,18 @@
 #version 410 core
 
 // The glyphs of the tesserae of a cavity (cavity.h), one instance each: a quad facing the camera, as large as the
-// silhouette of the sphere that bounds the glyph. The glyph stands on the tessera's point along its normal: a cylinder
-// or capsule from p0 to p1, of radius r, never thinner than u_min_px pixels.
+// silhouette of the sphere that bounds the glyph. A cylinder from the tessera's point outward along its normal, or a
+// sphere centred on the point, of the radius and height the representation maps (cavity.cpp: upload_glyphs), never
+// thinner than u_min_px pixels.
 
 uniform samplerBuffer u_tess_a;         // xyz: the point of the tessera (the frame of the file)
-uniform samplerBuffer u_tess_b;         // xyz: its normal, w: its own value of the field
-uniform samplerBuffer u_glyph;          // x: the radius of its Gaussian at half its peak (Å), y: its decay length (Å),
-                                        // z: the share of a whole point the switching left it, w: 1 on the surface, 0 off
+uniform samplerBuffer u_tess_b;         // xyz: its normal, w: the value it is coloured by
+uniform samplerBuffer u_glyph;          // x: the radius (Angstrom), y: the height of a cylinder (Angstrom)
 uniform mat4  u_cavity_to_view;
 uniform mat4  u_view_to_clip;
 uniform int   u_ortho;
 uniform int   u_only;                   // the one tessera to draw, or -1 for every instance
-uniform int   u_set;                    // 0: all, 1: those off the surface
-uniform int   u_length_mode;            // 0: decay length times the scale, 1: the field over its range to the scale, 2: the scale
-uniform float u_length_scale;
-uniform int   u_radius_halfmax;
-uniform float u_radius;
-uniform vec2  u_range;
+uniform int   u_sphere;                 // 1: spheres, 0: cylinders
 uniform float u_min_px;
 uniform float u_pixel;                  // the size of a pixel in view space: at a depth of 1 in perspective, else as it is
 
@@ -37,25 +32,13 @@ void main() {
     vec4 A = texelFetch(u_tess_a, j);
     vec4 B = texelFetch(u_tess_b, j);
     vec4 G = texelFetch(u_glyph, j);
-    if (u_set == 1 && G.w != 0.0) { cull(); return; }
-
-    float L;
-    if (u_length_mode == 0) {
-        L = G.y * u_length_scale;
-    } else if (u_length_mode == 1) {
-        float ext = u_range.y - u_range.x;
-        L = u_length_scale * (abs(ext) > 0.0 ? clamp((B.w - u_range.x) / ext, 0.0, 1.0) : 0.5);
-    } else {
-        L = u_length_scale;
-    }
-    L = max(L, 1e-3);
-
+    float L = (u_sphere != 0) ? 0.0 : max(G.y, 1e-3);
     vec3 p0 = (u_cavity_to_view * vec4(A.xyz, 1.0)).xyz;
     vec3 ax = normalize(mat3(u_cavity_to_view) * B.xyz);
     vec3 p1 = p0 + ax * L;
     vec3 c  = 0.5 * (p0 + p1);
     float px = (u_ortho != 0) ? u_pixel : u_pixel * max(-c.z, 1e-3);
-    float r  = max((u_radius_halfmax != 0) ? G.x : u_radius, u_min_px * px);
+    float r  = max(G.x, u_min_px * px);
     float R  = 0.5 * L + r;
 
     float d = length(c);

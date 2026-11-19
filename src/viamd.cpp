@@ -6,6 +6,9 @@
 #include <md_dssp.h>
 #include <md_qm.h>
 #include <md_gto_iso.h>
+#include <gostshyp.h>
+#include <vector>
+#include <algorithm>
 
 #include <atomic>
 #include <stdarg.h>
@@ -987,13 +990,8 @@ static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationStat
     const CavityRepresentation& cav = rep->cavity;
     const md_system_t& sys = state.mold.sys;
 
-    if (hit.domain == PickingDomain_CavitySphere) {
-        tooltip_title(req, "cavity" TOOLTIP_SEP "sphere of atom(%u)", hit.local_idx + 1);
-        return;
-    }
     CavityTesseraInfo info = {};
-    const float world[3] = {hit.world_pos.x, hit.world_pos.y, hit.world_pos.z};
-    if (!cavity_tessera_info(&info, cav, hit.local_idx, world)) return;
+    if (!cavity_tessera_info(&info, cav, hit.local_idx)) return;
 
     md_str_writer_t title = md_str_writer_create(req->alloc);
     title += "tessera ";
@@ -1002,19 +1000,12 @@ static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationStat
     tooltip_append_atom_name(&title, sys, info.sys_atom);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    if (info.has_field_here) {
-        const bool kernel = cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage;
-        tooltip_row(req, MD_STR_LIT("here"), "%.4g %s (%s, %s)", info.field_here, cavity_field_unit_str[(int)cav.field],
-                    cavity_field_str[(int)cav.field], kernel ? "kernel" : "nearest");
-    }
-    if (info.has_switching_here) {
-        tooltip_row(req, MD_STR_LIT("weight here"), "%.2f (GOSTSHYP's switching)", info.switching_here);
-    }
     tooltip_row(req, MD_STR_LIT("area"), "%.4f Å²", info.area);
     tooltip_row(req, MD_STR_LIT("decay length"), "%.4f Å", info.decay_length);
     tooltip_row(req, MD_STR_LIT("wall energy"), "%.3f kJ/mol/Å²", info.wall_energy);
     tooltip_row(req, MD_STR_LIT("wall density"), "%.3e e/bohr³", info.wall_density);
     tooltip_row(req, MD_STR_LIT("amplitude"), "%.4g a.u.", info.amplitude);
+    tooltip_row(req, MD_STR_LIT("switching"), "%.3g", info.switching);
     tooltip_row(req, MD_STR_LIT("index"), "atom(%u)", info.sys_atom + 1);
 }
 
@@ -1040,7 +1031,7 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
-    } else if (hit.domain == PickingDomain_Tessera || hit.domain == PickingDomain_CavitySphere) {
+    } else if (hit.domain == PickingDomain_Tessera) {
         tooltip_cavity(req, state, hit);
     }
 }
@@ -4664,7 +4655,10 @@ static void localization_job_destroy(LocalizationJob* job) {
 
 // Lets go of the jobs which have stopped and nobody wants: superseded, or of a representation which is gone or no
 // longer of ELF or LOL
+static void gostshyp_jobs_collect(ApplicationState* state);
+
 void es_jobs_collect(ApplicationState* state) {
+    gostshyp_jobs_collect(state);
     uint32_t n = 0;
     for (uint32_t i = 0; i < g_num_localization_jobs; ++i) {
         LocalizationJob* job = g_localization_jobs[i];
@@ -4744,6 +4738,209 @@ static int localization_poll(ApplicationState* state, Representation* rep, uint6
         MD_LOG_ERROR("%s could not be evaluated (are the orbitals and their occupations there?)", lol ? "LOL" : "ELF");
     }
     job->orphan = true;   // what it made is taken: it goes with the next collect
+    return made ? 1 : -1;
+}
+
+// THE GOSTSHYP FIELDS AS VOLUMES (gostshyp.h): analytic sums of the wall's Gaussians, evaluated on the CPU by a pool
+// task into the volume, as ELF and LOL are without the GPU. The energy density rho V1 takes the density too, made of
+// the orbitals (md_gto_iso, in double) and evaluated only where the wall reaches: it is zero elsewhere.
+struct GostshypJob {
+    task_system::Job   task;
+    uint32_t           rep_id = 0;
+    uint64_t           key = 0;           // the volume hash it was started for
+    GostshypField      field = GostshypField::EffectivePotential;
+    bool               orphan = false;
+    const md_system_t* sys = nullptr;
+    md_grid_t          grid = {};
+    md_f32x3_t*        atom_xyz = nullptr;  // bohr, one per basis (QM) atom: its own copy
+    size_t             num_atoms = 0;
+    float*             out = nullptr;
+    float              lo = 0, hi = 0;    // the 1st and 99th percentile of the values where the wall reaches
+    bool               ok = false;
+    double             seconds = 0.0;
+};
+
+static GostshypJob* g_gostshyp_jobs[16];
+static uint32_t g_num_gostshyp_jobs = 0;
+
+static void gostshyp_job_run(GostshypJob* job) {
+    const md_tick_t t0 = md_tick_now();
+    const size_t count = md_grid_num_points(&job->grid);
+    GostshypTesserae t;
+    GostshypPlacement pl;
+    if (!gostshyp_read(&t, *job->sys) || !gostshyp_place(&pl, t, job->atom_xyz, job->num_atoms, nullptr, 1.0 / BOHR_TO_ANGSTROM)) return;
+    GostshypWall* wall = gostshyp_wall_create(t, pl);
+    float* xyz = (float*)malloc(sizeof(float) * 3 * count);
+    job->out = (float*)malloc(sizeof(float) * count);
+    if (!wall || !xyz || !job->out) {
+        gostshyp_wall_destroy(wall);
+        free(xyz);
+        return;
+    }
+    md_grid_extract_points(xyz, &job->grid);   // bohr, in the order of the texture's texels
+
+    // The density, for the energy density
+    md_gto_basis_t basis = {};
+    md_gto_iso_field_t* rho = nullptr;
+    md_allocator_i* heap = md_get_heap_allocator();
+    if (job->field == GostshypField::EnergyDensity) {
+        double* rows = nullptr;
+        double* w = nullptr;
+        size_t num_ao = 0;
+        const size_t n = md_qm_density_orbitals(&rows, &w, &num_ao, job->sys, MD_STR_LIT("orbital/total/density"), heap);
+        if (n && md_gto_basis_extract_attributes(&basis, &job->sys->attributes, heap) && md_gto_basis_num_ao(&basis) == num_ao &&
+            md_gto_basis_num_atoms(&basis) <= job->num_atoms) {
+            rho = md_gto_iso_field_create_products(&basis, (const float*)job->atom_xyz, 0, rows, nullptr, w, n, heap);
+        }
+        if (rows) md_free(heap, rows, sizeof(double) * n * num_ao);
+        if (w)    md_free(heap, w, sizeof(double) * n);
+        if (!rho) {
+            MD_LOG_ERROR("GOSTSHYP wall energy density: no ground state density to make it of");
+            md_gto_basis_free(&basis, heap);
+            gostshyp_wall_destroy(wall);
+            free(xyz);
+            return;
+        }
+    }
+
+    const GostshypField wf = job->field == GostshypField::EnergyDensity ? GostshypField::WallPotential : job->field;
+    task_system::parallel_for((uint32_t)MD_DIV_UP(count, (size_t)256), 1, [&](uint32_t beg, uint32_t end) {
+        double v[256], r[256];
+        float pts[3 * 256];
+        for (uint32_t b = beg; b < end && !task_system::cancelled(); ++b) {
+            const size_t i0 = (size_t)b * 256, n = MD_MIN((size_t)256, count - i0);
+            gostshyp_wall_evaluate(wall, wf, xyz + 3 * i0, n, v);
+            if (rho) {
+                // the density where the wall is: the points it reaches, packed
+                size_t m = 0;
+                uint16_t at[256];
+                for (size_t i = 0; i < n; ++i) {
+                    if (v[i] != 0.0) {
+                        md_memcpy(pts + 3 * m, xyz + 3 * (i0 + i), sizeof(float) * 3);
+                        at[m++] = (uint16_t)i;
+                    }
+                }
+                if (m) md_gto_iso_field_evaluate(rho, pts, m, 0, r, nullptr);
+                for (size_t i = 0; i < n; ++i) job->out[i0 + i] = 0.0f;
+                for (size_t k = 0; k < m; ++k) job->out[i0 + at[k]] = (float)(r[k] * v[at[k]]);
+            } else {
+                for (size_t i = 0; i < n; ++i) job->out[i0 + i] = (float)v[i];
+            }
+        }
+    });
+    if (rho) md_gto_iso_field_destroy(rho);
+    md_gto_basis_free(&basis, heap);
+    gostshyp_wall_destroy(wall);
+    free(xyz);
+    if (task_system::cancelled()) return;
+
+    // The spread of the values where the wall is, for the colour map: of their magnitudes for the signed potential
+    {
+        std::vector<float> vals;
+        vals.reserve(count / 8);
+        const bool signed_field = job->field == GostshypField::EffectivePotential;
+        for (size_t i = 0; i < count; ++i) {
+            if (job->out[i] != 0.0f) vals.push_back(signed_field ? fabsf(job->out[i]) : job->out[i]);
+        }
+        if (!vals.empty()) {
+            const size_t k = MD_MIN(vals.size() - 1, (size_t)(0.99 * vals.size()));
+            std::nth_element(vals.begin(), vals.begin() + k, vals.end());
+            job->hi = vals[k];
+            job->lo = signed_field ? -job->hi : 0.0f;
+        }
+    }
+    job->ok = true;
+    job->seconds = md_tick_to_seconds(md_tick_now() - t0);
+}
+
+static void gostshyp_job_destroy(GostshypJob* job) {
+    job->task.cancel_and_wait();
+    free(job->atom_xyz);
+    free(job->out);
+    delete job;
+}
+
+static void gostshyp_jobs_collect(ApplicationState* state) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < g_num_gostshyp_jobs; ++i) {
+        GostshypJob* job = g_gostshyp_jobs[i];
+        if (!job->orphan && !job->task.running()) {
+            const Representation* rep = nullptr;
+            for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
+                if (state->representation.reps[r].node.id == job->rep_id) rep = &state->representation.reps[r];
+            }
+            job->orphan = !rep || rep->type != RepresentationType::ElectronicStructure ||
+                          rep->electronic_structure.source != ElectronicStructureSource::GostshypField;
+        }
+        if (job->orphan && !job->task.running()) {
+            gostshyp_job_destroy(job);
+        } else {
+            g_gostshyp_jobs[n++] = job;
+        }
+    }
+    g_num_gostshyp_jobs = n;
+}
+
+// The representation's GOSTSHYP field for the volume hash 'key': 1 when it is in the volume (put there now), 0 while
+// it is under way (started here if it was not), -1 when it could not be made
+static int gostshyp_poll(ApplicationState* state, Representation* rep, uint64_t key) {
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    GostshypJob* job = nullptr;
+    for (uint32_t i = 0; i < g_num_gostshyp_jobs; ++i) {
+        GostshypJob* j = g_gostshyp_jobs[i];
+        if (j->orphan || j->rep_id != rep->node.id) continue;
+        if (j->key == key) { job = j; continue; }
+        j->task.cancel();
+        j->orphan = true;
+    }
+    if (!job) {
+        if (g_num_gostshyp_jobs == MD_COUNTOF(g_gostshyp_jobs)) return 0;
+        md_grid_t grid = {};
+        const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
+        if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+        md_temp_scope_t temp = md_temp_begin();
+        size_t num_atoms = 0;
+        const md_f32x3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state->mold.sys, state->mold.state);
+        job = new GostshypJob();
+        job->rep_id = rep->node.id;
+        job->key = key;
+        job->field = (GostshypField)MD_CLAMP(es.gostshyp_field, 0, (int)GostshypField::Count - 1);
+        job->sys = &state->mold.sys;
+        job->grid = grid;
+        job->atom_xyz = atom_pos ? (md_f32x3_t*)malloc(sizeof(md_f32x3_t) * num_atoms) : nullptr;
+        if (job->atom_xyz) {
+            md_memcpy(job->atom_xyz, atom_pos, sizeof(md_f32x3_t) * num_atoms);
+            job->num_atoms = num_atoms;
+        }
+        md_temp_end(temp);
+        if (!job->atom_xyz) {
+            delete job;
+            return -1;
+        }
+        g_gostshyp_jobs[g_num_gostshyp_jobs++] = job;
+        job->task.start(MD_STR_LIT("GOSTSHYP field"), [job]() { gostshyp_job_run(job); md_temp_trim(); });
+        return 0;
+    }
+    if (job->task.running()) return 0;
+    const bool made = job->task.status() == task_system::Status::Completed && job->ok;
+    if (made) {
+        init_volume(&es.density_vol, job->grid, GL_R32F);
+        es.grid = job->grid;
+        gl::set_texture_3D_data(es.density_vol.tex_id, 0, job->out, GL_R32F);
+        volume::notify_data_changed(es.density_vol.tex_id);
+        es.box_to_world = es.density_vol.texture_to_world;
+        es.has_box = true;
+        // the colour map's range from the values, when it was set up for this field and not since
+        if (es.volume.map_auto && job->hi > 0.0f) {
+            es.volume.tf.range_beg = job->lo;
+            es.volume.tf.range_end = job->hi;
+            es.volume.map_auto = false;
+        }
+        MD_LOG_INFO("%s: %zu points in %.2f s (CPU)", gostshyp_field_str[(int)job->field], md_grid_num_points(&job->grid), job->seconds);
+    } else if (job->task.status() == task_system::Status::Completed) {
+        MD_LOG_ERROR("%s could not be evaluated", gostshyp_field_str[(int)job->field]);
+    }
+    job->orphan = true;
     return made ? 1 : -1;
 }
 
@@ -4929,6 +5126,8 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
         const bool magnitude = es.source == ElectronicStructureSource::ElectronDensity && es.spin == ElectronicStructureSpin::Difference && es.use_magnitude;
         return density_evaluate(state, tex_id, grid, path, slice.num_idx > 0 ? &slice : nullptr, es_gto_op(magnitude), true);
     }
+    case ElectronicStructureSource::GostshypField:
+        return false;   // by a pool task, which fills the volume itself (gostshyp_poll)
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
 #if MD_ENABLE_GPU
@@ -5791,6 +5990,23 @@ static void es_volume_map_update(ElectronicStructureRepresentation& es) {
         tf.range_end = 1.0f;
         transfer_function_ramp(&tf, 0.5f);
         break;
+    case ElectronicStructureValueKind::Potential:
+        // a range of its own, from the values once they are there (gostshyp_poll)
+        tf.symmetric = false;
+        tf.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+        tf.range_beg = 0.0f;
+        tf.range_end = 1.0f;
+        transfer_function_ramp(&tf, 0.0f);
+        es.volume.map_auto = true;
+        break;
+    case ElectronicStructureValueKind::SignedPotential:
+        tf.symmetric = true;
+        tf.colormap = COLOR_SCALE_COLORMAP_RDBU;
+        tf.range_beg = -1.0f;
+        tf.range_end =  1.0f;
+        transfer_function_ramp_magnitude(&tf, 0.1f);
+        es.volume.map_auto = true;
+        break;
     case ElectronicStructureValueKind::Density:
     default:
         tf.symmetric = false;
@@ -5817,6 +6033,7 @@ static uint64_t es_source_hash(const ApplicationState* state, const ElectronicSt
     h = md_hash64(&es.excited_state_idx,            sizeof(es.excited_state_idx), h);
     h = md_hash64(&es.nto_lambda_idx,               sizeof(es.nto_lambda_idx), h);
     h = md_hash64(&es.density_property_key,         sizeof(es.density_property_key), h);
+    if (es.source == ElectronicStructureSource::GostshypField) h = md_hash64(&es.gostshyp_field, sizeof(es.gostshyp_field), h);
     return h;
 }
 
@@ -5832,6 +6049,7 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
     if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_pack_prepare(state, path, &slice)) return 0;
 #endif
     if (es.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.excited_state_idx)) return 0;
+    if (es.source == ElectronicStructureSource::GostshypField) return -1;   // on the CPU, into the volume
     if (electronic_structure_is_localization(es)) {
 #if MD_ENABLE_GPU
         const int g = localization_gpu_prepare(state);
@@ -5847,7 +6065,8 @@ bool es_plane_images_supported(ApplicationState* state, const ElectronicStructur
 #if MD_ENABLE_GPU
     if (es.display != ElectronicStructureDisplay::Planes) return false;
     if (!gpu_evaluation_ready(state) || !state->gpu_plane) return false;
-    // ELF and LOL without their kernel: on the CPU, into the volume
+    // ELF and LOL without their kernel, and the GOSTSHYP fields: on the CPU, into the volume
+    if (es.source == ElectronicStructureSource::GostshypField) return false;
     return !electronic_structure_is_localization(es) || localization_gpu_prepare(state) >= 0;
 #else
     (void)state; (void)es;
@@ -6007,6 +6226,10 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
 #endif
             if (localization_cpu) ready = localization_poll(state, rep, vol_hash) != 0;
         }
+        if (ready && needs_volume && es.source == ElectronicStructureSource::GostshypField) {
+            localization_cpu = true;    // likewise: a pool task on the CPU puts it in the volume
+            ready = gostshyp_poll(state, rep, vol_hash) != 0;
+        }
         if (ready) {
             es.vol_hash = vol_hash;
             if (needs_volume && !localization_cpu) {
@@ -6067,6 +6290,9 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     // derivatives are within what is evaluated (no g functions)
     if (es_attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
         mask |= ElectronicStructureSourceFlag_ElectronLocalization | ElectronicStructureSourceFlag_LocalizedOrbitalLocator;
+    }
+    if (gostshyp_available(sys)) {
+        mask |= ElectronicStructureSourceFlag_GostshypField;
     }
 
     return mask;
@@ -7886,7 +8112,6 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 Representation& rep = state->representation.reps[j];
                 if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep)) continue;
                 if (!cavity_update(&rep.cavity, state->mold.sys, state->mold.state)) continue;
-                picking_range_reserve(NULL, space, PickingDomain_CavitySphere, cavity_sphere_count(rep.cavity), rep.node.id);
                 picking_range_reserve(NULL, space, PickingDomain_Tessera, cavity_tessera_count(rep.cavity), rep.node.id);
             }
             break;

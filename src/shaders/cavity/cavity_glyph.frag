@@ -1,6 +1,6 @@
 #version 410 core
 
-// The glyph of a tessera (cavity_glyph.vert), ray cast: a cylinder capped at both ends, or a capsule. Into the G-buffer
+// The glyph of a tessera (cavity_glyph.vert), ray cast: a cylinder capped at both ends, or a sphere. Into the G-buffer
 // as the opaque geometry writes it (the colour, the normal, the velocity of the camera's motion and the picking index of
 // the tessera), or, for the highlight, into the marks as cavity_marks.frag marks a patch.
 
@@ -10,8 +10,7 @@ flat in vec3  v_p0;
 flat in vec3  v_p1;
 flat in float v_r;
 
-uniform samplerBuffer u_tess_b;
-uniform samplerBuffer u_glyph;
+uniform samplerBuffer u_tess_b;         // w: the value the glyph is coloured by
 uniform sampler2D     u_colormap;
 uniform sampler2D     u_tex_depth;      // marks: the G-buffer's depth (jittered, at its render scale)
 
@@ -20,8 +19,8 @@ uniform mat4  u_curr_view_to_prev_clip;
 uniform mat4  u_clip_to_view;           // marks: of the G-buffer's depth
 uniform vec4  u_jitter_uv;
 uniform int   u_ortho;
-uniform int   u_capsule;
-uniform int   u_color_mode;             // 0: the field over u_range, 1: the weight, 2: uniform
+uniform int   u_sphere;
+uniform int   u_color_mode;             // 0: the value over u_range, 1: uniform
 uniform vec2  u_range;
 uniform int   u_unlit;
 uniform uint  u_tessera_base;
@@ -68,40 +67,21 @@ vec4 cylinder(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra) {
     return vec4(-1.0);
 }
 
-// And with the capsule
-vec4 capsule(vec3 ro, vec3 rd, vec3 pa, vec3 pb, float ra) {
-    vec3  ba = pb - pa;
-    vec3  oa = ro - pa;
-    float baba = dot(ba, ba);
-    float bard = dot(ba, rd);
-    float baoa = dot(ba, oa);
-    float a = baba - bard * bard;
-    float b = baba * dot(rd, oa) - baoa * bard;
-    float c = baba * dot(oa, oa) - baoa * baoa - ra * ra * baba;
-    float h = b * b - a * c;
-    float t = -1.0;
-    if (h >= 0.0) {
-        t = (-b - sqrt(h)) / a;
-        float y = baoa + t * bard;
-        if (y <= 0.0 || y >= baba) {
-            vec3 oc = (y <= 0.0) ? oa : ro - pb;
-            b = dot(rd, oc);
-            c = dot(oc, oc) - ra * ra;
-            h = b * b - c;
-            t = (h > 0.0) ? -b - sqrt(h) : -1.0;
-        }
-    }
-    if (t < 0.0) return vec4(-1.0);
-    vec3  pa_x = ro + rd * t - pa;
-    float s = clamp(dot(pa_x, ba) / baba, 0.0, 1.0);
-    return vec4(t, (pa_x - s * ba) / ra);
+// And with the sphere about c of radius ra
+vec4 sphere(vec3 ro, vec3 rd, vec3 c, float ra) {
+    vec3  oc = ro - c;
+    float b  = dot(oc, rd);
+    float h  = b * b - (dot(oc, oc) - ra * ra);
+    if (h < 0.0) return vec4(-1.0);
+    float t  = -b - sqrt(h);
+    return vec4(t, (oc + t * rd) / ra);
 }
 
 void main() {
     if (v_tess < 0) discard;
     vec3 ro = (u_ortho != 0) ? vec3(v_view.xy, 0.0) : vec3(0.0);
     vec3 rd = (u_ortho != 0) ? vec3(0.0, 0.0, -1.0) : normalize(v_view);
-    vec4 hit = (u_capsule != 0) ? capsule(ro, rd, v_p0, v_p1, v_r) : cylinder(ro, rd, v_p0, v_p1, v_r);
+    vec4 hit = (u_sphere != 0) ? sphere(ro, rd, v_p0, v_r) : cylinder(ro, rd, v_p0, v_p1, v_r);
     if (hit.x < 0.0) discard;
     vec3 x = ro + rd * hit.x;
     vec3 n = normalize(hit.yzw);
@@ -128,14 +108,9 @@ void main() {
     }
 
     vec3 color = vec3(0.75);
-    if (u_color_mode != 2) {
-        float param;
-        if (u_color_mode == 0) {
-            float ext = u_range.y - u_range.x;
-            param = abs(ext) > 0.0 ? clamp((texelFetch(u_tess_b, v_tess).w - u_range.x) / ext, 0.0, 1.0) : 0.5;
-        } else {
-            param = clamp(texelFetch(u_glyph, v_tess).z, 0.0, 1.0);
-        }
+    if (u_color_mode == 0) {
+        float ext = u_range.y - u_range.x;
+        float param = abs(ext) > 0.0 ? clamp((texelFetch(u_tess_b, v_tess).w - u_range.x) / ext, 0.0, 1.0) : 0.5;
         color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
     }
 

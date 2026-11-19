@@ -14,155 +14,90 @@ struct CavityData;
 
 // CAVITY
 //
-// A tessellated cavity around the QM atoms: points (tesserae) on the union of scaled van der Waals spheres, each with
-// a normal, an area and quantities of its own. Today that is the GOSTSHYP cavity of a VeloxChem run under pressure
-// (vlx/scf/gostshyp/*, md_vlx.h): a normalized 3D Gaussian on each tessera, with its exponent zeta_j (zeta_j a_j is
-// constant), its amplitude p_j and the decay length lambda_j = <rho|g_j> / (-d/dn <rho|g_j>). The amplitudes hold
-// the pressure: p_j (-d/dn <rho|g_j>) = P a_j, so the energy of the wall at a tessera, p_j <rho|g_j>, is P a_j
-// lambda_j, and its energy per area is P lambda_j.
+// The tesserae of the GOSTSHYP cavity of a VeloxChem run under pressure (gostshyp.h), drawn as what they are: points
+// with a normal and quantities of their own, one glyph each. The fields the wall makes over R^3 - its potential, the
+// potential the electrons feel, its energy density - are drawn by the electronic structure representation (a source
+// of its own, and fields an isosurface is coloured by): there is no surface of the cavity here, as GOSTSHYP has none.
 //
-// HOW IT IS DRAWN
-// The spheres are ray cast into the G-buffer by a pass of their own (cavity_draw_geometry), whose fragments pick as the
-// sphere they are on (PickingDomain_CavitySphere): their union. GOSTSHYP does not have a surface, but points with areas:
-// VeloxChem's 'swig' weights the points of each sphere by a smoothstep across a band about each neighbouring sphere's
-// surface (cavity_resolve.frag), so that the area of a tessera is its Lebedev share of its sphere times that switching
-// F, and F is the density of GOSTSHYP's area over the spheres. Where the cavity is switched, the union is measured by
-// it: the patches and the kernels below are sized and normalized by F dA, and the shader masks where F is below a
-// level (weight_level) by light dots of area 1 - F / level (cavity_resolve.frag). On 5helicene.h5 the union is 361.2 Å^2 and weighs 256.2; the tesserae sum to 312.5,
-// the rest of their weight (56 Å^2) inside other spheres, where no surface drawn can show it. A full screen pass after
-// the opaque geometry (cavity_resolve) then
-// looks at every pixel of the G-buffer that a sphere of the cavity won, intersects the view ray with that sphere again
-// for the exact point, finds the tesserae near it in a uniform grid, and writes the colour and what the pixel picks
-// as: the tessera nearest to the point (PickingDomain_Tessera). The surface is split exactly per pixel between the
-// tesserae, with no map in between. The tessera hovered is marked as its patch by a second full screen pass into the
-// marks (cavity_draw_marks).
+// THE GLYPHS stand on their tessera's point along its normal and pick as the tessera (PickingDomain_Tessera): hovering
+// one shows its tooltip and marks it, and follows it in the GOSTSHYP window's table. Two shapes:
+//   Sphere     centred on the point: its radius and its colour
+//   Cylinder   from the point outward: its radius, its height and its colour
+// Each of those is mapped from a quantity of the tessera (CavityAttribute), chosen per dimension:
+//   a size from a length as it is (the decay length lambda_j; the area as the radius sqrt(a_j / pi), where the
+//   tessera's Gaussian is at half its peak - zeta_j a_j = pi ln 2 - and the disc has the tessera's area), times the
+//   scale; from another quantity as its value over the 99th percentile of the tesserae's, at the scale in Angstrom -
+//   a radius by its square root, so that the cross section goes with the value, a height linearly; or constant, the
+//   scale in Angstrom
+//   the colour from the quantity through a colour scale over its spread (the 1st to 99th percentile)
+// By default a disc of the tessera's area, of a constant height, coloured by the wall's energy per area. A glyph is
+// never thinner than a pixel or two, so the smallest tesserae can be seen and hovered.
 //
-// COLOURING
-//   Nearest  each tessera's own value over its patch: the points nearest to it on the surface, among the tesserae
-//            facing the same way as the surface there. Nearest by power, |x - c_j|^2 - w_j, with the weights fitted
-//            so that each patch has the area of its tessera (fit_areas), or by distance alone (a Voronoi split, where
-//            the tesserae the switching kept inside other spheres crowd the seams with slivers)
-//   Kernel   the values spread over the surface by a Gaussian kernel per tessera, of the width of its own Gaussian
-//            (sigma_j = 1 / sqrt(2 zeta_j), times kernel_scale), normalized over the exposed surface (the union of
-//            the spheres) by GOSTSHYP's measure of area, F dA (dA where the cavity is not switched):
-//              K_j(x) = exp(-|x - c_j|^2 / 2 sigma_j^2) where n(x).n_j > 0 and |x - c_j| < 3 sigma_j, else 0
-//              N_j    = integral of K_j F dA over the exposed surface (by quadrature on the spheres)
-//            The kernels make a partition of unity, phi_j(x) = s_j K_j(x) / sum_k s_k K_k(x), and the field is the
-//            mean of the tesserae's values it weighs, f(x) = sum_j v_j phi_j(x), the values per area (P lambda_j,
-//            p_j / a_j) or per tessera (lambda_j, <rho|g_j>). So f never leaves the range of the values around it, and
-//            a field of one value is that value everywhere. The scales s_j are fitted (conserve) so that each part
-//            has the area of its tessera, the integral of phi_j F dA being a_j (scaled to the surface the kernels
-//            cover, by Sinkhorn's iteration): f then integrates to sum_j v_j a_j, the totals of the tesserae, for
-//            the energy and the amplitude. Else s_j = a_j / N_j, the kernels weighted by area.
-//            The kernels once spread the totals each by itself, f = sum_j e_j K_j / N_j: conservative, but a field of
-//            one value came out as that value times sum_j a_j K_j / N_j, the coverage, which ranged over +-25% with
-//            the layout of the tesserae and showed as blotches. Area coverage is that coverage.
-//
-// UNITS: positions in Ångström as the system's.
+// UNITS: positions in Angstrom as the system's.
 
-enum class CavityField : int {
-    WallEnergy,         // energy of the wall per area, P lambda_j: kJ/mol/Å^2
-    DecayLength,        // lambda_j: Å
-    WallDensity,        // <rho|g_j> = P a_j lambda_j / p_j: e/bohr^3
-    Amplitude,          // amplitude per area p_j / a_j
-    AreaCoverage,       // the areas of the tesserae spread each by its kernel, sum_j a_j K_j / N_j: 1 where they account
-                        // for the surface. A diagnostic of the layout of the tesserae, not of the partition
+enum class CavityGlyphShape : int { Cylinder, Sphere, Count };
+
+enum class CavityAttribute : int {
+    Constant,
+    Area,               // a_j, Angstrom^2 (switched: w_j R^2 F_j); as a radius, sqrt(a_j / pi)
+    DecayLength,        // lambda_j, Angstrom
+    WallEnergyPerArea,  // P lambda_j, kJ/mol/Angstrom^2
+    WallEnergy,         // P a_j lambda_j, kJ/mol
+    WallDensity,        // <rho|g_j> = P a_j lambda_j / p_j, e/bohr^3
+    Amplitude,          // p_j, a.u. (Eh bohr^3)
+    AmplitudePerArea,   // p_j / a_j, a.u./Angstrom^2
+    Switching,          // F_j
+    LebedevWeight,      // w_j, the point's solid angle (4 pi over a sphere)
     Count
 };
 
-enum class CavityColoring : int {
-    Nearest,
-    Kernel,
-    Count
-};
+inline const char* cavity_glyph_shape_str[(int)CavityGlyphShape::Count] = {"Cylinder", "Sphere"};
 
-inline const char* cavity_field_str[(int)CavityField::Count] = {
-    "Wall energy per area",
+inline const char* cavity_attribute_str[(int)CavityAttribute::Count] = {
+    "Constant",
+    "Area",
     "Decay length",
+    "Wall energy per area",
+    "Wall energy",
     "Wall density",
+    "Amplitude",
     "Amplitude per area",
-    "Area coverage",
+    "Switching",
+    "Lebedev weight",
 };
 
-// The units of the fields as they are shown. An energy per area is a force per length to md_unit (J/m^2 = kg/s^2),
-// which it would print as that: the fields carry their units in words, and no md_unit.
-inline const char* cavity_field_unit_str[(int)CavityField::Count] = {
-    "kJ/mol/Å²",
+// Their units in words: an energy per area is a force per length to md_unit, which it would print as kg/s^2
+inline const char* cavity_attribute_unit_str[(int)CavityAttribute::Count] = {
+    "",
+    "Å²",
     "Å",
+    "kJ/mol/Å²",
+    "kJ/mol",
     "e/bohr³",
+    "a.u.",
     "a.u./Å²",
     "",
+    "sr",
 };
 
-inline const char* cavity_coloring_str[(int)CavityColoring::Count] = {
-    "Nearest tessera",
-    "Kernel",
-};
+// Whether a quantity is a length as a size: the area as the radius of its disc, the decay length. Its scale is then a
+// factor; for the others a size in Angstrom at the 99th percentile of their values
+static inline bool cavity_attribute_is_length(CavityAttribute a) {
+    return a == CavityAttribute::Area || a == CavityAttribute::DecayLength;
+}
 
-// THE GLYPHS: one per tessera, standing on its point along its normal, picking as the tessera. By default a cylinder
-// whose base is the circle where the tessera's Gaussian is at half its peak, of radius sqrt(a_j / pi) (zeta_j a_j = pi
-// ln 2: the disc has the area of the tessera), and whose height is its decay length lambda_j at true scale: its volume
-// a_j lambda_j is then the energy of the wall at the tessera over the pressure, P a_j lambda_j. The areas in the file
-// are the switched ones, a_j = w_j 4 pi R^2 F_j, and so are the widths of the Gaussians: the disc is the Gaussian as
-// GOSTSHYP used it. Never thinner than a
-// pixel or two, so that the smallest tesserae can be seen and hovered.
-enum class CavityGlyphShape : int { Cylinder, Capsule, Count };
-enum class CavityGlyphSet : int {
-    All,                // every tessera
-    OffSurface,         // those left off the surface (min_area)
-    Count
+struct CavityMapping {
+    CavityAttribute attribute = CavityAttribute::Constant;
+    float scale = 1.0f;         // a factor for a length (cavity_attribute_is_length), else Angstrom
 };
-enum class CavityGlyphLength : int {
-    DecayLength,        // lambda_j, Å, times the scale
-    Field,              // the field of the representation (the nearest value), over its colour range, to the scale Å
-    Constant,           // the scale, Å
-    Count
-};
-enum class CavityGlyphColor : int {
-    Field,              // the value of the tessera through the colour scale of the representation
-    Weight,             // the switching at its point, F_j (its area over its Lebedev share of the sphere), 0..1,
-                        // through the colour map; where the cavity is not of 'swig', the share of a whole point
-    Uniform,            // grey
-    Count
-};
-
-inline const char* cavity_glyph_shape_str[(int)CavityGlyphShape::Count] = {"Cylinder", "Capsule"};
-inline const char* cavity_glyph_set_str[(int)CavityGlyphSet::Count] = {"All tesserae", "Off the surface"};
-inline const char* cavity_glyph_length_str[(int)CavityGlyphLength::Count] = {"Decay length", "Field", "Constant"};
-inline const char* cavity_glyph_color_str[(int)CavityGlyphColor::Count] = {"Field", "Weight", "Uniform"};
 
 struct CavityRepresentation {
-    CavityField    field    = CavityField::WallEnergy;
-    CavityColoring coloring = CavityColoring::Kernel;
-    float kernel_scale = 2.0f;  // of the width of each tessera's Gaussian: at 1 the tesserae are two widths apart and
-                                // the spread ripples between them; at 2, one
-    bool  conserve = true;      // Kernel: the parts of the partition of unity fitted to the areas of the tesserae, so that
-                                // the field integrates to their totals (else the kernels weighted by area)
-    bool  unlit = false;        // the colour as it is, not shaded. Shaded by default: the light and the occlusion are
-                                // what show the shape of the surface, and they leave its colours readable
-    bool  edges = true;         // Nearest: the borders between the patches
-    float edge_width = 0.03f;   // of the borders, Å along the surface
-    bool  switched = true;      // Measure the surface as GOSTSHYP does, weighted by its switching, and mask where the
-                                // weight is low (when the file's discretization is 'swig'); else by area alone
-    float weight_level = 0.5f;  // The switching weight below which the surface is masked (light dots, of area the share
-                                // missing below it: 1 - F / level), the level of an isosurface of the weight on the surface
-    bool  weight_outline = false;   // and a line along it
-    float min_area = 0.01f;     // Leave tesserae smaller than this share of a whole point of the grid (on a sphere of the
-                                // same radius) off the surface: their patches are too small to see or hover, and the
-                                // decay lengths of their needle-thin Gaussians are not comparable. They stay in the data
-    bool  fit_areas = true;     // Split the surface by a power diagram whose patches have the areas of the tesserae
-                                // (relative to the surface drawn, by the measure above), not by the nearest tessera alone
+    CavityGlyphShape shape = CavityGlyphShape::Cylinder;
+    CavityMapping radius = {CavityAttribute::Area, 1.0f};
+    CavityMapping height = {CavityAttribute::Constant, 0.1f};   // a cylinder's
+    CavityAttribute color = CavityAttribute::WallEnergyPerArea;
     ColorScale scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
-
-    bool  surface = true;       // the surface; off for the glyphs alone
-    bool  glyphs = false;
-    CavityGlyphShape  glyph_shape  = CavityGlyphShape::Cylinder;
-    CavityGlyphSet    glyph_set    = CavityGlyphSet::All;
-    CavityGlyphLength glyph_length = CavityGlyphLength::DecayLength;
-    CavityGlyphColor  glyph_color  = CavityGlyphColor::Field;
-    float glyph_length_scale = 1.0f;    // times lambda_j, or Å
-    bool  glyph_radius_halfmax = true;  // the Gaussian's circle at half its peak, else glyph_radius
-    float glyph_radius = 0.08f;         // Å
+    bool  unlit = false;        // the colour as it is, not shaded: shaded by default, the light shows the shape
 
     CavityData* data = nullptr; // owned, made by cavity_update
 };
@@ -170,82 +105,57 @@ struct CavityRepresentation {
 // Whether the system has a cavity to draw
 bool cavity_available(const md_system_t& sys);
 
-// Brings the representation up to date with the system and the frame: reads the tesserae when they are new, makes
-// the normalization of the kernel when its width changed, the values of the field when it changed, and places the
-// cavity on the atoms as they are in the state (rigidly: the tesserae are of the geometry of the file). Cheap when
-// nothing changed. Returns false when there is nothing to draw.
+// Brings the representation up to date with the system and the frame: reads the tesserae when they are new, sizes the
+// glyphs when their mapping changed, and places them on the atoms as they are in the state (rigidly: the tesserae are
+// of the geometry of the file). Cheap when nothing changed. Returns false when there is nothing to draw.
 bool cavity_update(CavityRepresentation* cav, const md_system_t& sys, const md_system_state_t& state);
 
 // Forgets what was read, for a system loaded under the representation
 void cavity_invalidate(CavityRepresentation* cav);
 void cavity_free(CavityRepresentation* cav);
 
-// What the field spans on the surface (the 1st to 99th percentile of it over the exposed surface), for the scale
+// What the quantity coloured by spans over the tesserae (the 1st to 99th percentile), for the scale
 ColorScaleSpan cavity_span(const CavityRepresentation& cav);
-md_unit_t      cavity_field_unit(CavityField field);  // Å for the decay length, none for the others (cavity_field_unit_str)
 
 // A hash of what the image of the cavity depends on, for the lazy rendering
 uint64_t cavity_hash(const CavityRepresentation& cav);
 
-// The picking indices it needs: one per sphere and one per tessera
-uint32_t cavity_sphere_count(const CavityRepresentation& cav);
+// The picking indices it needs: one per tessera
 uint32_t cavity_tessera_count(const CavityRepresentation& cav);
 
-// The spheres into the G-buffer bound for drawing (the opaque pass): ray cast, depth tested (their union), picking as
-// their spheres (sphere_base + the QM atom of each)
-void cavity_draw_geometry(const CavityRepresentation& cav, const ViewParam& view, uint32_t sphere_base);
-
-// The glyphs of the tesserae into the G-buffer bound for drawing (the opaque pass), picking as the tesserae
-// (tessera_base + the index of each). Nothing when cav.glyphs is off.
+// The glyphs into the G-buffer bound for drawing (the opaque pass), picking as the tesserae (tessera_base + the index
+// of each)
 void cavity_draw_glyphs(const CavityRepresentation& cav, const ViewParam& view, uint32_t tessera_base);
 
-// Whether the cavity can be weighted by GOSTSHYP's switching (the file's discretization is 'swig'), and is
-bool cavity_has_switching(const CavityRepresentation& cav);
-bool cavity_switched(const CavityRepresentation& cav);
-
-
-// The full screen pass over the G-buffer bound for drawing: where a sphere of this cavity was drawn (its picking
-// index in [sphere_base, sphere_base + cavity_sphere_count)), writes the colour and the picking index of the tessera
-// (tessera_base + its index). Leaves the depth, the normals and the velocities as they are. The picking target is
-// read from a copy made first, so the G-buffer is written in place.
-void cavity_resolve(const CavityRepresentation& cav, const GBuffer& gbuf, const ViewParam& view, uint32_t sphere_base, uint32_t tessera_base);
-
-// The patch of a tessera into the marks of the highlight (the marks target bound, gbuffer_marks_begin): there where it
-// is, in view where nothing is in front of it. And its glyph, when they are shown.
+// The glyph of a tessera into the marks of the highlight (the marks target bound, gbuffer_marks_begin): there where it
+// is, in view where nothing is in front of it
 void cavity_draw_marks(const CavityRepresentation& cav, uint32_t tessera, const GBuffer& gbuf, const ViewParam& view);
+
+// The value of a quantity at a tessera, in its unit (cavity_attribute_unit_str); 1 for Constant
+double cavity_attribute_value(const CavityRepresentation& cav, CavityAttribute a, uint32_t tessera);
 
 // What a tessera is, for the tooltip
 struct CavityTesseraInfo {
     uint32_t atom = 0;          // the QM atom whose sphere it is on
     uint32_t sys_atom = 0;      // and that atom in the system
-    float area = 0;             // Å^2
-    float decay_length = 0;     // Å
-    float wall_energy = 0;      // kJ/mol/Å^2
+    float area = 0;             // Angstrom^2
+    float decay_length = 0;     // Angstrom
+    float wall_energy = 0;      // kJ/mol/Angstrom^2
     float wall_density = 0;     // e/bohr^3
     float amplitude = 0;        // a.u.
-    float field_here = 0;       // the field shown, where the cursor is
-    bool  has_field_here = false;
-    float switching_here = 1;   // GOSTSHYP's weight of the area where the cursor is, of a switched cavity
-    bool  has_switching_here = false;
+    float switching = 0;        // F_j
 };
-bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& cav, uint32_t tessera, const float* world_pos);
+bool cavity_tessera_info(CavityTesseraInfo* info, const CavityRepresentation& cav, uint32_t tessera);
 
 // What the cavity is as a whole, for the representation's properties
 struct CavitySummary {
     float pressure_gpa = 0;
     uint32_t num_tesserae = 0;
     uint32_t num_spheres = 0;
-    float tessera_area = 0;     // sum a_j, Å^2
-    float exposed_area = 0;     // of the surface drawn (the union of the spheres), Å^2
-    float weighted_area = 0;    // the same weighted by the switching, Å^2
-    bool  switched = false;     // whether the surface is weighted by the switching
+    float tessera_area = 0;     // sum a_j, Angstrom^2
     float wall_energy = 0;      // sum_j P a_j lambda_j, kJ/mol
-    float max_kernel_error = 0; // largest relative difference of the integral of a conservative field from its sum
+    float effective_volume = 0; // sum_j a_j lambda_j, Angstrom^3: the wall energy over the pressure
     uint32_t num_buried = 0;    // tesserae inside the sphere of another atom: the switching keeps them where spheres overlap
     float buried_area = 0;      // their share of sum a_j
-    float unreached_energy = 0; // the share of the wall energy on tesserae no point of the exposed surface is within reach of
-    uint32_t num_hidden = 0;    // tesserae left off the surface, below min_area
-    float hidden_area = 0;      // their share of sum a_j
-    float hidden_energy = 0;    // their share of the wall energy
 };
 bool cavity_summary(CavitySummary* out, const CavityRepresentation& cav);

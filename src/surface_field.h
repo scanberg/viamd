@@ -95,6 +95,13 @@ enum class SurfaceFieldKind {
     // Made of the total density's orbitals (md_qm_density_orbitals) and its gradient: on the CPU by md_gto_iso in
     // double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
     DensityScaleLength,
+
+    // The GOSTSHYP wall of a run under pressure (gostshyp.h): the potential of its Gaussians, V1 = sum_j p_j g_j,
+    // whose expectation value is the wall's energy; and the potential the electrons feel, the Fock operator's
+    // V1 - V2, sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j.(r - c_j)). Hartree. Analytic sums of the tesserae's
+    // Gaussians, placed rigidly on the QM atoms as they are; zero beyond the cavity's reach.
+    GostshypWallPotential,
+    GostshypEffectivePotential,
     Count
 };
 
@@ -196,7 +203,8 @@ struct SurfaceFieldDesc {
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
     return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy ||
-           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy || kind == SurfaceFieldKind::DensityScaleLength;
+           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy || kind == SurfaceFieldKind::DensityScaleLength ||
+           kind == SurfaceFieldKind::GostshypWallPotential || kind == SurfaceFieldKind::GostshypEffectivePotential;
 }
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the

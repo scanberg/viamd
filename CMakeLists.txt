@@ -173,6 +173,7 @@ set(SRC_FILES
     src/display_units.cpp
     src/display_units_settings.cpp
     src/surface_field.cpp
+    src/gostshyp.cpp
     src/cavity.cpp
     src/event.cpp
     src/file_list.cpp
@@ -325,10 +326,6 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
     src/shaders/shadows/screen_space.frag
-    src/shaders/cavity/cavity_resolve.frag
-    src/shaders/cavity/cavity_marks.frag
-    src/shaders/cavity/cavity_geometry.vert
-    src/shaders/cavity/cavity_geometry.frag
     src/shaders/cavity/cavity_glyph.vert
     src/shaders/cavity/cavity_glyph.frag
 )

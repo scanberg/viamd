@@ -1,4 +1,5 @@
 #include <surface_field.h>
+#include <gostshyp.h>
 
 #include <task_system.h>
 #include <gfx/gl.h>
@@ -66,6 +67,10 @@ static const SurfaceFieldKindInfo* kind_table() {
         { "Local Electron Attachment Energy", md_unit_hartree(),                                  SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA },
         // DensityScaleLength: short (stiff) dark, long (soft) bright
         { "Density Scale Length",    md_unit_bohr_radius(),                                       SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS },
+        // GostshypWallPotential: >= 0, nothing special but zero
+        { "GOSTSHYP Wall Potential", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS },
+        // GostshypEffectivePotential: repulsive outward, attractive inward of the tesserae: its sign is the physics
+        { "GOSTSHYP Effective Potential", md_unit_hartree(),                                      SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU },
     };
     return table;
 }
@@ -567,6 +572,9 @@ bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys) {
         return basis_published(sys) && md_qm_attachment_available(&sys);
     case SurfaceFieldKind::DensityScaleLength:
         return basis_published(sys) && md_qm_density_available(&sys);
+    case SurfaceFieldKind::GostshypWallPotential:
+    case SurfaceFieldKind::GostshypEffectivePotential:
+        return gostshyp_available(sys);
     default:
         return false;
     }
@@ -689,14 +697,17 @@ size_t surface_field_progress(SurfaceFieldProgress* out, size_t cap) {
 struct FieldData {
     md_gto_int_charges_t* charges = nullptr;
     OrbitalRatio*         ratio = nullptr;
+    GostshypWall*         wall = nullptr;       // the GOSTSHYP potentials: analytic, on the CPU
+    GostshypField         wall_field = GostshypField::WallPotential;
 };
 
-static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio; }
+static inline bool field_data_valid(const FieldData& d) { return d.charges || d.ratio || d.wall; }
 
 // What a point costs on the CPU, roughly, for the size of a pool task's grain
 static uint64_t field_data_work_per_point(const FieldData& d) {
     if (d.charges) return md_gto_int_charges_work_per_point(d.charges);
     if (d.ratio)   return 64 * (uint64_t)(d.ratio->num_orbitals + 16);  // two fields, ~64 AOs reaching a point
+    if (d.wall)    return 64;                                           // tens of Gaussians reach a point
     return 1;
 }
 
@@ -708,6 +719,7 @@ static void evaluate_points_range(double* out, const float* xyz, uint32_t beg, u
         const uint32_t e = MD_MIN(b + 8, end);
         if (d.charges)   md_gto_int_potential_xyz(out + b, NULL, xyz + 3 * (size_t)b, e - b, 0, d.charges);
         else if (d.ratio) ratio_evaluate(out + b, xyz + 3 * (size_t)b, e - b, d.ratio);
+        else if (d.wall)  gostshyp_wall_evaluate(d.wall, d.wall_field, xyz + 3 * (size_t)b, e - b, out + b);
     }
 }
 
@@ -735,6 +747,7 @@ static void charges_destroy(md_gto_int_charges_t* q) {
 static void field_data_destroy(FieldData* d) {
     charges_destroy(d->charges);
     ratio_destroy(d->ratio);
+    gostshyp_wall_destroy(d->wall);
     *d = FieldData{};
 }
 
@@ -786,6 +799,16 @@ static void build_run(FieldBuild* b) {
         b->kind == SurfaceFieldKind::DensityScaleLength) {
         b->data.ratio = build_ratio(desc);
         b->ok = b->data.ratio != nullptr;
+    } else if (b->kind == SurfaceFieldKind::GostshypWallPotential || b->kind == SurfaceFieldKind::GostshypEffectivePotential) {
+        // The tesserae placed on the QM atoms where the basis is (bohr)
+        GostshypTesserae t;
+        GostshypPlacement pl;
+        if (gostshyp_read(&t, *b->sys) &&
+            gostshyp_place(&pl, t, b->basis_atom_xyz, b->num_basis_atoms, nullptr, 1.0 / 0.52917721092)) {
+            b->data.wall = gostshyp_wall_create(t, pl);
+            b->data.wall_field = b->kind == SurfaceFieldKind::GostshypWallPotential ? GostshypField::WallPotential : GostshypField::EffectivePotential;
+        }
+        b->ok = b->data.wall != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
         md_memset(q, 0, sizeof(*q));
         if (build_charges(q, desc, heap)) {

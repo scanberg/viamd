@@ -117,11 +117,7 @@ constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking d
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
-// A sphere of a cavity (cavity.h), keyed by the representation: what its spacefill picks as where its full screen pass
-// found no tessera. The index is the QM atom of the sphere.
-constexpr PickingDomainID PickingDomain_CavitySphere = HASH_STR_LIT64("picking domain cavity sphere");
-// A tessera of a cavity, keyed by the representation: what each pixel of the surface picks as once its full screen
-// pass has split the surface between the tesserae (cavity_resolve). The index is the tessera.
+// A tessera of a cavity (cavity.h), keyed by the representation: what its glyph picks as. The index is the tessera.
 constexpr PickingDomainID PickingDomain_Tessera = HASH_STR_LIT64("picking domain tessera");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
@@ -173,6 +169,8 @@ enum class ElectronicStructureSource {
     DensityProperty,
     ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
     LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
+    GostshypField,              // a field of the GOSTSHYP wall of a run under pressure (gostshyp.h), the one of gostshyp_field:
+                                // its potential, the potential the electrons feel, or its energy density
     Count
 };
 
@@ -325,6 +323,7 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Density Property",
     "Electron Localization (ELF)",
     "Localized Orbital Locator (LOL)",
+    "GOSTSHYP Field",
 };
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -335,6 +334,7 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
     ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
     ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
+    ElectronicStructureSourceFlag_GostshypField             = 1u << (int)ElectronicStructureSource::GostshypField,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -728,6 +728,7 @@ struct ElectronicStructureRepresentation {
     // changes across a reload; an id is derived from the path, so it names the same thing or
     // nothing at all.
     md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+    int gostshyp_field = 1;            // GostshypField: which (gostshyp.h, GostshypField): the effective potential
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
@@ -756,6 +757,7 @@ struct ElectronicStructureRepresentation {
     struct {
         TransferFunction tf = {};
         bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
+        bool  map_auto = false;        // ... and its range is to be taken from the values when they come (a potential's)
         int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
         uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
         uint64_t tf_hash = 0;
@@ -794,6 +796,8 @@ enum class ElectronicStructureValueKind {
     Density,        // >= 0, largest at the nuclei
     Signed,         // an orbital, a difference: about 0
     Localization,   // in [0, 1]: ELF, LOL
+    Potential,      // >= 0, of a range of its own, set from the values: the GOSTSHYP wall's potential, its energy density
+    SignedPotential,// about 0, likewise: the GOSTSHYP effective potential
 };
 
 // ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
@@ -840,6 +844,9 @@ static inline bool electronic_structure_is_signed(const ElectronicStructureRepre
 
 static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
+    if (rep.source == ElectronicStructureSource::GostshypField) {
+        return rep.gostshyp_field == 1 ? ElectronicStructureValueKind::SignedPotential : ElectronicStructureValueKind::Potential;
+    }
     return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
@@ -977,6 +984,10 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         rep->spin = ElectronicStructureSpin::Total;
         rep->use_magnitude = false;
         break;
+    case ElectronicStructureSource::GostshypField:
+        rep->spin = ElectronicStructureSpin::None;
+        rep->use_magnitude = false;
+        break;
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
         // of both spins together, and drawn only as a volume or on a plane
@@ -1081,6 +1092,7 @@ static inline int electronic_structure_legacy_type(const ElectronicStructureRepr
     case ElectronicStructureSource::DensityProperty:
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator:
+    case ElectronicStructureSource::GostshypField:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
         MD_ASSERT(false);

@@ -1,6 +1,7 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <representation.h>
+#include <gostshyp.h>
 
 #include <md_system.h>
 
@@ -2103,48 +2104,20 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
         if (viamd::extract_flt(thickness, arg) && thickness == 0.0f) rep->box.thickness = 0.0f;
     } else if (md_str_eq(ident, MD_STR_LIT("BoxAxes"))) {
         viamd::extract_bool(rep->box.axes, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityField"))) {
-        viamd::extract_enum(rep->cavity.field, arg, (int)CavityField::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityColoring"))) {
-        viamd::extract_enum(rep->cavity.coloring, arg, (int)CavityColoring::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityKernelScale"))) {
-        viamd::extract_flt(rep->cavity.kernel_scale, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityShape"))) {
+        viamd::extract_enum(rep->cavity.shape, arg, (int)CavityGlyphShape::Count);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityRadiusAttribute"))) {
+        viamd::extract_enum(rep->cavity.radius.attribute, arg, (int)CavityAttribute::Count);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityRadiusScale"))) {
+        viamd::extract_flt(rep->cavity.radius.scale, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityHeightAttribute"))) {
+        viamd::extract_enum(rep->cavity.height.attribute, arg, (int)CavityAttribute::Count);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityHeightScale"))) {
+        viamd::extract_flt(rep->cavity.height.scale, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("CavityColorAttribute"))) {
+        viamd::extract_enum(rep->cavity.color, arg, (int)CavityAttribute::Count);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityUnlit"))) {
         viamd::extract_bool(rep->cavity.unlit, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityConserve"))) {
-        viamd::extract_bool(rep->cavity.conserve, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityEdges"))) {
-        viamd::extract_bool(rep->cavity.edges, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavitySwitched"))) {
-        viamd::extract_bool(rep->cavity.switched, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityWeightOutline"))) {
-        viamd::extract_bool(rep->cavity.weight_outline, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityWeightLevel"))) {
-        viamd::extract_flt(rep->cavity.weight_level, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityEdgeWidth"))) {
-        viamd::extract_flt(rep->cavity.edge_width, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavitySurface"))) {
-        viamd::extract_bool(rep->cavity.surface, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphs"))) {
-        viamd::extract_bool(rep->cavity.glyphs, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphShape"))) {
-        viamd::extract_enum(rep->cavity.glyph_shape, arg, (int)CavityGlyphShape::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphSet"))) {
-        viamd::extract_enum(rep->cavity.glyph_set, arg, (int)CavityGlyphSet::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphLength"))) {
-        viamd::extract_enum(rep->cavity.glyph_length, arg, (int)CavityGlyphLength::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphColor"))) {
-        viamd::extract_enum(rep->cavity.glyph_color, arg, (int)CavityGlyphColor::Count);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphLengthScale"))) {
-        viamd::extract_flt(rep->cavity.glyph_length_scale, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphHalfMax"))) {
-        viamd::extract_bool(rep->cavity.glyph_radius_halfmax, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityGlyphRadius"))) {
-        viamd::extract_flt(rep->cavity.glyph_radius, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityMinArea"))) {
-        viamd::extract_flt(rep->cavity.min_area, arg);
-    } else if (md_str_eq(ident, MD_STR_LIT("CavityFitAreas"))) {
-        viamd::extract_bool(rep->cavity.fit_areas, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityColormap"))) {
         viamd::extract_int(rep->cavity.scale.colormap, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("CavityRange"))) {
@@ -2180,6 +2153,9 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureType"))) {
         int type;
         if (viamd::extract_int(type, arg)) electronic_structure_set_legacy_type(&rep->electronic_structure, type);
+    } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureGostshypField"))) {
+        int f = 0;
+        if (viamd::extract_int(f, arg)) rep->electronic_structure.gostshyp_field = MD_CLAMP(f, 0, (int)GostshypField::Count - 1);
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureSource"))) {
         int source;
         if (viamd::extract_int(source, arg)) {
@@ -2266,7 +2242,7 @@ bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg
     } else if (md_str_eq(ident, MD_STR_LIT("ElectronicStructureVolumeKind"))) {
         // the map was saved, for a field of this kind: kept rather than set up for the field
         int kind;
-        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::Localization) {
+        if (viamd::extract_int(kind, arg) && kind >= 0 && kind <= (int)ElectronicStructureValueKind::SignedPotential) {
             rep->electronic_structure.volume.map_kind = kind;
             rep->electronic_structure.volume.map_init = true;
         }
@@ -2448,27 +2424,13 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
     if (rep.type == RepresentationType::Cavity) {
         const CavityRepresentation& c = rep.cavity;
         const float range[2] = { c.scale.range_beg, c.scale.range_end };
-        viamd::write_int(state,  MD_STR_LIT("CavityField"), (int)c.field);
-        viamd::write_int(state,  MD_STR_LIT("CavityColoring"), (int)c.coloring);
-        viamd::write_flt(state,  MD_STR_LIT("CavityKernelScale"), c.kernel_scale);
+        viamd::write_int(state,  MD_STR_LIT("CavityShape"), (int)c.shape);
+        viamd::write_int(state,  MD_STR_LIT("CavityRadiusAttribute"), (int)c.radius.attribute);
+        viamd::write_flt(state,  MD_STR_LIT("CavityRadiusScale"), c.radius.scale);
+        viamd::write_int(state,  MD_STR_LIT("CavityHeightAttribute"), (int)c.height.attribute);
+        viamd::write_flt(state,  MD_STR_LIT("CavityHeightScale"), c.height.scale);
+        viamd::write_int(state,  MD_STR_LIT("CavityColorAttribute"), (int)c.color);
         viamd::write_bool(state, MD_STR_LIT("CavityUnlit"), c.unlit);
-        viamd::write_bool(state, MD_STR_LIT("CavityConserve"), c.conserve);
-        viamd::write_bool(state, MD_STR_LIT("CavityEdges"), c.edges);
-        viamd::write_bool(state, MD_STR_LIT("CavitySwitched"), c.switched);
-        viamd::write_bool(state, MD_STR_LIT("CavityWeightOutline"), c.weight_outline);
-        viamd::write_flt(state,  MD_STR_LIT("CavityWeightLevel"), c.weight_level);
-        viamd::write_flt(state,  MD_STR_LIT("CavityMinArea"), c.min_area);
-        viamd::write_bool(state, MD_STR_LIT("CavitySurface"), c.surface);
-        viamd::write_flt(state,  MD_STR_LIT("CavityEdgeWidth"), c.edge_width);
-        viamd::write_bool(state, MD_STR_LIT("CavityGlyphs"), c.glyphs);
-        viamd::write_int(state,  MD_STR_LIT("CavityGlyphShape"), (int)c.glyph_shape);
-        viamd::write_int(state,  MD_STR_LIT("CavityGlyphSet"), (int)c.glyph_set);
-        viamd::write_int(state,  MD_STR_LIT("CavityGlyphLength"), (int)c.glyph_length);
-        viamd::write_int(state,  MD_STR_LIT("CavityGlyphColor"), (int)c.glyph_color);
-        viamd::write_flt(state,  MD_STR_LIT("CavityGlyphLengthScale"), c.glyph_length_scale);
-        viamd::write_bool(state, MD_STR_LIT("CavityGlyphHalfMax"), c.glyph_radius_halfmax);
-        viamd::write_flt(state,  MD_STR_LIT("CavityGlyphRadius"), c.glyph_radius);
-        viamd::write_bool(state, MD_STR_LIT("CavityFitAreas"), c.fit_areas);
         viamd::write_int(state,  MD_STR_LIT("CavityColormap"), c.scale.colormap);
         viamd::write_flt_vec(state, MD_STR_LIT("CavityRange"), range, 2);
         viamd::write_bool(state, MD_STR_LIT("CavityAutoRange"), c.scale.auto_range);
@@ -2491,6 +2453,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const App
         }
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureType"),     electronic_structure_legacy_type(rep.electronic_structure));
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureSource"),   (int)rep.electronic_structure.source);
+        viamd::write_int(state,  MD_STR_LIT("ElectronicStructureGostshypField"), rep.electronic_structure.gostshyp_field);
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureField"),    (int)electronic_structure_legacy_field(rep.electronic_structure));
         viamd::write_bool(state, MD_STR_LIT("ElectronicStructureUseMagnitude"), rep.electronic_structure.use_magnitude);
         viamd::write_int(state,  MD_STR_LIT("ElectronicStructureSpin"),     (int)rep.electronic_structure.spin);
@@ -3002,6 +2965,21 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 }
             }
             ImGui::EndCombo();
+        }
+
+        if (es.source == ElectronicStructureSource::GostshypField) {
+            prop::row("field", "The fields of the GOSTSHYP wall of the run under pressure, from its tesserae's Gaussians:\n"
+                               "Wall potential: V1 = sum_j p_j g_j, whose expectation value is the wall's energy.\n"
+                               "Effective potential: what the electrons feel, the Fock operator's V1 - V2,\n"
+                               "  sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j.(r - c_j)): each Gaussian, to first order, moved\n"
+                               "  outward by its decay length; attractive inward of the tesserae.\n"
+                               "Wall energy density: rho V1, where the wall's energy is (it integrates to it).\n"
+                               "Hartree (the energy density: Hartree / bohr^3). Evaluated on the CPU.");
+            int f = MD_CLAMP(es.gostshyp_field, 0, (int)GostshypField::Count - 1);
+            if (ImGui::Combo("##gostshyp_field", &f, gostshyp_field_str, (int)GostshypField::Count)) {
+                es.gostshyp_field = f;
+                update_rep = true;
+            }
         }
 
         if (electronic_structure_is_density_property(es)) {
@@ -3928,186 +3906,105 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
 }
 
 // The cavity's own properties: what colours it, how, and what it is. Returns whether it needs updating.
+// A size of the glyphs from a quantity of the tesserae (cavity.h): which, and its scale
+static bool draw_cavity_mapping(const char* label, const char* id, CavityMapping* m, bool radius) {
+    bool changed = false;
+    prop::row(label, radius ?
+        "Constant: the scale in Å.\n"
+        "Area: the radius of a disc of the tessera's area, sqrt(a / pi), where its Gaussian is at half its peak; times the scale.\n"
+        "Decay length: as it is, times the scale.\n"
+        "Another quantity: its square root over that of its 99th percentile, so that the cross section goes with it; the scale in Å there." :
+        "Constant: the scale in Å.\n"
+        "Decay length: as it is, times the scale (how far the density reaches past the tessera).\n"
+        "Area: the radius of a disc of the tessera's area, times the scale.\n"
+        "Another quantity: over its 99th percentile, linearly; the scale in Å there.");
+    ImGui::PushID(id);
+    int a = (int)m->attribute;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+    if (ImGui::Combo("##attribute", &a, cavity_attribute_str, (int)CavityAttribute::Count)) {
+        const bool was_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
+        m->attribute = (CavityAttribute)a;
+        const bool is_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
+        // a factor and a size in Å are not the same scale: a sensible one for the new kind
+        if (was_length != is_length || m->attribute == CavityAttribute::Constant) {
+            m->scale = cavity_attribute_is_length(m->attribute) ? 1.0f : (radius ? 0.5f : 0.3f);
+            if (m->attribute == CavityAttribute::Constant) m->scale = radius ? 0.15f : 0.1f;
+        } else if (cavity_attribute_is_length(m->attribute)) {
+            m->scale = 1.0f;
+        }
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool factor = cavity_attribute_is_length(m->attribute);
+    changed |= ImGui::SliderFloat("##scale", &m->scale, factor ? 0.1f : 0.01f, factor ? 5.0f : 2.0f, factor ? "%.2f x" : "%.2f Å",
+                                  ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    ImGui::PopID();
+    return changed;
+}
+
 static bool draw_representation_cavity(Representation& rep) {
     bool update_rep = false;
     CavityRepresentation& cav = rep.cavity;
-    if (prop::section("Cavity")) {
-        prop::row("surface", "The surface of the cavity, coloured by the field. Off for the glyphs alone");
-        update_rep |= ImGui::Checkbox("##cavity_surface", &cav.surface);
-        prop::row("field", "Wall energy per area: P lambda_j, the energy p_j <rho|g_j> of the wall at a tessera over its area.\n"
-                           "Decay length: lambda_j = <rho|g_j> / (-d/dn <rho|g_j>), how soft the density is at the wall.\n"
-                           "Wall density: <rho|g_j>, the density the Gaussian of the tessera overlaps.\n"
-                           "Amplitude per area: p_j / a_j, the potential the wall needs to hold the pressure there.\n"
-                           "Area coverage: the areas of the tesserae spread over the surface, 1 where they account for it.");
-        int field = (int)cav.field;
-        if (ImGui::Combo("##cavity_field", &field, cavity_field_str, (int)CavityField::Count)) {
-            cav.field = (CavityField)field;
-            cav.scale.auto_range = true;
+    if (prop::section("Glyphs")) {
+        prop::row("shape", "A glyph per tessera of the GOSTSHYP cavity, picking as the tessera.\n"
+                           "Cylinder: from the tessera's point outward along its normal; its radius, height and colour.\n"
+                           "Sphere: centred on the point; its radius and colour.\n"
+                           "Never thinner than a pixel or two, so that the smallest tesserae can be hovered.\n"
+                           "The fields of the wall over space (its potential, the effective potential, its energy density)\n"
+                           "are in the electronic structure representation, as a source and as fields of its isosurfaces.");
+        int shape = (int)cav.shape;
+        if (ImGui::Combo("##cavity_shape", &shape, cavity_glyph_shape_str, (int)CavityGlyphShape::Count)) {
+            cav.shape = (CavityGlyphShape)shape;
             update_rep = true;
         }
-        prop::row("coloring", "Nearest tessera: each tessera's own value over the points of the surface nearest to it.\n"
-                              "Kernel: a smooth mean of the values of the tesserae around each point, by a Gaussian per tessera\n"
-                              "of the width of its own, made a partition of unity: the field never leaves the range of the\n"
-                              "values around it, and is one value where the tesserae have one.");
-        int coloring = (int)cav.coloring;
-        if (ImGui::Combo("##cavity_coloring", &coloring, cavity_coloring_str, (int)CavityColoring::Count)) {
-            cav.coloring = (CavityColoring)coloring;
-            update_rep = true;
+        update_rep |= draw_cavity_mapping("radius", "radius", &cav.radius, true);
+        if (cav.shape == CavityGlyphShape::Cylinder) {
+            update_rep |= draw_cavity_mapping("height", "height", &cav.height, false);
         }
-        if (cav.coloring == CavityColoring::Kernel || cav.field == CavityField::AreaCoverage) {
-            prop::row("kernel width", "Of each tessera's own Gaussian, sigma_j = 1 / sqrt(2 zeta_j): how smooth the field is.\n"
-                                      "Applied when the slider is let go: the partition is fitted again.");
-            {
-                const ImGuiID id = ImGui::GetID("##cavity_kernel");
-                float* w = ImGui::GetStateStorage()->GetFloatRef(id, cav.kernel_scale);
-                if (ImGui::GetActiveID() != id) *w = cav.kernel_scale;
-                ImGui::SliderFloat("##cavity_kernel", w, 0.5f, 3.0f, "%.2f x", ImGuiSliderFlags_AlwaysClamp);
-                if (ImGui::IsItemDeactivatedAfterEdit()) {
-                    cav.kernel_scale = *w;
-                    update_rep = true;
-                }
-            }
-            if (cav.field != CavityField::AreaCoverage) {
-                prop::row("fit to areas", "Fit each tessera's part of the partition of unity to its area, so that the field integrates\n"
-                                          "to the tesserae's totals over the surface (of the share of their area the surface shows:\n"
-                                          "the switching keeps some inside other spheres). Off: the kernels weighted by area alone.");
-                update_rep |= ImGui::Checkbox("##cavity_conserve", &cav.conserve);
-            }
-        } else {
-            prop::row("borders", "The borders between the patches of the tesserae, of a width along the surface: painted on it,\n"
-                                 "so that they narrow as the surface turns away and as the view zooms out");
-            update_rep |= ImGui::Checkbox("##cavity_edges", &cav.edges);
-            if (cav.edges) {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(-FLT_MIN);
-                update_rep |= ImGui::SliderFloat("##cavity_edge_width", &cav.edge_width, 0.005f, 0.1f, "%.3f Å", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
-            }
-        }
-        if (cavity_has_switching(cav)) {
-            prop::row("switching weight", "Measure the surface as GOSTSHYP does. VeloxChem weights each point by a smoothstep\n"
-                                          "across a band about every neighbouring sphere (evaluated on the spheres grown by r_ext),\n"
-                                          "so the area of a tessera is its Lebedev share of its sphere times that weight.\n"
-                                          "The patches and kernels are sized by the weighted area, and where the weight is low the\n"
-                                          "surface is masked by light dots: the paler, the less it counts.\n"
-                                          "Off: by area alone, as if the union of the spheres were the cavity.");
-            update_rep |= ImGui::Checkbox("##cavity_switched", &cav.switched);
-            if (cav.switched) {
-                prop::row("mask below", "Mask the surface where the switching weight is below this: light dots whose area is the\n"
-                                        "share of it missing, 1 - F / level. At 1/2, the bands a cut at 1/2 would remove; at 1,\n"
-                                        "everything the switching touches.");
-                update_rep |= ImGui::SliderFloat("##cavity_weight_level", &cav.weight_level, 0.05f, 1.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
-                prop::row("outline", "A line where the weight is the level of the mask: an isoline of the weight");
-                update_rep |= ImGui::Checkbox("##cavity_weight_outline", &cav.weight_outline);
-            }
-        }
-        prop::row("smallest area", "Leave the tesserae smaller than this share of a whole point of the Lebedev grid off the surface:\n"
-                                   "the switching shrinks the points along the seams down to nothing, and their patches are too\n"
-                                   "small to see or hover. Their neighbours take their place. They stay in the data (the GOSTSHYP\n"
-                                   "window), and their share of the area and the energy is in Data below.\n"
-                                   "Applied when the slider is let go: the patches are fitted again.");
-        {
-            // Applied on release: a change fits the power diagram again, which takes a moment
-            const ImGuiID id = ImGui::GetID("##cavity_min_area");
-            float* pct = ImGui::GetStateStorage()->GetFloatRef(id, 100.0f * cav.min_area);
-            if (ImGui::GetActiveID() != id) *pct = 100.0f * cav.min_area;
-            ImGui::SliderFloat("##cavity_min_area", pct, 0.0f, 20.0f, "%.1f %%", ImGuiSliderFlags_AlwaysClamp);
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                cav.min_area = *pct / 100.0f;
-                update_rep = true;
-            }
-        }
-        prop::row("area weighted", "Split the surface between the tesserae so that each patch has the area of its tessera, relative\n"
-                                   "to the surface drawn (a power diagram, |x - c|^2 - w, with fitted weights). Off: each point to\n"
-                                   "the nearest tessera, which crowds the seams with slivers of the tesserae the switching kept\n"
-                                   "inside other spheres.");
-        update_rep |= ImGui::Checkbox("##cavity_fit_areas", &cav.fit_areas);
-        prop::row("unlit", "The colours as the colour map gives them, not shaded by the light");
+        prop::row("unlit", "The colours as they are, not shaded");
         update_rep |= ImGui::Checkbox("##cavity_unlit", &cav.unlit);
         prop::section_end();
     }
-    if (prop::section("Glyphs", false)) {
-        prop::row("show", "A glyph per tessera, standing on its point along its normal, picking as the tessera.\n"
-                          "By default a cylinder whose base is where the tessera's Gaussian is at half its peak\n"
-                          "(radius sqrt(a / pi): the disc has the tessera's area) and whose height is its decay length\n"
-                          "at true scale: its volume a lambda is the energy of the wall at it over the pressure, P a lambda.\n"
-                          "Never thinner than a pixel or two, so that the smallest tesserae can be hovered.");
-        update_rep |= ImGui::Checkbox("##cavity_glyphs", &cav.glyphs);
-        if (cav.glyphs) {
-            int v;
-            prop::row("shape");
-            v = (int)cav.glyph_shape;
-            if (ImGui::Combo("##cavity_glyph_shape", &v, cavity_glyph_shape_str, (int)CavityGlyphShape::Count)) { cav.glyph_shape = (CavityGlyphShape)v; update_rep = true; }
-            prop::row("tesserae", "All of them, or those below the smallest area, which the surface leaves out");
-            v = (int)cav.glyph_set;
-            if (ImGui::Combo("##cavity_glyph_set", &v, cavity_glyph_set_str, (int)CavityGlyphSet::Count)) { cav.glyph_set = (CavityGlyphSet)v; update_rep = true; }
-            prop::row("radius", "The circle where the tessera's Gaussian is at half its peak, sqrt(a / pi), or a constant");
-            update_rep |= ImGui::Checkbox("half maximum##cavity_glyph_halfmax", &cav.glyph_radius_halfmax);
-            if (!cav.glyph_radius_halfmax) {
-                ImGui::SameLine();
-                ImGui::SetNextItemWidth(-FLT_MIN);
-                update_rep |= ImGui::SliderFloat("##cavity_glyph_radius", &cav.glyph_radius, 0.01f, 0.5f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
-            }
-            prop::row("length", "Decay length: lambda times the scale (1: true scale).\n"
-                                "Field: the tessera's value of the field over the colour range, to the scale in Å.\n"
-                                "Constant: the scale in Å.");
-            v = (int)cav.glyph_length;
-            if (ImGui::Combo("##cavity_glyph_length", &v, cavity_glyph_length_str, (int)CavityGlyphLength::Count)) { cav.glyph_length = (CavityGlyphLength)v; update_rep = true; }
-            prop::row("length scale");
-            update_rep |= ImGui::SliderFloat("##cavity_glyph_length_scale", &cav.glyph_length_scale, 0.1f, 5.0f,
-                                             cav.glyph_length == CavityGlyphLength::DecayLength ? "%.2f x" : "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
-            prop::row("color", "Field: the tessera's own value through the colour scale above.\n"
-                               "Weight: the switching at the tessera, 0 to 1, through the colour map (its area is its Lebedev share times it).\n"
-                               "Uniform: grey.");
-            v = (int)cav.glyph_color;
-            if (ImGui::Combo("##cavity_glyph_color", &v, cavity_glyph_color_str, (int)CavityGlyphColor::Count)) { cav.glyph_color = (CavityGlyphColor)v; update_rep = true; }
-        }
-        prop::section_end();
-    }
     if (prop::section("Color")) {
-        if (cavity_field_unit_str[(int)cav.field][0] && cav.field != CavityField::DecayLength) {
-            prop::row("unit");
-            ImGui::TextUnformatted(cavity_field_unit_str[(int)cav.field]);
+        prop::row("by", "Wall energy per area: P lambda_j, the energy p_j <rho|g_j> of the wall at a tessera over its area.\n"
+                        "Wall energy: P a_j lambda_j, at the tessera.\n"
+                        "Decay length: lambda_j = <rho|g_j> / (-d/dn <rho|g_j>), how far the density reaches past the wall.\n"
+                        "Wall density: <rho|g_j>, the density the tessera's Gaussian sees.\n"
+                        "Amplitude: p_j; per area, p_j / a_j = P / (-d/dn <rho|g_j>): the stiffer the density, the less.\n"
+                        "Switching: F_j, how much of its Lebedev share the switching left it.\n"
+                        "Area, Lebedev weight: what the discretization made of it (a = w R^2 F).");
+        int c = (int)cav.color;
+        if (ImGui::Combo("##cavity_color", &c, cavity_attribute_str, (int)CavityAttribute::Count)) {
+            cav.color = (CavityAttribute)c;
+            cav.scale.auto_range = true;
+            update_rep = true;
         }
-        update_rep |= color_scale_draw_controls(&cav.scale, cavity_span(cav), cavity_field_unit(cav.field), "on surface", "Over the exposed surface: the 1st to 99th percentile");
+        if (cav.color != CavityAttribute::Constant) {
+            if (cavity_attribute_unit_str[(int)cav.color][0]) {
+                prop::row("unit");
+                ImGui::TextUnformatted(cavity_attribute_unit_str[(int)cav.color]);
+            }
+            update_rep |= color_scale_draw_controls(&cav.scale, cavity_span(cav), md_unit_none(), "tesserae", "Over the tesserae: the 1st to 99th percentile");
+        }
         prop::section_end();
     }
     CavitySummary sum = {};
     if (cavity_summary(&sum, cav) && prop::section("Data", false)) {
-        char buf[128];
         prop::row("pressure");
         ImGui::Text("%.3g GPa", sum.pressure_gpa);
         prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
         ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
-        if (sum.switched) {
-            prop::row("area", "The sum of the areas of the tesserae; the area of the surface drawn (the union of the spheres)\n"
-                              "weighted by the switching, and unweighted. The tesserae weigh more than the surface: the\n"
-                              "switching keeps part of their area inside other spheres, where no surface shows it");
-            snprintf(buf, sizeof(buf), "%.1f / %.1f of %.1f Å²", sum.tessera_area, sum.weighted_area, sum.exposed_area);
-        } else {
-            prop::row("area", "The sum of the areas of the tesserae, and the area of the surface drawn");
-            snprintf(buf, sizeof(buf), "%.1f / %.1f Å²", sum.tessera_area, sum.exposed_area);
-        }
-        ImGui::TextUnformatted(buf);
+        prop::row("area", "The sum of the areas of the tesserae");
+        ImGui::Text("%.1f Å²", sum.tessera_area);
         prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
         ImGui::Text("%.1f kJ/mol", sum.wall_energy);
+        prop::row("volume", "sum_j a_j lambda_j: the wall energy over the pressure, the volume of the skin of density the wall holds");
+        ImGui::Text("%.1f Å³", sum.effective_volume);
         prop::row("inside others", "Tesserae inside the sphere of another atom: the switching keeps them where the spheres overlap,\n"
                                    "with small areas, so the cavity of the calculation is a smoothed union of the spheres.\n"
                                    "Their share of the area of the tesserae.");
         ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
-        if (sum.num_hidden > 0) {
-            prop::row("off the surface", "Tesserae below the smallest area, left off the surface: their share of the area and of the wall energy");
-            ImGui::Text("%u (%.2f%% of the area, %.2f%% of the energy)", sum.num_hidden, 100.0f * sum.hidden_area, 100.0f * sum.hidden_energy);
-        }
-        if (sum.unreached_energy > 0) {
-            prop::row("not on surface", "The share of the wall energy on tesserae too deep inside other spheres for their kernels to\n"
-                                        "reach the surface drawn: it is not in what the kernel spreads");
-            ImGui::Text("%.2f%% of the energy", 100.0f * sum.unreached_energy);
-        }
-        if (cav.coloring == CavityColoring::Kernel && sum.max_kernel_error > 0) {
-            prop::row("conservation", "How far the integral of the field over the surface is from the sum of the tesserae's values\n"
-                                      "over their areas (scaled to the surface covered)");
-            ImGui::Text("%.2e", sum.max_kernel_error);
-        }
         prop::section_end();
     }
     return update_rep;
@@ -4617,15 +4514,16 @@ void draw_representation_legends(ApplicationState& state) {
             }
         }
 
-        if (rep.type == RepresentationType::Cavity && rep.type_is_valid && rep.cavity.scale.show_legend && cavity_span(rep.cavity).valid) {
+        if (rep.type == RepresentationType::Cavity && rep.type_is_valid && rep.cavity.scale.show_legend && cavity_span(rep.cavity).valid &&
+            rep.cavity.color != CavityAttribute::Constant) {
             char label[96];
-            const CavityField f = rep.cavity.field;
-            if (f != CavityField::DecayLength && cavity_field_unit_str[(int)f][0]) {
-                snprintf(label, sizeof(label), "%s (%s)", cavity_field_str[(int)f], cavity_field_unit_str[(int)f]);
+            const int c = (int)rep.cavity.color;
+            if (cavity_attribute_unit_str[c][0]) {
+                snprintf(label, sizeof(label), "%s (%s)", cavity_attribute_str[c], cavity_attribute_unit_str[c]);
             } else {
-                snprintf(label, sizeof(label), "%s", cavity_field_str[(int)f]);
+                snprintf(label, sizeof(label), "%s", cavity_attribute_str[c]);
             }
-            color_scale_draw_legend(rep.cavity.scale, cavity_field_unit(f), label, rep.name, (int)rep.node.id, slot++);
+            color_scale_draw_legend(rep.cavity.scale, md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
             continue;
         }
 

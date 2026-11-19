@@ -584,7 +584,6 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
-static void resolve_cavities(ApplicationState* state);
 static void draw_cavity_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
@@ -7482,14 +7481,6 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
-    // The cavities: colour and picking of their surfaces per pixel, from what the opaque geometry left
-    PUSH_GPU_SECTION("Cavity")
-    resolve_cavities(state);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
-    glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
-    POP_GPU_SECTION()
-
     immediate::RenderParams params = {};
     params.view = state->view.param.matrix.curr.view;
     params.proj = state->view.param.matrix.curr.proj;
@@ -8136,16 +8127,13 @@ static void draw_representations_opaque(ApplicationState* state) {
             draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
         }
 
-        // The surfaces of the cavities, ray cast by a pass of their own, picking as their spheres: the full screen pass
-        // after the opaque geometry (resolve_cavities) takes it from there
+        // The glyphs of the cavities' tesserae, ray cast by a pass of their own, picking as their tesserae
         const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
             if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-            const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id) : nullptr;
-            const PickingRange* tess  = space ? picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id) : nullptr;
-            if (!range || !tess) continue;
-            cavity_draw_geometry(rep.cavity, state->view.param, range->beg);
+            const PickingRange* tess = space ? picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id) : nullptr;
+            if (!tess) continue;
             cavity_draw_glyphs(rep.cavity, state->view.param, tess->beg);
         }
 #if EXPERIMENTAL_GFX_API
@@ -8153,21 +8141,7 @@ static void draw_representations_opaque(ApplicationState* state) {
 #endif
 }
 
-// The full screen pass of each cavity shown (cavity_resolve), over what the opaque geometry left in the G-buffer
-static void resolve_cavities(ApplicationState* state) {
-    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-    if (!space) return;
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        const Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-        const PickingRange* spheres = picking_space_find_range(*space, PickingDomain_CavitySphere, rep.node.id);
-        const PickingRange* tess    = picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id);
-        if (!spheres || !tess) continue;
-        cavity_resolve(rep.cavity, state->gbuffer, state->view.param, spheres->beg, tess->beg);
-    }
-}
-
-// The patch of the tessera hovered, into the marks of the highlight
+// The glyph of the tessera hovered, into the marks of the highlight
 static void draw_cavity_marks(ApplicationState* state) {
     const bool ui = state->cavity_hover_ui.rep_id != 0;
     const uint32_t rep_id  = ui ? state->cavity_hover_ui.rep_id : state->cavity_hover.rep_id;
