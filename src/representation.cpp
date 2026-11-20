@@ -633,6 +633,10 @@ bool representation_uses_atom_colors(const Representation& rep) {
     }
 }
 
+bool representation_filter_invalid(const Representation& rep) {
+    return representation_uses_atom_colors(rep) && !rep.filter.result.success && !rep.filt_is_dirty;
+}
+
 bool representation_particle_type_valid(const ApplicationState& state, RepresentationType type) {
     const md_system_t& sys = state.mold.sys;
     switch (type) {
@@ -878,37 +882,50 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             rep->filt_is_dirty = true;
         }
         if (rep->filt_is_dirty) {
-            // Within the context of the groups it is in. A context that is not valid leaves nothing to
-            // evaluate within, which is what an invalid filter of its own leaves too.
+            // Within the context of the groups it is in. Where the filter or that context is not valid, what it picked
+            // when it last was is kept, in either language: that is mostly brief (a filter being typed, a script being
+            // edited whose names it reads), and nothing shown would flicker and take away what is edited against. It
+            // is said on its row and in the viewport (representation_filter_invalid).
             const RepresentationContext ctx = representation_context(*state, rep->node.parent);
-            if (ctx.valid && rep->type == RepresentationType::Bonds) {
-                // The bonds, and the atoms at their ends: those are what is coloured, and shown
-                filter_evaluate_bonds(&rep->filter, &rep->bond_pairs, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
-                md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
-                for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
-                    md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
-                    md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[1]);
-                }
-                md_bitset_free(&rep->atom_mask, state->allocator.persistent);
-                rep->atom_mask = md_bitmask_extract(&ends, state->allocator.persistent);
-                rep->filter.result.is_dynamic |= ctx.dynamic;
-            } else if (ctx.valid) {
-                filter_evaluate(&rep->filter, &rep->atom_mask, state->script.language, representation_filter_context(*state, ctx), state->allocator.persistent);
-                // What it picks follows the frame if the context it picks within does
-                rep->filter.result.is_dynamic |= ctx.dynamic;
-            } else {
-                md_bitset_free(&rep->atom_mask, state->allocator.persistent);
-                md_array_shrink(rep->bond_pairs, 0);
+            md_allocator_i* alloc = state->allocator.persistent;
+            if (!ctx.valid) {
                 rep->filter.result = {};
                 rep->filter.result.is_dynamic = ctx.dynamic;     // it may come back valid in another frame
                 snprintf(rep->filter.result.error, sizeof(rep->filter.result.error), "The filter of the representation group '%s', the context of this one, is not valid", ctx.group ? ctx.group->name : "");
+            } else if (rep->type == RepresentationType::Bonds) {
+                // The bonds, and the atoms at their ends: those are what is coloured, and shown
+                md_array(md_atom_pair_t) pairs = nullptr;
+                if (filter_evaluate_bonds(&rep->filter, &pairs, state->script.language, representation_filter_context(*state, ctx), alloc)) {
+                    md_array_free(rep->bond_pairs, alloc);
+                    rep->bond_pairs = pairs;
+                    md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
+                    for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
+                        md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
+                        md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[1]);
+                    }
+                    md_bitset_free(&rep->atom_mask, alloc);
+                    rep->atom_mask = md_bitmask_extract(&ends, alloc);
+                } else {
+                    md_array_free(pairs, alloc);
+                }
+                rep->filter.result.is_dynamic |= ctx.dynamic;
+            } else {
+                md_bitset_t picked = md_bitset_empty_set();
+                if (filter_evaluate(&rep->filter, &picked, state->script.language, representation_filter_context(*state, ctx), alloc)) {
+                    md_bitset_free(&rep->atom_mask, alloc);
+                    rep->atom_mask = picked;
+                } else {
+                    md_bitset_free(&picked, alloc);
+                }
+                // What it picks follows the frame if the context it picks within does
+                rep->filter.result.is_dynamic |= ctx.dynamic;
             }
             rep->filt_is_dirty = false;
             state->representation.atom_visibility_mask_dirty = true;
         }
 
         // Of the atoms shown, for a colour scale which spans their values
-        representation_atom_colors(colors, num_atoms, state, rep, rep->filter.result.success ? &rep->atom_mask : nullptr);
+        representation_atom_colors(colors, num_atoms, state, rep, &rep->atom_mask);
     }
 
     switch (rep->type) {
@@ -947,18 +964,17 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     }
 
     if (colors) {
-        if (rep->filter.result.success) {
-            filter_colors(colors, num_atoms, rep->atom_mask);
-            state->representation.atom_visibility_mask_dirty = true;
-            md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
-            representation_set_weak_bonds(state, rep);
-            rep->glyphs_shown = false;
-            if (rep->type == RepresentationType::Cartoon) {
-                rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
-            }
-            state->representation.gl_version += 1;
-
+        // Of the atoms it shows, whether or not its filter is valid now: what is changed meanwhile (a colour mapping,
+        // a tint) applies to what is shown
+        filter_colors(colors, num_atoms, rep->atom_mask);
+        state->representation.atom_visibility_mask_dirty = true;
+        md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
+        representation_set_weak_bonds(state, rep);
+        rep->glyphs_shown = false;
+        if (rep->type == RepresentationType::Cartoon) {
+            rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
         }
+        state->representation.gl_version += 1;
     }
 
     rep->needs_update = again;
@@ -4555,7 +4571,7 @@ static void draw_representation_row(ApplicationState* state, const WindowTree& t
     ImGui::SameLine();
     const float buttons_width = (tree.button_size + tree.button_spacing) * 3;
     ImGui::SetNextItemWidth(MD_MAX(row.right_screen - ImGui::GetCursorScreenPos().x - buttons_width - tree.button_spacing, 1.0f));
-    const bool flag_invalid = representation_uses_atom_colors(rep) && !rep.filter.result.success && !rep.filt_is_dirty && rep.filter.text[0] != '\0';
+    const bool flag_invalid = representation_filter_invalid(rep);
     if (flag_invalid) ImGui::PushInvalid();
     ImGui::InputText("##name", rep.name, sizeof(rep.name));
     if (flag_invalid) {

@@ -1291,6 +1291,8 @@ struct Representation {
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
+    // What it shows: what its filter picked when it was last valid, kept while the filter or its context is not
+    // (representation_filter_invalid); empty when it has not been valid since the system was loaded
     md_bitset_t atom_mask = {};
     md_gl_rep_t md_rep = {};
     // The representation of the cartoon of the lipids and nucleic acids (CartoonGlyphs), drawn by a Cartoon, and whether
@@ -1338,6 +1340,7 @@ struct Representation {
     md_array(md_atom_pair_t) bond_pairs = nullptr;
     BondDashes bond_dashes = BondDashes::ByKind;
     bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
+    double invalid_since = 0.0;     // ImGui::GetTime() when its filter was found not valid, for the notice in the viewport; 0 while valid
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them

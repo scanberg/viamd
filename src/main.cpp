@@ -3772,6 +3772,26 @@ static void draw_async_task_window(ApplicationState* data) {
     TaskProgressRequest component_progress = {};
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTaskProgressRequest, viamd::EventPayloadType_TaskProgressRequest, &component_progress);
     any_task_label_visible |= component_progress.count > 0;
+
+    // The representations shown whose filter, or the context of their groups, is not valid: they show what it picked
+    // when it last was, or nothing (representation_filter_invalid). Said once it has stayed so for a moment, so that a
+    // filter being typed does not flash it here; its row in the Representations window says it at once.
+    constexpr double INVALID_SECONDS = 1.0;
+    Representation* invalid[4];
+    size_t num_invalid = 0;
+    const double now = ImGui::GetTime();
+    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
+        Representation& rep = data->representation.reps[i];
+        if (!representation_filter_invalid(rep)) {
+            rep.invalid_since = 0.0;
+            continue;
+        }
+        if (rep.invalid_since == 0.0) rep.invalid_since = now;
+        if (!representation_shown(*data, rep) || now - rep.invalid_since < INVALID_SECONDS) continue;
+        if (num_invalid < MD_COUNTOF(invalid)) invalid[num_invalid] = &rep;
+        num_invalid += 1;
+    }
+    any_task_label_visible |= num_invalid > 0;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3826,6 +3846,28 @@ static void draw_async_task_window(ApplicationState* data) {
                 }
                 ImGui::PopID();
             }
+        }
+        for (size_t i = 0; i < MD_MIN(num_invalid, MD_COUNTOF(invalid)); ++i) {
+            Representation& rep = *invalid[i];
+            const bool none = md_bitset_empty(rep.atom_mask);
+            char label[160];
+            snprintf(label, sizeof(label), "%s %s: %s##invalid %u", (const char*)ICON_FA_TRIANGLE_EXCLAMATION, rep.name, none ? "nothing shown" : "earlier result", rep.node.id);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
+            const bool clicked = ImGui::Selectable(label);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s\n\n%s\n\nClick to open it in the Representations window",
+                    none ? "Its filter is not valid, and has not been since the system was loaded: it shows nothing."
+                         : "Its filter is not valid: it shows what the filter picked when it last was.",
+                    rep.filter.result.error);
+            }
+            if (clicked) {
+                data->representation.show_window = true;
+                rep.open_properties = true;
+            }
+        }
+        if (num_invalid > MD_COUNTOF(invalid)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "and %zu more", (size_t)(num_invalid - MD_COUNTOF(invalid)));
         }
 
         ImGui::End();
