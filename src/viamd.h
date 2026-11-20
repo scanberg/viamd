@@ -375,41 +375,15 @@ static inline bool electronic_structure_source_is_surface_field(ElectronicStruct
 }
 
 // Whether isosurface meshes can be extracted from the source (iso_meshes.h): the orbitals and densities, which
-// md_gto_iso evaluates, and ELF and LOL, which it bounds through the density and the kinetic energy density
-// (on the CPU so far). The others' isosurfaces are raycast through their volume, whatever the setting.
+// md_gto_iso evaluates, ELF and LOL, which it bounds through the density and the kinetic energy density, and the
+// GOSTSHYP potentials, orbitals over the tesserae (gostshyp_wall_orbital). The others' isosurfaces are raycast
+// through their volume, whatever the setting.
 static inline bool electronic_structure_source_meshable(ElectronicStructureSource s) {
     return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
            s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
            s == ElectronicStructureSource::DensityProperty || s == ElectronicStructureSource::ElectronLocalization ||
            s == ElectronicStructureSource::LocalizedOrbitalLocator || s == ElectronicStructureSource::GostshypWallPotential ||
            s == ElectronicStructureSource::GostshypEffectivePotential;
-}
-
-// What the isosurfaces of a field are, in the isosurface display (ElectronicStructureRepresentation::surface).
-// The field picked is the one shown whatever the display; on a surface that is either its own isosurface, or the
-// isosurface of another field (surface_field at surface_value), where it is read and drawn as the colours of that
-// surface: the electrostatic potential and the local ionization energy on the electron density at 0.001 au.
-enum class ElectronicStructureSurface {
-    Other,          // the isosurface of surface_field at surface_value, coloured by the field
-    Own,            // the field's own isosurfaces at its isovalue
-    Count
-};
-
-inline const char* electronic_structure_surface_str[(int)ElectronicStructureSurface::Count] = {
-    "Surface of another field",
-    "Isosurface of the field",
-};
-
-// Whether a source can be shown on the surface of another field: whether it is evaluated as a surface field, which is
-// what colours a surface
-static inline bool electronic_structure_source_on_other_surface_possible(ElectronicStructureSource s) {
-    return electronic_structure_source_field_kind(s) != SurfaceFieldKind::Count;
-}
-
-// The surface a source starts out on: where it is read (the density's) for what is read on one, its own isosurfaces
-// for ELF and LOL, whose shapes (the basins, the shells) are the point
-static inline ElectronicStructureSurface electronic_structure_default_surface(ElectronicStructureSource s) {
-    return electronic_structure_source_is_surface_field(s) ? ElectronicStructureSurface::Other : ElectronicStructureSurface::Own;
 }
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
@@ -763,8 +737,7 @@ struct ElectronicStructurePlaneImage {
 };
 
 // A field over R^3 of the electronic structure: what it is (its path, field.h, names the source and a density
-// property's attribute) and the parameters that tell the fields of one family apart. What a representation shows,
-// and the field whose isosurface it is shown on, are each one.
+// property's attribute) and the parameters that tell the fields of one family apart. What a representation draws is one.
 struct FieldRef {
     ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
     bool use_magnitude = false;
@@ -830,19 +803,13 @@ struct ElectronicStructureRepresentation {
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
     md_grid_t grid = {};
 
-    // The field shown (FieldRef): in the isosurface display on its own isosurfaces, or as the colours of the surface of
-    // surface_field (ElectronicStructureSurface)
+    // The field (FieldRef): the data the representation draws, in every display - its isosurfaces, its volume, its
+    // planes. The isosurface display can colour its surfaces by another (coloring, field_kind).
     FieldRef shown;
 
     // How its isosurfaces are drawn (IsosurfaceRendering): meshes only of what they can be made of (es_mesh_mode),
     // the others raycast whatever this says
     int rendering = IsosurfaceRendering_Raycast;
-
-    // The isosurface display: what the surfaces are (ElectronicStructureSurface); for the surface of another field,
-    // that field and the value where it is, in its unit (a density's not squared, as its own isovalue is)
-    ElectronicStructureSurface surface = ElectronicStructureSurface::Own;
-    FieldRef surface_field = { .source = ElectronicStructureSource::ElectronDensity, .spin = ElectronicStructureSpin::Total };
-    double surface_value = 0.001;
 
     // The source evaluated as a surface field (electronic_structure_source_is_surface_field, and ELF and LOL without
     // their kernel): all of the grid, taken into density_vol once complete; its values' spread (1st to 99th
@@ -1085,33 +1052,6 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
     }
 }
 
-// Whether the representation shows its field on the surface of another (ElectronicStructureSurface::Other)
-static inline bool electronic_structure_on_other_surface(const ElectronicStructureRepresentation& rep) {
-    return rep.display == ElectronicStructureDisplay::Isosurface && rep.surface == ElectronicStructureSurface::Other &&
-           electronic_structure_source_on_other_surface_possible(rep.shown.source);
-}
-
-// What the representation's volume and isosurfaces are of: itself; or showing its field on the surface of another,
-// that field at surface_value, coloured by the field shown. What evaluates the volume, draws the surfaces and
-// evaluates the colours reads this, so the field picked is the one shown in every display.
-static inline ElectronicStructureRepresentation electronic_structure_geometry(const ElectronicStructureRepresentation& rep) {
-    ElectronicStructureRepresentation g = rep;
-    if (!electronic_structure_on_other_surface(rep)) return g;
-    g.field_kind = electronic_structure_source_field_kind(rep.shown.source);
-    g.coloring   = SurfaceColoring::Field;
-    g.shown      = rep.surface_field;
-    g.surface    = ElectronicStructureSurface::Own;
-    // the value in the isovalue the surface field is drawn at: a density's squared where it is drawn
-    if (electronic_structure_source_field_kind(g.shown.source) != SurfaceFieldKind::Count) {
-        g.field_iso_value = rep.surface_value;
-    } else if (electronic_structure_uses_density_iso_squared(g)) {
-        g.iso_value = sqrt(fmax(rep.surface_value, 0.0));
-    } else {
-        g.iso_value = rep.surface_value;
-    }
-    return g;
-}
-
 static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
     return rep.shown.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
 }
@@ -1149,11 +1089,8 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
     field_ref_set_defaults(&rep->shown);
     const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep->shown.source);
     if (fk != SurfaceFieldKind::Count) {
-        // a field of the system as a whole: an isovalue in its unit, and the surface it is shown on
+        // a field of the system as a whole: an isovalue in its unit
         rep->field_iso_value = surface_field_kind_info(fk).iso;
-        rep->surface = electronic_structure_default_surface(rep->shown.source);
-        rep->surface_field = FieldRef{ .source = ElectronicStructureSource::ElectronDensity, .spin = ElectronicStructureSpin::Total };
-        rep->surface_value = rep->shown.source == ElectronicStructureSource::LocalElectronAttachmentEnergy ? 0.004 : 0.001;
         rep->source_span = {};
     }
     if (rep->shown.source == ElectronicStructureSource::DensityProperty) {
@@ -2849,9 +2786,6 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
 // Whether the representation's isosurfaces are drawn as meshes: its setting, for what meshes can be made of
 bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es);
-// The density an isodensity surface for the source starts out at (electrons / bohr^3): 0.001, 0.004 for the local
-// electron attachment energy, where the GOSTSHYP wall is for its fields (the median density its Gaussians see)
-double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource source);
 
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
 

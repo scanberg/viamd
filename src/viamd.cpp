@@ -4539,7 +4539,7 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
 
 static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureRepresentation& es, uint32_t tex_id, const md_grid_t& grid);
 
-// es: what the volume is of (electronic_structure_geometry)
+// es: what the volume is of
 static bool electronic_structure_evaluate(ApplicationState* state, Representation* rep, const ElectronicStructureRepresentation& es) {
 
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
@@ -5629,7 +5629,7 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 
 // The representation's source evaluated as a surface field (surface_field.h), all of the grid, for the volume hash
 // 'key': 1 when it is in the volume (put there now), 0 while it is under way (started here if it was not), -1 when
-// it cannot be made. g: what the volume is of (electronic_structure_geometry).
+// it cannot be made. g: what the volume is of.
 static int es_source_volume_poll(ApplicationState* state, Representation* rep, const ElectronicStructureRepresentation& g) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     const md_system_t& sys = state->mold.sys;
@@ -5677,26 +5677,7 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
 bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
     (void)state;
     return es.rendering == IsosurfaceRendering_Mesh &&
-           electronic_structure_source_meshable(electronic_structure_geometry(es).shown.source);
-}
-
-double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource source) {
-    switch (source) {
-    case ElectronicStructureSource::LocalElectronAttachmentEnergy:
-        return 0.004;   // where it was defined (Brinck, Carlqvist and Stenlid 2016)
-    case ElectronicStructureSource::GostshypWallPotential:
-    case ElectronicStructureSource::GostshypEffectivePotential:
-    case ElectronicStructureSource::GostshypEnergyDensity: {
-        // where the wall is: the median of the density its Gaussians see, <rho|g_j> (md_vlx.h)
-        std::vector<double> d = attribute_values(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3)));
-        if (d.empty()) return 0.001;
-        std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
-        const double m = d[d.size() / 2];
-        return m > 0.0 ? m : 0.001;
-    }
-    default:
-        return 0.001;   // the molecular surface the electrostatic potential and the ionization energy are read on
-    }
+           electronic_structure_source_meshable(es.shown.source);
 }
 
 // Re-evaluating is expensive and everything it depends on is right here, so it is gated on a hash of
@@ -5706,30 +5687,19 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     MD_ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
 
-    // On an isodensity surface the field shown is what colours it: its colour scale follows it
-    if (electronic_structure_on_other_surface(es)) {
-        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.shown.source);
-        if (es.field_kind != fk) {
-            surface_field_scale_for_kind(&es.field_map, es.field_kind, fk);
-            es.field_kind = fk;
-        }
-    }
-    // What the volume and the surfaces are of: the field, or the density it is shown on
-    const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
-
-    uint64_t vol_hash = es_source_hash(state, g);
-    const VolumeResolution resolution = electronic_structure_volume_resolution(g);
+    uint64_t vol_hash = es_source_hash(state, es);
+    const VolumeResolution resolution = electronic_structure_volume_resolution(es);
     vol_hash = md_hash64(&resolution, sizeof(resolution), vol_hash);
 
     // The mesh rendering mode draws the surfaces from the field itself (iso_meshes.h), and evaluates a surface
     // field at their vertices: the volume is only evaluated for what still reads it, the colours by atom. Of the
     // orbitals and densities only: the other fields' surfaces are raycast through their volume.
     const bool mesh_mode = es_mesh_mode(state, es);
-    const bool iso_display = g.display == ElectronicStructureDisplay::Isosurface;
+    const bool iso_display = es.display == ElectronicStructureDisplay::Isosurface;
     // a volume rendering and a plane draw from (or over the box of) the volume, whatever renders the isosurfaces
     // (the planes display evaluated on the planes too: the volume is drawn where an image is not there, or not of the
     // plane as it is, as while it is dragged)
-    const bool needs_volume = !mesh_mode || !iso_display || g.coloring == SurfaceColoring::AtomColors;
+    const bool needs_volume = !mesh_mode || !iso_display || es.coloring == SurfaceColoring::AtomColors;
     vol_hash = md_hash64(&needs_volume, sizeof(needs_volume), vol_hash);
 
     bool done = true;
@@ -5754,20 +5724,20 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             md_attribute_slice_t slice = {};
             if ((es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) || gpu_density_job_pending(state)) {
                 ready = false;
-            } else if (es_volume_density(&path, &slice, g, state->mold.sys)) {
+            } else if (es_volume_density(&path, &slice, es, state->mold.sys)) {
                 ready = density_pack_prepare(state, path, &slice);
             }
         }
 #endif
         // a natural transition orbital whose state is being read on a worker thread
-        if (ready && needs_volume && g.shown.source == ElectronicStructureSource::NaturalTransitionOrbital) {
-            ready = es_nto_ready(state, (size_t)g.shown.excited_state_idx);
+        if (ready && needs_volume && es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+            ready = es_nto_ready(state, (size_t)es.shown.excited_state_idx);
         }
         // The fields of the system as a whole, and ELF and LOL without their kernel: as a surface field, all of the
         // grid, put in the volume once it is there. ELF and LOL on the GPU once what their kernel reads is made (by a
         // pool task). Until then the volume shown stays (a failure is taken as done, not tried again every frame).
-        bool as_field = needs_volume && electronic_structure_source_is_surface_field(g.shown.source);
-        if (ready && needs_volume && electronic_structure_is_localization(g)) {
+        bool as_field = needs_volume && electronic_structure_source_is_surface_field(es.shown.source);
+        if (ready && needs_volume && electronic_structure_is_localization(es)) {
 #if MD_ENABLE_GPU
             const int k = localization_gpu_prepare(state);
             if (k == 0) ready = false;
@@ -5777,12 +5747,12 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
 #endif
         }
         if (ready && as_field) {
-            ready = es_source_volume_poll(state, rep, g) != 0;
+            ready = es_source_volume_poll(state, rep, es) != 0;
         }
         if (ready) {
             es.vol_hash = vol_hash;
             if (needs_volume && !as_field) {
-                electronic_structure_evaluate(state, rep, g);
+                electronic_structure_evaluate(state, rep, es);
             } else if (!needs_volume) {
                 es_box_update(state, rep);
             }
@@ -5795,15 +5765,15 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
         es_volume_map_update(es);
     }
 
-    if (iso_display && g.coloring == SurfaceColoring::AtomColors) {
+    if (iso_display && es.coloring == SurfaceColoring::AtomColors) {
         uint64_t col_hash = md_hash64(&es.gaussian_splatting_power, sizeof(es.gaussian_splatting_power), (int)rep->color_mapping);
         col_hash = md_hash64_combine(col_hash, es.vol_hash);
         if (col_hash != es.col_hash) {
             es.col_hash = col_hash;
             electronic_structure_color_volume_update(state, rep, atom_colors);
         }
-    } else if (iso_display && g.coloring == SurfaceColoring::Field && !mesh_mode) {
-        done &= electronic_structure_field_update(state, rep, g);
+    } else if (iso_display && es.coloring == SurfaceColoring::Field && !mesh_mode) {
+        done &= electronic_structure_field_update(state, rep, es);
     }
     return done;
 }

@@ -2044,7 +2044,7 @@ static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "
                                                          "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
                                                          "GostshypEffectivePotential", "GostshypEnergyDensity", "ElectronDensity",
                                                          "ElectronLocalization", "LocalizedOrbitalLocator" };
-static const char* const es_surface_names[]          = { "Other", "Own" };
+static const char* const es_legacy_surface_names[]   = { "Other", "Own" };   // of older workspaces
 static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
 static const char* const glyph_shape_names[]         = { "Cylinder", "Sphere" };
 static const char* const es_display_names[]          = { "Isosurface", "Volume", "Planes" };
@@ -2063,7 +2063,6 @@ MD_STATIC_ASSERT(MD_COUNTOF(surface_field_kind_names) == (size_t)SurfaceFieldKin
 MD_STATIC_ASSERT(MD_COUNTOF(es_display_names)         == (size_t)ElectronicStructureDisplay::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(plane_detail_names)       == (size_t)PlaneDetail::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::SignedRanged + 1, "a name for each value");
-MD_STATIC_ASSERT(MD_COUNTOF(es_surface_names)         == (size_t)ElectronicStructureSurface::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(glyph_shape_names)        == (size_t)GlyphShape::Count, "a name for each value");
 
 // A colour scale. range_is_set: a range read is one somebody set, and turns the automatic range off. That is for the
@@ -2226,11 +2225,6 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
     viamd::write_enum(s, p("Resolution"), (int)es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::write_dbl(s, p("Iso"), es.iso_value);
     viamd::write_dbl(s, p("FieldIso"), es.field_iso_value);
-    viamd::write_enum(s, p("Surface"), (int)es.surface, viamd::enum_names(es_surface_names));
-    if (es.surface == ElectronicStructureSurface::Other) {
-        write_field_ref(s, p.sub("SurfaceField"), es.surface_field, sys);
-        viamd::write_dbl(s, p("SurfaceValue"), es.surface_value);
-    }
     viamd::write_enum(s, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
@@ -2329,10 +2323,17 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     viamd::get_enum(e, p("Resolution"), es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::get(e, p("Iso"), es.iso_value);
     viamd::get(e, p("FieldIso"), es.field_iso_value);
-    viamd::get_enum(e, p("Surface"), es.surface, viamd::enum_names(es_surface_names));
-    viamd::PathPrefix sf = p.sub("SurfaceField");
-    if (read_field_path(e, sf, es.surface_field)) read_field_params(e, sf, es.surface_field);
-    viamd::get(e, p("SurfaceValue"), es.surface_value);
+    // Of older workspaces: a field shown on the isosurface of another (Surface = Other), which is that other field
+    // coloured by it
+    int legacy_surface = 1;
+    viamd::get_enum(e, p("Surface"), legacy_surface, viamd::enum_names(es_legacy_surface_names));
+    FieldRef legacy_surface_field = {};
+    double legacy_surface_value = 0.001;
+    const bool legacy_other = legacy_surface == 0 && read_field_path(e, p.sub("SurfaceField"), legacy_surface_field);
+    if (legacy_other) {
+        read_field_params(e, p.sub("SurfaceField"), legacy_surface_field);
+        viamd::get(e, p("SurfaceValue"), legacy_surface_value);
+    }
     viamd::get_enum(e, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
@@ -2364,6 +2365,17 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     }
 
     viamd::get_enum(e, p("Display"), es.display, viamd::enum_names(es_display_names));
+    if (legacy_other && es.display == ElectronicStructureDisplay::Isosurface &&
+        electronic_structure_source_field_kind(es.shown.source) != SurfaceFieldKind::Count) {
+        es.coloring = SurfaceColoring::Field;
+        es.field_kind = electronic_structure_source_field_kind(es.shown.source);
+        es.shown = legacy_surface_field;
+        if (electronic_structure_source_field_kind(es.shown.source) != SurfaceFieldKind::Count) {
+            es.field_iso_value = legacy_surface_value;
+        } else {
+            es.iso_value = electronic_structure_uses_density_iso_squared(es) ? sqrt(fmax(legacy_surface_value, 0.0)) : legacy_surface_value;
+        }
+    }
     viamd::get_count(e, p("Cut"), es.cuts.count, ES_MAX_PLANES);
     for (int i = 0; i < es.cuts.count; ++i) {
         viamd::PathPrefix q = p.sub("Cut", i);
@@ -2832,10 +2844,8 @@ bool representations_deserialize(ApplicationState* app, md_str_t section, viamd:
 // How the isosurfaces of an electronic structure representation are coloured, as rows of its Color section: the
 // colouring, and for a field the field, its colour scale and its isolines. The atoms' colours are not offered for a
 // density property; a field is offered whenever the dataset has what one is made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode, bool field_only) {
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode) {
     bool update_rep = false;
-    if (field_only) goto scale;
-    {
 
     bool any_field = false;
     for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
@@ -2882,8 +2892,6 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     if (es.coloring != SurfaceColoring::Field) {
         return update_rep;
     }
-    }
-scale:
     // Where the field stands, on its label: how much of it has been evaluated, and where
     const SurfaceFieldVolume& vol = es.field_vol;
     char status[160] = "";
@@ -2894,8 +2902,8 @@ scale:
         snprintf(status, sizeof(status), "%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
-    if (!field_only) prop::row("field", status);
-    if (!field_only) {
+    prop::row("field", status);
+    {
         // the fields that are surface fields, by path (field.h)
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
@@ -3121,9 +3129,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
     const bool mesh_mode = es_mesh_mode(state, es);
 
     if (prop::section("Field")) {
-        prop::row("field", "The field over space that is shown, as a surface, a volume or on planes.\n"
-                           "On a surface the electrostatic potential, the local energies, the density scale length and the\n"
-                           "GOSTSHYP fields are shown on a surface of the electron density by default, as its colours.");
+        prop::row("field", "The field over space that is drawn: its isosurfaces, its volume, or its values on planes.\n"
+                           "To read a field on another's isosurface (the electrostatic potential on the electron density),\n"
+                           "draw the isosurfaces of that other field and colour them by this one (Color, Field).");
         {
             md_temp_scope_t temp = md_temp_begin();
             MD_DEFER { md_temp_end(temp); };
@@ -3144,9 +3152,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 if (e.source != es.shown.source) {
                     es.shown.source = e.source;
                     electronic_structure_set_source_defaults(&es);
-                    if (es.surface_field.source == ElectronicStructureSource::ElectronDensity) {
-                        es.surface_value = es_isodensity_default(state->mold.sys, e.source);
-                    }
                 }
                 if (e.source == ElectronicStructureSource::DensityProperty) es.shown.density_property_key = e.density_property_key;
                 update_rep = true;
@@ -3479,14 +3484,15 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             } else {
                 const bool field = electronic_structure_source_field_kind(es.shown.source) != SurfaceFieldKind::Count;
                 {
-                    // meshes only of the orbitals and densities (an isodensity surface's too): the others raycast
-                    const bool meshable = electronic_structure_source_meshable(electronic_structure_geometry(es).shown.source);
+                    // meshes only of what they can be made of: the others raycast
+                    const bool meshable = electronic_structure_source_meshable(es.shown.source);
                     prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame\n"
                                            "(Fast or Exact: Settings, Isosurfaces).\n"
                                            "Mesh: extracted as triangle meshes from the field itself rather than from the volume, at a\n"
                                            "spacing set by the resolution, and drawn with stochastic transparency refined over the\n"
                                            "frames while the view is still. Extraction runs when the surface changes; drawing is cheap.\n"
-                                           "Meshes are made of orbitals and densities only: other fields' own surfaces are ray cast.");
+                                           "Meshes are made of the orbitals, the densities, ELF, LOL and the GOSTSHYP potentials: the\n"
+                                           "other fields' surfaces are ray cast.");
                     int r = meshable ? MD_CLAMP(es.rendering, 0, 1) : (int)IsosurfaceRendering_Raycast;
                     ImGui::BeginDisabled(!meshable);
                     if (ImGui::Combo("##iso_rendering", &r, "Ray Casting\0Mesh\0")) {
@@ -3494,66 +3500,9 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         update_rep = true;
                     }
                     ImGui::EndDisabled();
-                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals, densities, ELF and LOL only");
+                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of the orbitals, the densities, ELF, LOL and the GOSTSHYP potentials");
                 }
-                if (electronic_structure_source_on_other_surface_possible(es.shown.source)) {
-                    prop::row("surface", "What the surface is:\n"
-                                         "Surface of another field: where that field is the value, coloured by this one (as the\n"
-                                         "  electrostatic potential is read on the electron density at 0.001 au); evaluated only around it\n"
-                                         "Isosurface of the field: where this field is the isovalue");
-                    int sf = (int)es.surface;
-                    if (ImGui::Combo("##surface", &sf, electronic_structure_surface_str, (int)ElectronicStructureSurface::Count)) {
-                        es.surface = (ElectronicStructureSurface)sf;
-                        update_rep = true;
-                    }
-                }
-                // The band a field is evaluated in follows the isovalue
-                if (electronic_structure_on_other_surface(es)) {
-                    // The field the surface is of: the electron density, or a field of the system as a whole (one
-                    // without an index or a state to pick)
-                    md_temp_scope_t temp = md_temp_begin();
-                    MD_DEFER { md_temp_end(temp); };
-                    md_array(FieldEntry) entries = nullptr;
-                    const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
-                    char path[FIELD_PATH_MAX] = "";
-                    field_path_of_source(path, sizeof(path), es.surface_field.source, es.surface_field.density_property_key, state->mold.sys);
-                    md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.surface_field.source]);
-                    for (size_t i = 0; i < n; ++i) {
-                        if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
-                    }
-                    char preview_buf[128];
-                    snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)preview.len, preview.ptr);
-                    prop::row("of", "The field the surface is an isosurface of");
-                    const int picked = field_picker("surface_field", preview_buf, entries, n, md_str_from_cstr(path), [](const FieldEntry& e) {
-                        return e.source == ElectronicStructureSource::ElectronDensity || electronic_structure_source_is_surface_field(e.source) ||
-                               e.source == ElectronicStructureSource::ElectronLocalization || e.source == ElectronicStructureSource::LocalizedOrbitalLocator;
-                    });
-                    if (picked >= 0 && entries[picked].source != es.surface_field.source) {
-                        es.surface_field = FieldRef{ .source = entries[picked].source };
-                        field_ref_set_defaults(&es.surface_field);
-                        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.surface_field.source);
-                        es.surface_value = fk != SurfaceFieldKind::Count ? fabs(surface_field_kind_info(fk).iso) : es_isodensity_default(state->mold.sys, es.shown.source);
-                        update_rep = true;
-                    }
-                    const SurfaceFieldKind sk = electronic_structure_source_field_kind(es.surface_field.source);
-                    if (sk == SurfaceFieldKind::Count) {
-                        // the electron density: decades of it
-                        const double d_min = 1.0e-5, d_max = 0.1;
-                        prop::row("value", "The electron density of the surface, electrons / bohr^3 (au)");
-                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
-                    } else {
-                        // a field in its unit: about where it starts, [0, 1] for ELF and LOL
-                        const SurfaceFieldKindInfo& info = surface_field_kind_info(sk);
-                        const double d = info.iso;
-                        double lo = info.unit_interval ? 0.0 : (d < 0.0 ? 10.0 * d : 0.0);
-                        double hi = info.unit_interval ? 1.0 : (d < 0.0 ? 0.0 : 10.0 * fabs(d));
-                        char fmt[64], unit[32] = "";
-                        md_unit_print(unit, sizeof(unit), info.unit);
-                        snprintf(fmt, sizeof(fmt), "%s%%.4g %s", info.scale == SurfaceFieldScale::Diverging ? (const char*)u8"±" : "", unit);
-                        prop::row("value", "Where the surface is: that field at this value, in its unit");
-                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &lo, &hi, fmt);
-                    }
-                } else if (field) {
+                if (field) {
                     // over the field's values: its spread once evaluated, [0, 1] for ELF and LOL, about its default before
                     const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.shown.source));
                     const bool sgn = electronic_structure_is_signed(es);
@@ -3590,21 +3539,18 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
         if (prop::section("Color")) {
             const bool density_property = electronic_structure_is_density_property(es);
-            // on an isodensity surface the field shown is its colours: its colour map alone
-            const bool on_isodensity = electronic_structure_on_other_surface(es);
-            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode, on_isodensity);
-            if (!on_isodensity && es.coloring == SurfaceColoring::AtomColors) {
+            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
+            if (es.coloring == SurfaceColoring::AtomColors) {
                 update_rep |= draw_representation_coloring(state, rep);
             }
 
             // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
-            const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
             if (!density_property) {
-                const bool tint = g.coloring != SurfaceColoring::Uniform;
-                const bool attachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-                const bool detachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const bool tint = es.coloring != SurfaceColoring::Uniform;
+                const bool attachment = es.shown.source == ElectronicStructureSource::TransitionDensity && es.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = es.shown.source == ElectronicStructureSource::TransitionDensity && es.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
                 const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
-                if (electronic_structure_is_signed(g)) {
+                if (electronic_structure_is_signed(es)) {
                     prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
                     prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
                     prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
@@ -4812,7 +4758,7 @@ void draw_representation_legends(ApplicationState& state) {
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
             const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
-            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && electronic_structure_geometry(es).coloring == SurfaceColoring::Field;
+            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && es.coloring == SurfaceColoring::Field;
             if (colored && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;

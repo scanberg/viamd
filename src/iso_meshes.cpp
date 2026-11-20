@@ -998,16 +998,14 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es.iso_mesh) es.iso_mesh = new EsIsoMesh();
     EsIsoMesh& em = *es.iso_mesh;
-    // What the surfaces are of: the field, or the density it is shown on (and coloured by it)
-    const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
 
     // The field, made on a worker thread: the old one and its meshes stay until the new one is there. A field
     // of what is wanted at other positions (a frame since played) is taken all the same, as the newest there is,
     // but not while the mesh of the one shown is being made, if that is of the same: dropping its work for a
     // field that will itself be out of date by the time its mesh is would, on a trajectory played faster than
     // a mesh is made, leave the surface where it was. A field of something else (another orbital) is not taken.
-    const uint64_t field_key = electronic_structure_field_key(state, g);
-    const FieldRef spec = field_spec_of(g);
+    const uint64_t field_key = electronic_structure_field_key(state, es);
+    const FieldRef spec = field_spec_of(es);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
         !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
@@ -1043,7 +1041,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // One slot per distinct isovalue, its sheets those of the entries that share it: the + and - surfaces of
     // an orbital are the two sheets of one slot. A magnitude |f| = v is both sheets of f at v.
-    const bool magnitude = electronic_structure_uses_magnitude_toggle(g) && g.shown.use_magnitude;
+    const bool magnitude = electronic_structure_uses_magnitude_toggle(es) && es.shown.use_magnitude;
     IsoMeshSlot slots[ISO_MESHES_MAX_SLOTS];
     uint32_t num_slots = 0;
     int      entry_slot[8];
@@ -1078,9 +1076,9 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // Coloured by a field: the field at the vertices
     bool vertex_field = false;
-    if (g.coloring == SurfaceColoring::Field && surface_field_available(g.field_kind, state->mold.sys)) {
+    if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, state->mold.sys)) {
         // What the values are of: the field (its kind, the frame) and the vertices
-        uint64_t source = md_hash64(&g.field_kind, sizeof(g.field_kind), 0x5f1e1d);
+        uint64_t source = md_hash64(&es.field_kind, sizeof(es.field_kind), 0x5f1e1d);
         source = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source);
         const md_system_state_t& st = state->mold.state;
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
@@ -1091,12 +1089,12 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             em.span = {};
             md_temp_scope_t temp = md_temp_begin();
             SurfaceFieldDesc desc = {};
-            desc.kind        = g.field_kind;
+            desc.kind        = es.field_kind;
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
             desc.density_cache = density_cache_of(state);
-            if (surface_field_uses_basis(g.field_kind)) {
+            if (surface_field_uses_basis(es.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
 #if MD_ENABLE_GPU
@@ -1122,7 +1120,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(g.field_kind).label, nv,
+                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
                 isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
