@@ -13,6 +13,7 @@
 #include <md_gto.h>
 #include <core/md_grid.h>
 #include <script_engine.h>
+#include <string>
 #include <md_gl.h>
 #include <md_infer.h>
 #include <md_chem.h>
@@ -1948,6 +1949,9 @@ struct ApplicationState {
         // The scene rendered only while something in it changes, and settles; else the image made last is shown again
         // (render: lazy rendering)
         bool lazy_rendering = true;
+        // The script language a session starts in, as last chosen under Settings. A workspace is written in its own,
+        // and loading one switches to it without changing this
+        script::Language script_language = script::Language::V1;
     } settings;
 
     // Views onto the temporal attributes, plus the one array still owned here.
@@ -1989,6 +1993,9 @@ struct ApplicationState {
 
         // The workspace's language: what the editor's text is compiled as, and what the filters are written in
         script::Language language = script::Language::V1;
+        // The script in the other language, kept while this one is used: the editor shows one buffer per language,
+        // and switching swaps them (script_switch_language)
+        std::string other_text;
 
         // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
         // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
@@ -3275,8 +3282,14 @@ void assembly_subsets_free(ApplicationState* app);
 script::Program* script_ir_create(ApplicationState* state, md_str_t src, const script::CompileDesc& desc);
 
 // Sets the workspace's script language: the editor's highlighting and completion follow, the script is compiled
-// again, and every filter is evaluated again in it. The text is kept as it is.
+// again, and every filter is evaluated again in it. The text is kept as it is: for a workspace being loaded, whose
+// texts are set beside it.
 void script_set_language(ApplicationState* state, script::Language lang);
+
+// Switches to the other language's script: the editor's text is kept as that language's, the other's shown in its
+// place, and the language set (script_set_language). What was evaluated is of the language left, and its properties
+// show as not evaluated until Evaluate is pressed again.
+void script_switch_language(ApplicationState* state, script::Language lang);
 void script_ir_collect(ApplicationState* state);
 
 // Script visualization
