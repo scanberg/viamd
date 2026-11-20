@@ -2029,7 +2029,6 @@ struct Dataset : viamd::EventHandler {
         size_t   num_frames = 0;
         double   t0 = 0, t1 = 0;            // run's time unit
         double   dt_min = 0, dt_max = 0, dt_mean = 0;
-        size_t   backwards_at = 0;          // first frame whose time is before the previous, 0 for none
         bool     has_time = false;
         bool     has_velocity = false;
         bool     has_force = false;
@@ -2060,7 +2059,6 @@ struct Dataset : viamd::EventHandler {
             traj.dt_max = -DBL_MAX;
             for (size_t i = 1; i < n; ++i) {
                 const double dt = t[i] - t[i - 1];
-                if (dt < 0 && !traj.backwards_at) traj.backwards_at = i;
                 traj.dt_min = MD_MIN(traj.dt_min, dt);
                 traj.dt_max = MD_MAX(traj.dt_max, dt);
             }
@@ -2125,7 +2123,7 @@ struct Dataset : viamd::EventHandler {
         } else {
             ImGui::Text("%zu frames", traj.num_frames);
             ImGui::SameLine();
-            ImGui::TextDisabled("(the file has no time)");
+            ImGui::TextDisabled("(the file has no time, or one that goes back: its frames are numbered)");
         }
 
         if (traj.num_frames > 1 && traj.has_time) {
@@ -2136,10 +2134,6 @@ struct Dataset : viamd::EventHandler {
             } else {
                 ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " Frames are not evenly spaced: %.4g - %.4g %s apart", traj.dt_min * ts, traj.dt_max * ts, tu);
                 ImGui::SetItemTooltip("Typically trajectories from restarts joined together, or frames written at a changed interval.\nPlots over time are drawn at the actual times; playback steps frame by frame.");
-            }
-            if (traj.backwards_at) {
-                ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " Time goes backwards at frame %zu", traj.backwards_at);
-                ImGui::SetItemTooltip("Usually runs concatenated with overlap. Time based lookups (energy files, plots) will be unreliable.");
             }
         }
 

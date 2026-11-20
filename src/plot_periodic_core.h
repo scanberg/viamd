@@ -21,7 +21,7 @@ static inline double periodic_near(double value, double ref, double len) {
 // step longer than max_step, and a sample which is not a number (a frame not evaluated), leave a gap. The polyline is
 // written to out_x and out_y, broken where there is no line by points which are not numbers (ImPlot leaves a gap there);
 // cap is at least 4 n. Returns the number of points written.
-int periodic_polyline(double* out_x, double* out_y, int cap, const float* x, const float* y, int n, int stride, int k, double scale,
+int periodic_polyline(double* out_x, double* out_y, int cap, const double* x, const float* y, int n, int stride, int k, double scale,
                       double base, double len, double max_step);
 
 // The band of a periodic series about its centre, [lo[i], hi[i]] at x[i], hi[i] - lo[i] at most a period: as runs of samples

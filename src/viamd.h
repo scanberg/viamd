@@ -1707,22 +1707,12 @@ struct ApplicationState {
         // The named periods and markers along the timeline (see timeline_periods.h)
         TimelinePeriods periods;
 
+        // The visible span of the run's time ("<run>/time"), in its own unit like everything on the
+        // timeline: the display unit only changes how a time is printed (frame_axis.h)
         struct {
             double beg_x = 0;
             double end_x = 1;
         } view_range;
-
-        // Holds the timestamps for each frame, in 'time_unit' rather than in the trajectory's own
-        // unit. Converting here rather than at each view is what lets the animation window, the
-        // timeline plot, the tooltips and the frame/time mapping agree without any of them knowing
-        // about display_units: they all read these values.
-        md_array(float) x_values = 0;
-
-        // What the trajectory's time unit became once the display preference was applied,
-        // the factor that took it there, and the preference generation that produced both.
-        md_unit_t time_unit     = md_unit_none();
-        double    time_scale    = 1.0;
-        uint64_t  units_version = 0;
 
         // What each subplot draws, by attribute path (see plot_series.h)
         PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
@@ -2488,13 +2478,17 @@ void init_system_data(ApplicationState* app);
 // takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
 void init_trajectory_data(ApplicationState* app, md_str_t run_file, uint32_t traj_flags = 0);
 
-// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
-// unit, which is none when the file does not know time and the values are frame ordinals. NULL,
-// zero and empty without a trajectory.
+// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64, never
+// decreasing) and their unit, which is none when the file does not know time and the values are
+// frame ordinals. NULL, zero and empty without a trajectory.
 const md_attribute_t* run_time_axis(const ApplicationState* app);
 size_t                run_num_frames(const ApplicationState* app);
 const double*         run_frame_times(const ApplicationState* app);
 md_unit_t             run_time_unit(const ApplicationState* app);
+
+// Along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
+double run_time_at_frame(const ApplicationState* app, double frame);
+double run_frame_at_time(const ApplicationState* app, double time);
 
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of

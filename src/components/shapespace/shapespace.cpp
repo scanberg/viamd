@@ -40,6 +40,7 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <display_units.h>
 #include <event.h>
 
 #include <serialization_utils.h>
@@ -1819,12 +1820,11 @@ struct Shapespace : viamd::EventHandler {
         md_allocator_i* temp = md_temp_allocator(temp_scope);
         MD_DEFER { md_temp_end(temp_scope); };
 
-        // The time column is timeline.x_values, held in display units: its label is from the same place
-        const md_unit_t time_unit = app->timeline.time_unit;
+        // The time column is the run's time in the display unit, as the timeline shows it
+        char unit_buf[64];
+        const double time_scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(app));
         md_str_t x_label = MD_STR_INIT("Frame");
-        if (!md_unit_is_none(time_unit)) {
-            char unit_buf[64];
-            md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
+        if (unit_buf[0] != '\0') {
             x_label = md_alloc_printf(temp, "Time (%s)", unit_buf);
         }
         md_array(md_str_t)  labels = 0;
@@ -1839,10 +1839,10 @@ struct Shapespace : viamd::EventHandler {
             md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
-        const float* time = app->timeline.x_values;
-        const bool has_time = time && md_array_size(app->timeline.x_values) >= nf;
+        const double* time = run_frame_times(app);
+        const bool has_time = time && run_num_frames(app) >= nf;
         for (size_t f = 0; f < nf; ++f) {
-            md_array_push(values[0], has_time ? time[f] : (float)f, temp);
+            md_array_push(values[0], has_time ? (float)(time[f] * time_scl) : (float)f, temp);
             for (size_t s = 0; s < ns; ++s) {
                 const md_float3_t w = shape_weights_of(eval->coords[s * nf + f]);
                 md_array_push(values[1 + s * 3 + 0], w.x, temp);

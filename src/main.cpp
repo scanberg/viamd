@@ -78,6 +78,7 @@
 #include <viamd.h>
 #include <representation.h>
 #include <timeline_periods_ui.h>
+#include <frame_axis.h>
 #include <plot_periodic.h>
 #include <script_reference.h>
 #include <script_suggestions.h>
@@ -380,54 +381,6 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
     }
 }
 
-static double frame_to_time(double frame, const ApplicationState& data) {
-    const int64_t num_frames = md_array_size(data.timeline.x_values);
-    MD_ASSERT(num_frames);
-    const int64_t f0 = MD_CLAMP((int64_t)frame + 0, 0, num_frames - 1);
-    const int64_t f1 = MD_CLAMP((int64_t)frame + 1, 0, num_frames - 1);
-    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], md_f64_fract(frame));
-}
-
-// Try to map time t back into frame
-static double time_to_frame(double time, const md_array(float) frame_times) {
-    const int64_t num_frames = md_array_size(frame_times);
-    if (!num_frames) return 0.0;
-
-    const double beg = frame_times[0];
-    const double end = frame_times[num_frames - 1];
-    time = MD_CLAMP(time, beg, end);
-
-    // Estimate the frame
-    const double frame_est = MD_CLAMP(((time - beg) / (end-beg)) * (num_frames - 1), 0, num_frames - 1);
-
-    int64_t prev_frame_idx = MD_CLAMP((int64_t)frame_est,     0, num_frames - 1);
-    int64_t next_frame_idx = MD_CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
-
-    if (time < (double)frame_times[prev_frame_idx]) {
-        // Linear search down
-        for (prev_frame_idx = prev_frame_idx - 1; prev_frame_idx >= 0; --prev_frame_idx) {
-            next_frame_idx = prev_frame_idx + 1;
-            if ((double)frame_times[prev_frame_idx] <= time && time <= (double)frame_times[next_frame_idx])
-                break;
-        }
-    }
-    else if (time > (double)frame_times[next_frame_idx]) {
-        // Linear search up
-        for (next_frame_idx = next_frame_idx + 1; next_frame_idx < num_frames; ++next_frame_idx) {
-            prev_frame_idx = next_frame_idx - 1;
-            if ((double)frame_times[prev_frame_idx] <= time && time <= (double)frame_times[next_frame_idx])
-                break;
-        }
-    }
-
-    // Compute true fraction between timestamps
-    double t = (time - (double)frame_times[prev_frame_idx]) / ((double)frame_times[next_frame_idx] - (double)frame_times[prev_frame_idx]);
-    t = MD_CLAMP(t, 0.0, 1.0);
-
-    // Compose frame value (base + fraction)
-    return (double)prev_frame_idx + t;
-}
-
 static void update_view_param(ApplicationState* state);
 // The transforms of the copies of the scene the periodic images show (view.periodic_transforms)
 static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const ApplicationState& state, md_allocator_i* alloc);
@@ -705,39 +658,6 @@ static void apply_visual_settings(void* user_data) {
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
     visual_look_restore(state);
-}
-
-// timeline.x_values and view_range are stored in display units, so a change to the time preference
-// has to be carried into them. The raw frame times are still with the trajectory, so this re-derives
-// rather than compounding factors, and the visible range is moved by the ratio so the user keeps
-// looking at the same stretch of trajectory.
-static void update_timeline_time_unit(ApplicationState* state) {
-    MD_ASSERT(state);
-
-    if (state->timeline.units_version == display_units::version()) {
-        return;
-    }
-    state->timeline.units_version = display_units::version();
-
-    const double prev_scl = state->timeline.time_scale;
-    const double time_scl = display_units::factor(&state->timeline.time_unit, run_time_unit(state));
-    state->timeline.time_scale = time_scl;
-
-    if (time_scl == prev_scl) {
-        return;
-    }
-
-    const double* frame_times = run_frame_times(state);
-    const size_t  num_frames  = md_array_size(state->timeline.x_values);
-    if (frame_times) {
-        for (size_t i = 0; i < num_frames; ++i) {
-            state->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
-        }
-    }
-
-    const double ratio = prev_scl != 0.0 ? time_scl / prev_scl : 1.0;
-    state->timeline.view_range.beg_x *= ratio;
-    state->timeline.view_range.end_x *= ratio;
 }
 
 static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
@@ -1772,7 +1692,6 @@ int main(int argc, char** argv) {
 
         PUSH_GPU_SECTION("Upload");
         update_md_buffers(&state);
-        update_timeline_time_unit(&state);
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Render");
@@ -3746,22 +3665,20 @@ static void draw_animation_window(ApplicationState* data) {
     size_t num_frames = run_num_frames(data);
     if (num_frames == 0) return;
 
-    MD_ASSERT(data->timeline.x_values);
-    MD_ASSERT(md_array_size(data->timeline.x_values) == num_frames);
-
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %zu", num_frames);
-        md_unit_t time_unit = data->timeline.time_unit;
-        double t   = frame_to_time(data->animation.frame, *data);
-        double min = data->timeline.x_values[0];
-        double max = data->timeline.x_values[num_frames - 1];
+        // The slider is in the display unit; the frame it sets is found in the run's own
+        char unit_buf[32];
+        const double scl   = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(data));
+        const double* times = run_frame_times(data);
+        double t   = run_time_at_frame(data, data->animation.frame) * scl;
+        double min = times[0] * scl;
+        double max = times[num_frames - 1] * scl;
         char time_label[64];
-        if (md_unit_is_none(time_unit)) {
+        if (unit_buf[0] == '\0') {
             snprintf(time_label, sizeof(time_label), "Time");
         } else {
-            char unit_buf[32];
-            md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
             snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
         }
         const float w = ImGui::CalcTextSize("Time (ps)").x;
@@ -3790,7 +3707,7 @@ static void draw_animation_window(ApplicationState* data) {
             ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
         if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
-            data->animation.frame = time_to_frame(t, data->timeline.x_values);
+            data->animation.frame = run_frame_at_time(data, t / scl);
         }
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
@@ -3924,252 +3841,6 @@ static void draw_async_task_window(ApplicationState* data) {
         ImGui::End();
         ImGui::PopStyleColor();
     }
-}
-
-struct TimelineArgs {
-    const char* lbl;
-    uint32_t col;
-    int plot_height;
-
-    struct {
-        int count;
-        int dim_y;
-
-        const float* x;
-        const float* y;
-        const float* y_mean;
-        const float* y_var;
-        const float* y_min;
-        const float* y_max;
-
-        float min_y;
-        float max_y;
-        md_str_t unit;
-    } values;
-
-    struct {
-        double* beg;
-        double* end;
-        double  min;
-        double  max;
-    } view_range;
-
-    struct {
-        bool* is_dragging;
-        bool* is_selecting;
-    } input;
-
-    struct {
-        bool show;
-        bool enabled;
-
-        double* beg;
-        double* end;
-
-        double min;
-        double max;
-    } filter;
-
-    struct {
-        bool enabled;
-        double min;
-        double max;
-    } value_filter;
-
-    double* time;
-};
-
-struct TimePayload {
-    const TimelineArgs* args;
-    int y_idx;
-};
-
-static ImPlotPoint get_time_point(int index, void* user_data) {
-    const TimePayload* payload = (const TimePayload*)user_data;
-    const TimelineArgs* args = payload->args;
-    return ImPlotPoint(args->values.x[index], args->values.y[index * args->values.dim_y + payload->y_idx]);
-}
-
-bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& args) {
-    const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
-    const ImPlotAxisFlags axis_flags_x = axis_flags;
-    const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
-    
-    const ImPlotFlags flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-    
-    const float pad_x = ImPlot::GetStyle().PlotPadding.x;
-    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(pad_x, 0));
-    MD_DEFER { ImPlot::PopStyleVar(1); };
-
-    if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
-        ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.beg, args.view_range.end);
-        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, args.view_range.min, args.view_range.max);
-        ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
-        ImPlot::SetupFinish();
-
-        bool active = ImGui::IsItemActive();
-        bool print_timeline_tooltip = false;
-
-        if (args.value_filter.enabled) {
-            float* y_vals = (float*)md_alloc(frame_alloc, args.values.count * sizeof(float));
-            for (int i = 0; i < args.values.count; ++i) {
-                float val = args.values.y[i];
-                y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -FLT_MAX;
-            }
-
-            const ImVec4 filter_frame_color = ImVec4(1, 1, 1, 1);
-            ImPlot::SetNextFillStyle(filter_frame_color, 0.15f);
-            ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -FLT_MAX);
-        }
-
-        if (args.filter.show) {
-            if (!args.filter.enabled) ImGui::PushDisabled();
-            ImPlot::DragRangeX("Time Filter", args.filter.beg, args.filter.end, args.filter.min, args.filter.max);
-            if (!args.filter.enabled) ImGui::PopDisabled();
-            *args.filter.beg = MD_CLAMP(*args.filter.beg, args.filter.min, args.filter.max);
-            *args.filter.end = MD_CLAMP(*args.filter.end, args.filter.min, args.filter.max);
-        }
-
-        ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
-        ImPlot::SetNextLineStyle(line_col);
-
-        if (args.values.count > 0) {
-            MD_ASSERT(args.values.x);
-            MD_ASSERT(args.values.y);
-            if (args.values.y_var) {
-                MD_ASSERT(args.values.y_min);
-                MD_ASSERT(args.values.y_max);
-                char lbl[32];
-
-                snprintf(lbl, sizeof(lbl), "%s", args.lbl);
-                TimePayload payload = {
-                    .args = &args,
-                    .y_idx = 0,
-                };
-                for (int i = 0; i < args.values.dim_y; ++i) {
-                    payload.y_idx = i;
-                    ImPlot::PlotLineG(lbl, get_time_point, &payload, args.values.count);
-                }
-
-                ImPlot::SetNextLineStyle(line_col);
-                snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
-                ImPlot::PlotLine(lbl, args.values.x, args.values.y_mean, args.values.count);
-
-                ImPlot::SetNextFillStyle(line_col, 0.4f);
-                snprintf(lbl, sizeof(lbl), "%s (var)", args.lbl);
-                ImPlot::PlotShadedG(lbl,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_mean[idx] - args->values.y_var[idx]);
-                    },
-                    (void*)&args,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_mean[idx] + args->values.y_var[idx]);
-                    },
-                    (void*)&args,
-                    args.values.count
-                );
-
-                ImPlot::SetNextFillStyle(line_col, 0.2f);
-                snprintf(lbl, sizeof(lbl), "%s (min,max)", args.lbl);
-                ImPlot::PlotShadedG(lbl,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_min[idx]);
-                    },
-                    (void*)&args,
-                        [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_max[idx]);
-                    },
-                    (void*)&args,
-                    args.values.count
-                );
-            } 
-            else {
-                ImPlot::PlotLine(args.lbl, args.values.x, args.values.y, args.values.count);
-            }
-        }
-        
-        if (*args.input.is_dragging) {
-            *args.time = ImPlot::GetPlotMousePos().x;
-        }
-        else if (*args.input.is_selecting) {
-            *args.filter.end = MD_MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
-        }
-        else if (ImPlot::IsPlotHovered()) {
-            if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {           
-                if (ImGui::GetIO().KeyMods == ImGuiMod_Shift) {
-                    if (args.filter.show && args.filter.enabled) {
-                        *args.input.is_selecting = true;
-                        *args.filter.beg = ImPlot::GetPlotMousePos().x;
-                    }
-                } else {
-                    *args.input.is_dragging = true;
-                }
-            }
-        }
-
-        if (ImPlot::IsPlotHovered()) {
-            print_timeline_tooltip = true;
-        }
-        
-        if (ImPlot::DragLineX(0, args.time, ImVec4(1,1,0,1))) {
-            *args.time = MD_CLAMP(*args.time, args.filter.min, args.filter.max);
-        }
-        if (ImGui::IsItemHovered()) {
-            print_timeline_tooltip = true;
-        }
-
-        if (print_timeline_tooltip) {
-            ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
-            ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
-            ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
-            ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
-            ImPlot::PushPlotClipRect();
-            ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
-            ImPlot::PopPlotClipRect();
-
-            char buf[128] = "";
-            int len = 0;
-
-            double time = plot_pos.x;
-            int frame_idx = MD_CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
-            len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
-
-            md_unit_t time_unit = data.timeline.time_unit;
-            if (!md_unit_is_none(time_unit)) {
-                char unit_buf[32];
-                md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-                len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
-            }
-
-            if (0 <= frame_idx && frame_idx < args.values.count) {
-                const char* value_lbl = args.values.y_var ? "mean" : "value";
-                if (args.values.y) {
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
-                }
-                if (args.values.y_var) {
-                    MD_ASSERT(args.values.y_min);
-                    MD_ASSERT(args.values.y_max);
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
-                        args.values.y_var[frame_idx],
-                        args.values.y_min[frame_idx],
-                        args.values.y_max[frame_idx]);
-                }
-
-                if (!md_str_empty(args.values.unit)) {
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
-                }
-            }
-            ImGui::SetTooltip("%.*s", len, buf);
-        }
-
-        ImPlot::EndPlot();
-    }
-
-    return true;
 }
 
 static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoint p) {
@@ -4518,6 +4189,11 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
     plot_system_series_menu(data, TIMELINE_SERIES_DND, first);
 }
 
+// A tick label of the timeline's time axis: the run's time, in its own unit, shown in the display unit (user_data, the factor)
+static int format_scaled(double value, char* buf, int size, void* user_data) {
+    return snprintf(buf, size, "%g", value * *(const double*)user_data);
+}
+
 static void draw_timeline_window(ApplicationState* data) {
     MD_ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
@@ -4526,10 +4202,12 @@ static void draw_timeline_window(ApplicationState* data) {
         int& num_subplots = data->timeline.num_subplots;
         num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
-        const float* x_values   = data->timeline.x_values;
-        const int num_x_values  = (int)md_array_size(data->timeline.x_values);
-        const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
-        const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
+        // The plots are in the run's time, in its own unit: the display unit is applied to the tick labels and
+        // the tooltips only, so changing it moves nothing
+        const double* frame_times = run_frame_times(data);
+        const int     num_frames  = (int)run_num_frames(data);
+        const double  min_time    = num_frames > 0 ? frame_times[0] : 0.0;
+        const double  max_time    = num_frames > 0 ? frame_times[num_frames - 1] : 1.0;
 
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         MD_DEFER { ImPlot::PopStyleVar(); };
@@ -4560,7 +4238,7 @@ static void draw_timeline_window(ApplicationState* data) {
             data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
         }
 
-        if (num_x_values > 0) {
+        if (num_frames > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
             static bool is_dragging  = false;
@@ -4578,25 +4256,28 @@ static void draw_timeline_window(ApplicationState* data) {
                 ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
             }
 
+            // A run without time of its own has its frames numbered: its unit prints as nothing, and the factor is one
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
-            md_unit_t x_unit = data->timeline.time_unit;
-            if (!md_unit_is_none(x_unit)) {
-                md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
+            const double x_scale = display_units::factor_print(x_unit_str, sizeof(x_unit_str), run_time_unit(data));
+            if (x_unit_str[0] != '\0') {
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
 
             // The periods, above the plots and on their time axis
             TimelinePeriodAxis range_axis;
-            range_axis.frame_times = x_values;
-            range_axis.num_frames  = num_x_values;
-            range_axis.view_beg    = &data->timeline.view_range.beg_x;
-            range_axis.view_end    = &data->timeline.view_range.end_x;
-            range_axis.time_unit   = x_unit_str;
+            range_axis.frame_times   = frame_times;
+            range_axis.num_frames    = num_frames;
+            range_axis.view_beg      = &data->timeline.view_range.beg_x;
+            range_axis.view_end      = &data->timeline.view_range.end_x;
+            range_axis.time_unit     = x_unit_str;
+            range_axis.display_scale = x_scale;
             timeline_periods_lane(&data->timeline.periods, range_axis, &data->animation.frame);
 
-            // After the lane, which ctrl-drag in it may have moved
-            double time = frame_to_time(data->animation.frame, *data);
+            // After the lane, which ctrl-drag in it may have moved. The current frame is set from the time only when
+            // something below moves the time: a frame taken to its time and back may not be the same frame.
+            double time = run_time_at_frame(data, data->animation.frame);
+            bool   time_moved = false;
 
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
@@ -4637,7 +4318,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                 if (ImPlot::BeginPlot("", ImVec2(), plot_flags)) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x_value, max_x_value);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_time, max_time);
 
                     const ImPlotAxisFlags axis_flags_x = axis_flags;
 
@@ -4659,6 +4340,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
+                    ImPlot::SetupAxisFormat(ImAxis_X1, format_scaled, (void*)&x_scale);
                     if (axis_view) {
                         // Not fitted to the values: they fill the period, wherever it is cut
                         periodic_axis_setup(ImAxis_Y1, y_label, axis_view, axis_flags | ImPlotAxisFlags_Opposite);
@@ -4809,6 +4491,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     if (is_dragging) {
                         time = ImPlot::GetPlotMousePos().x;
+                        time_moved = true;
                     } else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                         is_dragging = true;
                     }
@@ -4944,7 +4627,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     if (ImPlot::DragLineX(0, &time, ImVec4(1,1,0,1), 1.0f, ImPlotDragToolFlags_NoFit)) {
-                        time = MD_CLAMP(time, min_x_value, max_x_value);
+                        time_moved = true;
                     }
 
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
@@ -4978,12 +4661,12 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                         ImPlot::PopPlotClipRect();
 
-                        double t = plot_pos.x;
-                        if (md_unit_is_none(x_unit)) {
-                            int32_t frame_idx = MD_CLAMP((int)(time_to_frame(t, x_values) + 0.5), 0, num_x_values-1);
+                        const double t = plot_pos.x;
+                        if (x_unit_str[0] == '\0') {
+                            const int frame_idx = (int)(frame_at_time(frame_times, num_frames, t) + 0.5);
                             ImGui::SetTooltip("Frame: %i\n%s", frame_idx, hovered_label);
                         } else {
-                            ImGui::SetTooltip("Time: %.2f (%s)\n%s", t, x_unit_str, hovered_label);
+                            ImGui::SetTooltip("Time: %.2f (%s)\n%s", t * x_scale, x_unit_str, hovered_label);
                         }
                     }
 
@@ -5000,8 +4683,9 @@ static void draw_timeline_window(ApplicationState* data) {
 
             ImPlot::EndSubplots();
 
-            time = MD_CLAMP(time, (double)min_x_value, (double)max_x_value);
-            data->animation.frame = time_to_frame(time, data->timeline.x_values);
+            if (time_moved) {
+                data->animation.frame = frame_at_time(frame_times, num_frames, time);
+            }
 
             ImPlot::GetInputMap() = old_map;
         }
@@ -6916,12 +6600,15 @@ static void draw_property_export_window(ApplicationState* data) {
                     if (series_resolve_temporal(&view, data, selected)) {
                         num_rows = (size_t)view.num_samples;
                         char time_unit_str[32] = "";
-                        md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
-                        x_label = md_unit_is_none(data->timeline.time_unit) ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
+                        const double time_scl = display_units::factor_print(time_unit_str, sizeof(time_unit_str), run_time_unit(data));
+                        x_label = time_unit_str[0] == '\0' ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
                         if (view.unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.unit_str);
 
+                        // The columns written are float (md_csv, md_xvg)
                         float* x = md_temp_alloc_array(temp, float, num_rows);
-                        md_memcpy(x, view.x, num_rows * sizeof(float));
+                        for (size_t r = 0; r < num_rows; ++r) {
+                            x[r] = (float)(view.x[r] * time_scl);
+                        }
                         md_array_push(column_data, x, alloc);
                         md_array_push(column_labels, x_label, alloc);
                         push_columns(view.dim, [&](size_t r, int k) { return (float)series_temporal_point(view, (int)r, k).y; });

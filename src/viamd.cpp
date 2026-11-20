@@ -30,6 +30,7 @@
 #include <loader.h>
 #include <color_utils.h>
 #include <display_units.h>
+#include <frame_axis.h>
 #include <serialization_utils.h>
 #include <plot_periodic.h>
 
@@ -1352,6 +1353,14 @@ md_unit_t run_time_unit(const ApplicationState* app) {
     return axis ? axis->unit : md_unit_none();
 }
 
+double run_time_at_frame(const ApplicationState* app, double frame) {
+    return time_at_frame(run_frame_times(app), run_num_frames(app), frame);
+}
+
+double run_frame_at_time(const ApplicationState* app, double time) {
+    return frame_at_time(run_frame_times(app), run_num_frames(app), time);
+}
+
 const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
     MD_ASSERT(app);
     const md_system_state_t* state = &app->mold.state;
@@ -1416,7 +1425,6 @@ void free_trajectory_data(ApplicationState* state) {
     // The run, and with it the files it was opened from and the series loaded along it
     file_list_drop_runs(&state->files.list);
 
-    md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
     // on only mean something within one table, and the next one may be allocated where this was.
     series_cache_free(state);
@@ -1620,22 +1628,7 @@ void init_trajectory_data(ApplicationState* data, md_str_t run_file, uint32_t tr
 
         MD_ASSERT(frame_times);
 
-        // The timeline carries time in the unit the user asked to see it in. Everything downstream
-        // reads x_values and view_range, so this is the one place the conversion happens; a later
-        // change to the preference is picked up by update_timeline_time_unit in main.cpp.
-        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(data));
-        data->timeline.time_scale    = time_scl;
-        data->timeline.units_version = display_units::version();
-
-        double min_time = frame_times[0] * time_scl;
-        double max_time = frame_times[num_frames - 1] * time_scl;
-
-        data->timeline.view_range = {min_time, max_time};
-
-        md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
-        for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
-        }
+        data->timeline.view_range = {frame_times[0], frame_times[num_frames - 1]};
 
         data->animation.frame = MD_CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = MD_CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
@@ -2379,31 +2372,6 @@ void workspace_register_window(const char* name, bool* show) {
     }
 }
 
-// Frame <-> time along the timeline, for the parts of it stored as frames (see TimelineView)
-static double workspace_frame_to_time(const ApplicationState* app, double frame) {
-    const int64_t n = (int64_t)md_array_size(app->timeline.x_values);
-    if (n == 0) return frame;
-    const int64_t f0 = MD_CLAMP((int64_t)frame, (int64_t)0, n - 1);
-    const int64_t f1 = MD_CLAMP(f0 + 1, (int64_t)0, n - 1);
-    const double t = MD_CLAMP(frame - (double)f0, 0.0, 1.0);
-    return lerp((double)app->timeline.x_values[f0], (double)app->timeline.x_values[f1], t);
-}
-
-static double workspace_time_to_frame(const ApplicationState* app, double time) {
-    const int64_t n = (int64_t)md_array_size(app->timeline.x_values);
-    if (n == 0) return time;
-    const float* x = app->timeline.x_values;
-    if (time <= x[0]) return 0.0;
-    if (time >= x[n - 1]) return (double)(n - 1);
-    int64_t lo = 0, hi = n - 1;
-    while (hi - lo > 1) {
-        const int64_t mid = (lo + hi) / 2;
-        if (x[mid] <= time) lo = mid; else hi = mid;
-    }
-    const double dx = (double)x[hi] - (double)x[lo];
-    return (double)lo + (dx > 0.0 ? (time - x[lo]) / dx : 0.0);
-}
-
 // What is read before the data it refers to is loaded, applied once it is
 struct WorkspacePending {
     // The systems, their runs and the files of each ([System], [Run], [Input], or a [Files] section of a
@@ -2608,8 +2576,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 } else if (md_str_eq(ident, MD_STR_LIT("PeriodShadeAll"))) {
                     viamd::extract_bool(data->timeline.periods.shade_all, arg);
                 } else if (md_str_eq(ident, MD_STR_LIT("ViewFrames"))) {
-                    float r[2];
-                    if (viamd::extract_flt_vec(r, 2, arg)) {
+                    double r[2];
+                    if (viamd::extract_dbl_vec(r, 2, arg)) {
                         pending.has_view_range = true;
                         pending.view_beg_frame = r[0];
                         pending.view_end_frame = r[1];
@@ -2940,8 +2908,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             if (r) data->timeline.periods.legacy_filter_id = r->id;
         }
         if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
-            data->timeline.view_range.beg_x = workspace_frame_to_time(data, MD_CLAMP(pending.view_beg_frame, 0.0, last));
-            data->timeline.view_range.end_x = workspace_frame_to_time(data, MD_CLAMP(pending.view_end_frame, 0.0, last));
+            data->timeline.view_range.beg_x = run_time_at_frame(data, MD_CLAMP(pending.view_beg_frame, 0.0, last));
+            data->timeline.view_range.end_x = run_time_at_frame(data, MD_CLAMP(pending.view_end_frame, 0.0, last));
         }
     }
 
@@ -3039,17 +3007,17 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     periodic_views_serialize(state);
 
     {
-        // In frames: a time is in whatever unit it happens to be shown in
+        // In frames, like the current frame and the periods
         const auto& tl = app_state->timeline;
         viamd::write_section_header(state, MD_STR_LIT("TimelineView"));
         viamd::write_int(state, MD_STR_LIT("PeriodLayout"), (int)tl.periods.layout);
         viamd::write_bool(state, MD_STR_LIT("PeriodShadeAll"), tl.periods.shade_all);
-        if (md_array_size(tl.x_values) > 0) {
-            const float view[2] = {
-                (float)workspace_time_to_frame(app_state, tl.view_range.beg_x),
-                (float)workspace_time_to_frame(app_state, tl.view_range.end_x),
+        if (run_num_frames(app_state) > 0) {
+            const double view[2] = {
+                run_frame_at_time(app_state, tl.view_range.beg_x),
+                run_frame_at_time(app_state, tl.view_range.end_x),
             };
-            viamd::write_flt_vec(state, MD_STR_LIT("ViewFrames"), view, 2);
+            viamd::write_dbl_vec(state, MD_STR_LIT("ViewFrames"), view, 2);
         }
         timeline_periods_serialize(state, &tl.periods);
     }

@@ -2,6 +2,7 @@
 
 #include <viamd.h>
 #include <display_units.h>
+#include <frame_axis.h>
 #include <serialization_utils.h>
 
 #include <md_system.h>
@@ -345,7 +346,8 @@ struct ConvertEntry {
     const md_attributes_t* table = nullptr;
     uint64_t               version = 0;
     bool                   valid = false;
-    md_array(float)        data = nullptr;
+    md_array(uint8_t)      data = nullptr;  // count floats or doubles, as the key says
+    size_t                 count = 0;
     int                    last_used = 0;
 };
 
@@ -392,10 +394,14 @@ static md_array(HistogramEntry) histogram_cache = nullptr;
 static md_array(BandwidthEntry) bandwidth_cache = nullptr;
 static md_array(SlotEntry)      slot_cache = nullptr;
 
-// A converted copy of the whole attribute as floats in dst_unit (as stored for md_unit_none())
-static const float* cache_convert(ApplicationState* app, const md_attributes_t* table, const md_attribute_t* attr, md_unit_t dst_unit, size_t* out_count) {
+// A converted copy of the whole attribute in dst_unit (as stored for md_unit_none()): as floats, or as doubles (type F64),
+// which is what a time is kept in
+static const void* cache_convert(ApplicationState* app, const md_attributes_t* table, const md_attribute_t* attr, md_unit_t dst_unit,
+                                 md_attribute_type_t type, size_t* out_count) {
+    MD_ASSERT(type == MD_ATTRIBUTE_TYPE_F32 || type == MD_ATTRIBUTE_TYPE_F64);
     uint64_t key = md_hash64(&dst_unit.base.raw_bits, sizeof(dst_unit.base.raw_bits), 0);
     key = md_hash64(&dst_unit.mult, sizeof(dst_unit.mult), key);
+    key = md_hash64(&type, sizeof(type), key);
     key = md_hash64_str(attr->path, key);
 
     const int frame = ImGui::GetFrameCount();
@@ -413,20 +419,27 @@ static const float* cache_convert(ApplicationState* app, const md_attributes_t* 
         entry->table = table;
     } else if (entry->version == attr->version) {
         entry->last_used = frame;
-        *out_count = md_array_size(entry->data);
+        *out_count = entry->count;
         return entry->valid ? entry->data : nullptr;
     }
 
     entry->version   = attr->version;
     entry->last_used = frame;
     const size_t count = md_attribute_element_count(&attr->format);
-    md_array_resize(entry->data, count, app->allocator.persistent);
-    entry->valid = md_attribute_extract_f32(entry->data, count, table, attr, md_attribute_slice_all(), dst_unit) == count;
+    const md_attribute_slice_t all = md_attribute_slice_all();
+    if (type == MD_ATTRIBUTE_TYPE_F64) {
+        md_array_resize(entry->data, count * sizeof(double), app->allocator.persistent);
+        entry->valid = md_attribute_extract_f64((double*)entry->data, count, table, attr, all, dst_unit) == count;
+    } else {
+        md_array_resize(entry->data, count * sizeof(float), app->allocator.persistent);
+        entry->valid = md_attribute_extract_f32((float*)entry->data, count, table, attr, all, dst_unit) == count;
+    }
     if (!entry->valid) {
         md_array_free(entry->data, app->allocator.persistent);
         entry->data = nullptr;
     }
-    *out_count = md_array_size(entry->data);
+    entry->count = entry->valid ? count : 0;
+    *out_count = entry->count;
     return entry->valid ? entry->data : nullptr;
 }
 
@@ -437,8 +450,29 @@ static const float* attribute_floats(ApplicationState* app, const md_attributes_
         return (const float*)attr->data;
     }
     size_t count = 0;
-    const float* data = cache_convert(app, table, attr, md_unit_none(), &count);
+    const float* data = (const float*)cache_convert(app, table, attr, md_unit_none(), MD_ATTRIBUTE_TYPE_F32, &count);
     return (data && count == md_attribute_element_count(&attr->format)) ? data : nullptr;
+}
+
+// The times of a series' frame axis in the unit of the run's (the timeline's): the run's own in place, another axis in
+// place when it holds them as they are (an energy file's in ps beside a trajectory in ps), converted otherwise. Frames
+// numbered place only against frames numbered: a run without time has nothing to put a picosecond on, and an axis
+// without time nothing to put on a run with it. NULL then, and when the axis cannot be read.
+static const double* timeline_times(ApplicationState* app, const md_attributes_t* table, const md_attribute_t* axis, size_t* out_count) {
+    const md_attribute_t* run_axis = run_time_axis(app);
+    if (run_axis && md_attribute_same_data(axis, run_axis)) {
+        *out_count = run_num_frames(app);
+        return run_frame_times(app);
+    }
+    const md_unit_t run_unit = run_time_unit(app);
+    if (md_unit_is_none(run_unit) != md_unit_is_none(axis->unit)) return nullptr;
+    if (md_unit_equal(run_unit, axis->unit)) {
+        if (const double* t = (const double*)md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1)) {
+            *out_count = axis->format.shape[0];
+            return t;
+        }
+    }
+    return (const double*)cache_convert(app, table, axis, run_unit, MD_ATTRIBUTE_TYPE_F64, out_count);
 }
 
 // The slot of the script property under key, as it is now. NULL while there is none: not asked for, or not a
@@ -586,14 +620,14 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         const size_t n = attr->format.shape[0];
         if (is_script(key.source)) {
             // Over a period it is the same over time, so only the one over every frame is offered for that
-            if (key.period == 0 && n == md_array_size(app->timeline.x_values)) views |= SeriesView_Timeline;
+            if (key.period == 0 && n == run_num_frames(app)) views |= SeriesView_Timeline;
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
             const md_attribute_t* run_axis = run_time_axis(app);
             if (axis && axis->format.shape[0] == n) {
                 if ((run_axis && md_attribute_same_data(axis, run_axis)) ||
-                    md_unit_is_none(app->timeline.time_unit) == md_unit_is_none(axis->unit)) {
+                    md_unit_is_none(run_time_unit(app)) == md_unit_is_none(axis->unit)) {
                     views |= SeriesView_Timeline;
                 }
             }
@@ -668,28 +702,17 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     series_periodic(&out->periodic, app, key, out->y_scale);
 
     // ### x
-    const size_t num_frames = md_array_size(app->timeline.x_values);
-    const float* x = nullptr;
+    const double* x = nullptr;
     if (is_script(key.source)) {
         // Evaluated over the run's frames, so its axis is the timeline's
-        if (n != num_frames) return false;
-        x = app->timeline.x_values;
+        if (n != run_num_frames(app)) return false;
+        x = run_frame_times(app);
     } else {
         const md_attribute_t* axis = md_attributes_axis(table, src);
         if (!axis || axis->format.shape[0] != n) return false;
-
-        const md_attribute_t* run_axis = run_time_axis(app);
-        if (run_axis && md_attribute_same_data(axis, run_axis) && num_frames == n) {
-            x = app->timeline.x_values;
-        } else {
-            // Ordinals place only against ordinals: a run without time has nothing to put a
-            // picosecond on, and a file without time nothing to put on a run with it
-            const md_unit_t time_unit = app->timeline.time_unit;
-            if (md_unit_is_none(time_unit) != md_unit_is_none(axis->unit)) return false;
-            size_t count = 0;
-            x = cache_convert(app, table, axis, time_unit, &count);
-            if (!x || count != n) return false;
-        }
+        size_t count = 0;
+        x = timeline_times(app, table, axis, &count);
+        if (!x || count != n) return false;
     }
 
     // ### y
@@ -734,19 +757,7 @@ void series_temporal_band(const SeriesTemporalView& v, int i, double* lo, double
 }
 
 double series_temporal_index_at(const SeriesTemporalView& v, double x) {
-    const int n = v.num_samples;
-    if (n <= 0 || !v.x) return 0.0;
-    if (x <= v.x[0])     return 0.0;
-    if (x >= v.x[n - 1]) return (double)(n - 1);
-    int lo = 0;
-    int hi = n - 1;
-    while (hi - lo > 1) {
-        const int mid = (lo + hi) / 2;
-        if (v.x[mid] <= x) lo = mid;
-        else hi = mid;
-    }
-    const double dx = (double)v.x[hi] - (double)v.x[lo];
-    return lo + (dx > 0.0 ? (x - v.x[lo]) / dx : 0.0);
+    return (v.num_samples > 0 && v.x) ? frame_at_time(v.x, (size_t)v.num_samples, x) : 0.0;
 }
 
 int series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView& v, int i, int k) {

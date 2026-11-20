@@ -59,6 +59,7 @@ void write_int_vec(serialization_state_t& state, md_str_t ident, const int* elem
 void write_flt(serialization_state_t& state, md_str_t ident, float val);
 void write_dbl(serialization_state_t& state, md_str_t ident, double val);
 void write_flt_vec(serialization_state_t& state, md_str_t ident, const float* elem, size_t len);
+void write_dbl_vec(serialization_state_t& state, md_str_t ident, const double* elem, size_t len);
 void write_str(serialization_state_t& state, md_str_t ident, md_str_t str);
 // Base64 between ### markers: any bit pattern survives the line based format
 void write_bitset(serialization_state_t& state, md_str_t ident, const md_bitset_t* bs);
@@ -76,6 +77,7 @@ bool extract_int_vec(int* elem, size_t len, md_str_t arg);
 bool extract_dbl (double& val, md_str_t arg);
 bool extract_flt (float& val, md_str_t arg);
 bool extract_flt_vec (float* elem, size_t len, md_str_t arg);
+bool extract_dbl_vec (double* elem, size_t len, md_str_t arg);
 bool extract_str (md_str_t& str, md_str_t arg);
 bool extract_to_char_buf(char* buf, size_t cap, md_str_t arg);
 // The set is allocated with alloc. Reads the byte format of the former md_bitfield masks, and the one for sets

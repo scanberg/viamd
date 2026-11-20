@@ -16,13 +16,14 @@
 
 #include <timeline_periods.h>
 
-// How frames map to the screen, shared with the timeline's plots
+// How frames map to the screen, shared with the timeline's plots: in the run's time, in its own unit (frame_axis.h)
 struct TimelinePeriodAxis {
-    const float* frame_times = nullptr;     // per frame, in the timeline's unit (timeline.x_values)
-    int          num_frames = 0;
-    double*      view_beg = nullptr;        // the visible span of time, which the lane pans and zooms
-    double*      view_end = nullptr;
-    const char*  time_unit = "";            // "ns"; empty when the frames have no time of their own
+    const double* frame_times = nullptr;    // per frame, never decreasing
+    int           num_frames = 0;
+    double*       view_beg = nullptr;       // the visible span of time, which the lane pans and zooms
+    double*       view_end = nullptr;
+    const char*   time_unit = "";           // the display unit, "ns"; empty when the frames have no time of their own
+    double        display_scale = 1.0;      // from the unit of frame_times into time_unit
 };
 
 // Call where the lane goes, before the plots of the timeline. Ctrl-drag in it moves current_frame.

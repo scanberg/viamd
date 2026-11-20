@@ -138,6 +138,17 @@ void write_flt_vec(serialization_state_t& state, md_str_t ident, const float* el
 	md_str_writer_push_char(&state.sw, '\n');
 }
 
+void write_dbl_vec(serialization_state_t& state, md_str_t ident, const double* elem, size_t len) {
+	md_str_writer_fmt(&state.sw, MD_STR_FMT "=", MD_STR_ARG(ident));
+	for (size_t i = 0; i < len; ++i) {
+		md_str_writer_fmt(&state.sw, "%.17g", elem[i]);
+		if (i < len - 1) {
+			md_str_writer_push_char(&state.sw, ',');
+		}
+	}
+	md_str_writer_push_char(&state.sw, '\n');
+}
+
 void write_str(serialization_state_t& state, md_str_t ident, md_str_t str) {
 	// Quoted whenever a plain value would not come back as it went: a line break ends it, and the
 	// reader trims whitespace at either end
@@ -250,11 +261,11 @@ bool extract_flt (float& val, md_str_t arg) {
 	return false;
 }
 
-bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
+bool extract_dbl_vec (double* elem, size_t len, md_str_t arg) {
 	// Exactly len numbers, parsed into a copy and written back only then. More than len is not cut down to the
 	// first len: that is what a vector written with decimal commas looks like ("0,5,0,25,1,1" for 0.5 0.25 1 1),
 	// and its first len would be values nobody wrote.
-	float tmp[16];
+	double tmp[16];
 	if (len > MD_COUNTOF(tmp)) return false;
 	const md_str_t all = arg;
 	md_str_t tok;
@@ -264,14 +275,23 @@ bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
 		tok = md_str_trim(tok);
 		if (!(md_parse_is_float(tok) || md_parse_is_int(tok))) return false;
 		if (count < len) {
-			tmp[count++] = (float)md_parse_float(tok);
+			tmp[count++] = md_parse_float(tok);
 		} else {
 			extra += 1;
 		}
 	}
 	if (extra) log_decimal_comma(all);
 	if (count != len || extra) return false;
-	md_memcpy(elem, tmp, len * sizeof(float));
+	md_memcpy(elem, tmp, len * sizeof(double));
+	return true;
+}
+
+bool extract_flt_vec (float* elem, size_t len, md_str_t arg) {
+	double tmp[16];
+	if (len > MD_COUNTOF(tmp) || !extract_dbl_vec(tmp, len, arg)) return false;
+	for (size_t i = 0; i < len; ++i) {
+		elem[i] = (float)tmp[i];
+	}
 	return true;
 }
 

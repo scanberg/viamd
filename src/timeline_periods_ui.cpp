@@ -5,6 +5,7 @@
 #include <imgui_internal.h>
 #include <implot.h>
 #include <imgui_widgets.h>
+#include <frame_axis.h>
 #include <app/IconsFontAwesome6.h>
 
 #include <core/md_common.h>
@@ -82,26 +83,11 @@ bool is_hot(uint32_t id) {
 }
 
 double frame_time(const TimelinePeriodAxis& a, double frame) {
-    const int last = a.num_frames - 1;
-    const double f = MD_CLAMP(frame, 0.0, (double)last);
-    const int f0 = (int)f;
-    const int f1 = MD_MIN(f0 + 1, last);
-    const double t = f - f0;
-    return a.frame_times[f0] * (1.0 - t) + a.frame_times[f1] * t;
+    return time_at_frame(a.frame_times, (size_t)a.num_frames, frame);
 }
 
 int nearest_frame(const TimelinePeriodAxis& a, double time) {
-    const float* ft = a.frame_times;
-    int lo = 0;
-    int hi = a.num_frames - 1;
-    if (hi <= 0 || time <= ft[0]) return 0;
-    if (time >= ft[hi]) return hi;
-    while (hi - lo > 1) {
-        const int mid = (lo + hi) / 2;
-        if (ft[mid] <= time) lo = mid;
-        else hi = mid;
-    }
-    return (time - ft[lo] <= ft[hi] - time) ? lo : hi;
+    return (int)(frame_at_time(a.frame_times, (size_t)a.num_frames, time) + 0.5);
 }
 
 float plot_width() { return MD_MAX(ui.plot_x1 - ui.plot_x0, 1.0f); }
@@ -148,10 +134,10 @@ TimelinePeriodPart lit_part(const TimelinePeriod& r) {
 
 void tooltip_frames(const TimelinePeriodAxis& a, bool marker, int beg, int end) {
     if (marker) {
-        if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg], a.time_unit);
+        if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg] * a.display_scale, a.time_unit);
         else                ImGui::Text("Frame %d", beg);
     } else {
-        if (a.time_unit[0]) ImGui::Text("Frames %d to %d, %d frames (%.4g to %.4g %s)", beg, end, end - beg + 1, a.frame_times[beg], a.frame_times[end], a.time_unit);
+        if (a.time_unit[0]) ImGui::Text("Frames %d to %d, %d frames (%.4g to %.4g %s)", beg, end, end - beg + 1, a.frame_times[beg] * a.display_scale, a.frame_times[end] * a.display_scale, a.time_unit);
         else                ImGui::Text("Frames %d to %d, %d frames", beg, end, end - beg + 1);
     }
 }
