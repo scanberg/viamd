@@ -3133,8 +3133,8 @@ static void context_targets_update(ApplicationState* state, const PickingHit& hi
     if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
-        bool formed;
-        if (picked_bond(*state, hit.local_idx, &pair, &flags, &formed)) {
+        PickedBondSource source;
+        if (picked_bond(*state, hit, &pair, &flags, &source)) {
             context_targets.hit_bond[0] = pair.idx[0];
             context_targets.hit_bond[1] = pair.idx[1];
         }

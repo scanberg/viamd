@@ -158,9 +158,14 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
 // The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
 // dashed as it says (BondDashes), and the non-covalent bonds of the system, dashed by kind, over the sticks of a
-// licorice or a ball and stick.
+// licorice or a ball and stick. They pick as bonds of the representation, in the range reserved for it this frame
+// (PickingDomain_Bond, keyed by its id), as long as that holds them all; otherwise as their atoms.
 // Nothing for the others. The copies and the subset are the caller's.
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
+// How many weak bonds it draws (representation_weak_bond_draw_ops), 0 for none: what its picking range is reserved for
+size_t representation_weak_bond_count(const ApplicationState& app, const Representation& rep);
+// The atoms of weak bond i of the representation of id rep_id, as it draws them; false when there is none such
+bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState& app, uint32_t rep_id, size_t i);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the

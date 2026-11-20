@@ -103,6 +103,10 @@ typedef uint64_t PickingSourceID;
 typedef uint64_t InteractionSurfaceID;
 
 constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
+// A bond: what the middle half of a bond picks as, the quarters at its ends picking as their atoms, however it is drawn.
+// Of the system (key 0): a bond of the graph, or one formed in the frame shown after them (picked_bond). Or a weak bond
+// of a representation (key: its id), in a range of its own: one of a Bonds representation, a non-covalent bond over the
+// sticks of a licorice.
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
@@ -1384,11 +1388,12 @@ struct PickingRange {
 };
 
 // Sized for atoms, bonds and one range per keyed object. A VeloxChem file publishes four dipole
-// groups today (ground state plus the electric, magnetic and velocity transition sets); reserving
-// past the end fails rather than aliasing, which costs those objects their picking, nothing else.
+// groups today (ground state plus the electric, magnetic and velocity transition sets), and each
+// representation which draws weak bonds has a range of its own; reserving past the end fails
+// rather than aliasing, which costs those objects their picking, nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[32] = {};
+    PickingRange ranges[64] = {};
 };
 
 struct PickingReadbackSlot {
@@ -2725,9 +2730,17 @@ md_atom_flags_t frame_atom_flags(const ApplicationState& app, size_t atom_idx, i
 // after them. False when there is none.
 bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags);
 
-// The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
-// come after them as they are drawn (formed is set for those)
-bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
+// What a picked bond is (picked_bond)
+enum class PickedBondSource {
+    System,     // A bond of the system
+    Formed,     // Formed in the frame shown, the bonds tracked (bond_tracking): not a bond of the system
+    Unbonded,   // No bond: two atoms a representation draws a bond between (a pair its filter gave) which none joins
+};
+
+// The bond a hit of the bond picking domain names: of the system, a bond of the graph or one formed in the frame shown,
+// which come after them as they are drawn; or a weak bond of a representation, that of the system (or of the frame)
+// between its atoms, as of the frame shown. Its atoms, its flags (none when unbonded) and what it is.
+bool picked_bond(const ApplicationState& app, const PickingHit& hit, md_atom_pair_t* pair, md_bond_flags_t* flags, PickedBondSource* source);
 
 // Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights, and what clicking it
 // selects (the atoms of a bond, the residue of a cartoon segment, ...)

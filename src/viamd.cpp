@@ -615,8 +615,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
-// A bond of the system, or one formed in the frame shown (picked_bond)
-static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, md_atom_pair_t pair, md_bond_flags_t flags, bool formed) {
+// A bond of the system, one formed in the frame shown, or two atoms a representation draws a bond between which none
+// joins (picked_bond)
+static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, md_atom_pair_t pair, md_bond_flags_t flags, PickedBondSource source) {
     const md_system_t& sys = state.mold.sys;
     const md_system_state_t& sys_state = state.mold.state;
     const int order = md_bond_order(flags);
@@ -657,10 +658,12 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     case MD_BOND_KIND_HYDROGEN:    tooltip_list_add(&kind, "hydrogen bond"); break;
     default: break;
     }
+    // Of no flags
+    if (source == PickedBondSource::Unbonded) tooltip_list_add(&kind, "no bond (a pair of the representation)");
     tooltip_row_list(req, MD_STR_LIT("kind"), kind);
 
     // The fragment it is within, or the two it joins: "amine / phenyl"
-    if (!formed) {
+    if (source == PickedBondSource::System) {
         const md_fragment_idx_t f0 = md_system_fragment_find_by_atom_idx(&sys, pair.idx[0]);
         const md_fragment_idx_t f1 = md_system_fragment_find_by_atom_idx(&sys, pair.idx[1]);
         if (f0 != MD_FRAGMENT_NONE && f0 == f1) {
@@ -677,17 +680,17 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     // Across a periodic boundary the bond is the short way round
     md_float3_t d = md_float3_sub(md_state_coord(&sys_state, pair.idx[1]), md_state_coord(&sys_state, pair.idx[0]));
     md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
-    tooltip_row(req, MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_float3_length(d));
+    tooltip_row(req, source == PickedBondSource::Unbonded ? MD_STR_LIT("distance") : MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_float3_length(d));
 
-    md_str_writer_t source = md_str_writer_create(req->alloc);
-    if (formed) {
+    md_str_writer_t from = md_str_writer_create(req->alloc);
+    if (source == PickedBondSource::Formed) {
         // Not a bond of the system: tracked, of this frame alone
-        tooltip_list_add(&source, "formed in this frame");
-    } else {
-        tooltip_list_add(&source, md_bond_origin_name(md_bond_origin(flags)));
-        if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&source, "order perceived");
+        tooltip_list_add(&from, "formed in this frame");
+    } else if (source == PickedBondSource::System) {
+        tooltip_list_add(&from, md_bond_origin_name(md_bond_origin(flags)));
+        if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&from, "order perceived");
     }
-    tooltip_row_list(req, MD_STR_LIT("source"), source);
+    tooltip_row_list(req, MD_STR_LIT("source"), from);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     script_write_position(&index, state.script.language, "atom", pair.idx[0]);
@@ -1044,8 +1047,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
     } else if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
-        bool formed;
-        if (picked_bond(state, hit.local_idx, &pair, &flags, &formed)) tooltip_bond(req, state, pair, flags, formed);
+        PickedBondSource source;
+        if (picked_bond(state, hit, &pair, &flags, &source)) tooltip_bond(req, state, pair, flags, source);
     } else if (hit.domain == PickingDomain_BackboneSegment) {
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.res_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
@@ -6868,12 +6871,53 @@ static md_bond_flags_t frame_bond_flags(const ApplicationState& app, size_t idx,
     return (lo < chem->num_bonds && chem->bond_idx[lo] == idx) ? chem->bond_flags[lo] : flags;
 }
 
-bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed) {
+// The bond between the two atoms of a pair, as of the frame shown: of the system (the graph, the bonds outside of it in
+// its range, the non-covalent ones), or formed in the frame
+static PickedBondSource bond_between(const ApplicationState& app, md_atom_pair_t pair, md_bond_flags_t* flags) {
     const md_system_t& sys = app.mold.sys;
+    *flags = MD_BOND_FLAG_NONE;
+    const md_atom_idx_t a = pair.idx[0], b = pair.idx[1];
+    if (a < 0 || b < 0 || (size_t)a >= sys.atom.count || (size_t)b >= sys.atom.count) return PickedBondSource::Unbonded;
+    md_bond_idx_t idx = md_system_bond_find(&sys, a, b);
+    if (idx == -1) idx = md_bond_find_noncovalent(&sys.bond, a, b);
+    if (idx == -1 && sys.bond.pairs && sys.bond.flags) {
+        // The elastic and metallic bonds have no connectivity: all of the range is looked through, as for the tooltip
+        // of an atom of a metal
+        for (size_t i = 0; i < sys.bond.count && idx == -1; ++i) {
+            if (md_bond_is_graph(sys.bond.flags[i])) continue;
+            const md_atom_pair_t p = sys.bond.pairs[i];
+            if ((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a)) idx = (md_bond_idx_t)i;
+        }
+    }
+    if (idx != -1) {
+        *flags = (size_t)idx < sys.bond.count ? frame_bond_flags(app, (size_t)idx, sys.bond.flags[idx]) : md_system_bond_flags(&sys, idx);
+        return PickedBondSource::System;
+    }
+    const md_bond_delta_t* delta = bond_tracking_delta(&app);
+    for (size_t k = 0; delta && k < delta->num_formed; ++k) {
+        const md_atom_pair_t p = delta->formed_pair[k];
+        if ((p.idx[0] == a && p.idx[1] == b) || (p.idx[0] == b && p.idx[1] == a)) {
+            *flags = frame_bond_flags(app, sys.bond.count + k, delta->formed_flags[k]);
+            return PickedBondSource::Formed;
+        }
+    }
+    return PickedBondSource::Unbonded;
+}
+
+bool picked_bond(const ApplicationState& app, const PickingHit& hit, md_atom_pair_t* pair, md_bond_flags_t* flags, PickedBondSource* source) {
+    if (hit.domain != PickingDomain_Bond) return false;
+    if (hit.key != 0) {
+        // A weak bond of a representation: its atoms are what it has of its own
+        if (!representation_weak_bond_pair(pair, app, (uint32_t)hit.key, hit.local_idx)) return false;
+        *source = bond_between(app, *pair, flags);
+        return true;
+    }
+    const md_system_t& sys = app.mold.sys;
+    const size_t idx = hit.local_idx;
     if (idx < sys.bond.count) {
         *pair = sys.bond.pairs[idx];
         *flags = frame_bond_flags(app, idx, sys.bond.flags[idx]);
-        *formed = false;
+        *source = PickedBondSource::System;
         return true;
     }
     const md_bond_delta_t* delta = bond_tracking_delta(&app);
@@ -6881,7 +6925,7 @@ bool picked_bond(const ApplicationState& app, size_t idx, md_atom_pair_t* pair, 
     if (delta && k < delta->num_formed) {
         *pair = delta->formed_pair[k];
         *flags = frame_bond_flags(app, idx, delta->formed_flags[k]);
-        *formed = true;
+        *source = PickedBondSource::Formed;
         return true;
     }
     return false;
@@ -7565,8 +7609,8 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
     } else if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
-        bool formed;
-        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+        PickedBondSource source;
+        if (picked_bond(app, hit, &pair, &flags, &source)) {
             // Grow both bond atoms by the current granularity, same as for atom hits
             mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[0], granularity, app.mold.sys);
             mask_set_atom_by_selection_granularity(mask, (size_t)pair.idx[1], granularity, app.mold.sys);
@@ -7659,11 +7703,17 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
             // Each glyph representation shown: its points, keyed by the representation. Read and placed on the frame
             // here, so that what it reserves is what it draws this frame.
+            // One range per shown representation which draws weak bonds (those of a Bonds representation, the
+            // non-covalent bonds over the sticks of a licorice), keyed by its id: weak bond i picks as beg + i
+            // (representation_weak_bond_draw_ops, picked_bond)
             for (size_t j = 0; j < md_array_size(state->representation.reps); ++j) {
                 Representation& rep = state->representation.reps[j];
-                if (rep.type != RepresentationType::Glyphs || !representation_shown(*state, rep)) continue;
-                if (!glyphs_update(&rep.glyphs, state->mold.sys, state->mold.state)) continue;
-                picking_range_reserve(NULL, space, PickingDomain_Glyph, glyphs_count(rep.glyphs), rep.node.id);
+                if (!rep.type_is_valid || !representation_shown(*state, rep)) continue;
+                if (rep.type == RepresentationType::Glyphs && glyphs_update(&rep.glyphs, state->mold.sys, state->mold.state)) {
+                    picking_range_reserve(NULL, space, PickingDomain_Glyph, glyphs_count(rep.glyphs), rep.node.id);
+                }
+                const size_t count = representation_weak_bond_count(*state, rep);
+                if (count > 0) picking_range_reserve(NULL, space, PickingDomain_Bond, count, rep.node.id);
             }
             break;
         }
