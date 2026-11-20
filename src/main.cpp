@@ -1762,6 +1762,9 @@ int main(int argc, char** argv) {
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
         if (state.gpu_plane) md_gpu_texture_destroy(state.gpu_plane);
+        if (state.gpu_grad) md_gpu_texture_destroy(state.gpu_grad);
+        if (state.gpu_normals) md_gpu_texture_destroy(state.gpu_normals);
+        state.gpu_grad = state.gpu_normals = nullptr;
         state.gpu_plane = nullptr;
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
@@ -8220,6 +8223,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .color_volume = rep.electronic_structure.color_vol.tex_id,
                     .field_volume = use_field ? rep.electronic_structure.field_vol.tex_id : 0,
                     .field_colormap = use_field ? surface_field_colormap_texture(&rep.electronic_structure.field_vol, rep.electronic_structure.field_map.colormap) : 0,
+                    .normal_volume = es_normals_of(rep.electronic_structure.density_vol.tex_id),
                 },
                 .matrix = {
                     .model = rep.electronic_structure.density_vol.texture_to_world,

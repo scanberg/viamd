@@ -757,6 +757,9 @@ struct FieldRef {
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
+    // The analytic normals of density_vol (RGB10_A2, its dims), where its evaluation made them (es_normals_of): what the
+    // raycast isosurfaces are shaded with
+    uint32_t normal_tex = 0;
     EsIsoMesh* iso_mesh = nullptr;     // owned: the mesh rendering mode's surfaces, made on first use
     VolumeResolution resolution = VolumeResolution::Mid;
 
@@ -1417,6 +1420,11 @@ inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 // GPU_PLANE_DIM^2 x 1 R32F texture, the largest plane image (es_plane_images.h)
 inline constexpr uint32_t GPU_PLANE_DIM = 2048;
 
+// The largest grid the analytic normals of an evaluation are made for (ApplicationState::gpu_grad): 20 bytes a voxel
+// on the device while it is evaluated (the gradient in float, its normals packed), 4 in the GL texture. Past it the
+// isosurfaces take their normals from the volume's differences.
+inline constexpr size_t GPU_GRAD_MAX_VOXELS = size_t(1) << 25;
+
 // What is derived from the core a loader gives and the user edits (the bonds, what the residues are, the structures,
 // the chemistry: md_system_infer), inferred in the background and put in place of what the system had between frames.
 // Until then the system is shown as it was: as loaded, its atoms, as spheres where a representation needs what is not
@@ -1452,6 +1460,16 @@ struct ApplicationState {
     // Where the evaluations write and their readbacks read: gpu_volume when null. An evaluation into another
     // scratch sets it for its call (gpu_eval_target_scope, viamd.cpp); a readback queued records its own.
     md_gpu_texture_t gpu_eval_target = nullptr;
+    // Normals of what is evaluated (for the raycast isosurfaces, es_normals_of): when gpu_eval_normals names a GL
+    // texture (RGB10_A2, the grid's dims) for the call, the orbitals' and densities' evaluations write their analytic
+    // gradient into gpu_grad (RGBA32F) and set gpu_grad_written, and the readback packs it into gpu_normals (R32UI,
+    // md_gto_gpu_gradient_pack) and fills that texture too. Both made for the largest grid asked for so far
+    // (gpu_grad_dim), up to GPU_GRAD_MAX_VOXELS; past it no normals.
+    uint32_t         gpu_eval_normals = 0;
+    bool             gpu_grad_written = false;
+    md_gpu_texture_t gpu_grad    = nullptr;
+    md_gpu_texture_t gpu_normals = nullptr;
+    int              gpu_grad_dim[3] = {};
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
@@ -1466,6 +1484,8 @@ struct ApplicationState {
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
+        uint32_t          normal_tex = 0;       // GL texture to receive the normals (gpu_eval_normals), 0: none
+        md_gpu_mem_t      rb_normals = {};      // their HOST_READ block
         // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
         // readback is queued when it is (gpu_volume_jobs_poll), of this grid
         void*             density_job = nullptr;
@@ -3118,6 +3138,10 @@ bool gpu_volume_evaluation_available(const ApplicationState* state);
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
 // stream instead of reading it back. False when the GPU backend is unavailable, in which case there
 // is no scratch volume to run anything over.
+// The analytic normals of a density volume's texels (RGB10_A2: ElectronicStructureRepresentation::normal_tex), where its
+// last evaluation made them along with it; 0 where it did not (the texels came without: from the CPU, of ELF, or before)
+uint32_t es_normals_of(uint32_t vol_tex);
+
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
 

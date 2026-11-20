@@ -299,6 +299,7 @@ static void clear_owned(Representation* rep) {
     rep->bond_pairs = nullptr;
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
+    rep->electronic_structure.normal_tex         = 0;
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
@@ -377,6 +378,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     gpu_volume_job_cancel(state, rep.electronic_structure.density_vol.tex_id);
     gpu_volume_jobs_drain(state);
     if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
+    if (rep.electronic_structure.normal_tex) gl::free_texture(&rep.electronic_structure.normal_tex);
     if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
     for (ElectronicStructurePlaneImage& im : rep.electronic_structure.plane_images) {
         for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);

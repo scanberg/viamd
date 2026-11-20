@@ -240,6 +240,22 @@ vec3 gradient_view(vec3 p) {
         sample_volume(p + dz) - sample_volume(p - dz));
 }
 
+#if defined(USE_NORMALS)
+uniform sampler3D u_tex_normals;    // RGB10A2: the direction of the field's gradient, (n + 1) / 2, in world axes
+uniform mat3      u_normal_to_view; // world directions to view space (the inverse transpose of the view)
+#endif
+
+// The direction of the field's gradient at p in view space (not normalized): from the normals the evaluation made of
+// its analytic gradient where there are those (and they agree enough to filter to more than half a unit), else
+// gradient_view's differences a voxel apart
+vec3 surface_normal_view(vec3 p) {
+#if defined(USE_NORMALS)
+    vec3 n = texture(u_tex_normals, p).xyz * 2.0 - 1.0;
+    if (dot(n, n) > 0.25) return u_normal_to_view * n;
+#endif
+    return gradient_view(p);
+}
+
 vec4 surface_color(vec3 p, int i) {
     vec4 base = u_iso_colors[i];
 #if defined(USE_COLOR_VOLUME)
@@ -483,7 +499,7 @@ void main() {
 
                 int  i  = idx[h];
                 vec3 ph = mix(pa, pb, frac[h]);
-                vec3 N  = gradient_view(ph);
+                vec3 N  = surface_normal_view(ph);
                 float nl = length(N);
                 N = (nl > 1e-20) ? N / nl : V;
                 if (dot(N, V) < 0.0) N = -N;

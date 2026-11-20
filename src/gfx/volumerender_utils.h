@@ -85,6 +85,10 @@ struct IsoRenderDesc {
         uint32_t color_volume   = 0;    // optional, see iso.use_color_volume
         uint32_t field_volume   = 0;    // the box of density_volume at any resolution, see iso.use_field
         uint32_t field_colormap = 0;    // 2D, N x 1
+        // optional: RGB10A2, of density_volume's dimensions, the direction of the field's gradient at each voxel in
+        // the axes of the space matrix.model maps to, as (n + 1) / 2 (md_gto_gpu_gradient_pack). The surfaces' normals
+        // are then those, filtered, rather than the volume's differences a voxel apart (where they are near 0, those).
+        uint32_t normal_volume  = 0;
     } texture;
 
     struct {
