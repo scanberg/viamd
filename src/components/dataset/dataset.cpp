@@ -1,5 +1,6 @@
 ﻿#include <viamd_event.h>
 #include <window_menu.h>
+#include <script_suggestions.h>
 #include <viamd.h>
 #include <representation.h>
 #include <color_utils.h>
@@ -3663,15 +3664,18 @@ struct Dataset : viamd::EventHandler {
         size_t   noncovalent = 0;
     } bond_counts;
 
-    // "ALA 23 CA (12)": the residue the file gives the atom, its name, and its number from 1, as the viewport has it
-    static void bond_atom_label(char* buf, size_t cap, const md_system_t& sys, md_atom_idx_t atom) {
+    // "ALA 23 CA atom(12)": the residue the file gives the atom, its name, and its position as the script's language
+    // writes it (script_write_position: atom(12) in mdscript, particle[11] in VIAL), as the tooltips have it
+    static void bond_atom_label(char* buf, size_t cap, const md_system_t& sys, md_atom_idx_t atom, script::Language lang) {
         const md_str_t name = md_atom_name(&sys.atom, (size_t)atom);
         const md_residue_idx_t res = md_system_residue_find_by_atom_idx(&sys, (size_t)atom);
+        char pos[64];
+        script_print_position(pos, sizeof(pos), lang, "atom", atom);
         if (res >= 0) {
             const md_str_t res_name = md_system_residue_name(&sys, (size_t)res);
-            snprintf(buf, cap, MD_STR_FMT " %d " MD_STR_FMT " (%d)", MD_STR_ARG(res_name), (int)md_system_residue_seq_id(&sys, (size_t)res), MD_STR_ARG(name), (int)atom + 1);
+            snprintf(buf, cap, MD_STR_FMT " %d " MD_STR_FMT " %s", MD_STR_ARG(res_name), (int)md_system_residue_seq_id(&sys, (size_t)res), MD_STR_ARG(name), pos);
         } else {
-            snprintf(buf, cap, MD_STR_FMT " (%d)", MD_STR_ARG(name), (int)atom + 1);
+            snprintf(buf, cap, MD_STR_FMT " %s", MD_STR_ARG(name), pos);
         }
     }
 
@@ -3698,8 +3702,8 @@ struct Dataset : viamd::EventHandler {
             ImGui::PushID((int)i);
             ImGui::TableSetColumnIndex(0);
             char a[96], b[96], label[200];
-            bond_atom_label(a, sizeof(a), sys, pair.idx[0]);
-            bond_atom_label(b, sizeof(b), sys, pair.idx[1]);
+            bond_atom_label(a, sizeof(a), sys, pair.idx[0], data.script.language);
+            bond_atom_label(b, sizeof(b), sys, pair.idx[1], data.script.language);
             snprintf(label, sizeof(label), "%s - %s", a, b);
             ImGui::Selectable(label, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
             if (ImGui::IsItemHovered()) {

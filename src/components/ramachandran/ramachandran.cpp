@@ -41,6 +41,7 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <script_suggestions.h>
 #include <serialization_utils.h>
 #include <timeline_periods_ui.h>
 #include <filter_input.h>
@@ -1622,7 +1623,10 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::Text("%.*s %d", (int)name.len, name.ptr, seq_id);
             }
         } else {
-            ImGui::Text("CA atom[%d]", sys.protein_backbone.segment.atoms[h.seg].ca + 1);
+            // its CA by its position, as the script's language writes it (script_write_position)
+            char pos[64];
+            script_print_position(pos, sizeof(pos), app->script.language, "atom", sys.protein_backbone.segment.atoms[h.seg].ca);
+            ImGui::Text("CA %s", pos);
         }
         ImGui::Text("\xcf\x86 %.1f\xc2\xb0   \xcf\x88 %.1f\xc2\xb0", MD_RAD_TO_DEG(h.ang.phi), MD_RAD_TO_DEG(h.ang.psi));
         const Region r = ref_region(h.type, h.ang.phi, h.ang.psi);

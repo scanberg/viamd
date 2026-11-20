@@ -189,6 +189,11 @@ void draw_representations_window(ApplicationState* app);
 bool draw_representation_type(ApplicationState* app, Representation& rep, bool atoms_only);
 bool draw_representation_coloring(ApplicationState* app, Representation& rep);
 bool draw_representation_geometry(ApplicationState* app, Representation& rep);
+// Whether the geometry of the representation's type is one row (a spacefill's radius): drawn with the type then, not
+// in a section of its own, as a section of one row is only a header in the way
+static inline bool representation_geometry_is_one_row(const Representation& rep) {
+    return rep.type == RepresentationType::SpaceFill;
+}
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);

@@ -175,6 +175,10 @@ set(SRC_FILES
     src/display_units_settings.cpp
     src/surface_field.cpp
     src/gpu_job.cpp
+    src/gostshyp.cpp
+    src/field.cpp
+    src/glyphs.cpp
+    src/qm_placement.cpp
     src/event.cpp
     src/file_list.cpp
     src/load_order.h
@@ -331,6 +335,8 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
     src/shaders/shadows/screen_space.frag
+    src/shaders/glyphs/point_glyph.vert
+    src/shaders/glyphs/point_glyph.frag
 )
 
 # Bake shaders into a single header file

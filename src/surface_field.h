@@ -17,8 +17,10 @@ struct SurfaceFieldPointsWork;
 // SURFACE FIELDS
 //
 // A FIELD is a scalar function over R^3 with an identity and a unit. A SURFACE is whatever a
-// representation draws. A surface field colours the one by the other, and keeps three things apart
-// that used to be one:
+// representation draws. A surface field colours the one by the other. The same evaluation, over all of
+// a grid (no density in the desc), is the volume of a field shown on its own: every kind here is also a
+// field of the electronic structure representation (viamd.h, electronic_structure_source_field_kind),
+// as an isosurface, a volume or on planes. The rest of this keeps three things apart that used to be one:
 //
 //   what      the field, evaluated by mdlib (md_gto_int for potentials, md_gto_iso for what is made of
 //             orbitals)
@@ -97,6 +99,28 @@ enum class SurfaceFieldKind {
     // Made of the total density's orbitals (md_qm_density_orbitals) and its gradient: on the CPU by md_gto_iso in
     // double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
     DensityScaleLength,
+
+    // The GOSTSHYP wall of a run under pressure (gostshyp.h): the potential of its Gaussians, V1 = sum_j p_j g_j,
+    // whose expectation value is the wall's energy; and the potential the electrons feel, the Fock operator's
+    // V1 - V2, sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j.(r - c_j)). Hartree. Analytic sums of the tesserae's
+    // Gaussians, placed rigidly on the QM atoms as they are; zero beyond the cavity's reach.
+    GostshypWallPotential,
+    GostshypEffectivePotential,
+
+    // rho(r) V1(r): where the energy of the GOSTSHYP wall is, integrating to it. Hartree / bohr^3. The density made of
+    // the total density's orbitals (md_qm_density_orbitals), evaluated only where the wall reaches: zero elsewhere.
+    GostshypEnergyDensity,
+
+    // The QM region's ground state electron density, of both spins: made of the total density's orbitals
+    // (md_qm_density_orbitals), as the ratios above. Electrons / bohr^3.
+    ElectronDensity,
+
+    // The electron localization function (ELF, md_qm_elf) and the localized orbital locator (LOL, md_qm_lol) of the
+    // ground state, of both spins together: in [0, 1]. Made of each spin's density, its gradient and its kinetic energy
+    // density (md_qm_kinetic_orbitals), in double on the CPU. A volume of the whole of either is made faster on the
+    // GPU by its own kernel (viamd.cpp); this is what colours a surface, and the volume without that kernel.
+    ElectronLocalization,
+    LocalizedOrbitalLocator,
     Count
 };
 
@@ -123,6 +147,8 @@ struct SurfaceFieldKindInfo {
     md_unit_t         unit = {};
     SurfaceFieldScale scale = SurfaceFieldScale::Diverging;
     int               colormap = COLOR_SCALE_COLORMAP_RDBU;   // the colour map it starts out on
+    double            iso = 0.0;        // the isovalue an isosurface of it starts out at (both signs, for Diverging)
+    bool              unit_interval = false;  // its values are in [0, 1] by definition: the range is that, not the values'
 };
 
 const SurfaceFieldKindInfo& surface_field_kind_info(SurfaceFieldKind kind);
@@ -179,7 +205,10 @@ struct SurfaceFieldDesc {
     size_t                   num_basis_atoms = 0;       // the basis sits (surface_field_uses_basis)
 
     // The surfaces: the isosurfaces at iso_values of `density`, sampled on `grid` (bohr, x fastest,
-    // voxel centres at (i + 0.5) * spacing)
+    // voxel centres at (i + 0.5) * spacing). Without a density, all of the grid: the field as a volume of its own,
+    // on the grid itself (or for the electrostatic potential the coarser one of surface_field_grid), its span over
+    // all of it (the values of exactly zero left out: where a field of a cutoff does not reach). Complete once
+    // every voxel holds a value.
     const md_grid_t*         grid = nullptr;
     const float*             density = nullptr;
     const float*             iso_values = nullptr;
@@ -204,13 +233,20 @@ struct SurfaceFieldDesc {
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
-    return kind == SurfaceFieldKind::ElectrostaticPotential || kind == SurfaceFieldKind::AverageLocalIonizationEnergy ||
-           kind == SurfaceFieldKind::LocalElectronAttachmentEnergy || kind == SurfaceFieldKind::DensityScaleLength;
+    return kind != SurfaceFieldKind::EmbeddingPotential;
 }
 
 // Whether the system has what the field is made from. Cheap: the attributes are looked up, and for the
 // ionization and attachment energies the orbitals' occupations (and energies) read.
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
+
+// The density and the kinetic energy density of each spin as md_gto_iso fields, what ELF and LOL are made of
+// (md_gto_iso_field_create_products: the density's orbitals over the basis, md_qm_kinetic_orbitals' over its
+// derivative basis): one spin, the totals, for a closed shell. atom_xyz in bohr, one per atom of the basis.
+// Returns the spins (1 or 2), whose fields are the caller's; 0 on failure, with none made.
+struct md_gto_iso_field_t;
+int localization_fields_create(md_gto_iso_field_t* out_rho[2], md_gto_iso_field_t* out_tau[2], const md_system_t& sys, const md_float3_t* atom_xyz,
+                               size_t num_atoms);
 
 // What the Embedding Potential of a dataset is made of: how many of the environment's sites carry
 // each source (a finite value, not all zero). 'polarizable' counts the sites with a polarizability

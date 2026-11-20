@@ -196,18 +196,6 @@ static void job_cancel(IsoMeshes* m) {
 // made (iso_field_release) goes when that task ends. A task whose result is no longer wanted is orphaned and
 // cleaned up once it ends (iso_meshes_collect); nothing here waits for one, but iso_meshes_shutdown.
 
-// What an electronic structure representation's field is of, copied for the task that makes it
-struct IsoFieldSpec {
-    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
-    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
-    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
-    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
-    int orbital_idx = 0;
-    int excited_state_idx = 0;
-    int nto_lambda_idx = 0;
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
-};
-
 struct IsoBuild {
     enum Kind { Field, Set } kind = Field;
     task_system::Job task;       // a cancelled one (a load) made nothing to be taken
@@ -218,7 +206,7 @@ struct IsoBuild {
     md_float3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
     // Field
-    IsoFieldSpec spec = {};
+    FieldRef spec = {};
     md_gto_iso_field_t* field = nullptr;
     // Set
     const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS] = {};
@@ -238,7 +226,7 @@ static uint32_t  g_num_builds = 0;
 static md_gto_iso_field_t* g_dead_fields[256];   // let go of while a set of them was being made
 static uint32_t  g_num_dead = 0;
 
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec);
 
 static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
@@ -466,6 +454,12 @@ static constexpr double JOB_POLL_MS = 3.0;
 // not take). g: where the fields' atoms are.
 static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, const IsoFieldGeometry& g) {
     if (!state->gpu_device || !state->gpu_stream) return -1;
+    // a field made of other fields (ELF, LOL) is a set of its own on the device: with others, on the CPU
+    for (uint32_t k = 0; k < n && n > 1; ++k) {
+        md_gto_iso_field_info_t info;
+        md_gto_iso_field_info(&info, slots[k].field);
+        if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE) return -1;
+    }
     if (m->gpu_set) return 1;
     if (m->set_failed_key == m->fields_key) return -1;
     IsoBuild* b = (IsoBuild*)m->set_build;
@@ -794,7 +788,7 @@ static bool iso_meshes_busy(const IsoMeshes* m) {
 struct EsIsoMesh {
     uint64_t field_key = 0;
     md_gto_iso_field_t* field = nullptr;
-    IsoFieldSpec field_spec = {};   // what it is of
+    FieldRef field_spec = {};   // what it is of
     bool field_failed = false;
     md_float3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
@@ -807,29 +801,27 @@ struct EsIsoMesh {
     ColorScaleSpan span = {};
 };
 
-static bool field_spec_equal(const IsoFieldSpec& a, const IsoFieldSpec& b) {
+static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
            a.transition_density_component == b.transition_density_component && a.orbital_idx == b.orbital_idx &&
            a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx &&
            a.density_property_key == b.density_property_key;
 }
 
-static IsoFieldSpec field_spec_of(const ElectronicStructureRepresentation& es) {
-    IsoFieldSpec f;
-    f.source = es.source;
-    f.spin = es.spin;
-    f.nto_component = es.nto_component;
-    f.transition_density_component = es.transition_density_component;
-    f.orbital_idx = es.orbital_idx;
-    f.excited_state_idx = es.excited_state_idx;
-    f.nto_lambda_idx = es.nto_lambda_idx;
-    f.density_property_key = es.density_property_key;
-    return f;
+// What a representation's field is of, copied for the task that makes it: the field (FieldRef), as that is all a
+// field of the electronic structure is
+static FieldRef field_spec_of(const ElectronicStructureRepresentation& es) {
+    return es.shown;
 }
+
+// Where ELF and LOL are meshed at all: they are 0 where the density is below this, which bounds their surfaces
+// (both fall to 0 in a gaussian basis' tails by themselves, so it changes nothing an isovalue of interest shows;
+// the volume takes them without)
+static constexpr double LOCALIZATION_MESH_RHO_MIN = 1.0e-6;
 
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& es) {
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -865,6 +857,26 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldS
         const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.density_property_key);
         return attr ? field_create_density(g, attr->path, nullptr) : nullptr;
     }
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator: {
+        // made of each spin's density and kinetic energy density, which it takes; bounded through theirs
+        md_gto_iso_field_t *rho[2], *tau[2];
+        const int ns = localization_fields_create(rho, tau, *g.sys, g.atom_xyz, g.num_atoms);
+        if (!ns) return nullptr;
+        md_gto_iso_field_t* rb = ns == 2 ? rho[1] : nullptr;
+        md_gto_iso_field_t* tb = ns == 2 ? tau[1] : nullptr;
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_gto_iso_field_t* f = es.source == ElectronicStructureSource::ElectronLocalization ?
+            md_gto_iso_field_create_elf(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, MD_QM_ELF_D_MIN, heap) :
+            md_gto_iso_field_create_lol(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, heap);
+        if (!f) {
+            for (int s = 0; s < 2; ++s) {
+                md_gto_iso_field_destroy(rho[s]);
+                md_gto_iso_field_destroy(tau[s]);
+            }
+        }
+        return f;
+    }
     default:
         return nullptr;
     }
@@ -875,14 +887,14 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
     uint64_t h = 0x150;
     const md_system_state_t& st = state->mold.state;
     if (st.xyz && st.num_atoms) h = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, h);
-    h = md_hash64(&es.source, sizeof(es.source), h);
-    h = md_hash64(&es.spin, sizeof(es.spin), h);
-    h = md_hash64(&es.nto_component, sizeof(es.nto_component), h);
-    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
-    h = md_hash64(&es.orbital_idx, sizeof(es.orbital_idx), h);
-    h = md_hash64(&es.excited_state_idx, sizeof(es.excited_state_idx), h);
-    h = md_hash64(&es.nto_lambda_idx, sizeof(es.nto_lambda_idx), h);
-    h = md_hash64(&es.density_property_key, sizeof(es.density_property_key), h);
+    h = md_hash64(&es.shown.source, sizeof(es.shown.source), h);
+    h = md_hash64(&es.shown.spin, sizeof(es.shown.spin), h);
+    h = md_hash64(&es.shown.nto_component, sizeof(es.shown.nto_component), h);
+    h = md_hash64(&es.shown.transition_density_component, sizeof(es.shown.transition_density_component), h);
+    h = md_hash64(&es.shown.orbital_idx, sizeof(es.shown.orbital_idx), h);
+    h = md_hash64(&es.shown.excited_state_idx, sizeof(es.shown.excited_state_idx), h);
+    h = md_hash64(&es.shown.nto_lambda_idx, sizeof(es.shown.nto_lambda_idx), h);
+    h = md_hash64(&es.shown.density_property_key, sizeof(es.shown.density_property_key), h);
     return h ? h : 1;
 }
 
@@ -902,7 +914,7 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // one shown is (so after the meshes' update, which begins that): for a large density each is seconds of the CPU and
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
-static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const IsoFieldSpec& spec) {
+static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const FieldRef& spec) {
     if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
         // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
         (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
@@ -924,14 +936,16 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es.iso_mesh) es.iso_mesh = new EsIsoMesh();
     EsIsoMesh& em = *es.iso_mesh;
+    // What the surfaces are of: the field, or the density it is shown on (and coloured by it)
+    const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
 
     // The field, made on a worker thread: the old one and its meshes stay until the new one is there. A field
     // of what is wanted at other positions (a frame since played) is taken all the same, as the newest there is,
     // but not while the mesh of the one shown is being made, if that is of the same: dropping its work for a
     // field that will itself be out of date by the time its mesh is would, on a trajectory played faster than
     // a mesh is made, leave the surface where it was. A field of something else (another orbital) is not taken.
-    const uint64_t field_key = electronic_structure_field_key(state, es);
-    const IsoFieldSpec spec = field_spec_of(es);
+    const uint64_t field_key = electronic_structure_field_key(state, g);
+    const FieldRef spec = field_spec_of(g);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
         !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
@@ -967,7 +981,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // One slot per distinct isovalue, its sheets those of the entries that share it: the + and - surfaces of
     // an orbital are the two sheets of one slot. A magnitude |f| = v is both sheets of f at v.
-    const bool magnitude = electronic_structure_uses_magnitude_toggle(es) && es.use_magnitude;
+    const bool magnitude = electronic_structure_uses_magnitude_toggle(g) && g.shown.use_magnitude;
     IsoMeshSlot slots[ISO_MESHES_MAX_SLOTS];
     uint32_t num_slots = 0;
     int      entry_slot[8];
@@ -1002,9 +1016,9 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // Coloured by a field: the field at the vertices
     bool vertex_field = false;
-    if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, state->mold.sys)) {
+    if (g.coloring == SurfaceColoring::Field && surface_field_available(g.field_kind, state->mold.sys)) {
         // What the values are of: the field (its kind, the frame) and the vertices
-        uint64_t source = md_hash64(&es.field_kind, sizeof(es.field_kind), 0x5f1e1d);
+        uint64_t source = md_hash64(&g.field_kind, sizeof(g.field_kind), 0x5f1e1d);
         source = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source);
         const md_system_state_t& st = state->mold.state;
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
@@ -1015,12 +1029,12 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             em.span = {};
             md_temp_scope_t temp = md_temp_begin();
             SurfaceFieldDesc desc = {};
-            desc.kind        = es.field_kind;
+            desc.kind        = g.field_kind;
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
             desc.density_cache = density_cache_of(state);
-            if (surface_field_uses_basis(es.field_kind)) {
+            if (surface_field_uses_basis(g.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
 #if MD_ENABLE_GPU
@@ -1046,7 +1060,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
                 em.span = surface_field_span_of(values, nv);
                 color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
+                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(g.field_kind).label, nv,
                              em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
             } else {
                 isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
@@ -1082,8 +1096,8 @@ void electronic_structure_meshes_update(ApplicationState* state, Representation*
     MD_ASSERT(rep);
     // as draw_representations_transparent_mesh draws them
     if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(*state, *rep)) return;
-    if (state->settings.isosurface_rendering != IsosurfaceRendering_Mesh || state->mold.sys.atom.count == 0) return;
     ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!es_mesh_mode(state, es) || state->mold.sys.atom.count == 0) return;
     if (es.display != ElectronicStructureDisplay::Isosurface) return;
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);

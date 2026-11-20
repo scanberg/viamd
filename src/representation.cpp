@@ -1,6 +1,7 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <representation.h>
+#include <field.h>
 
 #include <md_system.h>
 
@@ -277,6 +278,12 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // A system loaded under a representation that colours by a field: the field's values were of the
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
+    surface_field_invalidate(&rep->electronic_structure.source_vol);
+    // the points of the old one
+    glyphs_invalidate(&rep->glyphs);
+    if (rep->type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep->glyphs.points)) {
+        glyphs_select(&rep->glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
+    }
     // and its meshes of the old one's basis
     electronic_structure_mesh_free(state, &rep->electronic_structure);
 
@@ -294,7 +301,10 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.color_vol.tex_id   = 0;
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
+    rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
+    rep->electronic_structure.source_span        = ColorScaleSpan{};
     rep->electronic_structure.iso_mesh           = nullptr;
+    rep->glyphs.data                             = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -328,7 +338,9 @@ Representation* create_representation(ApplicationState* state, RepresentationTyp
     // the file. -1 (nothing occupied) clamps to 0, which is the only orbital there is to show.
     OrbitalFrontier frontier = {};
     es_orbital_frontier(&frontier, state->mold.sys, es_path::alpha_occupation);
-    rep->electronic_structure.orbital_idx = MD_MAX(frontier.homo_idx, 0);
+    rep->electronic_structure.shown.orbital_idx = MD_MAX(frontier.homo_idx, 0);
+    // as the windows' panels draw theirs, which was everyone's: an old workspace's surfaces look as they did
+    rep->electronic_structure.rendering = state->settings.isosurface_rendering;
     init_representation(state, rep);
 
     const uint32_t id = rep->node.id;
@@ -370,7 +382,9 @@ void remove_representation(ApplicationState* state, size_t idx) {
         for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
     }
     surface_field_free(&rep.electronic_structure.field_vol);
+    surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
+    glyphs_free(&rep.glyphs);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -612,6 +626,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
         case RepresentationType::SimulationBox:
+        case RepresentationType::Glyphs:
             return false;
         default:
             return true;
@@ -907,7 +922,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->type_is_valid |= rep->sphere_fallback;
         break;
     case RepresentationType::ElectronicStructure:
-        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.source);
+        rep->type_is_valid = electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.shown.source);
         if (rep->type_is_valid) {
             // what it waits for without blocking, asked again next frame
             again = !electronic_structure_representation_update(state, rep, colors);
@@ -921,6 +936,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         break;
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
+        break;
+    case RepresentationType::Glyphs:
+        // Read and placed every frame as the picking is reserved (glyphs_update), which follows the frame
+        rep->type_is_valid = glyphs_is_point_set(sys, rep->glyphs.points);
         break;
     default:
         MD_ASSERT(false);
@@ -1903,9 +1922,27 @@ done:
         box->enabled = false;
     }
 
+    {
+        // Every oriented point set (a cavity's tesserae: a run under pressure, in a continuum): its glyphs
+        md_attribute_id_t sets[16];
+        const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
+        for (size_t i = 0; i < n; ++i) {
+            if (!glyphs_is_oriented(state->mold.sys, sets[i])) continue;
+            Representation* g = create_representation(state, RepresentationType::Glyphs);
+            glyphs_select(&g->glyphs, state->mold.sys, sets[i]);
+            const md_str_t grp = glyphs_group(state->mold.sys, sets[i]);
+            const size_t sl = md_str_rfind_char(grp, '/');
+            const md_str_t parent = sl == MD_STR_NPOS ? grp : md_str_substr(grp, 0, sl);
+            const size_t sl2 = md_str_rfind_char(parent, '/');
+            const md_str_t nm = sl2 == MD_STR_NPOS ? parent : md_str_substr(parent, sl2 + 1, parent.len);
+            snprintf(g->name, sizeof(g->name), "%.*s", (int)nm.len, nm.ptr);
+            g->enabled = true;
+        }
+    }
+
     if (electronic_structure_present) {
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
-        snprintf(rep->name, sizeof(rep->name), "electronic structure");
+        snprintf(rep->name, sizeof(rep->name), "field");
         rep->enabled = true;
         electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
 
@@ -1952,7 +1989,8 @@ done:
 //     Type=5                              as an older VIAMD writes and reads it
 //     Bonds.Color=NearestAtom
 //     Attribute.Path=atom/charge
-//     ElectronicStructure.Source=MolecularOrbital
+//     ElectronicStructure.Path=es/orbital         the field shown (field.h) and its parameters
+//     ElectronicStructure.Orbital=73
 //     ElectronicStructure.Field.Range=-0.0500000007,0.0500000007
 //     ElectronicStructure.Slice=1
 //     ElectronicStructure.Slice.0.Opacity=1
@@ -1965,18 +2003,27 @@ done:
 // What an enum is kept as: the identifiers of its values
 static const char* const bond_color_names[]          = { "NearestAtom", "SmoothAtom", "Uniform" };
 static const char* const bond_dashes_names[]         = { "ByKind", "None", "All" };
+// The source by its index, as workspaces from before the paths of the fields (field.h) keep it
 static const char* const es_source_names[]           = { "MolecularOrbital", "NaturalTransitionOrbital", "TransitionDensity", "ElectronDensity",
-                                                         "DensityProperty", "ElectronLocalization", "LocalizedOrbitalLocator" };
+                                                         "DensityProperty", "ElectronLocalization", "LocalizedOrbitalLocator",
+                                                         "ElectrostaticPotential", "EmbeddingPotential", "AverageLocalIonizationEnergy",
+                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
+                                                         "GostshypEffectivePotential", "GostshypEnergyDensity" };
 static const char* const es_spin_names[]             = { "None", "Alpha", "Beta", "Total", "Difference" };
 static const char* const es_nto_component_names[]    = { "Particle", "Hole" };
 static const char* const es_transition_component_names[] = { "Attachment", "Detachment", "Difference" };
 static const char* const volume_resolution_names[]   = { "Low", "Mid", "High" };
 static const char* const surface_coloring_names[]    = { "Uniform", "AtomColors", "Field" };
 static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "ElectrostaticPotential", "AverageLocalIonizationEnergy",
-                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength" };
+                                                         "LocalElectronAttachmentEnergy", "DensityScaleLength", "GostshypWallPotential",
+                                                         "GostshypEffectivePotential", "GostshypEnergyDensity", "ElectronDensity",
+                                                         "ElectronLocalization", "LocalizedOrbitalLocator" };
+static const char* const es_surface_names[]          = { "Other", "Own" };
+static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
+static const char* const glyph_shape_names[]         = { "Cylinder", "Sphere" };
 static const char* const es_display_names[]          = { "Isosurface", "Volume", "Planes" };
 static const char* const plane_detail_names[]        = { "Coarse", "Fine", "Finest" };
-static const char* const es_value_kind_names[]       = { "Density", "Signed", "Localization" };
+static const char* const es_value_kind_names[]       = { "Density", "Signed", "Localization", "Ranged", "SignedRanged" };
 
 MD_STATIC_ASSERT(MD_COUNTOF(bond_color_names)         == (size_t)BondColorMode::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(bond_dashes_names)        == (size_t)BondDashes::Count, "a name for each value");
@@ -1989,7 +2036,9 @@ MD_STATIC_ASSERT(MD_COUNTOF(surface_coloring_names)   == (size_t)SurfaceColoring
 MD_STATIC_ASSERT(MD_COUNTOF(surface_field_kind_names) == (size_t)SurfaceFieldKind::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(es_display_names)         == (size_t)ElectronicStructureDisplay::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(plane_detail_names)       == (size_t)PlaneDetail::Count, "a name for each value");
-MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::Localization + 1, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::SignedRanged + 1, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(es_surface_names)         == (size_t)ElectronicStructureSurface::Count, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(glyph_shape_names)        == (size_t)GlyphShape::Count, "a name for each value");
 
 // A colour scale. range_is_set: a range read is one somebody set, and turns the automatic range off. That is for the
 // scale of an attribute, whose range a workspace from before the range could follow the values kept without saying
@@ -2098,17 +2147,65 @@ static bool read_attribute_path(viamd::Entries& e, md_str_t path, md_attribute_i
     return true;
 }
 
-static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_attributes_t* attributes) {
-    viamd::write_enum(s, p("Source"), (int)es.source, viamd::enum_names(es_source_names));
-    viamd::write_int(s, p("Orbital"), es.orbital_idx);
-    viamd::write_int(s, p("ExcitedState"), es.excited_state_idx);
-    viamd::write_int(s, p("NtoLambda"), es.nto_lambda_idx);
-    viamd::write_bool(s, p("UseMagnitude"), es.use_magnitude);
-    viamd::write_enum(s, p("Spin"), (int)es.spin, viamd::enum_names(es_spin_names));
-    viamd::write_enum(s, p("NtoComponent"), (int)es.nto_component, viamd::enum_names(es_nto_component_names));
-    viamd::write_enum(s, p("TransitionDensityComponent"), (int)es.transition_density_component, viamd::enum_names(es_transition_component_names));
+// A field (FieldRef): its path (field.h) and the parameters of its family
+static void write_field_ref(viamd::serialization_state_t& s, viamd::PathPrefix p, const FieldRef& f, const md_system_t& sys) {
+    char path[FIELD_PATH_MAX];
+    const size_t path_len = field_path_of_source(path, sizeof(path), f.source, f.density_property_key, sys);
+    if (path_len > 0 && path_len < sizeof(path)) viamd::write_str(s, p("Path"), md_str_t{path, path_len});
+    // the parameters its family has: the others are its defaults as it is read
+    const bool orbital = f.source == ElectronicStructureSource::MolecularOrbital;
+    const bool nto     = f.source == ElectronicStructureSource::NaturalTransitionOrbital;
+    const bool td      = f.source == ElectronicStructureSource::TransitionDensity;
+    const bool density = f.source == ElectronicStructureSource::ElectronDensity;
+    if (orbital) viamd::write_int(s, p("Orbital"), f.orbital_idx);
+    if (nto || td) viamd::write_int(s, p("ExcitedState"), f.excited_state_idx);
+    if (nto) viamd::write_int(s, p("NtoLambda"), f.nto_lambda_idx);
+    if (orbital || nto || density) viamd::write_bool(s, p("UseMagnitude"), f.use_magnitude);
+    if (orbital || density) viamd::write_enum(s, p("Spin"), (int)f.spin, viamd::enum_names(es_spin_names));
+    if (nto) viamd::write_enum(s, p("NtoComponent"), (int)f.nto_component, viamd::enum_names(es_nto_component_names));
+    if (td) viamd::write_enum(s, p("TransitionDensityComponent"), (int)f.transition_density_component, viamd::enum_names(es_transition_component_names));
+}
+
+// The path of a field into f, its defaults set: false when there is none, or no field has it
+static bool read_field_path(viamd::Entries& e, viamd::PathPrefix p, FieldRef& f) {
+    md_str_t path = {};
+    ElectronicStructureSource source;
+    md_attribute_id_t key = MD_ATTRIBUTE_INVALID;
+    if (!viamd::get(e, p("Path"), path)) return false;
+    if (!field_resolve(&source, &key, path)) {
+        MD_LOG_INFO("Workspace: no field '" MD_STR_FMT "' (field.h); it is left as it was", MD_STR_ARG(path));
+        return false;
+    }
+    f.source = source;
+    field_ref_set_defaults(&f);
+    if (source == ElectronicStructureSource::DensityProperty) f.density_property_key = key;
+    return true;
+}
+
+// The parameters of a field, after its path
+static void read_field_params(viamd::Entries& e, viamd::PathPrefix p, FieldRef& f) {
+    viamd::get(e, p("Orbital"), f.orbital_idx);
+    viamd::get(e, p("ExcitedState"), f.excited_state_idx);
+    viamd::get(e, p("NtoLambda"), f.nto_lambda_idx);
+    viamd::get(e, p("UseMagnitude"), f.use_magnitude);
+    viamd::get_enum(e, p("Spin"), f.spin, viamd::enum_names(es_spin_names));
+    viamd::get_enum(e, p("NtoComponent"), f.nto_component, viamd::enum_names(es_nto_component_names));
+    viamd::get_enum(e, p("TransitionDensityComponent"), f.transition_density_component, viamd::enum_names(es_transition_component_names));
+}
+
+static void write_electronic_structure(viamd::serialization_state_t& s, viamd::PathPrefix p, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
+    const md_attributes_t* attributes = &sys.attributes;
+    // The field shown, its keys those of the representation's block
+    write_field_ref(s, p, es.shown, sys);
     viamd::write_enum(s, p("Resolution"), (int)es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::write_dbl(s, p("Iso"), es.iso_value);
+    viamd::write_dbl(s, p("FieldIso"), es.field_iso_value);
+    viamd::write_enum(s, p("Surface"), (int)es.surface, viamd::enum_names(es_surface_names));
+    if (es.surface == ElectronicStructureSurface::Other) {
+        write_field_ref(s, p.sub("SurfaceField"), es.surface_field, sys);
+        viamd::write_dbl(s, p("SurfaceValue"), es.surface_value);
+    }
+    viamd::write_enum(s, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
     viamd::write_vec4(s, c("Positive"),   es.col_psi_pos);
@@ -2124,7 +2221,9 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
     viamd::write_enum(s, p("Coloring"), (int)es.coloring, viamd::enum_names(surface_coloring_names));
     if (es.coloring == SurfaceColoring::Field) {
         viamd::PathPrefix f = p.sub("Field");
-        viamd::write_enum(s, f("Kind"), (int)es.field_kind, viamd::enum_names(surface_field_kind_names));
+        char field_path[FIELD_PATH_MAX];
+        const size_t len = field_path_of_kind(field_path, sizeof(field_path), es.field_kind);
+        if (len > 0 && len < sizeof(field_path)) viamd::write_str(s, f("Path"), md_str_t{field_path, len});
         write_color_scale(s, f, es.field_map);
         write_isolines(s, f, es.field_isolines);
     }
@@ -2163,11 +2262,11 @@ static void write_electronic_structure(viamd::serialization_state_t& s, viamd::P
 
     // The density property it draws and its isosurfaces, as many as there are whenever there could be some: a
     // DensityProperty source sets some up for itself when it has none, which an empty list read after it undoes
-    const bool has_property = (attributes && md_attributes_get(attributes, es.density_property_key)) ||
-                              es.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
+    const bool has_property = (attributes && md_attributes_get(attributes, es.shown.density_property_key)) ||
+                              es.shown.source == ElectronicStructureSource::DensityProperty || es.density_property.num_isos > 0;
     if (has_property) {
         viamd::PathPrefix d = p.sub("DensityProperty");
-        write_attribute_path(s, d("Path"), attributes, es.density_property_key);
+        write_attribute_path(s, d("Path"), attributes, es.shown.density_property_key);
         viamd::write_int(s, d("Iso"), es.density_property.num_isos);
         for (int i = 0; i < es.density_property.num_isos; ++i) {
             viamd::PathPrefix q = d.sub("Iso", i);
@@ -2185,8 +2284,13 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
             electronic_structure_set_legacy_type(&es, type);
         }
     }
-    // The source before what it sets up for itself (the spin, the display), which the fields after it may change
-    if (viamd::get_enum(e, p("Source"), es.source, viamd::enum_names(es_source_names))) {
+    // The field before what it sets up for itself (the spin, the display), which the fields after it may change: by
+    // its path (field.h), or as a workspace from before the paths has it, by its source
+    FieldRef shown = es.shown;
+    if (read_field_path(e, p, shown)) {
+        es.shown = shown;
+        electronic_structure_set_source_defaults(&es);
+    } else if (viamd::get_enum(e, p("Source"), es.shown.source, viamd::enum_names(es_source_names))) {
         electronic_structure_set_source_defaults(&es);
     }
     if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("ElectronicStructureField"))) {
@@ -2195,15 +2299,15 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
             electronic_structure_set_legacy_field(&es, field);
         }
     }
-    viamd::get(e, p("Orbital"), es.orbital_idx);
-    viamd::get(e, p("ExcitedState"), es.excited_state_idx);
-    viamd::get(e, p("NtoLambda"), es.nto_lambda_idx);
-    viamd::get(e, p("UseMagnitude"), es.use_magnitude);
-    viamd::get_enum(e, p("Spin"), es.spin, viamd::enum_names(es_spin_names));
-    viamd::get_enum(e, p("NtoComponent"), es.nto_component, viamd::enum_names(es_nto_component_names));
-    viamd::get_enum(e, p("TransitionDensityComponent"), es.transition_density_component, viamd::enum_names(es_transition_component_names));
+    read_field_params(e, p, es.shown);
     viamd::get_enum(e, p("Resolution"), es.resolution, viamd::enum_names(volume_resolution_names));
     viamd::get(e, p("Iso"), es.iso_value);
+    viamd::get(e, p("FieldIso"), es.field_iso_value);
+    viamd::get_enum(e, p("Surface"), es.surface, viamd::enum_names(es_surface_names));
+    viamd::PathPrefix sf = p.sub("SurfaceField");
+    if (read_field_path(e, sf, es.surface_field)) read_field_params(e, sf, es.surface_field);
+    viamd::get(e, p("SurfaceValue"), es.surface_value);
+    viamd::get_enum(e, p("Rendering"), es.rendering, viamd::enum_names(iso_rendering_names));
 
     viamd::PathPrefix c = p.sub("Color");
     viamd::get(e, c("Positive"),   es.col_psi_pos);
@@ -2218,7 +2322,13 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
 
     viamd::get_enum(e, p("Coloring"), es.coloring, viamd::enum_names(surface_coloring_names));
     viamd::PathPrefix f = p.sub("Field");
-    viamd::get_enum(e, f("Kind"), es.field_kind, viamd::enum_names(surface_field_kind_names));
+    md_str_t field_path = {};
+    SurfaceFieldKind color_kind;
+    if (viamd::get(e, f("Path"), field_path) && field_resolve_kind(&color_kind, field_path)) {
+        es.field_kind = color_kind;
+    } else {
+        viamd::get_enum(e, f("Kind"), es.field_kind, viamd::enum_names(surface_field_kind_names));
+    }
     read_color_scale(e, f, es.field_map, false);
     read_isolines(e, f, es.field_isolines);
     // Of older workspaces: the isolines' count before their values were a list
@@ -2271,7 +2381,7 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     }
 
     viamd::PathPrefix d = p.sub("DensityProperty");
-    read_attribute_path(e, d("Path"), es.density_property_key);
+    read_attribute_path(e, d("Path"), es.shown.density_property_key);
     viamd::get_count(e, d("Iso"), es.density_property.num_isos, (int)MD_COUNTOF(es.density_property.values));
     for (int i = 0; i < es.density_property.num_isos; ++i) {
         viamd::PathPrefix q = d.sub("Iso", i);
@@ -2287,7 +2397,8 @@ static void read_electronic_structure(viamd::Entries& e, viamd::PathPrefix p, El
     viamd::get_value(e, MD_STR_LIT("ElectronicStructureVolumeRampExponent"));
 }
 
-static void write_representation(viamd::serialization_state_t& s, const Representation& rep, const md_attributes_t* attributes) {
+static void write_representation(viamd::serialization_state_t& s, const Representation& rep, const md_system_t& sys) {
+    const md_attributes_t* attributes = &sys.attributes;
     viamd::PathPrefix p;
     // Kept as an older VIAMD keeps them, which reads them too
     viamd::write_str(s, p("Name"), md_str_from_cstr(rep.name));
@@ -2353,7 +2464,24 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
     }
 
     if (rep.type == RepresentationType::ElectronicStructure) {
-        write_electronic_structure(s, p.sub("ElectronicStructure"), rep.electronic_structure, attributes);
+        write_electronic_structure(s, p.sub("ElectronicStructure"), rep.electronic_structure, sys);
+    }
+
+    if (rep.type == RepresentationType::Glyphs) {
+        // The point set and the quantities by their paths (none written: a constant, uniform)
+        const GlyphRepresentation& g = rep.glyphs;
+        viamd::PathPrefix q = p.sub("Glyphs");
+        write_attribute_path(s, q("Points"), attributes, g.points);
+        viamd::write_enum(s, q("Shape"), (int)g.shape, viamd::enum_names(glyph_shape_names));
+        viamd::PathPrefix r = q.sub("Radius");
+        write_attribute_path(s, r("Quantity"), attributes, g.radius.quantity);
+        viamd::write_flt(s, r("Scale"), g.radius.scale);
+        viamd::PathPrefix h = q.sub("Height");
+        write_attribute_path(s, h("Quantity"), attributes, g.height.quantity);
+        viamd::write_flt(s, h("Scale"), g.height.scale);
+        write_attribute_path(s, q("Color"), attributes, g.color);
+        write_color_scale(s, q, g.scale);
+        viamd::write_bool(s, q("Unlit"), g.unlit);
     }
 }
 
@@ -2528,6 +2656,23 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     }
 
     read_electronic_structure(e, p.sub("ElectronicStructure"), rep.electronic_structure);
+
+    GlyphRepresentation& g = rep.glyphs;
+    viamd::PathPrefix q = p.sub("Glyphs");
+    if (read_attribute_path(e, q("Points"), g.points)) {
+        // what is not written is none
+        g.radius.quantity = g.height.quantity = g.color = MD_ATTRIBUTE_INVALID;
+    }
+    viamd::get_enum(e, q("Shape"), g.shape, viamd::enum_names(glyph_shape_names));
+    viamd::PathPrefix r = q.sub("Radius");
+    read_attribute_path(e, r("Quantity"), g.radius.quantity);
+    viamd::get(e, r("Scale"), g.radius.scale);
+    viamd::PathPrefix h = q.sub("Height");
+    read_attribute_path(e, h("Quantity"), g.height.quantity);
+    viamd::get(e, h("Scale"), g.height.scale);
+    read_attribute_path(e, q("Color"), g.color);
+    read_color_scale(e, q, g.scale, true);
+    viamd::get(e, q("Unlit"), g.unlit);
 }
 
 void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section) {
@@ -2555,7 +2700,7 @@ static void deserialize_representation(ApplicationState* data, viamd::deserializ
 }
 
 void representation_write_entries(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
-    write_representation(state, rep, &app_state->mold.sys.attributes);
+    write_representation(state, rep, app_state->mold.sys);
 }
 
 static void serialize_representation(viamd::serialization_state_t& state, const ApplicationState* app_state, const Representation& rep) {
@@ -2661,8 +2806,10 @@ bool representations_deserialize(ApplicationState* app, md_str_t section, viamd:
 // How the isosurfaces of an electronic structure representation are coloured, as rows of its Color section: the
 // colouring, and for a field the field, its colour scale and its isolines. The atoms' colours are not offered for a
 // density property; a field is offered whenever the dataset has what one is made from.
-static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode) {
+static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const md_system_t& sys, bool allow_atom_colors, bool mesh_mode, bool field_only) {
     bool update_rep = false;
+    if (field_only) goto scale;
+    {
 
     bool any_field = false;
     for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
@@ -2709,7 +2856,8 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
     if (es.coloring != SurfaceColoring::Field) {
         return update_rep;
     }
-
+    }
+scale:
     // Where the field stands, on its label: how much of it has been evaluated, and where
     const SurfaceFieldVolume& vol = es.field_vol;
     char status[160] = "";
@@ -2720,19 +2868,23 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         snprintf(status, sizeof(status), "%zu of %zu voxels (%dx%dx%d) evaluated on the %s", vol.num_evaluated, vol.num_voxels,
                  vol.grid.dim[0], vol.grid.dim[1], vol.grid.dim[2], vol.on_gpu ? "GPU" : "CPU");
     }
-    prop::row("field", status);
-    if (ImGui::BeginCombo("##field", surface_field_kind_info(es.field_kind).label)) {
-        for (int k = 0; k < (int)SurfaceFieldKind::Count; ++k) {
-            const SurfaceFieldKind kind = (SurfaceFieldKind)k;
-            ImGui::BeginDisabled(!surface_field_available(kind, sys));
-            if (ImGui::Selectable(surface_field_kind_info(kind).label, es.field_kind == kind)) {
-                if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
-                es.field_kind = kind;
-                update_rep = true;
-            }
-            ImGui::EndDisabled();
+    if (!field_only) prop::row("field", status);
+    if (!field_only) {
+        // the fields that are surface fields, by path (field.h)
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        md_array(FieldEntry) entries = nullptr;
+        const size_t n = field_catalog(&entries, sys, md_temp_allocator(temp));
+        char path[FIELD_PATH_MAX] = "";
+        field_path_of_kind(path, sizeof(path), es.field_kind);
+        const int picked = field_picker("color_field", surface_field_kind_info(es.field_kind).label, entries, n, md_str_from_cstr(path),
+                                        [](const FieldEntry& e) { return e.field_kind != SurfaceFieldKind::Count; });
+        if (picked >= 0) {
+            const SurfaceFieldKind kind = entries[picked].field_kind;
+            if (es.field_kind != kind) surface_field_scale_for_kind(&es.field_map, es.field_kind, kind);
+            es.field_kind = kind;
+            update_rep = true;
         }
-        ImGui::EndCombo();
     }
     if (es.field_kind == SurfaceFieldKind::EmbeddingPotential) {
         // What this dataset's potential is made of, since a polarizable run may or may not have kept its
@@ -2939,43 +3091,40 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
 static bool draw_representations_window_electronic_structure(ApplicationState* state, Representation& rep) {
     ElectronicStructureRepresentation& es = rep.electronic_structure;
 
-    // The key is an opaque hash now, so it is no longer worth showing beside the label: a property
-    // with no label is named by its path's last segment already, which is the readable thing.
-    auto density_property_combo_label = [](char* buf, size_t buf_cap, const DensityProperty* prop) {
-        MD_ASSERT(buf);
-        MD_ASSERT(buf_cap > 0);
-        if (!prop || md_str_empty(prop->label)) {
-            snprintf(buf, buf_cap, "None");
-            return;
-        }
-        snprintf(buf, buf_cap, "%.*s", (int)prop->label.len, prop->label.ptr);
-    };
-
     bool update_rep = false;
-    const bool mesh_mode = state->settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-    const ElectronicStructureSourceFlags source_mask = es_source_mask(state->mold.sys);
+    const bool mesh_mode = es_mesh_mode(state, es);
 
-    if (prop::section("Source")) {
-        prop::row("source");
-        if (ImGui::BeginCombo("##source", electronic_structure_source_str[(int)es.source])) {
-            for (int n = 0; n < (int)ElectronicStructureSource::Count; n++) {
-                ElectronicStructureSource source = (ElectronicStructureSource)n;
-                bool is_selected = (es.source == source);
-                bool disabled = !electronic_structure_source_supported(source_mask, source);
-
-                if (disabled) ImGui::PushDisabled();
-                if (ImGui::Selectable(electronic_structure_source_str[n], is_selected)) {
-                    es.source = source;
-                    electronic_structure_set_source_defaults(&es);
-                    update_rep = true;
-                }
-                if (disabled) ImGui::PopDisabled();
-
-                if (is_selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
+    if (prop::section("Field")) {
+        prop::row("field", "The field over space that is shown, as a surface, a volume or on planes.\n"
+                           "On a surface the electrostatic potential, the local energies, the density scale length and the\n"
+                           "GOSTSHYP fields are shown on a surface of the electron density by default, as its colours.");
+        {
+            md_temp_scope_t temp = md_temp_begin();
+            MD_DEFER { md_temp_end(temp); };
+            md_array(FieldEntry) entries = nullptr;
+            const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
+            char path[FIELD_PATH_MAX] = "";
+            field_path_of_source(path, sizeof(path), es.shown.source, es.shown.density_property_key, state->mold.sys);
+            // what it is: its label, a density property's its own
+            md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.shown.source]);
+            for (size_t i = 0; i < n; ++i) {
+                if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
             }
-            ImGui::EndCombo();
+            char preview_buf[128];
+            snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)preview.len, preview.ptr);
+            const int picked = field_picker("field", preview_buf, entries, n, md_str_from_cstr(path), nullptr);
+            if (picked >= 0) {
+                const FieldEntry& e = entries[picked];
+                if (e.source != es.shown.source) {
+                    es.shown.source = e.source;
+                    electronic_structure_set_source_defaults(&es);
+                    if (es.surface_field.source == ElectronicStructureSource::ElectronDensity) {
+                        es.surface_value = es_isodensity_default(state->mold.sys, e.source);
+                    }
+                }
+                if (e.source == ElectronicStructureSource::DensityProperty) es.shown.density_property_key = e.density_property_key;
+                update_rep = true;
+            }
         }
 
         if (electronic_structure_is_density_property(es)) {
@@ -2989,38 +3138,17 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 // than drawing nothing.
                 const DensityProperty* selected = nullptr;
                 for (int n = 0; n < num_density_props; ++n) {
-                    if (density_props[n].key == es.density_property_key) {
+                    if (density_props[n].key == es.shown.density_property_key) {
                         selected = &density_props[n];
                         break;
                     }
                 }
                 if (!selected) {
                     selected = &density_props[0];
-                    es.density_property_key = selected->key;
+                    es.shown.density_property_key = selected->key;
                     update_rep = true;
                 }
 
-                char preview[256];
-                density_property_combo_label(preview, sizeof(preview), selected);
-                prop::row("property");
-                if (ImGui::BeginCombo("##property", preview)) {
-                    for (int n = 0; n < num_density_props; ++n) {
-                        char label[256];
-                        density_property_combo_label(label, sizeof(label), &density_props[n]);
-                        const bool is_selected = (es.density_property_key == density_props[n].key);
-                        if (ImGui::Selectable(label, is_selected)) {
-                            if (es.density_property_key != density_props[n].key) {
-                                es.density_property_key = density_props[n].key;
-                                update_rep = true;
-                            }
-                        }
-
-                        if (is_selected) {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
-                }
             } else {
                 prop::hint("no density properties in this dataset");
             }
@@ -3032,22 +3160,22 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // only checked that the column existed - so the selector appeared and toggled between two
             // names for one datum.
             const bool has_beta = es_has_distinct_beta_orbitals(state->mold.sys);
-            if (es.source == ElectronicStructureSource::MolecularOrbital) {
-                if (es.spin != ElectronicStructureSpin::Alpha && es.spin != ElectronicStructureSpin::Beta) {
-                    es.spin = ElectronicStructureSpin::Alpha;
+            if (es.shown.source == ElectronicStructureSource::MolecularOrbital) {
+                if (es.shown.spin != ElectronicStructureSpin::Alpha && es.shown.spin != ElectronicStructureSpin::Beta) {
+                    es.shown.spin = ElectronicStructureSpin::Alpha;
                     update_rep = true;
                 }
                 if (has_beta) {
                     const char* spin_options[] = { "Alpha", "Beta" };
-                    int spin_idx = es.spin == ElectronicStructureSpin::Beta ? 1 : 0;
+                    int spin_idx = es.shown.spin == ElectronicStructureSpin::Beta ? 1 : 0;
                     prop::row("spin");
                     if (ImGui::Combo("##spin", &spin_idx, spin_options, IM_ARRAYSIZE(spin_options))) {
-                        es.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
+                        es.shown.spin = spin_idx == 1 ? ElectronicStructureSpin::Beta : ElectronicStructureSpin::Alpha;
                         update_rep = true;
                     }
                 }
             }
-            else if (es.source == ElectronicStructureSource::ElectronDensity) {
+            else if (es.shown.source == ElectronicStructureSource::ElectronDensity) {
                 if (has_beta) {
                     const ElectronicStructureSpin spin_options[] = {
                         ElectronicStructureSpin::Total,
@@ -3058,53 +3186,53 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     const char* spin_labels[] = { "Total", "Alpha", "Beta", "Difference" };
                     int spin_idx = 0;
                     for (int i = 0; i < (int)IM_ARRAYSIZE(spin_options); ++i) {
-                        if (es.spin == spin_options[i]) {
+                        if (es.shown.spin == spin_options[i]) {
                             spin_idx = i;
                             break;
                         }
                     }
-                    if (es.spin != spin_options[spin_idx]) {
-                        es.spin = spin_options[spin_idx];
+                    if (es.shown.spin != spin_options[spin_idx]) {
+                        es.shown.spin = spin_options[spin_idx];
                         update_rep = true;
                     }
                     prop::row("spin");
                     if (ImGui::Combo("##spin", &spin_idx, spin_labels, IM_ARRAYSIZE(spin_labels))) {
-                        es.spin = spin_options[spin_idx];
-                        if (es.spin != ElectronicStructureSpin::Difference) {
-                            es.use_magnitude = false;
+                        es.shown.spin = spin_options[spin_idx];
+                        if (es.shown.spin != ElectronicStructureSpin::Difference) {
+                            es.shown.use_magnitude = false;
                         }
                         update_rep = true;
                     }
-                } else if (es.spin != ElectronicStructureSpin::Total) {
-                    es.spin = ElectronicStructureSpin::Total;
-                    es.use_magnitude = false;
+                } else if (es.shown.spin != ElectronicStructureSpin::Total) {
+                    es.shown.spin = ElectronicStructureSpin::Total;
+                    es.shown.use_magnitude = false;
                     update_rep = true;
                 }
             }
         }
 
-        if (es.source == ElectronicStructureSource::NaturalTransitionOrbital) {
+        if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital) {
             prop::row("component");
-            if (ImGui::Combo("##component", (int*)&es.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
+            if (ImGui::Combo("##component", (int*)&es.shown.nto_component, electronic_structure_nto_component_str, IM_ARRAYSIZE(electronic_structure_nto_component_str))) {
                 update_rep = true;
             }
         }
 
-        if (es.source == ElectronicStructureSource::TransitionDensity) {
+        if (es.shown.source == ElectronicStructureSource::TransitionDensity) {
             prop::row("component");
-            if (ImGui::Combo("##component", (int*)&es.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
+            if (ImGui::Combo("##component", (int*)&es.shown.transition_density_component, electronic_structure_transition_density_component_str, IM_ARRAYSIZE(electronic_structure_transition_density_component_str))) {
                 update_rep = true;
             }
         }
 
         if (electronic_structure_uses_orbital_idx(es)) {
             // The (homo)/(lumo) markers sit at different indices for the two spins in an unrestricted
-            // calculation, and the rendered volume already follows es.spin - so the frontier has to
+            // calculation, and the rendered volume already follows es.shown.spin - so the frontier has to
             // follow it too, or the entry marked (homo) under spin=Beta is alpha's HOMO index.
             //
             // Formatted here rather than read out of a precomputed list: it is an index, an energy and
             // two markers, and a copy of it would be one more thing to keep in step with the table.
-            const bool use_beta = (es.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
+            const bool use_beta = (es.shown.spin == ElectronicStructureSpin::Beta) && es_has_distinct_beta_orbitals(state->mold.sys);
 
             size_t num_orbitals = 0;
             OrbitalFrontier frontier = {};
@@ -3135,10 +3263,10 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     }
                 };
 
-                es.orbital_idx = MD_CLAMP(es.orbital_idx, 0, (int)num_orbitals - 1);
+                es.shown.orbital_idx = MD_CLAMP(es.shown.orbital_idx, 0, (int)num_orbitals - 1);
 
                 char preview[48];
-                orbital_label(preview, sizeof(preview), es.orbital_idx, 0, 0);
+                orbital_label(preview, sizeof(preview), es.shown.orbital_idx, 0, 0);
                 prop::row("orbital", energy ? "The orbitals by index and energy (Ha), highest first" : nullptr);
                 if (ImGui::BeginCombo("##orbital", preview)) {
                     // Highest index first, so the lowest lying orbital sits at the bottom - the
@@ -3147,14 +3275,14 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // index IS descending energy; sorting on the energies instead would only differ for
                     // a non-aufbau set, and would then disagree with that table.
                     for (int n = (int)num_orbitals - 1; n >= 0; n--) {
-                        bool is_selected = (es.orbital_idx == n);
+                        bool is_selected = (es.shown.orbital_idx == n);
                         char label[48];
                         orbital_label(label, sizeof(label), n, idx_width, 10);
                         if (ImGui::Selectable(label, is_selected)) {
-                            if (es.orbital_idx != n) {
+                            if (es.shown.orbital_idx != n) {
                                 update_rep = true;
                             }
-                            es.orbital_idx = n;
+                            es.shown.orbital_idx = n;
                         }
 
                         if (is_selected) {
@@ -3169,20 +3297,20 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (electronic_structure_uses_excited_state_idx(es)) {
             const int num_excited_states = (int)es_excited_state_count(state->mold.sys);
             if (num_excited_states > 0) {
-                es.excited_state_idx = MD_CLAMP(es.excited_state_idx, 0, num_excited_states - 1);
+                es.shown.excited_state_idx = MD_CLAMP(es.shown.excited_state_idx, 0, num_excited_states - 1);
                 char preview[16];
-                snprintf(preview, sizeof(preview), "%i", es.excited_state_idx + 1);
+                snprintf(preview, sizeof(preview), "%i", es.shown.excited_state_idx + 1);
                 prop::row("state", "The excited state");
                 if (ImGui::BeginCombo("##state", preview)) {
                     for (int n = 0; n < num_excited_states; n++) {
-                        const bool is_selected = (es.excited_state_idx == n);
+                        const bool is_selected = (es.shown.excited_state_idx == n);
                         char label[16];
                         snprintf(label, sizeof(label), "%i", n + 1);
                         if (ImGui::Selectable(label, is_selected)) {
-                            if (es.excited_state_idx != n) {
+                            if (es.shown.excited_state_idx != n) {
                                 update_rep = true;
                             }
-                            es.excited_state_idx = n;
+                            es.shown.excited_state_idx = n;
                         }
 
                         if (is_selected) {
@@ -3196,15 +3324,15 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // tail of the ragged lambda axis stops it.
                     const double LAMBDA_CUTOFF = 1.0e-3;
                     double lambdas[32];
-                    const bool nto_ready = es_nto_ready(state, (size_t)es.excited_state_idx);
+                    const bool nto_ready = es_nto_ready(state, (size_t)es.shown.excited_state_idx);
                     const int num_lambdas = nto_ready ? (int)es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), state->mold.sys,
-                                                                            (size_t)es.excited_state_idx, LAMBDA_CUTOFF) : 0;
+                                                                            (size_t)es.shown.excited_state_idx, LAMBDA_CUTOFF) : 0;
                     if (!nto_ready) {
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
                         ImGui::TextDisabled("computing...");
                     }
                     if (num_lambdas > 0) {
-                        es.nto_lambda_idx = MD_CLAMP(es.nto_lambda_idx, 0, num_lambdas - 1);
+                        es.shown.nto_lambda_idx = MD_CLAMP(es.shown.nto_lambda_idx, 0, num_lambdas - 1);
 
                         auto lambda_label = [&lambdas](char* buf, size_t cap, int n) {
                             // The bytes rather than a u8 literal: u8"" is const char8_t* in C++20 and
@@ -3213,18 +3341,18 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         };
 
                         char preview_lambda[32];
-                        lambda_label(preview_lambda, sizeof(preview_lambda), es.nto_lambda_idx);
+                        lambda_label(preview_lambda, sizeof(preview_lambda), es.shown.nto_lambda_idx);
                         prop::row("\xce\xbb", "The natural transition orbital pair, by its weight");
                         if (ImGui::BeginCombo("##lambda", preview_lambda)) {
                             for (int n = 0; n < num_lambdas; n++) {
-                                const bool is_selected = (es.nto_lambda_idx == n);
+                                const bool is_selected = (es.shown.nto_lambda_idx == n);
                                 char label[32];
                                 lambda_label(label, sizeof(label), n);
                                 if (ImGui::Selectable(label, is_selected)) {
-                                    if (es.nto_lambda_idx != n) {
+                                    if (es.shown.nto_lambda_idx != n) {
                                         update_rep = true;
                                     }
-                                    es.nto_lambda_idx = n;
+                                    es.shown.nto_lambda_idx = n;
                                 }
 
                                 if (is_selected) {
@@ -3239,19 +3367,11 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         }
 
         if (electronic_structure_uses_magnitude_toggle(es)) {
-            const bool density = es.source == ElectronicStructureSource::ElectronDensity;
+            const bool density = es.shown.source == ElectronicStructureSource::ElectronDensity;
             prop::row("magnitude", density ? (const char*)u8"The surfaces of |ρ| instead of ρ" : (const char*)u8"The surfaces of |Ψ| instead of Ψ");
-            update_rep |= ImGui::Checkbox("##magnitude", &es.use_magnitude);
+            update_rep |= ImGui::Checkbox("##magnitude", &es.shown.use_magnitude);
         }
-        prop::section_end();
-    }
-
-    const double min_tau = 0.0;
-    const double max_tau = 1.0;
-    const double iso_min = 1.0e-2;
-    const double iso_max = 5.0;
-
-    if (prop::section("Display")) {
+        // How it is drawn, with what is drawn: a row, not a section of one
         prop::row("display", "How the field is drawn:\n"
                              "Isosurface: surfaces where it takes given values\n"
                              "Volume: the whole field, its values through a colour map and an opacity ramp, cut by planes\n"
@@ -3259,9 +3379,6 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
         if (ImGui::BeginCombo("##display", electronic_structure_display_str[(int)es.display])) {
             for (int n = 0; n < (int)ElectronicStructureDisplay::Count; ++n) {
                 const ElectronicStructureDisplay d = (ElectronicStructureDisplay)n;
-                // ELF and LOL are about how they vary through space, which a surface of one value does not show
-                const bool disabled = d == ElectronicStructureDisplay::Isosurface && electronic_structure_is_localization(es);
-                ImGui::BeginDisabled(disabled);
                 if (ImGui::Selectable(electronic_structure_display_str[n], es.display == d) && es.display != d) {
                     es.display = d;
                     if (es.display == ElectronicStructureDisplay::Planes && es.slices.count == 0) {
@@ -3271,14 +3388,18 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                     // which would evaluate it again whatever (flag_representation_as_dirty)
                     rep.needs_update = true;
                 }
-                ImGui::EndDisabled();
-                if (disabled) ImGui::SetItemTooltip("Not for ELF and LOL: a volume or a plane shows how they vary");
                 if (es.display == d) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
         prop::section_end();
     }
+
+    const double min_tau = 0.0;
+    const double max_tau = 1.0;
+    const double iso_min = 1.0e-2;
+    const double iso_max = 5.0;
+
 
     if (es.display == ElectronicStructureDisplay::Isosurface) {
         if (prop::section("Surface")) {
@@ -3330,9 +3451,107 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                 prop::row("optical density", "Optical density shared by all the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             } else {
+                const bool field = electronic_structure_source_field_kind(es.shown.source) != SurfaceFieldKind::Count;
+                {
+                    // meshes only of the orbitals and densities (an isodensity surface's too): the others raycast
+                    const bool meshable = electronic_structure_source_meshable(electronic_structure_geometry(es).shown.source);
+                    prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame\n"
+                                           "(Fast or Exact: Settings, Isosurfaces).\n"
+                                           "Mesh: extracted as triangle meshes from the field itself rather than from the volume, at a\n"
+                                           "spacing set by the resolution, and drawn with stochastic transparency refined over the\n"
+                                           "frames while the view is still. Extraction runs when the surface changes; drawing is cheap.\n"
+                                           "Meshes are made of orbitals and densities only: other fields' own surfaces are ray cast.");
+                    int r = meshable ? MD_CLAMP(es.rendering, 0, 1) : (int)IsosurfaceRendering_Raycast;
+                    ImGui::BeginDisabled(!meshable);
+                    if (ImGui::Combo("##iso_rendering", &r, "Ray Casting\0Mesh\0")) {
+                        es.rendering = r;
+                        update_rep = true;
+                    }
+                    ImGui::EndDisabled();
+                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals, densities, ELF and LOL only");
+                }
+                if (electronic_structure_source_on_other_surface_possible(es.shown.source)) {
+                    prop::row("surface", "What the surface is:\n"
+                                         "Surface of another field: where that field is the value, coloured by this one (as the\n"
+                                         "  electrostatic potential is read on the electron density at 0.001 au); evaluated only around it\n"
+                                         "Isosurface of the field: where this field is the isovalue");
+                    int sf = (int)es.surface;
+                    if (ImGui::Combo("##surface", &sf, electronic_structure_surface_str, (int)ElectronicStructureSurface::Count)) {
+                        es.surface = (ElectronicStructureSurface)sf;
+                        update_rep = true;
+                    }
+                }
                 // The band a field is evaluated in follows the isovalue
-                prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
-                update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                if (electronic_structure_on_other_surface(es)) {
+                    // The field the surface is of: the electron density, or a field of the system as a whole (one
+                    // without an index or a state to pick)
+                    md_temp_scope_t temp = md_temp_begin();
+                    MD_DEFER { md_temp_end(temp); };
+                    md_array(FieldEntry) entries = nullptr;
+                    const size_t n = field_catalog(&entries, state->mold.sys, md_temp_allocator(temp));
+                    char path[FIELD_PATH_MAX] = "";
+                    field_path_of_source(path, sizeof(path), es.surface_field.source, es.surface_field.density_property_key, state->mold.sys);
+                    md_str_t preview = md_str_from_cstr(electronic_structure_source_str[(int)es.surface_field.source]);
+                    for (size_t i = 0; i < n; ++i) {
+                        if (md_str_eq_cstr(md_str_from_cstr(path), entries[i].path)) preview = entries[i].label;
+                    }
+                    char preview_buf[128];
+                    snprintf(preview_buf, sizeof(preview_buf), "%.*s", (int)preview.len, preview.ptr);
+                    prop::row("of", "The field the surface is an isosurface of");
+                    const int picked = field_picker("surface_field", preview_buf, entries, n, md_str_from_cstr(path), [](const FieldEntry& e) {
+                        return e.source == ElectronicStructureSource::ElectronDensity || electronic_structure_source_is_surface_field(e.source) ||
+                               e.source == ElectronicStructureSource::ElectronLocalization || e.source == ElectronicStructureSource::LocalizedOrbitalLocator;
+                    });
+                    if (picked >= 0 && entries[picked].source != es.surface_field.source) {
+                        es.surface_field = FieldRef{ .source = entries[picked].source };
+                        field_ref_set_defaults(&es.surface_field);
+                        const SurfaceFieldKind fk = electronic_structure_source_field_kind(es.surface_field.source);
+                        es.surface_value = fk != SurfaceFieldKind::Count ? fabs(surface_field_kind_info(fk).iso) : es_isodensity_default(state->mold.sys, es.shown.source);
+                        update_rep = true;
+                    }
+                    const SurfaceFieldKind sk = electronic_structure_source_field_kind(es.surface_field.source);
+                    if (sk == SurfaceFieldKind::Count) {
+                        // the electron density: decades of it
+                        const double d_min = 1.0e-5, d_max = 0.1;
+                        prop::row("value", "The electron density of the surface, electrons / bohr^3 (au)");
+                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &d_min, &d_max, "%.4g", ImGuiSliderFlags_Logarithmic);
+                    } else {
+                        // a field in its unit: about where it starts, [0, 1] for ELF and LOL
+                        const SurfaceFieldKindInfo& info = surface_field_kind_info(sk);
+                        const double d = info.iso;
+                        double lo = info.unit_interval ? 0.0 : (d < 0.0 ? 10.0 * d : 0.0);
+                        double hi = info.unit_interval ? 1.0 : (d < 0.0 ? 0.0 : 10.0 * fabs(d));
+                        char fmt[64], unit[32] = "";
+                        md_unit_print(unit, sizeof(unit), info.unit);
+                        snprintf(fmt, sizeof(fmt), "%s%%.4g %s", info.scale == SurfaceFieldScale::Diverging ? (const char*)u8"±" : "", unit);
+                        prop::row("value", "Where the surface is: that field at this value, in its unit");
+                        update_rep |= ImGui::SliderScalar("##surface_value", ImGuiDataType_Double, &es.surface_value, &lo, &hi, fmt);
+                    }
+                } else if (field) {
+                    // over the field's values: its spread once evaluated, [0, 1] for ELF and LOL, about its default before
+                    const SurfaceFieldKindInfo& info = surface_field_kind_info(electronic_structure_source_field_kind(es.shown.source));
+                    const bool sgn = electronic_structure_is_signed(es);
+                    double lo = 0.0, hi = 1.0;
+                    if (!info.unit_interval) {
+                        const ColorScaleSpan& sp = es.source_span;
+                        if (sp.valid && sp.hi > sp.lo) {
+                            lo = sgn ? 0.0 : sp.lo;
+                            hi = sgn ? MD_MAX(fabs(sp.lo), fabs(sp.hi)) : sp.hi;
+                        } else {
+                            lo = info.iso < 0.0 ? 10.0 * info.iso : 0.0;
+                            hi = info.iso < 0.0 ? 0.0 : 10.0 * fabs(info.iso);
+                        }
+                    }
+                    char fmt[64];
+                    char unit[32] = "";
+                    md_unit_print(unit, sizeof(unit), info.unit);
+                    snprintf(fmt, sizeof(fmt), "%s%%.4g %s", sgn ? (const char*)u8"±" : "", unit);
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##field_isovalue", ImGuiDataType_Double, &es.field_iso_value, &lo, &hi, fmt) && es.coloring == SurfaceColoring::Field;
+                } else {
+                    prop::row("isovalue", electronic_structure_iso_value_tooltip(es));
+                    update_rep |= ImGui::SliderScalar("##isovalue", ImGuiDataType_Double, &es.iso_value, &iso_min, &iso_max, "%.4g", ImGuiSliderFlags_Logarithmic) && es.coloring == SurfaceColoring::Field;
+                }
                 prop::row("optical density", "Optical density of the isosurfaces: how much they absorb of what they enclose");
                 ImGui::SliderScalar("##optical_density", ImGuiDataType_Double, &es.iso_optical_density, &min_tau, &max_tau, "%.4f", ImGuiSliderFlags_Logarithmic);
             }
@@ -3345,18 +3564,21 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
 
         if (prop::section("Color")) {
             const bool density_property = electronic_structure_is_density_property(es);
-            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode);
-            if (es.coloring == SurfaceColoring::AtomColors) {
+            // on an isodensity surface the field shown is its colours: its colour map alone
+            const bool on_isodensity = electronic_structure_on_other_surface(es);
+            update_rep |= draw_surface_coloring(es, state->mold.sys, !density_property, mesh_mode, on_isodensity);
+            if (!on_isodensity && es.coloring == SurfaceColoring::AtomColors) {
                 update_rep |= draw_representation_coloring(state, rep);
             }
 
             // The colours of the surfaces, or the tint of what colours them; a property's are per isovalue (Surface)
+            const ElectronicStructureRepresentation g = electronic_structure_geometry(es);
             if (!density_property) {
-                const bool tint = es.coloring != SurfaceColoring::Uniform;
-                const bool attachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
-                const bool detachment = es.source == ElectronicStructureSource::TransitionDensity && es.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
+                const bool tint = g.coloring != SurfaceColoring::Uniform;
+                const bool attachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment;
+                const bool detachment = g.shown.source == ElectronicStructureSource::TransitionDensity && g.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment;
                 const char* tint_tooltip = "Multiplies the colours of the surface, and its alpha is the surface's opacity";
-                if (electronic_structure_is_signed(es)) {
+                if (electronic_structure_is_signed(g)) {
                     prop::row(tint ? (const char*)u8"surface tint +" : "positive", tint ? tint_tooltip : nullptr);
                     prop::color("##pos", tint ? es.tint_psi_pos.elem : es.col_psi_pos.elem, true);
                     prop::row(tint ? (const char*)u8"surface tint −" : "negative", tint ? tint_tooltip : nullptr);
@@ -3901,6 +4123,165 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
+// The name of an attribute as the controls show it: its label, else its leaf
+static md_str_t glyph_attribute_name(const md_attribute_t* a) {
+    return a->label.len ? a->label : md_attribute_leaf(a);
+}
+
+// A combo of the point set's quantities, or none ("Constant", "Uniform"): true when another was picked
+static bool glyph_quantity_combo(const char* id, md_attribute_id_t* q, const md_system_t& sys, md_attribute_id_t points, const char* none) {
+    md_attribute_id_t ids[256];
+    const size_t n = MD_MIN(glyphs_quantities(ids, MD_COUNTOF(ids), sys, points), MD_COUNTOF(ids));
+    const md_attribute_t* cur = *q != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, *q) : nullptr;
+    char preview[128];
+    if (cur) {
+        const md_str_t nm = glyph_attribute_name(cur);
+        snprintf(preview, sizeof(preview), "%.*s", (int)nm.len, nm.ptr);
+    } else {
+        snprintf(preview, sizeof(preview), "%s", none);
+    }
+    bool changed = false;
+    if (ImGui::BeginCombo(id, preview)) {
+        if (ImGui::Selectable(none, !cur)) { *q = MD_ATTRIBUTE_INVALID; changed = true; }
+        for (size_t i = 0; i < n; ++i) {
+            const md_attribute_t* a = md_attributes_get(&sys.attributes, ids[i]);
+            const md_str_t nm = glyph_attribute_name(a);
+            char label[160];
+            snprintf(label, sizeof(label), "%.*s##%u", (int)nm.len, nm.ptr, (unsigned)i);
+            if (ImGui::Selectable(label, ids[i] == *q)) { *q = ids[i]; changed = true; }
+            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+// A size of the glyphs from a quantity of the point set (glyphs.h): which, and its scale
+static bool draw_glyph_mapping(const char* label, const char* id, GlyphMapping* m, const md_system_t& sys, md_attribute_id_t points, bool radius) {
+    bool changed = false;
+    prop::row(label, radius ?
+        "Constant: the scale in Å.\n"
+        "A length: as it is, times the scale.\n"
+        "An area: the radius of a disc of it, sqrt(a / pi), times the scale.\n"
+        "Another quantity: its square root over that of its 99th percentile, so that the cross section goes with it; the scale in Å there." :
+        "Constant: the scale in Å.\n"
+        "A length: as it is, times the scale.\n"
+        "An area: the radius of a disc of it, times the scale.\n"
+        "Another quantity: over its 99th percentile, linearly; the scale in Å there.\n"
+        "A negative value stands inward.");
+    ImGui::PushID(id);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
+    if (glyph_quantity_combo("##quantity", &m->quantity, sys, points, "Constant")) {
+        // a factor and a size in Å are not the same scale: a sensible one for the new kind
+        m->scale = glyphs_default_scale(sys, m->quantity, radius);
+        changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool factor = glyphs_scale_is_factor(sys, m->quantity);
+    changed |= ImGui::SliderFloat("##scale", &m->scale, factor ? 0.1f : 0.01f, factor ? 5.0f : 2.0f, factor ? "%.2f x" : "%.2f Å",
+                                  ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+    ImGui::PopID();
+    return changed;
+}
+
+// A glyph representation's own properties: which point set, how its glyphs are sized and coloured, and what the set's
+// group holds besides. Returns whether it needs updating.
+static bool draw_representation_glyphs(Representation& rep, const md_system_t& sys) {
+    bool update_rep = false;
+    GlyphRepresentation& g = rep.glyphs;
+    if (prop::section("Glyphs")) {
+        prop::row("points", "The point set: an attribute group with a coordinate series (and a normal series for cylinders).\n"
+                            "A cavity's tesserae, the QM atoms, ... whatever is published as one.");
+        {
+            md_attribute_id_t sets[64];
+            const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), sys), MD_COUNTOF(sets));
+            const md_str_t cur = glyphs_group(sys, g.points);
+            char preview[160];
+            snprintf(preview, sizeof(preview), "%.*s", (int)cur.len, cur.ptr);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##glyph_points", cur.len ? preview : "(none)")) {
+                for (size_t i = 0; i < n; ++i) {
+                    const md_str_t grp = glyphs_group(sys, sets[i]);
+                    char label[176];
+                    snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
+                    if (ImGui::Selectable(label, sets[i] == g.points) && sets[i] != g.points) {
+                        glyphs_select(&g, sys, sets[i]);
+                        update_rep = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        const bool oriented = glyphs_is_oriented(sys, g.points);
+        prop::row("shape", "Cylinder: from the point along its normal; its radius, height and colour (a point set with normals).\n"
+                           "Sphere: centred on the point; its radius and colour.\n"
+                           "Never thinner than a pixel or two, so that the smallest can be hovered.");
+        int shape = oriented ? (int)g.shape : (int)GlyphShape::Sphere;
+        ImGui::BeginDisabled(!oriented);
+        if (ImGui::Combo("##glyph_shape", &shape, glyph_shape_str, (int)GlyphShape::Count)) {
+            g.shape = (GlyphShape)shape;
+            update_rep = true;
+        }
+        ImGui::EndDisabled();
+        update_rep |= draw_glyph_mapping("radius", "radius", &g.radius, sys, g.points, true);
+        if (oriented && g.shape == GlyphShape::Cylinder) {
+            update_rep |= draw_glyph_mapping("height", "height", &g.height, sys, g.points, false);
+        }
+        prop::row("unlit", "The colours as they are, not shaded");
+        update_rep |= ImGui::Checkbox("##glyph_unlit", &g.unlit);
+        prop::section_end();
+    }
+    if (prop::section("Color")) {
+        prop::row("by", "A quantity of the point set, or a uniform colour");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        md_attribute_id_t c = g.color;
+        if (glyph_quantity_combo("##glyph_color", &c, sys, g.points, "Uniform")) {
+            glyphs_select_color(&g, sys, c);
+            update_rep = true;
+        }
+        if (const md_attribute_t* a = g.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, g.color) : nullptr) {
+            // in the display units where they follow them, else as published (glyphs_unit_print)
+            char unit[64];
+            const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+            if (!display && unit[0]) {
+                prop::row("unit");
+                ImGui::TextUnformatted(unit);
+            }
+            update_rep |= color_scale_draw_controls(&g.scale, glyphs_span(g), display ? a->unit : md_unit_none(), "points", "Over the points: the 1st to 99th percentile");
+        }
+        prop::section_end();
+    }
+    // What the point set's group holds besides: its single values (a cavity's pressure, area, energy, ...)
+    const md_str_t group = glyphs_group(sys, g.points);
+    const size_t slash = md_str_rfind_char(group, '/');
+    if (group.len && slash != MD_STR_NPOS) {
+        const md_str_t parent = md_str_substr(group, 0, slash);
+        bool open = false, any = false;
+        for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, parent); md_attributes_next(&it);) {
+            const md_attribute_t* a = it.attr;
+            if (!md_str_eq(md_attribute_group(a), parent) || a->format.rank != 0 || a->format.components != 1 || !md_attribute_type_is_numeric(a->format.type)) continue;
+            if (!any) { any = true; open = prop::section("Data", false); }
+            if (!open) break;
+            double v = 0.0;
+            if (md_attribute_extract_f64(&v, 1, &sys.attributes, a, md_attribute_slice_all(), a->unit) != 1) continue;
+            char unit[64];
+            double f = 1.0;
+            glyphs_unit_print(unit, sizeof(unit), &f, a->unit);
+            const md_str_t nm = glyph_attribute_name(a);
+            char row[128];
+            snprintf(row, sizeof(row), "%.*s", (int)nm.len, nm.ptr);
+            char tip[256];
+            snprintf(tip, sizeof(tip), "%.*s", (int)a->path.len, a->path.ptr);
+            prop::row(row, a->description.len ? nullptr : tip);
+            ImGui::Text(unit[0] ? "%.4g %s" : "%.4g", v * f, unit);
+            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+        }
+        if (open) prop::section_end();
+    }
+    return update_rep;
+}
+
 bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
     bool update_rep = false;
     // @TODO: Only display the representations which can be used for the current dataset
@@ -3914,11 +4295,15 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 // one, and a file without an SCF block can still carry density properties
                 if (es_source_mask(state->mold.sys) == 0) continue;
             }
+            if (i == (int)RepresentationType::Glyphs && glyphs_point_sets(nullptr, 0, state->mold.sys) == 0) continue;
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
                 if (rep.type == RepresentationType::ElectronicStructure) {
                     // The default source is orbitals, which this system may not have
                     electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
+                }
+                if (rep.type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep.glyphs.points)) {
+                    glyphs_select(&rep.glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
                 }
                 update_rep = true;
             }
@@ -4079,16 +4464,22 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::section_end();
         }
         break;
-    default:
+    case RepresentationType::Glyphs:
+        update_rep |= draw_representation_glyphs(rep, state->mold.sys);
+        break;
+    default: {
+        const bool one_row = representation_geometry_is_one_row(rep);
+        if (one_row) update_rep |= draw_representation_geometry(state, rep);
         if (prop::section("Color")) {
             update_rep |= draw_representation_coloring(state, rep);
             prop::section_end();
         }
-        if (prop::section("Geometry", false)) {
+        if (!one_row && prop::section("Geometry", false)) {
             update_rep |= draw_representation_geometry(state, rep);
             prop::section_end();
         }
         break;
+    }
     }
 
     prop::end();
@@ -4394,11 +4785,25 @@ void draw_representation_legends(ApplicationState& state) {
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
-            const bool has_field = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
-            if (es.coloring == SurfaceColoring::Field && es.field_map.show_legend && has_field) {
+            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && electronic_structure_geometry(es).coloring == SurfaceColoring::Field;
+            if (colored && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
+        }
+
+        if (rep.type == RepresentationType::Glyphs && rep.type_is_valid && rep.glyphs.scale.show_legend && glyphs_span(rep.glyphs).valid) {
+            if (const md_attribute_t* a = rep.glyphs.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&state.mold.sys.attributes, rep.glyphs.color) : nullptr) {
+                const md_str_t nm = glyph_attribute_name(a);
+                char unit[64];
+                const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+                char label[160];
+                if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
+                else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
+                color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+            }
+            continue;
         }
 
         if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {

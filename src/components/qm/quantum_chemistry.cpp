@@ -50,6 +50,7 @@
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <vector>
 #include <atomic>
 #include <app/IconsFontAwesome6.h>
 
@@ -1411,6 +1412,37 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_window = false;
     } summary;
 
+    // The GOSTSHYP window: the cavity of a run under pressure (vlx/scf/gostshyp/*, md_vlx.h, which publishes what
+    // the wall is per tessera and in all) as a whole, and a table of its tesserae linked to the glyphs of the tesserae
+    // in the view (glyphs.h). Copied again when the attributes it is made of change.
+    struct GostshypTessera {
+        uint32_t atom = 0;          // the QM atom of its sphere
+        uint32_t sys_atom = 0;      // and that atom in the system
+        float area = 0;             // Å^2
+        float lambda = 0;           // decay length, Å
+        float wall = 0;             // energy of the wall per area, P lambda: kJ/mol/Å^2
+        float density = 0;          // <rho|g> = P a lambda / p: e/bohr^3
+        float amp = 0;              // p: Eh bohr^3
+        float amp_area = 0;         // p / a: Eh bohr
+        float zeta = 0;             // exponent of its Gaussian, Å^-2
+        bool  inside = false;       // inside the sphere of another atom than its own
+    };
+    bool has_gostshyp = false;      // the system has a GOSTSHYP cavity: its window is offered (set each frame)
+    struct Gostshyp {
+        bool     show_window = false;
+        bool     follow = true;     // scroll the table to the tessera hovered in the view
+        uint64_t key = 0;
+        bool     valid = false;
+        size_t   num_spheres = 0;   // the QM atoms
+        size_t   num_inside = 0;
+        double   lambda_min = 0, lambda_max = 0;
+        std::vector<GostshypTessera> tess;
+        std::vector<uint32_t> order;        // the rows as sorted
+        bool     sort_dirty = true;
+        uint32_t view_hover_last = UINT32_MAX;
+        bool     row_hovered_last = false;  // a row was hovered the frame before: the patch fades in only where none was
+    } gostshyp;
+
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
         bool enabled = false;
@@ -2115,6 +2147,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     draw_orb_window(state);
                     draw_summary_window(state);
+                    has_gostshyp = attribute_exists(state.mold.sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+                    draw_gostshyp_window(state);
                     draw_critical_points_window(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
@@ -2136,6 +2170,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 const char* no_rsp       = has_orbitals ? "The calculation has no response, vibrational or XPS results" : no_orbitals;
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Summary", &summary.show_window,
                     {.order = 100, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/GOSTSHYP", &gostshyp.show_window,
+                    {.order = 105, .enabled = has_gostshyp, .disabled_reason = "The calculation was not run under pressure (GOSTSHYP)"});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Critical Points", &critical_points.show_window,
                     {.order = 110, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Response", &rsp.show_window,
@@ -6164,6 +6200,276 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
+    // A series of the cavity's tesserae (vlx/scf/gostshyp/tessera/<leaf>) in the given unit, n of them; empty otherwise
+    static std::vector<double> gostshyp_series(const md_system_t& sys, const char* leaf, size_t n, md_unit_t unit) {
+        std::vector<double> v;
+        const md_attribute_t* a = md_attributes_find_in(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera"), md_str_from_cstr(leaf));
+        if (!a || a->format.rank != 1 || a->format.shape[0] != n || a->format.components != 1) return v;
+        v.resize(n);
+        if (md_attribute_extract_f64(v.data(), n, &sys.attributes, a, md_attribute_slice_all(), unit) != n) v.clear();
+        return v;
+    }
+
+    // The cavity of a run under pressure, per tessera, as mdlib published it
+    void update_gostshyp(const md_system_t& sys) {
+        uint64_t key = 0x5bd1e995;
+        for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp")); md_attributes_next(&it);) {
+            const uint64_t v[2] = {(uint64_t)it.attr->id, it.attr->version};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (const md_attribute_t* a = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/system_index"))) {
+            const uint64_t v[2] = {(uint64_t)a->id, a->version};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (key == gostshyp.key) return;
+
+        Gostshyp& g = gostshyp;
+        g.key = key;
+        g.valid = false;
+        g.num_spheres = g.num_inside = 0;
+        g.tess.clear();
+        g.order.clear();
+        g.sort_dirty = true;
+        g.view_hover_last = UINT32_MAX;
+
+        const md_attribute_t* ac = md_attributes_find(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+        if (!ac || ac->format.rank != 1 || ac->format.shape[0] == 0) return;
+        const size_t n = ac->format.shape[0];
+        const md_unit_t ang = md_unit_angstrom(), bohr = md_unit_bohr_radius();
+        const std::vector<double> area = gostshyp_series(sys, "area", n, md_unit_pow(ang, 2));
+        const std::vector<double> idx  = gostshyp_series(sys, "atom_index", n, md_unit_none());
+        const std::vector<double> lam  = gostshyp_series(sys, "decay_length", n, ang);
+        // Ha/bohr^2 to kJ/mol/Å^2 (a molar energy is no dimension md_unit converts an energy to)
+        std::vector<double> wall = gostshyp_series(sys, "wall_energy_per_area", n, md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)));
+        for (double& w : wall) w *= HARTREE_TO_KJ_PER_MOL / (0.52917721092 * 0.52917721092);
+        const std::vector<double> dens = gostshyp_series(sys, "wall_density", n, md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)));
+        const std::vector<double> amp  = gostshyp_series(sys, "amplitude", n, md_unit_mul(md_unit_hartree(), md_unit_pow(bohr, 3)));
+        const std::vector<double> pa   = gostshyp_series(sys, "amplitude_per_area", n, md_unit_mul(md_unit_hartree(), bohr));
+        const std::vector<double> zeta = gostshyp_series(sys, "exponent", n, md_unit_inv(md_unit_pow(ang, 2)));
+        const std::vector<double> bur  = gostshyp_series(sys, "buried", n, md_unit_none());
+        if (area.empty() || idx.empty()) return;
+        size_t n_map = 0, n_rad = 0;
+        const uint32_t* map = (const uint32_t*)attribute_column(&n_map, sys, MD_STR_LIT("qm/atom/system_index"), MD_ATTRIBUTE_TYPE_U32);
+        attribute_series_f64(&n_rad, sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
+
+        g.valid = true;
+        g.num_spheres = n_rad;
+        g.lambda_min = DBL_MAX;
+        g.lambda_max = -DBL_MAX;
+        g.tess.resize(n);
+        g.order.resize(n);
+        for (size_t j = 0; j < n; ++j) {
+            GostshypTessera& t = g.tess[j];
+            const uint32_t q = (uint32_t)idx[j];
+            t.atom = q;
+            t.sys_atom = map && q < n_map ? map[q] : q;
+            t.area = (float)area[j];
+            t.lambda = lam.empty() ? 0.0f : (float)lam[j];
+            t.wall = wall.empty() ? 0.0f : (float)wall[j];
+            t.density = dens.empty() ? 0.0f : (float)dens[j];
+            t.amp = amp.empty() ? 0.0f : (float)amp[j];
+            t.amp_area = pa.empty() ? 0.0f : (float)pa[j];
+            t.zeta = zeta.empty() ? 0.0f : (float)zeta[j];
+            t.inside = !bur.empty() && bur[j] > 0.5;
+            g.num_inside += t.inside;
+            g.order[j] = (uint32_t)j;
+            if (!lam.empty()) {
+                g.lambda_min = MD_MIN(g.lambda_min, lam[j]);
+                g.lambda_max = MD_MAX(g.lambda_max, lam[j]);
+            }
+        }
+    }
+
+    void draw_gostshyp_summary(const md_system_t& sys) {
+        const Gostshyp& g = gostshyp;
+        const double P = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), 0.0);
+        const double n_leb = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), 0.0);
+        const double scale = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), 0.0);
+        const double area = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), 0.0);
+        const double skin = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), 0.0);
+        const double energy_kj = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), 0.0);
+        const double buried = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), 0.0);
+        const md_str_t disc = attribute_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"));
+
+        ImGui::Text("Pressure:               %.4g GPa", P);
+        if (!md_str_empty(disc)) ImGui::Text("Discretization:         %.*s", (int)disc.len, disc.ptr);
+        if (n_leb > 0)  ImGui::Text("Lebedev points:         %.0f per sphere", n_leb);
+        if (scale > 0)  ImGui::Text("Sphere radius:          %.3g x vdW", scale);
+        if (n_leb > 0 && g.num_spheres > 0) {
+            ImGui::Text("Tesserae:               %zu of %.0f kept", g.tess.size(), n_leb * (double)g.num_spheres);
+        } else {
+            ImGui::Text("Tesserae:               %zu", g.tess.size());
+        }
+        ImGui::Text("Inside other spheres:   %zu (%.1f%% of the area)", g.num_inside, 100.0 * buried);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Tesserae inside the sphere of another atom than their own: the switching keeps points where\n"
+                              "the spheres overlap, so the cavity of the calculation is a smoothed union of the spheres");
+        }
+        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", area);
+        if (skin > 0) {
+            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", skin);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("The volume of density outside the cavity the wall holds against the pressure: each tessera's\n"
+                                  "area times the decay length of the density there, <rho|g> / (-d/dn <rho|g>)");
+            }
+            if (area > 0) ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", skin / area, g.lambda_min, g.lambda_max);
+            ImGui::Text("Wall energy:            %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("sum p_j <rho|g_j> = P sum a_j lambda_j: the amplitudes hold the pressure, p_j (-d/dn <rho|g_j>) = P a_j");
+            }
+            if (area > 0) ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / area);
+        }
+    }
+
+    // The glyph representation the table is linked to: the first one shown of the tesserae
+    static const Representation* gostshyp_linked_rep(const ApplicationState& state) {
+        for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+            const Representation& rep = state.representation.reps[i];
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(state, rep) || !rep.type_is_valid) continue;
+            if (md_str_eq(glyphs_group(state.mold.sys, rep.glyphs.points), MD_STR_LIT("vlx/scf/gostshyp/tessera"))) return &rep;
+        }
+        return nullptr;
+    }
+
+    enum GostshypColumn {
+        GostshypColumn_Index, GostshypColumn_Atom, GostshypColumn_Area, GostshypColumn_Lambda, GostshypColumn_Wall,
+        GostshypColumn_Density, GostshypColumn_Amp, GostshypColumn_AmpArea, GostshypColumn_Zeta, GostshypColumn_Inside,
+        GostshypColumn_Count
+    };
+
+    static float gostshyp_value(const GostshypTessera& t, uint32_t j, int column) {
+        switch (column) {
+        case GostshypColumn_Index:   return (float)j;
+        case GostshypColumn_Atom:    return (float)t.sys_atom;
+        case GostshypColumn_Area:    return t.area;
+        case GostshypColumn_Lambda:  return t.lambda;
+        case GostshypColumn_Wall:    return t.wall;
+        case GostshypColumn_Density: return t.density;
+        case GostshypColumn_Amp:     return t.amp;
+        case GostshypColumn_AmpArea: return t.amp_area;
+        case GostshypColumn_Zeta:    return t.zeta;
+        case GostshypColumn_Inside:  return t.inside ? 1.0f : 0.0f;
+        default:                     return 0.0f;
+        }
+    }
+
+    void draw_gostshyp_window(ApplicationState& state) {
+        // What the table hovers is marked in the view as long as it is hovered: none while the window is closed
+        state.glyph_hover_ui = {};
+        if (!gostshyp.show_window) {
+            gostshyp.row_hovered_last = false;
+            return;
+        }
+        const md_system_t& sys = state.mold.sys;
+        update_gostshyp(sys);
+        Gostshyp& g = gostshyp;
+
+        ImGui::SetNextWindowSize({ 720, 560 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("GOSTSHYP", &g.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            if (!g.valid) {
+                ImGui::TextUnformatted("This dataset has no GOSTSHYP cavity");
+                ImGui::End();
+                return;
+            }
+            draw_gostshyp_summary(sys);
+            ImGui::Separator();
+
+            const Representation* rep = gostshyp_linked_rep(state);
+            // The tessera hovered in the view: its row is marked, and followed when asked
+            const uint32_t view_hover = (rep && state.glyph_hover.rep_id == rep->node.id) ? state.glyph_hover.point : UINT32_MAX;
+            ImGui::Checkbox("Follow the view", &g.follow);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scroll to the tessera under the cursor in the view");
+            ImGui::SameLine();
+            if (rep) {
+                ImGui::TextDisabled("hover a row to mark its patch on '%s'", rep->name);
+            } else {
+                ImGui::TextDisabled("no glyphs of the tesserae shown to mark them on");
+            }
+
+            const ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
+                                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable |
+                                          ImGuiTableFlags_SizingStretchProp;
+            if (ImGui::BeginTable("##tesserae", GostshypColumn_Count, flags)) {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("#",           ImGuiTableColumnFlags_DefaultSort, 0, GostshypColumn_Index);
+                ImGui::TableSetupColumn("Atom",        0, 0, GostshypColumn_Atom);
+                ImGui::TableSetupColumn("Area Å²",     0, 0, GostshypColumn_Area);
+                ImGui::TableSetupColumn("λ Å",         0, 0, GostshypColumn_Lambda);
+                ImGui::TableSetupColumn("Pλ kJ/mol/Å²",0, 0, GostshypColumn_Wall);
+                ImGui::TableSetupColumn("⟨ρ|g⟩ e/bohr³",0, 0, GostshypColumn_Density);
+                ImGui::TableSetupColumn("p a.u.",      0, 0, GostshypColumn_Amp);
+                ImGui::TableSetupColumn("p/a Eh bohr", 0, 0, GostshypColumn_AmpArea);
+                ImGui::TableSetupColumn("ζ Å⁻²",       ImGuiTableColumnFlags_DefaultHide, 0, GostshypColumn_Zeta);
+                ImGui::TableSetupColumn("Inside",      0, 0, GostshypColumn_Inside);
+                ImGui::TableHeadersRow();
+
+                if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
+                    if (specs->SpecsDirty || g.sort_dirty) {
+                        const ImGuiTableSortSpecs* sp = specs;
+                        const std::vector<GostshypTessera>& tess = g.tess;
+                        std::stable_sort(g.order.begin(), g.order.end(), [sp, &tess](uint32_t a, uint32_t b) {
+                            for (int i = 0; i < sp->SpecsCount; ++i) {
+                                const ImGuiTableColumnSortSpecs& s = sp->Specs[i];
+                                const float va = gostshyp_value(tess[a], a, s.ColumnUserID);
+                                const float vb = gostshyp_value(tess[b], b, s.ColumnUserID);
+                                if (va != vb) return s.SortDirection == ImGuiSortDirection_Ascending ? va < vb : va > vb;
+                            }
+                            return a < b;
+                        });
+                        specs->SpecsDirty = false;
+                        g.sort_dirty = false;
+                    }
+                }
+
+                // The row of the tessera hovered in the view, when it changed: drawn whatever the scroll, and scrolled to
+                int scroll_to = -1;
+                if (g.follow && view_hover != UINT32_MAX && view_hover != g.view_hover_last && view_hover < g.tess.size()) {
+                    for (size_t r = 0; r < g.order.size(); ++r) {
+                        if (g.order[r] == view_hover) { scroll_to = (int)r; break; }
+                    }
+                }
+                g.view_hover_last = view_hover;
+
+                ImGuiListClipper clipper;
+                clipper.Begin((int)g.order.size());
+                if (scroll_to >= 0) clipper.IncludeItemByIndex(scroll_to);
+                while (clipper.Step()) {
+                    for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                        const uint32_t j = g.order[r];
+                        const GostshypTessera& t = g.tess[j];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(GostshypColumn_Index);
+                        char label[32];
+                        snprintf(label, sizeof(label), "%u##t%u", j + 1, j);
+                        ImGui::Selectable(label, j == view_hover, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+                        if (ImGui::IsItemHovered() && rep) {
+                            if (!g.row_hovered_last && !state.glyph_hover.rep_id) state.selection.highlight_time = ImGui::GetTime();
+                            state.glyph_hover_ui.rep_id = rep->node.id;
+                            state.glyph_hover_ui.point  = j;
+                        }
+                        if (r == scroll_to) ImGui::SetScrollHereY(0.5f);
+
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Atom)) {
+                            const md_str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&sys.atom, t.sys_atom));
+                            ImGui::Text("%.*s%u", (int)sym.len, sym.ptr, t.sys_atom + 1);
+                        }
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Area))    ImGui::Text("%.3e", t.area);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Lambda))  ImGui::Text("%.4f", t.lambda);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Wall))    ImGui::Text("%.3f", t.wall);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Density)) ImGui::Text("%.3e", t.density);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Amp))     ImGui::Text("%.3e", t.amp);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_AmpArea)) ImGui::Text("%.3e", t.amp_area);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Zeta))    ImGui::Text("%.3f", t.zeta);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Inside))  ImGui::TextUnformatted(t.inside ? "yes" : "");
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+        ImGui::End();
+        g.row_hovered_last = state.glyph_hover_ui.rep_id != 0;
+    }
+
     void draw_summary_window(ApplicationState& state) {
         const md_system_t& sys = state.mold.sys;
 
@@ -6327,6 +6633,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
+
 
             {
                 size_t num_steps = 0;
@@ -8570,7 +8877,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
                     bool is_selected = (export_state.source == source);
-                    bool disabled = source == ElectronicStructureSource::DensityProperty ||
+                    bool disabled = source == ElectronicStructureSource::DensityProperty || electronic_structure_source_field_kind(source) != SurfaceFieldKind::Count ||
                                     ((source == ElectronicStructureSource::NaturalTransitionOrbital ||
                                      source == ElectronicStructureSource::TransitionDensity) &&
                                     (num_excited == 0));
