@@ -10,6 +10,7 @@
 
 #include <md_system.h>
 #include <md_system_state.h>
+#include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_hash.h>
 #include <core/md_allocator.h>
@@ -352,7 +353,7 @@ static void sizes(std::vector<float>* out, const md_system_t& sys, uint32_t n, c
         const std::vector<double> v = values(sys, m.quantity, n, area ? md_unit_pow(md_unit_angstrom(), 2) : md_unit_angstrom());
         for (uint32_t j = 0; j < n && j < v.size(); ++j) {
             const double x = isfinite(v[j]) ? v[j] : 0.0;
-            const double s = area ? copysign(sqrt(fabs(x) / M_PI), x) : x;
+            const double s = area ? copysign(sqrt(fabs(x) / MD_PI), x) : x;
             (*out)[j] = (float)(m.scale * (radius ? fabs(s) : s));
         }
         return;

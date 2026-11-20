@@ -99,7 +99,7 @@ GostshypWall* gostshyp_wall_create(const GostshypTesserae& t, const GostshypPlac
         }
         const double z = t.zeta[j] * BOHR_A * BOHR_A;
         w->zeta[j] = z;
-        w->coef[j] = t.amp[j] * pow(z / M_PI, 1.5);
+        w->coef[j] = t.amp[j] * pow(z / MD_PI, 1.5);
         w->lambda2z[j] = 2.0 * z * t.lambda[j] * to_bohr;
         w->cut2[j] = CUTOFF_EXP / z;
         const double cut = sqrt(w->cut2[j]);
