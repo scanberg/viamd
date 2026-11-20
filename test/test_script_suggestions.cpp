@@ -802,7 +802,8 @@ UTEST(script_suggestions, vial_measurement) {
     md_array(ScriptSuggestion) s = measure(l, {"name(\"N\") in residue(5)", "name(\"CA\") in residue(5)", "name(\"C\") in residue(5)"}, V2);
     print(s);
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
-    EXPECT_TRUE(contains(s, "m1 = angle(particle[30], particle[31], particle[32])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle[[30, 31, 32]])"));
+    EXPECT_FALSE(any_contains(s, "particle[30], "));
     // Within one residue, written once, with its particles stacked by name
     EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
     EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));
