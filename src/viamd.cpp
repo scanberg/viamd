@@ -34,6 +34,7 @@
 #include <loader.h>
 #include <color_utils.h>
 #include <display_units.h>
+#include <frame_axis.h>
 #include <serialization_utils.h>
 #include <plot_periodic.h>
 
@@ -337,7 +338,19 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
     }
 }
 
-// "residue(56) part(3) chain(1)", after whatever sb holds: the place in the script's terms. The part is given where it is
+// Two units: atom(3) atom(9) in v1, and particle[[2, 8]] in VIAL, which measurements take as their one argument
+static void tooltip_index_pair(md_str_writer_t* sb, script::Language lang, const char* kind, int64_t a, int64_t b) {
+    if (lang == script::Language::V2) {
+        const char* sep = md_str_writer_empty(sb) ? "" : " ";
+        md_str_writer_fmt(sb, "%s%s[[%lld, %lld]]", sep, strcmp(kind, "atom") ? kind : "particle", (long long)a, (long long)b);
+    } else {
+        script_write_position(sb, lang, kind, a);
+        script_write_position(sb, lang, kind, b);
+    }
+}
+
+// "residue(56) part(3) chain(1)", after whatever sb holds: the place in the script's terms, residue[55] part[2] chain[0]
+// in VIAL. The part is given where it is
 // less than its molecule (a glycan, a strand bonded to another). Then what it is filed under: its chain, else the strand
 // of a polymer it is by its position (polymer(2)), else its molecule by its position among the molecules.
 // Positions are written as the script's language writes them (script_write_position): atom(5) or particle[4]
@@ -694,8 +707,7 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, MD_STR_LIT("source"), from);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    script_write_position(&index, state.script.language, "atom", pair.idx[0]);
-    script_write_position(&index, state.script.language, "atom", pair.idx[1]);
+    tooltip_index_pair(&index, state.script.language, "atom", pair.idx[0], pair.idx[1]);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
@@ -816,8 +828,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    script_write_position(&index, state.script.language, "residue", res_idx);
-    script_write_position(&index, state.script.language, "residue", res_idx + 1);
+    tooltip_index_pair(&index, state.script.language, "residue", res_idx, (int64_t)res_idx + 1);
     const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
     const int strand = tooltip_polymer_position(sys, place[0].part_idx);
     const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
@@ -927,8 +938,8 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         }
     }
 
-    // ring(k) of the script is ring k - 1 of the system, as the circle picks it. A ring of the frame is none of the
-    // system's: the bonds formed in the frame close it, and the script knows the rings of the system
+    // ring(k) of v1, ring[k - 1] of VIAL, is ring k - 1 of the system, as the circle picks it. A ring of the frame is
+    // none of the system's: the bonds formed in the frame close it, and the script knows the rings of the system
     md_str_writer_t index = md_str_writer_create(req->alloc);
     if (frame_ring) {
         tooltip_list_add(&index, "of this frame, its bonds as they are tracked");
@@ -1386,6 +1397,10 @@ md_unit_t run_time_unit(const ApplicationState* app) {
     return axis ? axis->unit : md_unit_none();
 }
 
+double run_time_at_frame(const ApplicationState* app, double frame) {
+    return time_at_frame(run_frame_times(app), run_num_frames(app), frame);
+}
+
 const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
     MD_ASSERT(app);
     const md_system_state_t* state = &app->mold.state;
@@ -1450,7 +1465,6 @@ void free_trajectory_data(ApplicationState* state) {
     // The run, and with it the files it was opened from and the series loaded along it
     file_list_drop_runs(&state->files.list);
 
-    md_array_free(state->timeline.x_values,  state->allocator.persistent);
     // Converted axes and histograms of what is about to go. The attribute versions they are keyed
     // on only mean something within one table, and the next one may be allocated where this was.
     series_cache_free(state);
@@ -1654,22 +1668,7 @@ void init_trajectory_data(ApplicationState* data, md_str_t run_file, uint32_t tr
 
         MD_ASSERT(frame_times);
 
-        // The timeline carries time in the unit the user asked to see it in. Everything downstream
-        // reads x_values and view_range, so this is the one place the conversion happens; a later
-        // change to the preference is picked up by update_timeline_time_unit in main.cpp.
-        const double time_scl = display_units::factor(&data->timeline.time_unit, run_time_unit(data));
-        data->timeline.time_scale    = time_scl;
-        data->timeline.units_version = display_units::version();
-
-        double min_time = frame_times[0] * time_scl;
-        double max_time = frame_times[num_frames - 1] * time_scl;
-
-        data->timeline.view_range = {min_time, max_time};
-
-        md_array_resize(data->timeline.x_values, num_frames, data->allocator.persistent);
-        for (size_t i = 0; i < num_frames; ++i) {
-            data->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
-        }
+        data->timeline.view_range = {frame_times[0], frame_times[num_frames - 1]};
 
         data->animation.frame = MD_CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
         int64_t frame_idx = MD_CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
@@ -2413,31 +2412,6 @@ void workspace_register_window(const char* name, bool* show) {
     }
 }
 
-// Frame <-> time along the timeline, for the parts of it stored as frames (see TimelineView)
-static double workspace_frame_to_time(const ApplicationState* app, double frame) {
-    const int64_t n = (int64_t)md_array_size(app->timeline.x_values);
-    if (n == 0) return frame;
-    const int64_t f0 = MD_CLAMP((int64_t)frame, (int64_t)0, n - 1);
-    const int64_t f1 = MD_CLAMP(f0 + 1, (int64_t)0, n - 1);
-    const double t = MD_CLAMP(frame - (double)f0, 0.0, 1.0);
-    return lerp((double)app->timeline.x_values[f0], (double)app->timeline.x_values[f1], t);
-}
-
-static double workspace_time_to_frame(const ApplicationState* app, double time) {
-    const int64_t n = (int64_t)md_array_size(app->timeline.x_values);
-    if (n == 0) return time;
-    const float* x = app->timeline.x_values;
-    if (time <= x[0]) return 0.0;
-    if (time >= x[n - 1]) return (double)(n - 1);
-    int64_t lo = 0, hi = n - 1;
-    while (hi - lo > 1) {
-        const int64_t mid = (lo + hi) / 2;
-        if (x[mid] <= time) lo = mid; else hi = mid;
-    }
-    const double dx = (double)x[hi] - (double)x[lo];
-    return (double)lo + (dx > 0.0 ? (time - x[lo]) / dx : 0.0);
-}
-
 // What is read before the data it refers to is loaded, applied once it is
 struct WorkspacePending {
     // The systems, their runs and the files of each ([System], [Run], [Input], or a [Files] section of a
@@ -2476,9 +2450,10 @@ struct WorkspacePending {
     bool   temporal_window_enabled;
     double temporal_window_extent;
     bool   has_periods;
+    // The timeline's view, ViewTime: in the run's time and its unit. ViewFrames, as workspaces before it wrote it, in frames.
     bool   has_view_range;
-    double view_beg_frame;
-    double view_end_frame;
+    bool   view_range_in_frames;
+    double view_range[2];
 
     // The simulation box of a workspace from before it was a representation ([RenderSettings]), which becomes one
     bool   box_enabled;
@@ -2489,6 +2464,7 @@ static void workspace_reset(ApplicationState* data) {
     remove_all_selections(data);
     remove_all_representations(data);
     data->editor.SetText("");
+    data->script.other_text.clear();
     data->files.workspace[0] = '\0';
 
     // The workspace's files are loaded onto nothing, as they were when they were first loaded: what a file
@@ -2640,12 +2616,15 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     viamd::extract_enum(data->timeline.periods.layout, arg, (int)TimelinePeriodLayout_Count);
                 } else if (md_str_eq(ident, MD_STR_LIT("PeriodShadeAll"))) {
                     viamd::extract_bool(data->timeline.periods.shade_all, arg);
-                } else if (md_str_eq(ident, MD_STR_LIT("ViewFrames"))) {
-                    float r[2];
-                    if (viamd::extract_flt_vec(r, 2, arg)) {
+                } else if (md_str_eq(ident, MD_STR_LIT("ViewTime"))) {
+                    if (viamd::extract_dbl_vec(pending.view_range, 2, arg)) {
                         pending.has_view_range = true;
-                        pending.view_beg_frame = r[0];
-                        pending.view_end_frame = r[1];
+                        pending.view_range_in_frames = false;
+                    }
+                } else if (md_str_eq(ident, MD_STR_LIT("ViewFrames"))) {
+                    if (viamd::extract_dbl_vec(pending.view_range, 2, arg)) {
+                        pending.has_view_range = true;
+                        pending.view_range_in_frames = true;
                     }
                 }
             }
@@ -2775,7 +2754,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 }
             }
         } else if (md_str_eq(section, MD_STR_LIT("Script"))) {
-            // A workspace without the key is v1, as every workspace was before v2
+            // A workspace without the key is v1, as every workspace was before v2. Text is the script in it, OtherText
+            // the script in the other language, which a workspace from before there were two has none of
             script::Language lang = script::Language::V1;
             while (viamd::next_entry(ident, arg, state)) {
                 if (md_str_eq(ident, MD_STR_LIT("Language"))) {
@@ -2785,6 +2765,10 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     md_str_t str;
                     viamd::extract_str(str, arg);
                     data->editor.SetText(std::string(str.ptr, str.len));
+                } else if (md_str_eq(ident, MD_STR_LIT("OtherText"))) {
+                    md_str_t str;
+                    viamd::extract_str(str, arg);
+                    data->script.other_text.assign(str.ptr, str.len);
                 }
             }
             script_set_language(data, lang);
@@ -2967,9 +2951,20 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             }
             if (r) data->timeline.periods.legacy_filter_id = r->id;
         }
-        if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
-            data->timeline.view_range.beg_x = workspace_frame_to_time(data, MD_CLAMP(pending.view_beg_frame, 0.0, last));
-            data->timeline.view_range.end_x = workspace_frame_to_time(data, MD_CLAMP(pending.view_end_frame, 0.0, last));
+        if (pending.has_view_range) {
+            double beg = pending.view_range[0];
+            double end = pending.view_range[1];
+            if (pending.view_range_in_frames) {
+                beg = run_time_at_frame(data, beg);
+                end = run_time_at_frame(data, end);
+            }
+            const double t0 = run_time_at_frame(data, 0.0);
+            const double t1 = run_time_at_frame(data, last);
+            beg = MD_CLAMP(beg, t0, t1);
+            end = MD_CLAMP(end, t0, t1);
+            if (end > beg) {
+                data->timeline.view_range = {beg, end};
+            }
         }
     }
 
@@ -3067,17 +3062,15 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     periodic_views_serialize(state);
 
     {
-        // In frames: a time is in whatever unit it happens to be shown in
+        // The view in the run's time and its unit, as the timeline holds it: the same trajectory, which its frame count
+        // checks on loading, has the same time
         const auto& tl = app_state->timeline;
         viamd::write_section_header(state, MD_STR_LIT("TimelineView"));
         viamd::write_int(state, MD_STR_LIT("PeriodLayout"), (int)tl.periods.layout);
         viamd::write_bool(state, MD_STR_LIT("PeriodShadeAll"), tl.periods.shade_all);
-        if (md_array_size(tl.x_values) > 0) {
-            const float view[2] = {
-                (float)workspace_time_to_frame(app_state, tl.view_range.beg_x),
-                (float)workspace_time_to_frame(app_state, tl.view_range.end_x),
-            };
-            viamd::write_flt_vec(state, MD_STR_LIT("ViewFrames"), view, 2);
+        if (run_num_frames(app_state) > 0) {
+            const double view[2] = { tl.view_range.beg_x, tl.view_range.end_x };
+            viamd::write_dbl_vec(state, MD_STR_LIT("ViewTime"), view, 2);
         }
         timeline_periods_serialize(state, &tl.periods);
     }
@@ -3145,6 +3138,8 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         // Written for v2 alone, so a v1 workspace is as it was
         if (app_state->script.language == script::Language::V2) viamd::write_str(state, MD_STR_LIT("Language"), MD_STR_LIT("VIAL"));
         viamd::write_str(state, MD_STR_LIT("Text"), md_str_t{text.c_str(), text.size()});
+        const std::string& other = app_state->script.other_text;
+        if (!other.empty()) viamd::write_str(state, MD_STR_LIT("OtherText"), md_str_t{other.c_str(), other.size()});
     }
 
     for (size_t i = 0; i < md_array_size(app_state->selection.stored_selections); ++i) {
@@ -7859,6 +7854,15 @@ void script_set_language(ApplicationState* state, script::Language lang) {
     state->script.compile_ir = true;
     state->script.time_since_last_change = 1.0e9;     // now, not after the pause that follows an edit
     flag_all_representations_as_dirty(state);
+}
+
+void script_switch_language(ApplicationState* state, script::Language lang) {
+    MD_ASSERT(state);
+    if (state->script.language == lang) return;
+    std::string text = state->editor.GetText();
+    state->editor.SetText(state->script.other_text);
+    state->script.other_text = std::move(text);
+    script_set_language(state, lang);
 }
 
 void script_ir_collect(ApplicationState* state) {
