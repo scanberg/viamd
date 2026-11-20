@@ -1009,8 +1009,37 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
     md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr, flags);
 }
 
+size_t representation_weak_bond_count(const ApplicationState& state, const Representation& rep) {
+    const md_system_t& sys = state.mold.sys;
+    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+        // As representation_set_weak_bonds gives them
+        return rep.noncovalent_bonds && sys.bond.pairs && sys.bond.flags ? sys.bond.noncovalent_count : 0;
+    }
+    if (rep.type == RepresentationType::Bonds) {
+        return md_array_size(rep.bond_pairs);
+    }
+    return 0;
+}
+
+bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState& state, uint32_t rep_id, size_t i) {
+    MD_ASSERT(pair);
+    const int idx = find_rep_idx(state, rep_id);
+    if (idx < 0) return false;
+    const Representation& rep = state.representation.reps[idx];
+    if (i >= representation_weak_bond_count(state, rep)) return false;
+    // Those of a licorice are the non-covalent bonds of the system, all of them in order
+    *pair = rep.type == RepresentationType::Bonds ? rep.bond_pairs[i] : state.mold.sys.bond.pairs[state.mold.sys.bond.count + i];
+    return true;
+}
+
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
     MD_ASSERT(ops);
+    const size_t count = representation_weak_bond_count(state, rep);
+    if (count == 0) return;
+    // The range reserved for its weak bonds as the frame began: they may have changed since (a filter evaluated in the
+    // frame), and those past its end would pick as what follows it
+    const PickingSpace* space = picking_handler_find_space(state.picking_handler, state.picking_handler.frame_idx);
+    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Bond, rep.node.id) : nullptr;
     md_gl_draw_op_t op = {
         .type = MD_GL_REP_WEAK_BONDS,
         .args = {},
@@ -1019,7 +1048,6 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         // The non-covalent bonds of the system among its atoms, in their colours: thinner than its sticks, each in the
         // style of its kind (md_gl), between the joints or the balls
-        if (!rep.noncovalent_bonds || state.mold.sys.bond.noncovalent_count == 0) return;
         const md_gl_draw_op_t sticks = representation_draw_op(rep);
         const bool licorice = rep.type == RepresentationType::Licorice;
         op.args.weak_bonds.radius = 0.2f * (licorice ? rep.scale.x : rep.scale.y);
@@ -1029,8 +1057,7 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
         op.args.weak_bonds.color_mode    = licorice ? sticks.args.licorice.color_mode    : sticks.args.ball_and_stick.color_mode;
         op.args.weak_bonds.sharpness     = licorice ? sticks.args.licorice.sharpness     : sticks.args.ball_and_stick.sharpness;
         op.args.weak_bonds.uniform_color = licorice ? sticks.args.licorice.uniform_color : sticks.args.ball_and_stick.uniform_color;
-    } else if (rep.type == RepresentationType::Bonds) {
-        if (md_array_size(rep.bond_pairs) == 0) return;
+    } else {
         // As thick as the sticks of a licorice of the same scale, the dashed ones as its dashed bonds are relative to them
         op.args.weak_bonds.radius = 0.2f * rep.scale.x;
         op.args.weak_bonds.dashes = (md_gl_dashes_t)rep.bond_dashes;
@@ -1040,9 +1067,8 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
         if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
             tint_colors(&op.args.weak_bonds.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
         }
-    } else {
-        return;
     }
+    op.args.weak_bonds.picking_base = range && range->end - range->beg >= count ? range->beg : UINT32_MAX;
     md_array_push(*ops, op, alloc);
 }
 
@@ -1473,8 +1499,8 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
     } else if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
-        bool formed;
-        if (picked_bond(app, hit.local_idx, &pair, &flags, &formed)) {
+        PickedBondSource source;
+        if (picked_bond(app, hit, &pair, &flags, &source)) {
             push(pair.idx[0]);
             push(pair.idx[1]);
         }
