@@ -647,6 +647,32 @@ static void apply_font_size(void* user_data) {
     style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
 }
 
+// The script language a session starts in, as the .ini keeps it: one it does not know is v1
+static void apply_script_language(void* user_data) {
+    ApplicationState* state = (ApplicationState*)user_data;
+    script::Language& lang = state->settings.script_language;
+    if (lang != script::Language::V1 && lang != script::Language::V2) lang = script::Language::V1;
+    state->script.language = lang;
+}
+
+// The default dataset's script, in either language: the same measurements, so the two can be read side by side
+static const char* default_script(script::Language lang) {
+    if (lang == script::Language::V2) {
+        return "s1 = residue('ALA')[1:8]\n"
+               "d1 = distance(particle[[9, 29]])\n"
+               "a1 = angle(residue('ALA').particle[[1, 0, 2]])\n"
+               "r = rdf(particle(element='C'), particle(element='H'), 10.0)\n"
+               "v = sdf(s1, particle(element='H'), 10.0)\n"
+               "lin, plan, iso = shape_weights(particle)\n";
+    }
+    return "s1 = resname(\"ALA\")[2:8];\n"
+           "d1 = distance(10,30);\n"
+           "a1 = angle(2,1,3) in resname(\"ALA\");\n"
+           "r = rdf(element('C'), element('H'), 10.0);\n"
+           "v = sdf(s1, element('H'), 10.0);\n"
+           "{lin,plan,iso} = shape_weights(all);";
+}
+
 // The look of the Visuals menu a session starts with (settings.look) and the session's own (visuals): a workspace
 // sets the latter, Save as Default copies it to the former, which the .ini keeps
 static void visual_look_save(ApplicationState* state) {
@@ -860,6 +886,8 @@ int main(int argc, char** argv) {
         app_settings::bind(MD_STR_LIT("look_dof_strength"), &look.dof.aperture);
     }
     app_settings::on_apply(apply_visual_settings, &state);
+    app_settings::bind_enum(MD_STR_LIT("script_language"), &state.settings.script_language);
+    app_settings::on_apply(apply_script_language, &state);
     display_units::register_settings();
     app_settings::initialize();
 
@@ -991,7 +1019,10 @@ int main(int argc, char** argv) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
                 file_queue_push(&state.file_queue, path, FileFlags_DisableCacheWrite);
-                state.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
+                const script::Language lang = state.script.language;
+                const script::Language other = lang == script::Language::V2 ? script::Language::V1 : script::Language::V2;
+                state.editor.SetText(default_script(lang));
+                state.script.other_text = default_script(other);
             }
         }
 #endif
@@ -2819,6 +2850,23 @@ static void draw_main_menu(ApplicationState* data) {
                 data->settings.font_size = font_sizes[font_size_idx];
                 apply_font_size(data);
                 app_settings::mark_dirty();
+            }
+
+            // The script and every filter are in one language. Each language keeps a script of its own, which the
+            // editor shows when it is chosen; what was evaluated is of the language left
+            {
+                static const char* names[] = {"mdscript (v1)", "VIAL (v2)"};
+                int idx = data->script.language == script::Language::V2 ? 1 : 0;
+                if (ImGui::Combo("Script Language", &idx, names, (int)MD_COUNTOF(names))) {
+                    const script::Language lang = idx == 1 ? script::Language::V2 : script::Language::V1;
+                    data->settings.script_language = lang;
+                    script_switch_language(data, lang);
+                    app_settings::mark_dirty();
+                }
+                ImGui::SetItemTooltip("The language of the script and of every filter. Chosen here, it is also the one\n"
+                                      "a session starts in; a workspace opens in its own.\n"
+                                      "Each keeps a script of its own: switching shows the other's in the editor,\n"
+                                      "and what was evaluated has to be evaluated again.");
             }
 
 			if (ImGui::TreeNode("Units")) {
@@ -6103,16 +6151,6 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Language")) {
-                // The script and every filter of the workspace are in one language; the text is kept as it is
-                if (ImGui::MenuItem("mdscript (v1)", nullptr, state->script.language == script::Language::V1)) {
-                    script_set_language(state, script::Language::V1);
-                }
-                if (ImGui::MenuItem("VIAL (v2)", nullptr, state->script.language == script::Language::V2)) {
-                    script_set_language(state, script::Language::V2);
-                }
-                ImGui::EndMenu();
-            }
             if (ImGui::BeginMenu("Edit")) {
                 bool ro = state->editor.IsReadOnlyEnabled();
                 if (ImGui::MenuItem("Read-only mode", nullptr, &ro))
@@ -6172,6 +6210,15 @@ static void draw_script_editor_window(ApplicationState* state) {
                     open_script_reference(state, {word.data(), word.size()}, false);
                 }
                 ImGui::EndMenu();
+            }
+            // Which language the script is in, which is chosen under Settings in the main menu
+            {
+                const char* lang = state->script.language == script::Language::V2 ? "VIAL (v2)" : "mdscript (v1)";
+                // At the right, or after the menus when the window is too narrow for both
+                const float right = ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(lang).x;
+                ImGui::SetCursorPosX(MD_MAX(ImGui::GetCursorPosX(), right));
+                ImGui::TextDisabled("%s", lang);
+                ImGui::SetItemTooltip("The script's language: Settings > Script Language switches it, and the script with it");
             }
 
             ImGui::EndMenuBar();
