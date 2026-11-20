@@ -240,6 +240,14 @@ static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {
 // ionization and attachment energies the orbitals' occupations (and energies) read.
 bool surface_field_available(SurfaceFieldKind kind, const md_system_t& sys);
 
+// The density and the kinetic energy density of each spin as md_gto_iso fields, what ELF and LOL are made of
+// (md_gto_iso_field_create_products: the density's orbitals over the basis, md_qm_kinetic_orbitals' over its
+// derivative basis): one spin, the totals, for a closed shell. atom_xyz in bohr, one per atom of the basis.
+// Returns the spins (1 or 2), whose fields are the caller's; 0 on failure, with none made.
+struct md_gto_iso_field_t;
+int localization_fields_create(md_gto_iso_field_t* out_rho[2], md_gto_iso_field_t* out_tau[2], const md_system_t& sys, const md_float3_t* atom_xyz,
+                               size_t num_atoms);
+
 // What the Embedding Potential of a dataset is made of: how many of the environment's sites carry
 // each source (a finite value, not all zero). 'polarizable' counts the sites with a polarizability
 // above zero; with none of them 'induced', the dataset is a polarizable embedding that did not keep

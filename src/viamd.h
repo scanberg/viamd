@@ -369,11 +369,13 @@ static inline bool electronic_structure_source_is_surface_field(ElectronicStruct
 }
 
 // Whether isosurface meshes can be extracted from the source (iso_meshes.h): the orbitals and densities, which
-// md_gto_iso evaluates. The others' isosurfaces are raycast through their volume, whatever the setting.
+// md_gto_iso evaluates, and ELF and LOL, which it bounds through the density and the kinetic energy density
+// (on the CPU so far). The others' isosurfaces are raycast through their volume, whatever the setting.
 static inline bool electronic_structure_source_meshable(ElectronicStructureSource s) {
     return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
            s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
-           s == ElectronicStructureSource::DensityProperty;
+           s == ElectronicStructureSource::DensityProperty || s == ElectronicStructureSource::ElectronLocalization ||
+           s == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
 
 // What the isosurfaces of a field are, in the isosurface display (ElectronicStructureRepresentation::surface).

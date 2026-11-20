@@ -3452,7 +3452,7 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
                         update_rep = true;
                     }
                     ImGui::EndDisabled();
-                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals and densities only");
+                    if (!meshable) ImGui::SetItemTooltip("Ray cast: meshes are made of orbitals, densities, ELF and LOL only");
                 }
                 if (electronic_structure_source_on_other_surface_possible(es.shown.source)) {
                     prop::row("surface", "What the surface is:\n"

@@ -693,8 +693,6 @@ static md_gto_iso_field_t* density_field_create(md_gto_basis_t* basis, const md_
 
 // The densities and kinetic energy densities of the spins (one, the total, for a closed shell)
 struct LocalizationFields {
-    md_gto_basis_t      basis = {};
-    md_gto_basis_t      dbasis = {};    // the derivative basis
     md_gto_iso_field_t* rho[2] = {};
     md_gto_iso_field_t* tau[2] = {};
     int                 num_spins = 0;  // 1: closed shell (the total density), 2: alpha and beta
@@ -703,36 +701,29 @@ struct LocalizationFields {
 
 static void localization_destroy(LocalizationFields* f) {
     if (!f) return;
-    md_allocator_i* heap = md_get_heap_allocator();
     for (int i = 0; i < 2; ++i) {
         if (f->rho[i]) md_gto_iso_field_destroy(f->rho[i]);
         if (f->tau[i]) md_gto_iso_field_destroy(f->tau[i]);
     }
-    md_gto_basis_free(&f->basis, heap);
-    md_gto_basis_free(&f->dbasis, heap);
     delete f;
 }
 
-static LocalizationFields* localization_create(const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms, bool lol) {
+int localization_fields_create(md_gto_iso_field_t* out_rho[2], md_gto_iso_field_t* out_tau[2], const md_system_t& sys, const md_float3_t* atom_xyz,
+                               size_t num_atoms) {
+    out_rho[0] = out_rho[1] = out_tau[0] = out_tau[1] = nullptr;
     md_allocator_i* heap = md_get_heap_allocator();
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     md_allocator_i* alloc = md_temp_allocator(temp);
-    LocalizationFields* f = new LocalizationFields();
-    f->lol = lol;
-    if (!md_gto_basis_extract_attributes(&f->basis, &sys.attributes, heap) || md_gto_basis_num_atoms(&f->basis) > num_atoms) {
-        localization_destroy(f);
-        return nullptr;
-    }
+    // the fields copy what they take of the bases
+    md_gto_basis_t basis = {};
+    if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, alloc) || md_gto_basis_num_atoms(&basis) > num_atoms) return 0;
     // a closed shell: the same orbitals and occupations in both spins, which are then one density
     double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
     size_t ana = 0, bna = 0;
     const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &sys, ESP_ALPHA_DENSITY_PATH, alloc);
     const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &sys, ESP_BETA_DENSITY_PATH, alloc);
-    if (an == 0 && bn == 0) {
-        localization_destroy(f);
-        return nullptr;
-    }
+    if (an == 0 && bn == 0) return 0;
     const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
     // A spin without occupied orbitals has no density: it is left out, as md_qm_elf takes a spin of none
     md_str_t paths[2];
@@ -744,28 +735,44 @@ static LocalizationFields* localization_create(const md_system_t& sys, const md_
         if (bn) paths[num++] = ESP_BETA_DENSITY_PATH;
     }
     const float* xyz = (const float*)atom_xyz;
-    for (int i = 0; i < num; ++i) {
+    bool ok = true;
+    for (int i = 0; i < num && ok; ++i) {
         double *rr = nullptr, *rw = nullptr, *kr = nullptr, *kw = nullptr;
         size_t rna = 0, kna = 0;
         md_gto_basis_t dbasis = {};
         const size_t rn = md_qm_density_orbitals(&rr, &rw, &rna, &sys, paths[i], alloc);
         const size_t kn = rn ? md_qm_kinetic_orbitals(&kr, &kw, &kna, &dbasis, &sys, paths[i], heap) : 0;
-        if (!rn || !kn) {
-            localization_destroy(f);
-            return nullptr;
+        if (rn && kn) {
+            out_rho[i] = md_gto_iso_field_create_products(&basis,  xyz, 0, rr, nullptr, rw, rn, heap);
+            out_tau[i] = md_gto_iso_field_create_products(&dbasis, xyz, 0, kr, nullptr, kw, kn, heap);
         }
-        if (i == 0) f->dbasis = dbasis; else md_gto_basis_free(&dbasis, heap);
-        f->rho[i] = md_gto_iso_field_create_products(&f->basis,  xyz, 0, rr, nullptr, rw, rn, heap);
-        f->tau[i] = md_gto_iso_field_create_products(&f->dbasis, xyz, 0, kr, nullptr, kw, kn, heap);
-        md_free(heap, kr, sizeof(double) * kn * kna);
-        md_free(heap, kw, sizeof(double) * kn);
-        if (!f->rho[i] || !f->tau[i]) {
-            localization_destroy(f);
-            return nullptr;
+        if (kn) {
+            md_free(heap, kr, sizeof(double) * kn * kna);
+            md_free(heap, kw, sizeof(double) * kn);
         }
+        md_gto_basis_free(&dbasis, heap);
+        ok = out_rho[i] && out_tau[i];
     }
-    // Not the spin form with one spin's terms twice: closed is what says num_spins = 1 means the total
-    f->num_spins = closed ? 1 : num;
+    if (!ok) {
+        for (int i = 0; i < 2; ++i) {
+            md_gto_iso_field_destroy(out_rho[i]);
+            md_gto_iso_field_destroy(out_tau[i]);
+            out_rho[i] = out_tau[i] = nullptr;
+        }
+        return 0;
+    }
+    // Not the spin form with one spin's terms twice: closed is what says one spin means the total
+    return closed ? 1 : num;
+}
+
+static LocalizationFields* localization_create(const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms, bool lol) {
+    LocalizationFields* f = new LocalizationFields();
+    f->lol = lol;
+    f->num_spins = localization_fields_create(f->rho, f->tau, sys, atom_xyz, num_atoms);
+    if (!f->num_spins) {
+        localization_destroy(f);
+        return nullptr;
+    }
     return f;
 }
 

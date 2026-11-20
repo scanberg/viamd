@@ -454,6 +454,12 @@ static constexpr double JOB_POLL_MS = 3.0;
 // not take). g: where the fields' atoms are.
 static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, const IsoFieldGeometry& g) {
     if (!state->gpu_device || !state->gpu_stream) return -1;
+    // fields made of other fields (ELF, LOL) have no GPU path yet: on the CPU
+    for (uint32_t k = 0; k < n; ++k) {
+        md_gto_iso_field_info_t info;
+        md_gto_iso_field_info(&info, slots[k].field);
+        if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE) return -1;
+    }
     if (m->gpu_set) return 1;
     if (m->set_failed_key == m->fields_key) return -1;
     IsoBuild* b = (IsoBuild*)m->set_build;
@@ -808,6 +814,11 @@ static FieldRef field_spec_of(const ElectronicStructureRepresentation& es) {
     return es.shown;
 }
 
+// Where ELF and LOL are meshed at all: they are 0 where the density is below this, which bounds their surfaces
+// (both fall to 0 in a gaussian basis' tails by themselves, so it changes nothing an isovalue of interest shows;
+// the volume takes them without)
+static constexpr double LOCALIZATION_MESH_RHO_MIN = 1.0e-6;
+
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
@@ -845,6 +856,26 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
     case ElectronicStructureSource::DensityProperty: {
         const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.density_property_key);
         return attr ? field_create_density(g, attr->path, nullptr) : nullptr;
+    }
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator: {
+        // made of each spin's density and kinetic energy density, which it takes; bounded through theirs
+        md_gto_iso_field_t *rho[2], *tau[2];
+        const int ns = localization_fields_create(rho, tau, *g.sys, g.atom_xyz, g.num_atoms);
+        if (!ns) return nullptr;
+        md_gto_iso_field_t* rb = ns == 2 ? rho[1] : nullptr;
+        md_gto_iso_field_t* tb = ns == 2 ? tau[1] : nullptr;
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_gto_iso_field_t* f = es.source == ElectronicStructureSource::ElectronLocalization ?
+            md_gto_iso_field_create_elf(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, MD_QM_ELF_D_MIN, heap) :
+            md_gto_iso_field_create_lol(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, heap);
+        if (!f) {
+            for (int s = 0; s < 2; ++s) {
+                md_gto_iso_field_destroy(rho[s]);
+                md_gto_iso_field_destroy(tau[s]);
+            }
+        }
+        return f;
     }
     default:
         return nullptr;
@@ -1065,8 +1096,8 @@ void electronic_structure_meshes_update(ApplicationState* state, Representation*
     MD_ASSERT(rep);
     // as draw_representations_transparent_mesh draws them
     if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(*state, *rep)) return;
-    if (state->settings.isosurface_rendering != IsosurfaceRendering_Mesh || state->mold.sys.atom.count == 0) return;
     ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!es_mesh_mode(state, es) || state->mold.sys.atom.count == 0) return;
     if (es.display != ElectronicStructureDisplay::Isosurface) return;
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);
