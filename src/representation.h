@@ -136,6 +136,9 @@ void flag_dynamic_representations_as_dirty(ApplicationState* app);
 // Whether the atoms of a representation depend on the frame: its own filter, or the context it is in
 bool representation_is_dynamic(const ApplicationState& app, const Representation& rep);
 bool representation_uses_atom_colors(const Representation& rep);
+// Whether its filter, or the context of the groups it is in, is not valid as of its last evaluation. It then shows
+// what the filter picked when it was last valid, or nothing if it has not been since the system was loaded.
+bool representation_filter_invalid(const Representation& rep);
 
 // The union of the atoms of the shown representations, visibility_mask
 void recompute_atom_visibility_mask(ApplicationState* app);
