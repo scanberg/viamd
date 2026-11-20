@@ -2486,9 +2486,8 @@ size_t                run_num_frames(const ApplicationState* app);
 const double*         run_frame_times(const ApplicationState* app);
 md_unit_t             run_time_unit(const ApplicationState* app);
 
-// Along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
+// The time at a fractional frame along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
 double run_time_at_frame(const ApplicationState* app, double frame);
-double run_frame_at_time(const ApplicationState* app, double time);
 
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of

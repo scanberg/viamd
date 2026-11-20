@@ -3668,19 +3668,16 @@ static void draw_animation_window(ApplicationState* data) {
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %zu", num_frames);
-        // The slider is in the display unit; the frame it sets is found in the run's own
+        // The slider picks a frame, whole when dragged, and shows its time in the display unit beside it. A run
+        // without time of its own prints no unit, and its frames' numbers are all there is to show.
         char unit_buf[32];
-        const double scl   = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(data));
-        const double* times = run_frame_times(data);
-        double t   = run_time_at_frame(data, data->animation.frame) * scl;
-        double min = times[0] * scl;
-        double max = times[num_frames - 1] * scl;
-        char time_label[64];
-        if (unit_buf[0] == '\0') {
-            snprintf(time_label, sizeof(time_label), "Time");
-        } else {
-            snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
+        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(data));
+        char frame_fmt[64] = "%.0f";
+        if (unit_buf[0] != '\0') {
+            snprintf(frame_fmt, sizeof(frame_fmt), "%%.0f  (%.4g %s)", run_time_at_frame(data, data->animation.frame) * scl, unit_buf);
         }
+        const double min_frame = 0.0;
+        const double max_frame = (double)(num_frames - 1);
         const float w = ImGui::CalcTextSize("Time (ps)").x;
         const float item_width = MD_MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
@@ -3706,9 +3703,7 @@ static void draw_animation_window(ApplicationState* data) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
-        if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
-            data->animation.frame = run_frame_at_time(data, t / scl);
-        }
+        ImGui::SliderScalar("Frame", ImGuiDataType_Double, &data->animation.frame, &min_frame, &max_frame, frame_fmt);
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");

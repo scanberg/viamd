@@ -1357,9 +1357,6 @@ double run_time_at_frame(const ApplicationState* app, double frame) {
     return time_at_frame(run_frame_times(app), run_num_frames(app), frame);
 }
 
-double run_frame_at_time(const ApplicationState* app, double time) {
-    return frame_at_time(run_frame_times(app), run_num_frames(app), time);
-}
 
 const md_secondary_structure_t* displayed_secondary_structure(const ApplicationState* app) {
     MD_ASSERT(app);
@@ -2410,9 +2407,10 @@ struct WorkspacePending {
     bool   temporal_window_enabled;
     double temporal_window_extent;
     bool   has_periods;
+    // The timeline's view, ViewTime: in the run's time and its unit. ViewFrames, as workspaces before it wrote it, in frames.
     bool   has_view_range;
-    double view_beg_frame;
-    double view_end_frame;
+    bool   view_range_in_frames;
+    double view_range[2];
 
     // The simulation box of a workspace from before it was a representation ([RenderSettings]), which becomes one
     bool   box_enabled;
@@ -2575,12 +2573,15 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     viamd::extract_enum(data->timeline.periods.layout, arg, (int)TimelinePeriodLayout_Count);
                 } else if (md_str_eq(ident, MD_STR_LIT("PeriodShadeAll"))) {
                     viamd::extract_bool(data->timeline.periods.shade_all, arg);
-                } else if (md_str_eq(ident, MD_STR_LIT("ViewFrames"))) {
-                    double r[2];
-                    if (viamd::extract_dbl_vec(r, 2, arg)) {
+                } else if (md_str_eq(ident, MD_STR_LIT("ViewTime"))) {
+                    if (viamd::extract_dbl_vec(pending.view_range, 2, arg)) {
                         pending.has_view_range = true;
-                        pending.view_beg_frame = r[0];
-                        pending.view_end_frame = r[1];
+                        pending.view_range_in_frames = false;
+                    }
+                } else if (md_str_eq(ident, MD_STR_LIT("ViewFrames"))) {
+                    if (viamd::extract_dbl_vec(pending.view_range, 2, arg)) {
+                        pending.has_view_range = true;
+                        pending.view_range_in_frames = true;
                     }
                 }
             }
@@ -2907,9 +2908,20 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             }
             if (r) data->timeline.periods.legacy_filter_id = r->id;
         }
-        if (pending.has_view_range && pending.view_end_frame > pending.view_beg_frame) {
-            data->timeline.view_range.beg_x = run_time_at_frame(data, MD_CLAMP(pending.view_beg_frame, 0.0, last));
-            data->timeline.view_range.end_x = run_time_at_frame(data, MD_CLAMP(pending.view_end_frame, 0.0, last));
+        if (pending.has_view_range) {
+            double beg = pending.view_range[0];
+            double end = pending.view_range[1];
+            if (pending.view_range_in_frames) {
+                beg = run_time_at_frame(data, beg);
+                end = run_time_at_frame(data, end);
+            }
+            const double t0 = run_time_at_frame(data, 0.0);
+            const double t1 = run_time_at_frame(data, last);
+            beg = MD_CLAMP(beg, t0, t1);
+            end = MD_CLAMP(end, t0, t1);
+            if (end > beg) {
+                data->timeline.view_range = {beg, end};
+            }
         }
     }
 
@@ -3007,17 +3019,15 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     periodic_views_serialize(state);
 
     {
-        // In frames, like the current frame and the periods
+        // The view in the run's time and its unit, as the timeline holds it: the same trajectory, which its frame count
+        // checks on loading, has the same time
         const auto& tl = app_state->timeline;
         viamd::write_section_header(state, MD_STR_LIT("TimelineView"));
         viamd::write_int(state, MD_STR_LIT("PeriodLayout"), (int)tl.periods.layout);
         viamd::write_bool(state, MD_STR_LIT("PeriodShadeAll"), tl.periods.shade_all);
         if (run_num_frames(app_state) > 0) {
-            const double view[2] = {
-                run_frame_at_time(app_state, tl.view_range.beg_x),
-                run_frame_at_time(app_state, tl.view_range.end_x),
-            };
-            viamd::write_dbl_vec(state, MD_STR_LIT("ViewFrames"), view, 2);
+            const double view[2] = { tl.view_range.beg_x, tl.view_range.end_x };
+            viamd::write_dbl_vec(state, MD_STR_LIT("ViewTime"), view, 2);
         }
         timeline_periods_serialize(state, &tl.periods);
     }
