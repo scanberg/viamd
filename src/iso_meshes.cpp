@@ -454,8 +454,8 @@ static constexpr double JOB_POLL_MS = 3.0;
 // not take). g: where the fields' atoms are.
 static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, const IsoFieldGeometry& g) {
     if (!state->gpu_device || !state->gpu_stream) return -1;
-    // fields made of other fields (ELF, LOL) have no GPU path yet: on the CPU
-    for (uint32_t k = 0; k < n; ++k) {
+    // a field made of other fields (ELF, LOL) is a set of its own on the device: with others, on the CPU
+    for (uint32_t k = 0; k < n && n > 1; ++k) {
         md_gto_iso_field_info_t info;
         md_gto_iso_field_info(&info, slots[k].field);
         if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE) return -1;
