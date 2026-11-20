@@ -1,4 +1,5 @@
 #include <gostshyp.h>
+#include <attribute_access.h>
 
 #include <md_system.h>
 #include <md_attributes.h>
@@ -21,51 +22,38 @@ static const md_str_t qm_coord     = MD_STR_INIT("qm/atom/coordinate");
 
 static const double BOHR_A = 0.52917721092;
 
-static const md_attribute_t* find(const md_system_t& sys, md_str_t path) {
-    return md_attributes_find(&sys.attributes, path);
-}
-
-template <typename T>
-static const T* view(const md_system_t& sys, md_str_t path, md_attribute_type_t type, uint32_t comp, uint32_t count) {
-    const md_attribute_t* a = find(sys, path);
-    if (!a || a->format.rank != 1 || a->format.shape[0] != count) return nullptr;
-    return (const T*)md_attribute_view(a, type, comp, 1);
-}
-
 bool gostshyp_available(const md_system_t& sys) {
-    const md_attribute_t* c = find(sys, gostshyp_path::coordinate);
-    return c && md_attribute_view(c, MD_ATTRIBUTE_TYPE_F64, 3, 1) && find(sys, gostshyp_path::amplitude);
+    return attribute_shaped(sys, gostshyp_path::coordinate, 1, 3) && attribute_exists(sys, gostshyp_path::amplitude);
 }
 
 bool gostshyp_read(GostshypTesserae* d, const md_system_t& sys) {
     *d = GostshypTesserae{};
-    const md_attribute_t* c = find(sys, gostshyp_path::coordinate);
-    if (!c || c->format.rank != 1) return false;
-    const uint32_t n = c->format.shape[0];
-    const double* xyz  = view<double>(sys, gostshyp_path::coordinate,   MD_ATTRIBUTE_TYPE_F64, 3, n);
-    const double* nrm  = view<double>(sys, gostshyp_path::normal,       MD_ATTRIBUTE_TYPE_F64, 3, n);
-    const double* amp  = view<double>(sys, gostshyp_path::amplitude,    MD_ATTRIBUTE_TYPE_F64, 1, n);
-    const double* zeta = view<double>(sys, gostshyp_path::exponent,     MD_ATTRIBUTE_TYPE_F64, 1, n);
-    const double* lam  = view<double>(sys, gostshyp_path::decay_length, MD_ATTRIBUTE_TYPE_F64, 1, n);
-    if (!xyz || !nrm || !amp || !zeta || !lam) {
+    const md_unit_t ang = md_unit_angstrom();
+    const size_t n = attribute_count(sys, gostshyp_path::coordinate);
+    if (n == 0) return false;
+    // in the units the wall is made in, whatever they were published in
+    std::vector<double> xyz  = attribute_values(sys, gostshyp_path::coordinate,   ang, 3, n);
+    std::vector<double> nrm  = attribute_values(sys, gostshyp_path::normal,       md_unit_none(), 3, n);
+    std::vector<double> amp  = attribute_values(sys, gostshyp_path::amplitude,    md_unit_mul(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3)), 1, n);
+    std::vector<double> zeta = attribute_values(sys, gostshyp_path::exponent,     md_unit_inv(md_unit_pow(ang, 2)), 1, n);
+    std::vector<double> lam  = attribute_values(sys, gostshyp_path::decay_length, ang, 1, n);
+    if (xyz.empty() || nrm.empty() || amp.empty() || zeta.empty() || lam.empty()) {
         MD_LOG_ERROR("GOSTSHYP: the tesserae are incomplete");
         return false;
     }
-    const md_attribute_t* q = find(sys, gostshyp_path::qm_coord);
-    const uint32_t num_atoms = q && q->format.rank == 1 ? q->format.shape[0] : 0;
-    const double* qm = num_atoms ? view<double>(sys, gostshyp_path::qm_coord, MD_ATTRIBUTE_TYPE_F64, 3, num_atoms) : nullptr;
-    if (!qm) {
+    std::vector<double> qm = attribute_values(sys, gostshyp_path::qm_coord, ang, 3);
+    if (qm.empty()) {
         MD_LOG_ERROR("GOSTSHYP: the QM atoms are not where the cavity is (qm/atom/coordinate)");
         return false;
     }
-    d->num = n;
-    d->num_atoms = num_atoms;
-    d->pos.assign(xyz, xyz + 3 * n);
-    d->nrm.assign(nrm, nrm + 3 * n);
-    d->amp.assign(amp, amp + n);
-    d->zeta.assign(zeta, zeta + n);
-    d->lambda.assign(lam, lam + n);
-    d->qm_xyz.assign(qm, qm + 3 * num_atoms);
+    d->num = (uint32_t)n;
+    d->num_atoms = (uint32_t)(qm.size() / 3);
+    d->pos = std::move(xyz);
+    d->nrm = std::move(nrm);
+    d->amp = std::move(amp);
+    d->zeta = std::move(zeta);
+    d->lambda = std::move(lam);
+    d->qm_xyz = std::move(qm);
     return true;
 }
 

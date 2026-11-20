@@ -14,6 +14,7 @@
 #include <stdarg.h>
 
 #include <script_engine.h>
+#include <attribute_access.h>
 #include <script_suggestions.h>
 
 #include <core/md_log.h>
@@ -3650,13 +3651,13 @@ bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, md_str_t 
     MD_ASSERT(out);
     *out = {};
 
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
-    const double* occ = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    size_t count = 0;
+    const double* occ = attribute_view<double>(sys, occupation_path).get(&count);
     if (!occ) {
         return false;
     }
 
-    const int num = (int)attr->format.shape[0];
+    const int num = (int)count;
     out->num_orbitals = num;
 
     // Scanning DOWN from the top rather than up to the first zero: an unoccupied orbital below an
@@ -3675,24 +3676,19 @@ bool es_orbital_frontier(OrbitalFrontier* out, const md_system_t& sys, md_str_t 
 }
 
 const double* es_orbital_energies(size_t* out_count, const md_system_t& sys, md_str_t energy_path) {
-    if (out_count) *out_count = 0;
-
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, energy_path);
-    const double* energies = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
-    if (energies && out_count) *out_count = attr->format.shape[0];
-    return energies;
+    return attribute_view<double>(sys, energy_path).get(out_count);
 }
 
 // NULL when there is none, which the callers read as the identity. Same explicitness as
 // gto_attr_column in md_gto.c and for the same reason: the table is open, so a path with the wrong
 // shape is a mistake to refuse rather than to reinterpret.
 static const uint32_t* qm_atom_map_find(size_t* out_count, const md_system_t& sys) {
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, QM_ATOM_MAP_PATH);
-    const uint32_t* map = (const uint32_t*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_U32, 1, 1);
-    if (attr && !map) {
+    size_t count = 0;
+    const uint32_t* map = attribute_view<uint32_t>(sys, QM_ATOM_MAP_PATH).get(&count);
+    if (!map && attribute_exists(sys, QM_ATOM_MAP_PATH)) {
         MD_LOG_ERROR("'" MD_STR_FMT "' is not a plain column of atom indices", MD_STR_ARG(QM_ATOM_MAP_PATH));
     }
-    if (map && out_count) *out_count = attr->format.shape[0];
+    if (map && out_count) *out_count = count;
     return map;
 }
 
@@ -3708,13 +3704,13 @@ bool es_has_distinct_beta_orbitals(const md_system_t& sys) {
 }
 
 double es_electron_count(const md_system_t& sys, md_str_t occupation_path) {
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, occupation_path);
-    const double* occ = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
+    size_t count = 0;
+    const double* occ = attribute_view<double>(sys, occupation_path).get(&count);
     if (!occ) {
         return 0.0;
     }
     double sum = 0.0;
-    for (uint32_t i = 0; i < attr->format.shape[0]; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         sum += occ[i];
     }
     return sum;
@@ -4341,10 +4337,6 @@ double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_s
 
     if (out_dim) *out_dim = dim;
     return dst;
-}
-
-static bool es_attribute_exists(const md_system_t& sys, md_str_t path) {
-    return md_attributes_find(&sys.attributes, path) != nullptr;
 }
 
 // The density a representation's volume is evaluated from, for the sources that are one: its path and slice
@@ -5698,10 +5690,8 @@ double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource s
     case ElectronicStructureSource::GostshypEffectivePotential:
     case ElectronicStructureSource::GostshypEnergyDensity: {
         // where the wall is: the median of the density its Gaussians see, <rho|g_j> (md_vlx.h)
-        const md_attribute_t* a = md_attributes_find(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"));
-        if (!a || a->format.rank != 1 || a->format.shape[0] == 0) return 0.001;
-        std::vector<double> d(a->format.shape[0]);
-        if (md_attribute_extract_f64(d.data(), d.size(), &sys.attributes, a, md_attribute_slice_all(), a->unit) != d.size()) return 0.001;
+        std::vector<double> d = attribute_values(sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"), md_unit_div(md_unit_elementary_charge(), md_unit_pow(md_unit_bohr_radius(), 3)));
+        if (d.empty()) return 0.001;
         std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
         const double m = d[d.size() / 2];
         return m > 0.0 ? m : 0.001;
@@ -5842,14 +5832,14 @@ size_t density_properties_gather(DensityProperty out[], size_t cap, const md_sys
 ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     ElectronicStructureSourceFlags mask = 0;
 
-    if (es_attribute_exists(sys, es_path::alpha_coefficient))  mask |= ElectronicStructureSourceFlag_MolecularOrbital;
-    if (es_attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
-    if (es_attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
-    if (es_attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
+    if (attribute_exists(sys, es_path::alpha_coefficient))  mask |= ElectronicStructureSourceFlag_MolecularOrbital;
+    if (attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
+    if (attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
+    if (attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
     if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
     // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose
     // derivatives are within what is evaluated (no g functions)
-    if (es_attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
+    if (attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
         mask |= ElectronicStructureSourceFlag_ElectronLocalization | ElectronicStructureSourceFlag_LocalizedOrbitalLocator;
     }
     // The fields of the system as a whole, where it has what they are made of (ELF and LOL above: the same)

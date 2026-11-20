@@ -4,6 +4,7 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <attribute_access.h>
 #include <representation.h>
 #include <task_system.h>
 #include <density_cache.h>
@@ -2885,7 +2886,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // OPT. Opens on the last step, which is the converged geometry.
         size_t num_opt_steps = 0;
-        if (attribute_series_f64(&num_opt_steps, state.mold.sys, MD_STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
+        if (attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/opt/energy")).get(&num_opt_steps) && num_opt_steps > 0) {
             opt.selected = (int)(num_opt_steps - 1);
         }
 
@@ -4238,16 +4239,16 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t num_core     = 0;
         size_t num_core_osc = 0;
 
-        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy"));
-        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
-        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, MD_STR_LIT("vlx/rsp/rixs/core_energy"));
-        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
-        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
+        out.photon_energies_au     = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy")).get(&num_photon);
+        out.elastic_cross_sections = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section")).get(&num_elastic);
+        out.core_eigenvalues_au    = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/core_energy")).get(&num_core);
+        out.core_osc_strengths     = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength")).get(&num_core_osc);
+        out.gamma_fwhm_ev          = attribute_scalar(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"), md_unit_none());
 
         size_t cs_rows = 0, cs_cols = 0;
         size_t el_rows = 0, el_cols = 0;
-        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"));
-        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"));
+        out.cross_sections   = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"), 2).get(&cs_rows, &cs_cols);
+        out.energy_losses_au = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"), 2).get(&el_rows, &el_cols);
 
         // The map itself needs the photon energies, the cross sections and the energy losses.
         if (!out.photon_energies_au || !out.cross_sections || !out.energy_losses_au) return false;
@@ -4960,27 +4961,23 @@ struct QuantumChemistry : viamd::EventHandler {
     static bool xps_table_gather(XpsTable* out, const md_system_t& sys) {
         size_t num_energy = 0;
         size_t num_element = 0;
-        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, MD_STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
-        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, MD_STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
+        const double*  energy  = attribute_view<double>(sys, MD_STR_LIT("vlx/xps/ionization_energy")).get(&num_energy);
+        const uint8_t* element = attribute_view<uint8_t>(sys, MD_STR_LIT("vlx/xps/element")).get(&num_element);
         if (!energy || !element || num_energy == 0 || num_element != num_energy) {
             return false;
         }
 
         // A sibling whose length disagrees with the index space is dropped rather than trusted: it
         // would be read at an index that means something else in it.
-        auto column_of = [&](md_str_t path, md_attribute_type_t type) -> const void* {
-            size_t count = 0;
-            const void* data = attribute_column(&count, sys, path, type);
-            return (data && count == num_energy) ? data : nullptr;
-        };
+        auto column_of = [&](auto view) { return view.rows == num_energy ? view.data : nullptr; };
 
         out->count             = num_energy;
         out->ionization_energy = energy;
         out->element           = element;
-        out->contribution      = (const double*) column_of(MD_STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
-        out->atom_index        = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
-        out->mo_index          = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
-        out->is_delocalized    = (const uint8_t*)column_of(MD_STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
+        out->contribution      = column_of(attribute_view<double>(sys, MD_STR_LIT("vlx/xps/contribution")));
+        out->atom_index        = column_of(attribute_view<int32_t>(sys, MD_STR_LIT("vlx/xps/atom_index")));
+        out->mo_index          = column_of(attribute_view<int32_t>(sys, MD_STR_LIT("vlx/xps/mo_index")));
+        out->is_delocalized    = column_of(attribute_view<uint8_t>(sys, MD_STR_LIT("vlx/xps/is_delocalized")));
         return true;
     }
 
@@ -5412,138 +5409,6 @@ struct QuantumChemistry : viamd::EventHandler {
         return max_len;
     }
 
-    // One string out of the table, or empty when the path is absent. Pool strings are NUL
-    // terminated, so str_ptr goes straight into a "%s".
-    static md_str_t attribute_str(const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
-        return md_attribute_str(&sys.attributes, attr, 0);
-    }
-
-    // Reads one rank 1 series of doubles out of the system's attribute table.
-    //
-    // Hands back the stored buffer rather than extracting to float, deliberately: the vlx/ series
-    // are resident F64 and this panel prints total energies to ten decimals, which a float does not
-    // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
-    // the null return covers every case where it is not.
-    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
-        if (values && out_count) *out_count = attr->format.shape[0];
-        return values;
-    }
-
-    // True when the table carries this path at all. "Does this file have X" is a question about the
-    // table and nothing else: a block a file does not contain publishes nothing, so there is no
-    // separate "was it parsed" to ask alongside it.
-    static bool attribute_exists(const md_system_t& sys, md_str_t path) {
-        return md_attributes_find(&sys.attributes, path) != nullptr;
-    }
-
-    // One single valued attribute as a double, or 'fallback' when the path is absent. Anything that
-    // is not single valued returns the fallback too: md_attribute_extract_f64 refuses a cap smaller
-    // than the attribute, which is exactly the guard wanted here.
-    static double attribute_scalar_f64(const md_system_t& sys, md_str_t path, double fallback = 0.0) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr) return fallback;
-        double value = 0.0;
-        if (md_attribute_extract_f64(&value, 1, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) != 1) return fallback;
-        return value;
-    }
-
-    // The length of a rank 1 series without reading it. Zero when the path is absent, which is how
-    // "how many optimisation steps / response frequencies / normal modes does this file carry" is
-    // asked now that there is no reader to ask it of.
-    static size_t attribute_series_count(const md_system_t& sys, md_str_t path) {
-        size_t count = 0;
-        return attribute_series_f64(&count, sys, path) ? count : 0;
-    }
-
-    // A series that is only handed out when it covers the index space the caller is going to read it
-    // over. Presence alone is not enough: an optional column is indexed with a count that came from
-    // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
-    // shorter column - or a reader that fills it differently - would otherwise be read past its end.
-    // NULL when absent, not a plain F64 series, or shorter than 'required'.
-    static const double* attribute_series_f64_covering(const md_system_t& sys, md_str_t path, size_t required) {
-        size_t count = 0;
-        const double* data = attribute_series_f64(&count, sys, path);
-        return (data && count >= required) ? data : nullptr;
-    }
-
-    // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
-    // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
-    // same reason: these are resident F64 and the callers want them at that precision.
-    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 2);
-        if (!values) return nullptr;
-
-        if (out_rows) *out_rows = attr->format.shape[0];
-        if (out_cols) *out_cols = attr->format.shape[1];
-        return values;
-    }
-
-    // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
-    // selection index left over from a previously loaded file needs - rather than a read past the
-    // end that looks like data.
-    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, md_str_t path, size_t row) {
-        size_t num_rows = 0;
-        size_t num_cols = 0;
-        const double* data = attribute_matrix_f64(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows) return nullptr;
-        if (out_cols) *out_cols = num_cols;
-        return data + row * num_cols;
-    }
-
-    // A rank 2 {R,C} of THREE component values - one vector per (r,c). This is the shape a per atom
-    // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
-    // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
-    // this is not the matrix above with C*3 columns.
-    static const md_double3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 2 || attr->format.components != 3) return nullptr;
-
-        if (out_rows) *out_rows = attr->format.shape[0];
-        if (out_cols) *out_cols = attr->format.shape[1];
-        return (const md_double3_t*)attr->data;
-    }
-
-    // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
-    // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
-    // the row over the QM atoms, so a row that does not cover them is not one to read.
-    static const md_double3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
-        size_t num_rows = 0;
-        size_t num_cols = 0;
-        const md_double3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows || num_cols < min_cols) return nullptr;
-        return data + row * num_cols;
-    }
-
-    // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
-    static const md_double3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 1 || attr->format.components != 3) return nullptr;
-
-        if (out_count) *out_count = attr->format.shape[0];
-        return (const md_double3_t*)attr->data;
-    }
-
-    // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
-    // Typed rather than converted: an atom index is an index, and a widened double of one is a
-    // number that has lost the only thing that made it an index.
-    static const void* attribute_column(size_t* out_count, const md_system_t& sys, md_str_t path, md_attribute_type_t type) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != type) return nullptr;
-        if (attr->format.rank != 1 || attr->format.components != 1) return nullptr;
-
-        if (out_count) *out_count = attr->format.shape[0];
-        return attr->data;
-    }
 
     // ---- What KIND of calculation this is -------------------------------------------------------
     //
@@ -6202,12 +6067,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // A series of the cavity's tesserae (vlx/scf/gostshyp/tessera/<leaf>) in the given unit, n of them; empty otherwise
     static std::vector<double> gostshyp_series(const md_system_t& sys, const char* leaf, size_t n, md_unit_t unit) {
-        std::vector<double> v;
-        const md_attribute_t* a = md_attributes_find_in(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera"), md_str_from_cstr(leaf));
-        if (!a || a->format.rank != 1 || a->format.shape[0] != n || a->format.components != 1) return v;
-        v.resize(n);
-        if (md_attribute_extract_f64(v.data(), n, &sys.attributes, a, md_attribute_slice_all(), unit) != n) v.clear();
-        return v;
+        char path[128];
+        snprintf(path, sizeof(path), "vlx/scf/gostshyp/tessera/%s", leaf);
+        return attribute_values(sys, md_str_from_cstr(path), unit, 1, n);
     }
 
     // The cavity of a run under pressure, per tessera, as mdlib published it
@@ -6248,12 +6110,11 @@ struct QuantumChemistry : viamd::EventHandler {
         const std::vector<double> zeta = gostshyp_series(sys, "exponent", n, md_unit_inv(md_unit_pow(ang, 2)));
         const std::vector<double> bur  = gostshyp_series(sys, "buried", n, md_unit_none());
         if (area.empty() || idx.empty()) return;
-        size_t n_map = 0, n_rad = 0;
-        const uint32_t* map = (const uint32_t*)attribute_column(&n_map, sys, MD_STR_LIT("qm/atom/system_index"), MD_ATTRIBUTE_TYPE_U32);
-        attribute_series_f64(&n_rad, sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
+        size_t n_map = 0;
+        const uint32_t* map = attribute_view<uint32_t>(sys, MD_STR_LIT("qm/atom/system_index")).get(&n_map);
 
         g.valid = true;
-        g.num_spheres = n_rad;
+        g.num_spheres = attribute_count(sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
         g.lambda_min = DBL_MAX;
         g.lambda_max = -DBL_MAX;
         g.tess.resize(n);
@@ -6282,13 +6143,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void draw_gostshyp_summary(const md_system_t& sys) {
         const Gostshyp& g = gostshyp;
-        const double P = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), 0.0);
-        const double n_leb = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), 0.0);
-        const double scale = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), 0.0);
-        const double area = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), 0.0);
-        const double skin = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), 0.0);
-        const double energy_kj = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), 0.0);
-        const double buried = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), 0.0);
+        const double P = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), md_unit_none(), 0.0);
+        const double n_leb = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), md_unit_none(), 0.0);
+        const double scale = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), md_unit_none(), 0.0);
+        const double area = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), md_unit_none(), 0.0);
+        const double skin = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), md_unit_none(), 0.0);
+        const double energy_kj = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), md_unit_none(), 0.0);
+        const double buried = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), md_unit_none(), 0.0);
         const md_str_t disc = attribute_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"));
 
         ImGui::Text("Pressure:               %.4g GPa", P);
@@ -6481,7 +6342,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!summary.show_window) {
             // Parked on the converged geometry while the window is closed, so re-opening it does not
             // step the molecule back to wherever the last session left the slider.
-            opt.selected = (int)attribute_series_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
+            opt.selected = (int)attribute_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
             return;
         }
 
@@ -6527,10 +6388,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
-                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, MD_STR_LIT("vlx/molecular_charge")));
+                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar(sys, MD_STR_LIT("vlx/molecular_charge"), md_unit_none()));
                 ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
                 if (rsp_type == RSP_C6) {
-                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/c6")));
+                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar(sys, MD_STR_LIT("vlx/rsp/c6"), md_unit_none()));
                 }
                 ImGui::Spacing();
                 ImGui::TreePop();
@@ -6543,8 +6404,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // parsed" question to ask alongside it.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = attribute_series_f64(&num_iter, sys, MD_STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = attribute_series_f64(&num_grad, sys, MD_STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_view<double>(sys, MD_STR_LIT("vlx/scf/history/energy")).get(&num_iter);
+                const double* grad_norm = attribute_view<double>(sys, MD_STR_LIT("vlx/scf/history/gradient_norm")).get(&num_grad);
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -6629,7 +6490,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy")));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy"), md_unit_none()));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
@@ -6637,7 +6498,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             {
                 size_t num_steps = 0;
-                const double* opt_energies = attribute_series_f64(&num_steps, sys, MD_STR_LIT("vlx/opt/energy"));
+                const double* opt_energies = attribute_view<double>(sys, MD_STR_LIT("vlx/opt/energy")).get(&num_steps);
                 if (opt_energies && num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         // FitPadding is pushed once for the whole window, at the top of this function.
@@ -6645,7 +6506,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Published for an IRC only, where it names the step the path was walked out
                         // from. num_steps is out of range on purpose everywhere else, so the branch
                         // below falls through to the minimum without a second test for the kind.
-                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
+                        const size_t ts_index = (size_t)attribute_scalar(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), md_unit_none(), (double)num_steps);
                         const double* energies = opt_energies;
                         const char* y_axis_label = "Relative Energy [kJ/mol]";
                         const char* plot_label = "OPT";
@@ -6733,7 +6594,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
+                        set_atom_coordinates(state, attribute_view<md_double3_t>(sys, MD_STR_LIT("vlx/opt/coordinate"), 2).row((size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -6746,7 +6607,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const md_double3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
+                    const md_double3_t* opt_coord  = attribute_view<md_double3_t>(sys, MD_STR_LIT("vlx/opt/coordinate"), 2).row((size_t)opt.selected, num_atoms);
                     const md_double3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -6989,8 +6850,8 @@ struct QuantumChemistry : viamd::EventHandler {
     // the window would draw nothing.
     static bool rsp_has_content(const md_system_t& sys) {
         size_t num_frequencies = 0;
-        const bool has_rsp = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency")) && num_frequencies > 0;
-        const bool has_vib = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency")) > 0;
+        const bool has_rsp = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_frequencies) && num_frequencies > 0;
+        const bool has_vib = attribute_count(sys, MD_STR_LIT("vlx/vib/frequency")) > 0;
         const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
         return has_rsp || has_vib || has_xps;
     }
@@ -7007,10 +6868,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
         // Its own length is the frequency count - there is no separate number to disagree with it.
         size_t num_frequencies = 0;
-        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency"));
+        const double* x_freq_au = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_frequencies);
         if (!x_freq_au) num_frequencies = 0;
 
-        const size_t num_normal_modes = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency"));
+        const size_t num_normal_modes = attribute_count(sys, MD_STR_LIT("vlx/vib/frequency"));
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
@@ -7118,18 +6979,18 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
-                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
-                const double* y_samples_ord = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
-                const double* y_samples_cs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
+                const double* y_samples_sigma = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), 1, num_frequencies).data;
+                const double* y_samples_delta_epsilons = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), 1, num_frequencies).data;
+                const double* y_samples_ord = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), 1, num_frequencies).data;
+                const double* y_samples_cs = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), 1, num_frequencies).data;
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
-                const double* y_peaks_cgs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
+                const double* y_peaks_osc = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), 1, num_frequencies).data;
+                const double* y_peaks_cgs = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), 1, num_frequencies).data;
+                const double* y_peaks_tpa_trans_linear = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), 1, num_frequencies).data;
+                const double* y_peaks_tpa_trans_circular = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), 1, num_frequencies).data;
 
                 bool refit = false;
 
@@ -7710,12 +7571,12 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    const double* x_peaks_raw = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/frequency"), 1, num_normal_modes).data;
                     // Optional, and indexed over the normal modes - dropped when it does not cover them.
-                    const double* y_peaks_ir = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
+                    const double* y_peaks_ir = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/ir_intensity"), 1, num_normal_modes).data;
 
                     size_t num_external_frequencies = 0;
-                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, MD_STR_LIT("vlx/vib/external_frequency"));
+                    const double* external_frequencies = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/external_frequency")).get(&num_external_frequencies);
                     if (!external_frequencies) num_external_frequencies = 0;
 
                     // {E,M}: one row of per mode activities per external frequency, so a row IS the
@@ -7725,7 +7586,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // spectrum, and dropping both is better than plotting one against the other.
                     size_t num_raman_rows = 0;
                     size_t num_raman_cols = 0;
-                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, MD_STR_LIT("vlx/vib/raman_activity"));
+                    const double* raman_activities = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/raman_activity"), 2).get(&num_raman_rows, &num_raman_cols);
                     const double** y_raman_activities = NULL;
                     if (raman_activities && num_raman_rows == num_external_frequencies && num_raman_cols == num_normal_modes && num_external_frequencies > 0) {
                         y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
@@ -7991,7 +7852,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const md_double3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
+                        const md_double3_t* norm_modes = attribute_view<md_double3_t>(sys, MD_STR_LIT("qm/atom/normal_mode"), 2).row((size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -8107,10 +7968,10 @@ struct QuantumChemistry : viamd::EventHandler {
             // only used when it covers all of those rows. Everything below reads a null as "show no
             // value", never as a column to index.
             const size_t num_mo_rows = num_molecular_orbitals();
-            const double* occ_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_occupation, num_mo_rows);
-            const double* occ_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_occupation,  num_mo_rows);
-            const double* ene_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_energy,     num_mo_rows);
-            const double* ene_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_energy,      num_mo_rows);
+            const double* occ_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_occupation, 1, num_mo_rows).data;
+            const double* occ_beta  = attribute_view<double>(state.mold.sys, es_path::beta_occupation, 1,  num_mo_rows).data;
+            const double* ene_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_energy, 1,     num_mo_rows).data;
+            const double* ene_beta  = attribute_view<double>(state.mold.sys, es_path::beta_energy, 1,      num_mo_rows).data;
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
 
@@ -9917,8 +9778,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const md_double3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
-                        const md_double3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
+                        const md_double3_t* magnetic_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")).get(&num_magn);
+                        const md_double3_t* electric_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")).get(&num_elec);
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
@@ -11706,8 +11567,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t S = md_array_size(flow.strip);
         if (S == 0) return;
         size_t num_f = 0, num_e = 0;
-        const double* osc = attribute_series_f64(&num_f, state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength"));
-        const double* ene = attribute_series_f64(&num_e, state.mold.sys, MD_STR_LIT("vlx/rsp/frequency"));
+        const double* osc = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength")).get(&num_f);
+        const double* ene = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_e);
         double f_max = 0.0;
         for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
 

@@ -177,6 +177,7 @@ set(SRC_FILES
     src/gpu_job.cpp
     src/gostshyp.cpp
     src/field.cpp
+    src/attribute_access.cpp
     src/glyphs.cpp
     src/qm_placement.cpp
     src/event.cpp
