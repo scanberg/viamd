@@ -180,3 +180,43 @@ bool gostshyp_wall_reaches(const GostshypWall* w, const float xyz[3]) {
     }
     return false;
 }
+
+bool gostshyp_wall_orbital(GostshypOrbital* o, const GostshypWall* w, GostshypField field) {
+    *o = GostshypOrbital{};
+    if (!w) return false;
+    const bool p = field == GostshypField::EffectivePotential;
+    std::vector<uint32_t> keep;
+    for (uint32_t j = 0; j < w->num; ++j) {
+        if (w->coef[j] != 0.0) keep.push_back(j);
+    }
+    const uint32_t n = (uint32_t)keep.size();
+    if (n == 0) return false;
+    // a primitive of each shell (the p shells' are the s shells' again: md_gto_basis_t counts them per shell)
+    o->centres.resize(n);
+    o->alpha.resize(p ? 2 * n : n);
+    o->coeff.assign(o->alpha.size(), 1.0f);
+    o->shells.reserve(p ? 2 * n : n);
+    o->ao.reserve(p ? 4 * n : n);
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t j = keep[i];
+        o->centres[i] = {(float)w->c[3 * j], (float)w->c[3 * j + 1], (float)w->c[3 * j + 2]};
+        o->alpha[i] = (float)w->zeta[j];
+        o->shells.push_back({i, i, 1, 0});
+        o->ao.push_back(w->coef[j]);
+    }
+    if (p) {
+        // the p functions are (r - c_j) exp(-zeta_j |r - c_j|^2), x y z: along the normal, coef 2 zeta lambda n
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t j = keep[i];
+            o->alpha[n + i] = o->alpha[i];
+            o->shells.push_back({i, n + i, 1, 1});
+            for (int k = 0; k < 3; ++k) o->ao.push_back(w->coef[j] * w->lambda2z[j] * w->n[3 * j + k]);
+        }
+    }
+    o->basis.num_shells = (uint32_t)o->shells.size();
+    o->basis.num_primitives = (uint32_t)o->alpha.size();
+    o->basis.shells = o->shells.data();
+    o->basis.alpha = o->alpha.data();
+    o->basis.coeff = o->coeff.data();
+    return true;
+}

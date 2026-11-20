@@ -5,6 +5,7 @@
 #include <representation.h>
 #include <task_system.h>
 #include <surface_field.h>
+#include <gostshyp.h>
 
 #include <md_gto_iso.h>
 #include <md_qm.h>
@@ -16,6 +17,8 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <mutex>
+#include <vector>
 
 // Newton steps onto the surface and tangential relaxation passes: display quality (md_gto_iso_mesh_desc_t)
 static constexpr uint32_t PROJECT_ITERATIONS = 8;
@@ -228,6 +231,39 @@ static uint32_t  g_num_dead = 0;
 
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec);
 
+// Fields over a basis of their own rather than the system's (the GOSTSHYP wall's, on its tesserae): the basis a set
+// of one is made over on the device. Made by pool tasks, looked up by them: under a lock.
+struct OwnBasis {
+    const md_gto_iso_field_t* field;
+    GostshypOrbital* orbital;
+};
+static std::mutex g_own_lock;
+static std::vector<OwnBasis> g_own;
+
+static void own_basis_add(const md_gto_iso_field_t* f, GostshypOrbital* o) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    g_own.push_back({f, o});
+}
+
+static const GostshypOrbital* own_basis(const md_gto_iso_field_t* f) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    for (const OwnBasis& e : g_own) if (e.field == f) return e.orbital;
+    return nullptr;
+}
+
+// Before the field goes, so that a field made later at its address is not taken for it
+static void own_basis_remove(const md_gto_iso_field_t* f) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    for (size_t i = 0; i < g_own.size(); ++i) {
+        if (g_own[i].field == f) {
+            delete g_own[i].orbital;
+            g_own[i] = g_own.back();
+            g_own.pop_back();
+            return;
+        }
+    }
+}
+
 static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
     IsoBuild* b = new IsoBuild();
@@ -268,7 +304,9 @@ static void build_run(IsoBuild* b) {
 #if MD_ENABLE_GPU
     md_temp_scope_t temp = md_temp_begin();
     FieldContext ctx;
-    if (field_context(&ctx, temp, g)) {
+    if (const GostshypOrbital* o = b->num_fields == 1 ? own_basis(b->fields[0]) : nullptr) {
+        b->set = md_gto_iso_gpu_set_create(b->stream, &o->basis, (const float*)o->centres.data(), sizeof(md_float3_t), b->fields, 1, md_get_heap_allocator());
+    } else if (field_context(&ctx, temp, g)) {
         b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), b->fields, b->num_fields, md_get_heap_allocator());
     }
     md_temp_end(temp);
@@ -296,6 +334,7 @@ static bool field_held(const md_gto_iso_field_t* f) {
 // Fields destroyed on the pool: a protein's density field is a few hundred MB in large blocks, tens of ms to
 // give back, at the frame that takes the next one
 static void field_destroy(md_gto_iso_field_t* field) {
+    own_basis_remove(field);
     task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
@@ -454,11 +493,12 @@ static constexpr double JOB_POLL_MS = 3.0;
 // not take). g: where the fields' atoms are.
 static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, const IsoFieldGeometry& g) {
     if (!state->gpu_device || !state->gpu_stream) return -1;
-    // a field made of other fields (ELF, LOL) is a set of its own on the device: with others, on the CPU
+    // a field made of other fields (ELF, LOL), or over a basis of its own (the GOSTSHYP wall's), is a set of its own
+    // on the device: with others, on the CPU
     for (uint32_t k = 0; k < n && n > 1; ++k) {
         md_gto_iso_field_info_t info;
         md_gto_iso_field_info(&info, slots[k].field);
-        if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE) return -1;
+        if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE || own_basis(slots[k].field)) return -1;
     }
     if (m->gpu_set) return 1;
     if (m->set_failed_key == m->fields_key) return -1;
@@ -819,6 +859,25 @@ static FieldRef field_spec_of(const ElectronicStructureRepresentation& es) {
 // the volume takes them without)
 static constexpr double LOCALIZATION_MESH_RHO_MIN = 1.0e-6;
 
+// A field of the GOSTSHYP wall: an orbital over its tesserae (gostshyp_wall_orbital), placed where g's atoms are,
+// which are the QM atoms the cavity is of
+static md_gto_iso_field_t* field_create_gostshyp(const IsoFieldGeometry& g, GostshypField which) {
+    GostshypTesserae t;
+    GostshypPlacement pl;
+    if (!g.sys || !gostshyp_read(&t, *g.sys) || !gostshyp_place(&pl, t, g.atom_xyz, g.num_atoms, nullptr, 1.0 / 0.52917721092)) return nullptr;
+    GostshypWall* w = gostshyp_wall_create(t, pl);
+    GostshypOrbital* o = new GostshypOrbital();
+    const bool ok = gostshyp_wall_orbital(o, w, which);
+    gostshyp_wall_destroy(w);
+    md_gto_iso_field_t* f = ok ? md_gto_iso_field_create(&o->basis, (const float*)o->centres.data(), sizeof(md_float3_t), o->ao.data(), md_get_heap_allocator()) : nullptr;
+    if (!f) {
+        delete o;
+        return nullptr;
+    }
+    own_basis_add(f, o);
+    return f;
+}
+
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
 static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
@@ -877,6 +936,9 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
         }
         return f;
     }
+    case ElectronicStructureSource::GostshypWallPotential:
+    case ElectronicStructureSource::GostshypEffectivePotential:
+        return field_create_gostshyp(g, es.source == ElectronicStructureSource::GostshypEffectivePotential ? GostshypField::EffectivePotential : GostshypField::WallPotential);
     default:
         return nullptr;
     }

@@ -381,7 +381,8 @@ static inline bool electronic_structure_source_meshable(ElectronicStructureSourc
     return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
            s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
            s == ElectronicStructureSource::DensityProperty || s == ElectronicStructureSource::ElectronLocalization ||
-           s == ElectronicStructureSource::LocalizedOrbitalLocator;
+           s == ElectronicStructureSource::LocalizedOrbitalLocator || s == ElectronicStructureSource::GostshypWallPotential ||
+           s == ElectronicStructureSource::GostshypEffectivePotential;
 }
 
 // What the isosurfaces of a field are, in the isosurface display (ElectronicStructureRepresentation::surface).

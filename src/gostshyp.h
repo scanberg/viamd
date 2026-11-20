@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <core/md_vec_math.h>
+#include <md_gto.h>
 #include <qm_placement.h>
 
 struct md_system_t;
@@ -73,3 +74,18 @@ void gostshyp_wall_evaluate(const GostshypWall* w, GostshypField field, const fl
 
 // Whether V1 is zero at the point to the cutoff of the Gaussians: nothing of the wall reaches it
 bool gostshyp_wall_reaches(const GostshypWall* w, const float xyz[3]);
+
+// A field of the wall as what it exactly is, an orbital over a basis of its own (md_gto.h): a shell on each tessera of
+// one primitive, its exponent zeta_j and coefficient 1 (an s or p Cartesian function is not normalized further, so
+// the AO is exp(-zeta_j |r - c_j|^2) times 1 or a component of r - c_j). V1 is the s shells with coefficients
+// p_j (zeta_j / pi)^(3/2); v adds the p shells with that times 2 zeta_j lambda_j n_j. Exact, no cutoff: what the
+// isosurfaces of the field are meshed from (iso_meshes.h). Tesserae of no amplitude (buried) are left out.
+// The arrays the basis points into are the struct's own: not to be copied.
+struct GostshypOrbital {
+    md_gto_basis_t basis = {};
+    std::vector<md_gto_shell_t> shells;    // the s shells of all tesserae, then the p shells (md_gto.h's order)
+    std::vector<float> alpha, coeff;       // bohr^-2; 1
+    std::vector<md_float3_t> centres;      // bohr, the basis' atoms: one per tessera
+    std::vector<double> ao;                // the field's coefficient of each AO, Hartree
+};
+bool gostshyp_wall_orbital(GostshypOrbital* out, const GostshypWall* w, GostshypField field);
