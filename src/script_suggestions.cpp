@@ -1474,3 +1474,12 @@ md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, md_
     md_arena_allocator_destroy(temp);
     return out;
 }
+
+void script_write_position(md_str_writer_t* sb, script::Language lang, const char* unit, int64_t idx) {
+    const char* sep = md_str_writer_empty(sb) ? "" : " ";
+    if (lang == script::Language::V2) {
+        md_str_writer_fmt(sb, "%s%s[%lld]", sep, strcmp(unit, "atom") == 0 ? "particle" : unit, (long long)idx);
+    } else {
+        md_str_writer_fmt(sb, "%s%s(%lld)", sep, unit, (long long)idx + 1);
+    }
+}

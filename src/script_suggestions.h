@@ -45,6 +45,12 @@ md_array(ScriptSuggestion) script_suggest_selection(script::Language lang, md_st
 // [N:1][C:2]..., one and two bonds out, wherever it occurs. Empty for any other number of atoms.
 md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, md_str_t ident, const int32_t* atoms, size_t count, const md_system_t& sys, md_allocator_i* alloc);
 
+// A unit of the system by its position (from 0), as the script's language writes it, appended to sb after a space
+// unless sb is empty: mdscript counts from 1 with a call, atom(5) residue(12); VIAL from 0 with a subscript,
+// particle[4] residue[11] (mdscript's atom counts every particle, as VIAL's particle does). unit: "atom", "residue",
+// "part", "chain", "polymer", "molecule".
+void script_write_position(struct md_str_writer_t* sb, script::Language lang, const char* unit, int64_t idx);
+
 // The canonical SMILES of the selected atoms: the heavy atoms, the hydrogens implicit, the same text whatever their
 // order in the file, so two selections of the same chemistry read the same. What smiles('...') finds them by. Empty
 // where there is nothing to write or too much. Zero terminated.

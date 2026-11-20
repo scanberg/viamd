@@ -27,13 +27,6 @@
 static const float GLYPH_MIN_PX = 1.5f;     // pixels: the radius a glyph is never thinner than, to be seen and hovered
 static const double REF_PERCENTILE = 0.99;  // the magnitude a quantity that is not a length or an area maps to its scale at
 
-// The leaves of what a point set is usually coloured by, first found first: a default, not a condition
-static const md_str_t COLOR_PREFERRED[] = {
-    MD_STR_INIT("wall_energy_per_area"),    // GOSTSHYP
-    MD_STR_INIT("charge_per_area"),         // a polarizable continuum's surface charge density
-    MD_STR_INIT("charge"),
-};
-
 struct GlyphData {
     md_attribute_id_t points = MD_ATTRIBUTE_INVALID;
     uint64_t source_hash = 0;
@@ -208,11 +201,10 @@ void glyphs_select(GlyphRepresentation* g, const md_system_t& sys, md_attribute_
     for (size_t i = 0; i < nq; ++i) {
         if (is_area(get(sys, q[i])->unit)) { g->radius = {q[i], 1.0f}; break; }
     }
+    // coloured by what the set is about, as its publisher says (MD_ATTRIBUTE_FLAG_PRINCIPAL), else uniform
     md_attribute_id_t color = MD_ATTRIBUTE_INVALID;
-    for (size_t k = 0; k < MD_COUNTOF(COLOR_PREFERRED) && color == MD_ATTRIBUTE_INVALID; ++k) {
-        for (size_t i = 0; i < nq; ++i) {
-            if (md_str_eq(md_attribute_leaf(get(sys, q[i])), COLOR_PREFERRED[k])) { color = q[i]; break; }
-        }
+    if (const md_attribute_t* p = md_attributes_principal(&sys.attributes, glyphs_group(sys, points))) {
+        for (size_t i = 0; i < nq; ++i) if (q[i] == p->id) color = p->id;
     }
     glyphs_select_color(g, sys, color);
 }

@@ -14,6 +14,7 @@
 #include <stdarg.h>
 
 #include <script_engine.h>
+#include <script_suggestions.h>
 
 #include <core/md_log.h>
 #include <core/md_path.h>
@@ -338,31 +339,32 @@ static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, co
 // "residue(56) part(3) chain(1)", after whatever sb holds: the place in the script's terms. The part is given where it is
 // less than its molecule (a glycan, a strand bonded to another). Then what it is filed under: its chain, else the strand
 // of a polymer it is by its position (polymer(2)), else its molecule by its position among the molecules.
-static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
+// Positions are written as the script's language writes them (script_write_position): atom(5) or particle[4]
+static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place, script::Language lang) {
     const int chain = tooltip_place_chain(sys, place);
     int atom = place.atom_idx;
     if (atom == -1 && place.res_idx != -1) atom = (int)md_system_residue_atom_range(&sys, place.res_idx).beg;
     const md_molecule_idx_t mol = atom != -1 ? md_system_molecule_find_by_atom_idx(&sys, (size_t)atom) : -1;
 
-    if (place.res_idx != -1) md_str_writer_fmt(sb, "%sresidue(%d)", md_str_writer_empty(sb) ? "" : " ", place.res_idx + 1);
+    if (place.res_idx != -1) script_write_position(sb, lang, "residue", place.res_idx);
     const int32_t part = place.part_idx;
     if (part != -1 && mol != -1) {
         const md_urange_t part_atoms = md_system_part_atom_range(&sys, (size_t)part);
         const size_t mol_size = md_system_molecule_atom_count(&sys, (size_t)mol);
         if (part_atoms.end - part_atoms.beg < mol_size) {
-            md_str_writer_fmt(sb, "%spart(%d)", md_str_writer_empty(sb) ? "" : " ", part + 1);
+            script_write_position(sb, lang, "part", part);
         }
     }
     if (chain != -1) {
-        md_str_writer_fmt(sb, "%schain(%d)", md_str_writer_empty(sb) ? "" : " ", chain + 1);
+        script_write_position(sb, lang, "chain", chain);
         return;
     }
     const int pos = tooltip_polymer_position(sys, part);
     if (pos >= 0) {
-        md_str_writer_fmt(sb, "%spolymer(%d)", md_str_writer_empty(sb) ? "" : " ", pos + 1);
+        script_write_position(sb, lang, "polymer", pos);
         return;
     }
-    if (mol != -1) md_str_writer_fmt(sb, "%smolecule(%lld)", md_str_writer_empty(sb) ? "" : " ", (long long)mol + 1);
+    if (mol != -1) script_write_position(sb, lang, "molecule", mol);
 }
 
 // What a place is of: its part, by the type of it (an mmCIF entity, or inferred: the kind of a polymer, the residue names
@@ -608,8 +610,8 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row(req, MD_STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    md_str_writer_fmt(&index, "atom(%u)", atom_idx + 1);
-    tooltip_append_index(&index, sys, place);
+    script_write_position(&index, state.script.language, "atom", atom_idx);
+    tooltip_append_index(&index, sys, place, state.script.language);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
@@ -687,7 +689,10 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     }
     tooltip_row_list(req, MD_STR_LIT("source"), source);
 
-    tooltip_row(req, MD_STR_LIT("index"), "atom(%d) atom(%d)", pair.idx[0] + 1, pair.idx[1] + 1);
+    md_str_writer_t index = md_str_writer_create(req->alloc);
+    script_write_position(&index, state.script.language, "atom", pair.idx[0]);
+    script_write_position(&index, state.script.language, "atom", pair.idx[1]);
+    tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
 // A backbone segment stands for its residue: the cartoon and ribbons have no atoms to speak of. What the segment adds is
@@ -728,7 +733,9 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
         // segment adds, and the atom of its CA
         tooltip_title(req, "amino acid");
         tooltip_backbone_segment_geometry(req, state, seg_idx);
-        tooltip_row(req, MD_STR_LIT("index"), "atom(%d)", bb.segment.atoms[seg_idx].ca + 1);
+        md_str_writer_t index = md_str_writer_create(req->alloc);
+        script_write_position(&index, state.script.language, "atom", bb.segment.atoms[seg_idx].ca);
+        tooltip_row_list(req, MD_STR_LIT("index"), index);
         return;
     }
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
@@ -758,7 +765,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_part_and_molecule_rows(req, sys, place);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    tooltip_append_index(&index, sys, place);
+    tooltip_append_index(&index, sys, place, state.script.language);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
@@ -805,13 +812,14 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     }
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
-    md_str_writer_fmt(&index, "residue(%u) residue(%u)", res_idx + 1, res_idx + 2);
+    script_write_position(&index, state.script.language, "residue", res_idx);
+    script_write_position(&index, state.script.language, "residue", res_idx + 1);
     const md_chain_idx_t chain = md_system_chain_find_by_residue_idx(&sys, res_idx);
     const int strand = tooltip_polymer_position(sys, place[0].part_idx);
     const md_molecule_idx_t mol = range.beg < range.end ? md_system_molecule_find_by_atom_idx(&sys, range.beg) : -1;
-    if (chain != -1)       md_str_writer_fmt(&index, " chain(%d)", chain + 1);
-    else if (strand != -1) md_str_writer_fmt(&index, " polymer(%d)", strand + 1);
-    else if (mol != -1)    md_str_writer_fmt(&index, " molecule(%lld)", (long long)mol + 1);
+    if (chain != -1)       script_write_position(&index, state.script.language, "chain", chain);
+    else if (strand != -1) script_write_position(&index, state.script.language, "polymer", strand);
+    else if (mol != -1)    script_write_position(&index, state.script.language, "molecule", mol);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
@@ -921,9 +929,9 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     if (frame_ring) {
         tooltip_list_add(&index, "of this frame, its bonds as they are tracked");
     } else {
-        md_str_writer_fmt(&index, "ring(%u)", ring_idx + 1);
+        script_write_position(&index, state.script.language, "ring", ring_idx);
     }
-    tooltip_append_index(&index, sys, place);
+    tooltip_append_index(&index, sys, place, state.script.language);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
@@ -1020,7 +1028,11 @@ static void tooltip_glyph(PickingTooltipTextRequest* req, const ApplicationState
         const md_str_t label = a->label.len ? a->label : leaf;
         tooltip_row(req, label, unit[0] ? "%.4g %s" : "%.4g", v * f, unit);
     }
-    if (atom != UINT32_MAX) tooltip_row(req, MD_STR_LIT("index"), "atom(%u)", atom + 1);
+    if (atom != UINT32_MAX) {
+        md_str_writer_t index = md_str_writer_create(req->alloc);
+        script_write_position(&index, state.script.language, "atom", atom);
+        tooltip_row_list(req, MD_STR_LIT("index"), index);
+    }
 }
 
 static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
