@@ -1421,7 +1421,6 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t sys_atom = 0;      // and that atom in the system
         float area = 0;             // Å^2
         float lambda = 0;           // decay length, Å
-        float wall = 0;             // energy of the wall per area, P lambda: kJ/mol/Å^2
         float density = 0;          // <rho|g> = P a lambda / p: e/bohr^3
         float amp = 0;              // p: Eh bohr^3
         float amp_area = 0;         // p / a: Eh bohr
@@ -6101,9 +6100,6 @@ struct QuantumChemistry : viamd::EventHandler {
         const std::vector<double> area = gostshyp_series(sys, "area", n, md_unit_pow(ang, 2));
         const std::vector<double> idx  = gostshyp_series(sys, "atom_index", n, md_unit_none());
         const std::vector<double> lam  = gostshyp_series(sys, "decay_length", n, ang);
-        // Ha/bohr^2 to kJ/mol/Å^2 (a molar energy is no dimension md_unit converts an energy to)
-        std::vector<double> wall = gostshyp_series(sys, "wall_energy_per_area", n, md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)));
-        for (double& w : wall) w *= HARTREE_TO_KJ_PER_MOL / (0.52917721092 * 0.52917721092);
         const std::vector<double> dens = gostshyp_series(sys, "wall_density", n, md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)));
         const std::vector<double> amp  = gostshyp_series(sys, "amplitude", n, md_unit_mul(md_unit_hartree(), md_unit_pow(bohr, 3)));
         const std::vector<double> pa   = gostshyp_series(sys, "amplitude_per_area", n, md_unit_mul(md_unit_hartree(), bohr));
@@ -6126,7 +6122,6 @@ struct QuantumChemistry : viamd::EventHandler {
             t.sys_atom = map && q < n_map ? map[q] : q;
             t.area = (float)area[j];
             t.lambda = lam.empty() ? 0.0f : (float)lam[j];
-            t.wall = wall.empty() ? 0.0f : (float)wall[j];
             t.density = dens.empty() ? 0.0f : (float)dens[j];
             t.amp = amp.empty() ? 0.0f : (float)amp[j];
             t.amp_area = pa.empty() ? 0.0f : (float)pa[j];
@@ -6193,7 +6188,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     enum GostshypColumn {
-        GostshypColumn_Index, GostshypColumn_Atom, GostshypColumn_Area, GostshypColumn_Lambda, GostshypColumn_Wall,
+        GostshypColumn_Index, GostshypColumn_Atom, GostshypColumn_Area, GostshypColumn_Lambda,
         GostshypColumn_Density, GostshypColumn_Amp, GostshypColumn_AmpArea, GostshypColumn_Zeta, GostshypColumn_Inside,
         GostshypColumn_Count
     };
@@ -6204,7 +6199,6 @@ struct QuantumChemistry : viamd::EventHandler {
         case GostshypColumn_Atom:    return (float)t.sys_atom;
         case GostshypColumn_Area:    return t.area;
         case GostshypColumn_Lambda:  return t.lambda;
-        case GostshypColumn_Wall:    return t.wall;
         case GostshypColumn_Density: return t.density;
         case GostshypColumn_Amp:     return t.amp;
         case GostshypColumn_AmpArea: return t.amp_area;
@@ -6256,7 +6250,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::TableSetupColumn("Atom",        0, 0, GostshypColumn_Atom);
                 ImGui::TableSetupColumn("Area Å²",     0, 0, GostshypColumn_Area);
                 ImGui::TableSetupColumn("λ Å",         0, 0, GostshypColumn_Lambda);
-                ImGui::TableSetupColumn("Pλ kJ/mol/Å²",0, 0, GostshypColumn_Wall);
                 ImGui::TableSetupColumn("⟨ρ|g⟩ e/bohr³",0, 0, GostshypColumn_Density);
                 ImGui::TableSetupColumn("p a.u.",      0, 0, GostshypColumn_Amp);
                 ImGui::TableSetupColumn("p/a Eh bohr", 0, 0, GostshypColumn_AmpArea);
@@ -6316,7 +6309,6 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
                         if (ImGui::TableSetColumnIndex(GostshypColumn_Area))    ImGui::Text("%.3e", t.area);
                         if (ImGui::TableSetColumnIndex(GostshypColumn_Lambda))  ImGui::Text("%.4f", t.lambda);
-                        if (ImGui::TableSetColumnIndex(GostshypColumn_Wall))    ImGui::Text("%.3f", t.wall);
                         if (ImGui::TableSetColumnIndex(GostshypColumn_Density)) ImGui::Text("%.3e", t.density);
                         if (ImGui::TableSetColumnIndex(GostshypColumn_Amp))     ImGui::Text("%.3e", t.amp);
                         if (ImGui::TableSetColumnIndex(GostshypColumn_AmpArea)) ImGui::Text("%.3e", t.amp_area);

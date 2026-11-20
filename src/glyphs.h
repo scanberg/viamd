@@ -77,7 +77,7 @@ size_t glyphs_quantities(md_attribute_id_t out[], size_t cap, const md_system_t&
 
 // The point set shown (an oriented one first), and what it is mapped by, as a new representation starts out: a disc of
 // each point's area where it has one, of a constant height, coloured by the set's principal quantity, what its
-// publisher says it is about (MD_ATTRIBUTE_FLAG_PRINCIPAL: a cavity's wall energy per area, a surface charge), or
+// publisher says it is about (MD_ATTRIBUTE_FLAG_PRINCIPAL: a GOSTSHYP cavity's decay length, a surface charge), or
 // else uniform
 void glyphs_select(GlyphRepresentation* g, const md_system_t& sys, md_attribute_id_t points);
 
