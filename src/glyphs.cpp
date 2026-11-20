@@ -1,4 +1,5 @@
 #include <glyphs.h>
+#include <attribute_access.h>
 #include <qm_placement.h>
 #include <display_units.h>
 
@@ -9,6 +10,7 @@
 
 #include <md_system.h>
 #include <md_system_state.h>
+#include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_hash.h>
 #include <core/md_allocator.h>
@@ -61,9 +63,9 @@ static const md_attribute_t* get(const md_system_t& sys, md_attribute_id_t id) {
     return id != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, id) : nullptr;
 }
 
+// A series of `components` values each, of exactly count of them (0: any)
 static bool is_series(const md_attribute_t* a, uint32_t components, uint32_t count) {
-    return a && a->format.rank == 1 && a->format.components == components && md_attribute_type_is_numeric(a->format.type) &&
-           (count == 0 || a->format.shape[0] == count);
+    return attribute_has_shape(a, 1, components) && (count == 0 || a->format.shape[0] == count);
 }
 
 static bool is_length(md_unit_t u) { return md_unit_base_equal(u, md_unit_angstrom()); }
@@ -146,12 +148,8 @@ float glyphs_default_scale(const md_system_t& sys, md_attribute_id_t quantity, b
 // The values of a quantity at every point, in its own unit (or, for a size, in Angstrom or Angstrom^2); empty when
 // it is none
 static std::vector<double> values(const md_system_t& sys, md_attribute_id_t quantity, uint32_t count, md_unit_t unit) {
-    std::vector<double> v;
     const md_attribute_t* a = get(sys, quantity);
-    if (!is_series(a, 1, count)) return v;
-    v.resize(count);
-    if (md_attribute_extract_f64(v.data(), count, &sys.attributes, a, md_attribute_slice_all(), unit) != count) v.clear();
-    return v;
+    return is_series(a, 1, count) ? attribute_values(sys, a, unit) : std::vector<double>{};
 }
 
 static ColorScaleSpan span_of(const std::vector<double>& v) {
@@ -266,13 +264,9 @@ static bool read_points(GlyphData* d, const md_system_t& sys, md_attribute_id_t 
     const uint32_t n = c->format.shape[0];
     d->points = points;
     d->num = n;
-    d->pos.resize(3 * (size_t)n);
-    if (md_attribute_extract_f64(d->pos.data(), 3 * (size_t)n, &sys.attributes, c, md_attribute_slice_all(), md_unit_angstrom()) != 3 * (size_t)n) return false;
-    const md_attribute_t* nr = sibling(sys, c, "normal");
-    if (is_series(nr, 3, n)) {
-        d->nrm.resize(3 * (size_t)n);
-        if (md_attribute_extract_f64(d->nrm.data(), 3 * (size_t)n, &sys.attributes, nr, md_attribute_slice_all(), nr->unit) != 3 * (size_t)n) d->nrm.clear();
-    }
+    d->pos = attribute_values(sys, c, md_unit_angstrom());
+    if (d->pos.size() != 3 * (size_t)n) return false;
+    if (const md_attribute_t* nr = sibling(sys, c, "normal"); is_series(nr, 3, n)) d->nrm = attribute_values(sys, nr, md_unit_none());
     d->place = GlyphData::AsIs;
     if (const md_attribute_t* s = sibling(sys, c, "system_index"); is_series(s, 1, n)) {
         std::vector<double> v = values(sys, s->id, n, s->unit);
@@ -283,8 +277,8 @@ static bool read_points(GlyphData* d, const md_system_t& sys, md_attribute_id_t 
         const md_attribute_t* q = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/coordinate"));
         if (is_series(q, 3, 0)) {
             const uint32_t m = q->format.shape[0];
-            d->qm_xyz.resize(3 * (size_t)m);
-            if (md_attribute_extract_f64(d->qm_xyz.data(), 3 * (size_t)m, &sys.attributes, q, md_attribute_slice_all(), md_unit_angstrom()) == 3 * (size_t)m) {
+            d->qm_xyz = attribute_values(sys, q, md_unit_angstrom());
+            if (d->qm_xyz.size() == 3 * (size_t)m) {
                 const md_attribute_t* map = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/system_index"));
                 std::vector<double> v = is_series(map, 1, m) ? values(sys, map->id, m, map->unit) : std::vector<double>{};
                 d->atom_of.resize(m);
@@ -359,7 +353,7 @@ static void sizes(std::vector<float>* out, const md_system_t& sys, uint32_t n, c
         const std::vector<double> v = values(sys, m.quantity, n, area ? md_unit_pow(md_unit_angstrom(), 2) : md_unit_angstrom());
         for (uint32_t j = 0; j < n && j < v.size(); ++j) {
             const double x = isfinite(v[j]) ? v[j] : 0.0;
-            const double s = area ? copysign(sqrt(fabs(x) / M_PI), x) : x;
+            const double s = area ? copysign(sqrt(fabs(x) / MD_PI), x) : x;
             (*out)[j] = (float)(m.scale * (radius ? fabs(s) : s));
         }
         return;
