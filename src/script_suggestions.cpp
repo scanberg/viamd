@@ -7,6 +7,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_writer.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1475,11 +1476,15 @@ md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, md_
     return out;
 }
 
-void script_write_position(md_str_writer_t* sb, script::Language lang, const char* unit, int64_t idx) {
-    const char* sep = md_str_writer_empty(sb) ? "" : " ";
+int script_print_position(char* buf, size_t cap, script::Language lang, const char* unit, int64_t idx) {
     if (lang == script::Language::V2) {
-        md_str_writer_fmt(sb, "%s%s[%lld]", sep, strcmp(unit, "atom") == 0 ? "particle" : unit, (long long)idx);
-    } else {
-        md_str_writer_fmt(sb, "%s%s(%lld)", sep, unit, (long long)idx + 1);
+        return snprintf(buf, cap, "%s[%lld]", strcmp(unit, "atom") == 0 ? "particle" : unit, (long long)idx);
     }
+    return snprintf(buf, cap, "%s(%lld)", unit, (long long)idx + 1);
+}
+
+void script_write_position(md_str_writer_t* sb, script::Language lang, const char* unit, int64_t idx) {
+    char buf[64];
+    script_print_position(buf, sizeof(buf), lang, unit, idx);
+    md_str_writer_fmt(sb, "%s%s", md_str_writer_empty(sb) ? "" : " ", buf);
 }

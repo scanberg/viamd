@@ -50,6 +50,8 @@ md_array(ScriptSuggestion) script_suggest_measurement(script::Language lang, md_
 // particle[4] residue[11] (mdscript's atom counts every particle, as VIAL's particle does). unit: "atom", "residue",
 // "part", "chain", "polymer", "molecule".
 void script_write_position(struct md_str_writer_t* sb, script::Language lang, const char* unit, int64_t idx);
+// The same into buf (no separator); returns its length
+int  script_print_position(char* buf, size_t cap, script::Language lang, const char* unit, int64_t idx);
 
 // The canonical SMILES of the selected atoms: the heavy atoms, the hydrogens implicit, the same text whatever their
 // order in the file, so two selections of the same chemistry read the same. What smiles('...') finds them by. Empty
