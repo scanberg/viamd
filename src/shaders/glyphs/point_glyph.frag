@@ -1,8 +1,8 @@
 #version 410 core
 
-// The glyph of a tessera (cavity_glyph.vert), ray cast: a cylinder capped at both ends, or a sphere. Into the G-buffer
-// as the opaque geometry writes it (the colour, the normal, the velocity of the camera's motion and the picking index of
-// the tessera), or, for the highlight, into the marks as cavity_marks.frag marks a patch.
+// The glyph of a point (point_glyph.vert), ray cast: a cylinder capped at both ends, or a sphere. Into the G-buffer as
+// the opaque geometry writes it (the colour, the normal, the velocity of the camera's motion and the picking index of
+// the point), or, for the highlight, into the marks.
 
 in vec3 v_view;
 flat in int   v_tess;
@@ -10,7 +10,7 @@ flat in vec3  v_p0;
 flat in vec3  v_p1;
 flat in float v_r;
 
-uniform samplerBuffer u_tess_b;         // w: the value the glyph is coloured by
+uniform samplerBuffer u_normal;         // w: the value the glyph is coloured by
 uniform sampler2D     u_colormap;
 uniform sampler2D     u_tex_depth;      // marks: the G-buffer's depth (jittered, at its render scale)
 
@@ -23,7 +23,7 @@ uniform int   u_sphere;
 uniform int   u_color_mode;             // 0: the value over u_range, 1: uniform
 uniform vec2  u_range;
 uniform int   u_unlit;
-uniform uint  u_tessera_base;
+uniform uint  u_pick_base;
 uniform int   u_marks;
 uniform float u_proj_11;
 uniform vec2  u_inv_size;
@@ -90,7 +90,7 @@ void main() {
     gl_FragDepth = (clip.z / clip.w) * 0.5 + 0.5;
 
     if (u_marks != 0) {
-        // In view: no closer than the scene within a tolerance, as cavity_marks.frag decides it
+        // In view: no closer than the scene within a tolerance
         vec2  uv = gl_FragCoord.xy * u_inv_size;
         ivec2 size  = textureSize(u_tex_depth, 0);
         ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - 1);
@@ -110,7 +110,7 @@ void main() {
     vec3 color = vec3(0.75);
     if (u_color_mode == 0) {
         float ext = u_range.y - u_range.x;
-        float param = abs(ext) > 0.0 ? clamp((texelFetch(u_tess_b, v_tess).w - u_range.x) / ext, 0.0, 1.0) : 0.5;
+        float param = abs(ext) > 0.0 ? clamp((texelFetch(u_normal, v_tess).w - u_range.x) / ext, 0.0, 1.0) : 0.5;
         color = texture(u_colormap, vec2(param * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
     }
 
@@ -120,5 +120,5 @@ void main() {
     out_color    = vec4(color, u_unlit != 0 ? 1.0 / 255.0 : 1.0);
     out_normal   = vec4(encode_normal(n), 0.0, 0.0);
     out_velocity = vec4(ss_vel, 0.0, 0.0);
-    out_picking  = encode_index(u_tessera_base + uint(v_tess));
+    out_picking  = encode_index(u_pick_base + uint(v_tess));
 }

@@ -34,7 +34,7 @@
 
 #include <task_system.h>
 #include <surface_field.h>
-#include <cavity.h>
+#include <glyphs.h>
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
@@ -117,8 +117,9 @@ constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking d
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
-// A tessera of a cavity (cavity.h), keyed by the representation: what its glyph picks as. The index is the tessera.
-constexpr PickingDomainID PickingDomain_Tessera = HASH_STR_LIT64("picking domain tessera");
+// A point of a point set drawn as glyphs (glyphs.h), keyed by the representation: what its glyph picks as. The index is
+// the point.
+constexpr PickingDomainID PickingDomain_Glyph = HASH_STR_LIT64("picking domain point glyph");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
@@ -250,7 +251,7 @@ enum class RepresentationType {
     DipoleMoment,
     SimulationBox,
     Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
-    Cavity,             // The tessellated cavity of the QM atoms (cavity.h), coloured by a field of its tesserae
+    Glyphs,             // A glyph per point of a point set of the attributes (glyphs.h): a cavity's tesserae, ...
     Count
 };
 
@@ -287,7 +288,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
-    "Cavity",
+    "Glyphs",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -1342,7 +1343,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
-    CavityRepresentation cavity = {};
+    GlyphRepresentation glyphs = {};
     bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 
@@ -1846,18 +1847,18 @@ struct ApplicationState {
     PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
     PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
 
-    // The tessera of a cavity under the cursor (PickingDomain_Tessera): its representation's id and its index. Marked as
-    // its patch in the marks of the highlight (cavity_draw_marks). rep_id 0: none.
+    // The glyph under the cursor (PickingDomain_Glyph): its representation's id and its point. Marked in the marks of the
+    // highlight (glyphs_draw_marks). rep_id 0: none.
     struct {
-        uint32_t rep_id  = 0;
-        uint32_t tessera = 0;
-    } cavity_hover;
+        uint32_t rep_id = 0;
+        uint32_t point  = 0;
+    } glyph_hover;
     // The same, hovered elsewhere than in the view (a row of the GOSTSHYP table): set by what draws it, every frame it
     // is hovered. Marked in place of the one in the view.
     struct {
-        uint32_t rep_id  = 0;
-        uint32_t tessera = 0;
-    } cavity_hover_ui;
+        uint32_t rep_id = 0;
+        uint32_t point  = 0;
+    } glyph_hover_ui;
 
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 

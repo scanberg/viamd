@@ -1412,9 +1412,9 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_window = false;
     } summary;
 
-    // The GOSTSHYP window: the cavity of a run under pressure (vlx/scf/gostshyp/*, md_vlx.h) as a whole, and a
-    // table of its tesserae linked to the cavity in the view (cavity.h). Made again when the attributes it is made
-    // of change, as finding the tesserae inside other spheres goes over all pairs.
+    // The GOSTSHYP window: the cavity of a run under pressure (vlx/scf/gostshyp/*, md_vlx.h, which publishes what
+    // the wall is per tessera and in all) as a whole, and a table of its tesserae linked to the glyphs of the tesserae
+    // in the view (glyphs.h). Copied again when the attributes it is made of change.
     struct GostshypTessera {
         uint32_t atom = 0;          // the QM atom of its sphere
         uint32_t sys_atom = 0;      // and that atom in the system
@@ -1423,7 +1423,7 @@ struct QuantumChemistry : viamd::EventHandler {
         float wall = 0;             // energy of the wall per area, P lambda: kJ/mol/Å^2
         float density = 0;          // <rho|g> = P a lambda / p: e/bohr^3
         float amp = 0;              // p: Eh bohr^3
-        float amp_area = 0;         // p / a
+        float amp_area = 0;         // p / a: Eh bohr
         float zeta = 0;             // exponent of its Gaussian, Å^-2
         bool  inside = false;       // inside the sphere of another atom than its own
     };
@@ -1435,9 +1435,6 @@ struct QuantumChemistry : viamd::EventHandler {
         bool     valid = false;
         size_t   num_spheres = 0;   // the QM atoms
         size_t   num_inside = 0;
-        double   area = 0;          // sum a_j, Å^2
-        double   inside_area = 0;
-        double   skin = 0;          // sum a_j lambda_j, Å^3
         double   lambda_min = 0, lambda_max = 0;
         std::vector<GostshypTessera> tess;
         std::vector<uint32_t> order;        // the rows as sorted
@@ -6203,21 +6200,25 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
-    // The cavity of a run under pressure, as a whole and per tessera. The wall's energy is p_j <rho|g_j> summed,
-    // which the amplitudes make P a_j lambda_j (p_j (-d/dn <rho|g_j>) = P a_j): P times the volume sum a_j lambda_j,
-    // a skin of density outside the cavity.
+    // A series of the cavity's tesserae (vlx/scf/gostshyp/tessera/<leaf>) in the given unit, n of them; empty otherwise
+    static std::vector<double> gostshyp_series(const md_system_t& sys, const char* leaf, size_t n, md_unit_t unit) {
+        std::vector<double> v;
+        const md_attribute_t* a = md_attributes_find_in(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera"), md_str_from_cstr(leaf));
+        if (!a || a->format.rank != 1 || a->format.shape[0] != n || a->format.components != 1) return v;
+        v.resize(n);
+        if (md_attribute_extract_f64(v.data(), n, &sys.attributes, a, md_attribute_slice_all(), unit) != n) v.clear();
+        return v;
+    }
+
+    // The cavity of a run under pressure, per tessera, as mdlib published it
     void update_gostshyp(const md_system_t& sys) {
-        static const md_str_t paths[] = {
-            MD_STR_INIT("vlx/scf/gostshyp/tessera/coordinate"), MD_STR_INIT("vlx/scf/gostshyp/tessera/area"),
-            MD_STR_INIT("vlx/scf/gostshyp/tessera/decay_length"), MD_STR_INIT("vlx/scf/gostshyp/tessera/atom_index"),
-            MD_STR_INIT("vlx/scf/gostshyp/tessera/amplitude"), MD_STR_INIT("vlx/scf/gostshyp/tessera/exponent"),
-            MD_STR_INIT("vlx/scf/gostshyp/sphere_radius"), MD_STR_INIT("vlx/scf/gostshyp/pressure"),
-            MD_STR_INIT("qm/atom/coordinate"), MD_STR_INIT("qm/atom/system_index"),
-        };
         uint64_t key = 0x5bd1e995;
-        for (const md_str_t& p : paths) {
-            const md_attribute_t* a = md_attributes_find(&sys.attributes, p);
-            const uint64_t v[2] = {a ? (uint64_t)a->id : 0, a ? a->version : 0};
+        for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp")); md_attributes_next(&it);) {
+            const uint64_t v[2] = {(uint64_t)it.attr->id, it.attr->version};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (const md_attribute_t* a = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/system_index"))) {
+            const uint64_t v[2] = {(uint64_t)a->id, a->version};
             key = md_hash64(v, sizeof(v), key);
         }
         if (key == gostshyp.key) return;
@@ -6226,33 +6227,30 @@ struct QuantumChemistry : viamd::EventHandler {
         g.key = key;
         g.valid = false;
         g.num_spheres = g.num_inside = 0;
-        g.area = g.inside_area = g.skin = 0;
         g.tess.clear();
         g.order.clear();
         g.sort_dirty = true;
         g.view_hover_last = UINT32_MAX;
 
-        size_t n = 0, n_lam = 0, n_amp = 0, n_zeta = 0, n_xyz = 0, n_idx = 0, n_rad = 0, n_qm = 0, n_map = 0;
-        const double* area = attribute_series_f64(&n, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
-        const double* lam  = attribute_series_f64(&n_lam, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/decay_length"));
-        const double* amp  = attribute_series_f64(&n_amp, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/amplitude"));
-        const double* zeta = attribute_series_f64(&n_zeta, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/exponent"));
-        const md_double3_t* xyz = attribute_vec3_series(&n_xyz, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/coordinate"));
-        const uint32_t* idx = (const uint32_t*)attribute_column(&n_idx, sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/atom_index"), MD_ATTRIBUTE_TYPE_U32);
-        const double* rad = attribute_series_f64(&n_rad, sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
-        const md_double3_t* qm = attribute_vec3_series(&n_qm, sys, MD_STR_LIT("qm/atom/coordinate"));
+        const md_attribute_t* ac = md_attributes_find(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+        if (!ac || ac->format.rank != 1 || ac->format.shape[0] == 0) return;
+        const size_t n = ac->format.shape[0];
+        const md_unit_t ang = md_unit_angstrom(), bohr = md_unit_bohr_radius();
+        const std::vector<double> area = gostshyp_series(sys, "area", n, md_unit_pow(ang, 2));
+        const std::vector<double> idx  = gostshyp_series(sys, "atom_index", n, md_unit_none());
+        const std::vector<double> lam  = gostshyp_series(sys, "decay_length", n, ang);
+        // Ha/bohr^2 to kJ/mol/Å^2 (a molar energy is no dimension md_unit converts an energy to)
+        std::vector<double> wall = gostshyp_series(sys, "wall_energy_per_area", n, md_unit_div(md_unit_hartree(), md_unit_pow(bohr, 2)));
+        for (double& w : wall) w *= HARTREE_TO_KJ_PER_MOL / (0.52917721092 * 0.52917721092);
+        const std::vector<double> dens = gostshyp_series(sys, "wall_density", n, md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)));
+        const std::vector<double> amp  = gostshyp_series(sys, "amplitude", n, md_unit_mul(md_unit_hartree(), md_unit_pow(bohr, 3)));
+        const std::vector<double> pa   = gostshyp_series(sys, "amplitude_per_area", n, md_unit_mul(md_unit_hartree(), bohr));
+        const std::vector<double> zeta = gostshyp_series(sys, "exponent", n, md_unit_inv(md_unit_pow(ang, 2)));
+        const std::vector<double> bur  = gostshyp_series(sys, "buried", n, md_unit_none());
+        if (area.empty() || idx.empty()) return;
+        size_t n_map = 0, n_rad = 0;
         const uint32_t* map = (const uint32_t*)attribute_column(&n_map, sys, MD_STR_LIT("qm/atom/system_index"), MD_ATTRIBUTE_TYPE_U32);
-        if (!area || n == 0 || !idx || n_idx != n) return;
-        if (lam && n_lam != n) lam = nullptr;
-        if (amp && n_amp != n) amp = nullptr;
-        if (zeta && n_zeta != n) zeta = nullptr;
-        if (map && n_map != n_rad) map = nullptr;
-        const double P = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), 0.0);
-
-        // GPa Å^3 to kJ/mol (1e9 Pa 1e-30 m^3 N_A); the pressure, the area and the decay length in atomic units
-        const double GPA_A3_KJMOL = 0.602214076;
-        const double BOHR = 0.52917721092;
-        const double P_AU = P / 29421.02648438959;
+        attribute_series_f64(&n_rad, sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
 
         g.valid = true;
         g.num_spheres = n_rad;
@@ -6262,37 +6260,22 @@ struct QuantumChemistry : viamd::EventHandler {
         g.order.resize(n);
         for (size_t j = 0; j < n; ++j) {
             GostshypTessera& t = g.tess[j];
-            const double a = area[j], l = lam ? lam[j] : 0.0, p = amp ? amp[j] : 0.0;
-            t.atom = idx[j];
-            t.sys_atom = map && idx[j] < n_map ? map[idx[j]] : idx[j];
-            t.area = (float)a;
-            t.lambda = (float)l;
-            t.wall = (float)(GPA_A3_KJMOL * P * l);
-            t.density = p > 0 ? (float)(P_AU * (a / (BOHR * BOHR)) * (l / BOHR) / p) : 0.0f;
-            t.amp = (float)p;
-            t.amp_area = a > 0 ? (float)(p / a) : 0.0f;
-            t.zeta = zeta ? (float)zeta[j] : 0.0f;
+            const uint32_t q = (uint32_t)idx[j];
+            t.atom = q;
+            t.sys_atom = map && q < n_map ? map[q] : q;
+            t.area = (float)area[j];
+            t.lambda = lam.empty() ? 0.0f : (float)lam[j];
+            t.wall = wall.empty() ? 0.0f : (float)wall[j];
+            t.density = dens.empty() ? 0.0f : (float)dens[j];
+            t.amp = amp.empty() ? 0.0f : (float)amp[j];
+            t.amp_area = pa.empty() ? 0.0f : (float)pa[j];
+            t.zeta = zeta.empty() ? 0.0f : (float)zeta[j];
+            t.inside = !bur.empty() && bur[j] > 0.5;
+            g.num_inside += t.inside;
             g.order[j] = (uint32_t)j;
-
-            g.area += a;
-            if (lam) {
-                g.skin += a * l;
-                g.lambda_min = MD_MIN(g.lambda_min, l);
-                g.lambda_max = MD_MAX(g.lambda_max, l);
-            }
-        }
-        if (xyz && rad && qm && n_xyz == n && n_qm == n_rad) {
-            for (size_t j = 0; j < n; ++j) {
-                for (size_t k = 0; k < n_rad; ++k) {
-                    if (k == idx[j] || !(rad[k] > 0)) continue;
-                    const double dx = xyz[j].x - qm[k].x, dy = xyz[j].y - qm[k].y, dz = xyz[j].z - qm[k].z;
-                    if (dx * dx + dy * dy + dz * dz < rad[k] * rad[k] * (1.0 - 1e-6)) {
-                        g.tess[j].inside = true;
-                        g.num_inside += 1;
-                        g.inside_area += area[j];
-                        break;
-                    }
-                }
+            if (!lam.empty()) {
+                g.lambda_min = MD_MIN(g.lambda_min, lam[j]);
+                g.lambda_max = MD_MAX(g.lambda_max, lam[j]);
             }
         }
     }
@@ -6302,9 +6285,11 @@ struct QuantumChemistry : viamd::EventHandler {
         const double P = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), 0.0);
         const double n_leb = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), 0.0);
         const double scale = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), 0.0);
+        const double area = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), 0.0);
+        const double skin = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), 0.0);
+        const double energy_kj = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), 0.0);
+        const double buried = attribute_scalar_f64(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), 0.0);
         const md_str_t disc = attribute_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"));
-        // GPa Å^3 to kJ/mol: 1e9 Pa 1e-30 m^3 N_A
-        const double energy_kj = 0.602214076 * P * g.skin;
 
         ImGui::Text("Pressure:               %.4g GPa", P);
         if (!md_str_empty(disc)) ImGui::Text("Discretization:         %.*s", (int)disc.len, disc.ptr);
@@ -6315,32 +6300,33 @@ struct QuantumChemistry : viamd::EventHandler {
         } else {
             ImGui::Text("Tesserae:               %zu", g.tess.size());
         }
-        ImGui::Text("Inside other spheres:   %zu (%.1f%% of the area)", g.num_inside, g.area > 0 ? 100.0 * g.inside_area / g.area : 0.0);
+        ImGui::Text("Inside other spheres:   %zu (%.1f%% of the area)", g.num_inside, 100.0 * buried);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Tesserae inside the sphere of another atom than their own: the switching keeps points where\n"
                               "the spheres overlap, so the cavity of the calculation is a smoothed union of the spheres");
         }
-        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", g.area);
-        if (g.skin > 0) {
-            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", g.skin);
+        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", area);
+        if (skin > 0) {
+            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", skin);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("The volume of density outside the cavity the wall holds against the pressure: each tessera's\n"
                                   "area times the decay length of the density there, <rho|g> / (-d/dn <rho|g>)");
             }
-            ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", g.skin / g.area, g.lambda_min, g.lambda_max);
+            if (area > 0) ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", skin / area, g.lambda_min, g.lambda_max);
             ImGui::Text("Wall energy:            %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("sum p_j <rho|g_j> = P sum a_j lambda_j: the amplitudes hold the pressure, p_j (-d/dn <rho|g_j>) = P a_j");
             }
-            ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / g.area);
+            if (area > 0) ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / area);
         }
     }
 
-    // The cavity representation the table is linked to: the first one shown
+    // The glyph representation the table is linked to: the first one shown of the tesserae
     static const Representation* gostshyp_linked_rep(const ApplicationState& state) {
         for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
             const Representation& rep = state.representation.reps[i];
-            if (rep.type == RepresentationType::Cavity && representation_shown(state, rep) && rep.type_is_valid) return &rep;
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(state, rep) || !rep.type_is_valid) continue;
+            if (md_str_eq(glyphs_group(state.mold.sys, rep.glyphs.points), MD_STR_LIT("vlx/scf/gostshyp/tessera"))) return &rep;
         }
         return nullptr;
     }
@@ -6369,7 +6355,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void draw_gostshyp_window(ApplicationState& state) {
         // What the table hovers is marked in the view as long as it is hovered: none while the window is closed
-        state.cavity_hover_ui = {};
+        state.glyph_hover_ui = {};
         if (!gostshyp.show_window) {
             gostshyp.row_hovered_last = false;
             return;
@@ -6390,14 +6376,14 @@ struct QuantumChemistry : viamd::EventHandler {
 
             const Representation* rep = gostshyp_linked_rep(state);
             // The tessera hovered in the view: its row is marked, and followed when asked
-            const uint32_t view_hover = (rep && state.cavity_hover.rep_id == rep->node.id) ? state.cavity_hover.tessera : UINT32_MAX;
+            const uint32_t view_hover = (rep && state.glyph_hover.rep_id == rep->node.id) ? state.glyph_hover.point : UINT32_MAX;
             ImGui::Checkbox("Follow the view", &g.follow);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scroll to the tessera under the cursor in the view");
             ImGui::SameLine();
             if (rep) {
                 ImGui::TextDisabled("hover a row to mark its patch on '%s'", rep->name);
             } else {
-                ImGui::TextDisabled("no cavity representation shown to mark the tesserae on");
+                ImGui::TextDisabled("no glyphs of the tesserae shown to mark them on");
             }
 
             const ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
@@ -6412,7 +6398,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::TableSetupColumn("Pλ kJ/mol/Å²",0, 0, GostshypColumn_Wall);
                 ImGui::TableSetupColumn("⟨ρ|g⟩ e/bohr³",0, 0, GostshypColumn_Density);
                 ImGui::TableSetupColumn("p a.u.",      0, 0, GostshypColumn_Amp);
-                ImGui::TableSetupColumn("p/a",         0, 0, GostshypColumn_AmpArea);
+                ImGui::TableSetupColumn("p/a Eh bohr", 0, 0, GostshypColumn_AmpArea);
                 ImGui::TableSetupColumn("ζ Å⁻²",       ImGuiTableColumnFlags_DefaultHide, 0, GostshypColumn_Zeta);
                 ImGui::TableSetupColumn("Inside",      0, 0, GostshypColumn_Inside);
                 ImGui::TableHeadersRow();
@@ -6457,9 +6443,9 @@ struct QuantumChemistry : viamd::EventHandler {
                         snprintf(label, sizeof(label), "%u##t%u", j + 1, j);
                         ImGui::Selectable(label, j == view_hover, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
                         if (ImGui::IsItemHovered() && rep) {
-                            if (!g.row_hovered_last && !state.cavity_hover.rep_id) state.selection.highlight_time = ImGui::GetTime();
-                            state.cavity_hover_ui.rep_id  = rep->node.id;
-                            state.cavity_hover_ui.tessera = j;
+                            if (!g.row_hovered_last && !state.glyph_hover.rep_id) state.selection.highlight_time = ImGui::GetTime();
+                            state.glyph_hover_ui.rep_id = rep->node.id;
+                            state.glyph_hover_ui.point  = j;
                         }
                         if (r == scroll_to) ImGui::SetScrollHereY(0.5f);
 
@@ -6481,7 +6467,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
         ImGui::End();
-        g.row_hovered_last = state.cavity_hover_ui.rep_id != 0;
+        g.row_hovered_last = state.glyph_hover_ui.rep_id != 0;
     }
 
     void draw_summary_window(ApplicationState& state) {

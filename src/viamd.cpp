@@ -7,7 +7,6 @@
 #include <md_qm.h>
 #include "density_cache.h"
 #include <md_gto_iso.h>
-#include <gostshyp.h>
 #include <vector>
 #include <algorithm>
 
@@ -983,33 +982,45 @@ static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationStat
     }
 }
 
-// A tessera of a cavity: what it is, and the field shown where the cursor is
-static void tooltip_cavity(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
+// A point of a point set drawn as glyphs: what it is, every quantity of its set at it
+static void tooltip_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
     const Representation* rep = nullptr;
     for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
         if (state.representation.reps[i].node.id == (uint32_t)hit.key) rep = &state.representation.reps[i];
     }
     if (!rep) return;
-    const CavityRepresentation& cav = rep->cavity;
+    const GlyphRepresentation& g = rep->glyphs;
     const md_system_t& sys = state.mold.sys;
+    if (hit.local_idx >= glyphs_count(g)) return;
 
-    CavityTesseraInfo info = {};
-    if (!cavity_tessera_info(&info, cav, hit.local_idx)) return;
-
+    // titled by its group's leaf: "tessera 12"
+    const md_str_t group = glyphs_group(sys, g.points);
+    const size_t slash = md_str_rfind_char(group, '/');
+    const md_str_t name = slash == MD_STR_NPOS ? group : md_str_substr(group, slash + 1, group.len);
     md_str_writer_t title = md_str_writer_create(req->alloc);
-    title += "tessera ";
-    md_writef(&title.w, "%u", hit.local_idx + 1);
-    title += TOOLTIP_SEP;
-    tooltip_append_atom_name(&title, sys, info.sys_atom);
+    md_writef(&title.w, MD_STR_FMT " %u", MD_STR_ARG(name), hit.local_idx + 1);
+    const uint32_t atom = glyphs_point_atom(sys, g.points, hit.local_idx);
+    if (atom != UINT32_MAX) {
+        title += TOOLTIP_SEP;
+        tooltip_append_atom_name(&title, sys, atom);
+    }
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    tooltip_row(req, MD_STR_LIT("area"), "%.4f Å²", info.area);
-    tooltip_row(req, MD_STR_LIT("decay length"), "%.4f Å", info.decay_length);
-    tooltip_row(req, MD_STR_LIT("wall energy"), "%.3f kJ/mol/Å²", info.wall_energy);
-    tooltip_row(req, MD_STR_LIT("wall density"), "%.3e e/bohr³", info.wall_density);
-    tooltip_row(req, MD_STR_LIT("amplitude"), "%.4g a.u.", info.amplitude);
-    tooltip_row(req, MD_STR_LIT("switching"), "%.3g", info.switching);
-    tooltip_row(req, MD_STR_LIT("index"), "atom(%u)", info.sys_atom + 1);
+    md_attribute_id_t q[64];
+    const size_t nq = MD_MIN(glyphs_quantities(q, MD_COUNTOF(q), sys, g.points), MD_COUNTOF(q));
+    for (size_t i = 0; i < nq; ++i) {
+        const md_attribute_t* a = md_attributes_get(&sys.attributes, q[i]);
+        const md_str_t leaf = md_attribute_leaf(a);
+        if (md_str_eq(leaf, MD_STR_LIT("atom_index")) || md_str_eq(leaf, MD_STR_LIT("system_index"))) continue;
+        const double v = glyphs_value(sys, q[i], hit.local_idx);
+        if (!isfinite(v)) continue;
+        char unit[64];
+        double f = 1.0;
+        glyphs_unit_print(unit, sizeof(unit), &f, a->unit);
+        const md_str_t label = a->label.len ? a->label : leaf;
+        tooltip_row(req, label, unit[0] ? "%.4g %s" : "%.4g", v * f, unit);
+    }
+    if (atom != UINT32_MAX) tooltip_row(req, MD_STR_LIT("index"), "atom(%u)", atom + 1);
 }
 
 static void fill_picking_tooltip(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
@@ -1034,8 +1045,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
         tooltip_dipole(req, state, hit);
-    } else if (hit.domain == PickingDomain_Tessera) {
-        tooltip_cavity(req, state, hit);
+    } else if (hit.domain == PickingDomain_Glyph) {
+        tooltip_glyph(req, state, hit);
     }
 }
 
@@ -5674,11 +5685,11 @@ double es_isodensity_default(const md_system_t& sys, ElectronicStructureSource s
     case ElectronicStructureSource::GostshypWallPotential:
     case ElectronicStructureSource::GostshypEffectivePotential:
     case ElectronicStructureSource::GostshypEnergyDensity: {
-        // where the wall is: the median of the density its Gaussians see, <rho|g_j>
-        GostshypTesserae t;
-        if (!gostshyp_read(&t, sys) || t.num == 0) return 0.001;
-        std::vector<double> d(t.num);
-        for (uint32_t j = 0; j < t.num; ++j) d[j] = gostshyp_wall_density(t, j);
+        // where the wall is: the median of the density its Gaussians see, <rho|g_j> (md_vlx.h)
+        const md_attribute_t* a = md_attributes_find(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera/wall_density"));
+        if (!a || a->format.rank != 1 || a->format.shape[0] == 0) return 0.001;
+        std::vector<double> d(a->format.shape[0]);
+        if (md_attribute_extract_f64(d.data(), d.size(), &sys.attributes, a, md_attribute_slice_all(), a->unit) != d.size()) return 0.001;
         std::nth_element(d.begin(), d.begin() + d.size() / 2, d.end());
         const double m = d[d.size() / 2];
         return m > 0.0 ? m : 0.001;
@@ -7634,13 +7645,13 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 picking_range_reserve(NULL, space, PickingDomain_Dipole, groups[j].count, groups[j].key);
             }
 
-            // Each cavity shown: its spheres and its tesserae, keyed by the representation. Read and placed on the
-            // frame here, so that what it reserves is what it draws this frame.
+            // Each glyph representation shown: its points, keyed by the representation. Read and placed on the frame
+            // here, so that what it reserves is what it draws this frame.
             for (size_t j = 0; j < md_array_size(state->representation.reps); ++j) {
                 Representation& rep = state->representation.reps[j];
-                if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep)) continue;
-                if (!cavity_update(&rep.cavity, state->mold.sys, state->mold.state)) continue;
-                picking_range_reserve(NULL, space, PickingDomain_Tessera, cavity_tessera_count(rep.cavity), rep.node.id);
+                if (rep.type != RepresentationType::Glyphs || !representation_shown(*state, rep)) continue;
+                if (!glyphs_update(&rep.glyphs, state->mold.sys, state->mold.state)) continue;
+                picking_range_reserve(NULL, space, PickingDomain_Glyph, glyphs_count(rep.glyphs), rep.node.id);
             }
             break;
         }
@@ -7653,15 +7664,15 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                     draw_picking_tooltip_window(surf->hit, *state);
 					[[fallthrough]];
                 case InteractionSurfaceEventKind::Click:
-                    // The tessera of a cavity under the cursor, marked as its patch; fading in where there was none
+                    // The glyph under the cursor, marked; fading in where there was none
                     {
-                        const uint32_t prev = state->cavity_hover.rep_id;
-                        if (surf->hit.domain == PickingDomain_Tessera) {
-                            state->cavity_hover.rep_id  = (uint32_t)surf->hit.key;
-                            state->cavity_hover.tessera = surf->hit.local_idx;
+                        const uint32_t prev = state->glyph_hover.rep_id;
+                        if (surf->hit.domain == PickingDomain_Glyph) {
+                            state->glyph_hover.rep_id = (uint32_t)surf->hit.key;
+                            state->glyph_hover.point  = surf->hit.local_idx;
                             if (!prev) state->selection.highlight_time = ImGui::GetTime();
                         } else {
-                            state->cavity_hover = {};
+                            state->glyph_hover = {};
                         }
                     }
                     // Use highlight mask as intermediate mask for selection operations and to provide hover feedback

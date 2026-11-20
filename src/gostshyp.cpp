@@ -2,9 +2,7 @@
 
 #include <md_system.h>
 #include <md_attributes.h>
-#include <core/md_geom.h>
 #include <core/md_log.h>
-#include <core/md_hash.h>
 #include <core/md_common.h>
 
 #include <math.h>
@@ -15,22 +13,13 @@
 namespace gostshyp_path {
 static const md_str_t coordinate   = MD_STR_INIT("vlx/scf/gostshyp/tessera/coordinate");
 static const md_str_t normal       = MD_STR_INIT("vlx/scf/gostshyp/tessera/normal");
-static const md_str_t area         = MD_STR_INIT("vlx/scf/gostshyp/tessera/area");
 static const md_str_t amplitude    = MD_STR_INIT("vlx/scf/gostshyp/tessera/amplitude");
 static const md_str_t exponent     = MD_STR_INIT("vlx/scf/gostshyp/tessera/exponent");
 static const md_str_t decay_length = MD_STR_INIT("vlx/scf/gostshyp/tessera/decay_length");
-static const md_str_t atom_index   = MD_STR_INIT("vlx/scf/gostshyp/tessera/atom_index");
-static const md_str_t switching    = MD_STR_INIT("vlx/scf/gostshyp/tessera/switching");
-static const md_str_t lebedev      = MD_STR_INIT("vlx/scf/gostshyp/tessera/lebedev_weight");
-static const md_str_t radius       = MD_STR_INIT("vlx/scf/gostshyp/sphere_radius");
-static const md_str_t pressure     = MD_STR_INIT("vlx/scf/gostshyp/pressure");
 static const md_str_t qm_coord     = MD_STR_INIT("qm/atom/coordinate");
-static const md_str_t qm_map       = MD_STR_INIT("qm/atom/system_index");
 }
 
-static const double BOHR_A          = 0.52917721092;
-static const double GPA_A3_KJMOL    = 0.602214076;          // 1 GPa Angstrom^3 in kJ/mol
-static const double AU_PRESSURE_GPA = 29421.02648438959;    // the atomic unit of pressure, Eh / bohr^3
+static const double BOHR_A = 0.52917721092;
 
 static const md_attribute_t* find(const md_system_t& sys, md_str_t path) {
     return md_attributes_find(&sys.attributes, path);
@@ -45,20 +34,7 @@ static const T* view(const md_system_t& sys, md_str_t path, md_attribute_type_t 
 
 bool gostshyp_available(const md_system_t& sys) {
     const md_attribute_t* c = find(sys, gostshyp_path::coordinate);
-    return c && md_attribute_view(c, MD_ATTRIBUTE_TYPE_F64, 3, 1) && find(sys, gostshyp_path::atom_index) && find(sys, gostshyp_path::radius);
-}
-
-uint64_t gostshyp_source_hash(const md_system_t& sys) {
-    const md_str_t paths[] = {gostshyp_path::coordinate, gostshyp_path::normal, gostshyp_path::area, gostshyp_path::amplitude,
-                              gostshyp_path::exponent, gostshyp_path::decay_length, gostshyp_path::atom_index, gostshyp_path::switching,
-                              gostshyp_path::lebedev, gostshyp_path::radius, gostshyp_path::pressure, gostshyp_path::qm_coord, gostshyp_path::qm_map};
-    uint64_t h = 0x9e3779b97f4a7c15ull;
-    for (const md_str_t& p : paths) {
-        const md_attribute_t* a = find(sys, p);
-        const uint64_t v[2] = {a ? (uint64_t)a->id : 0, a ? a->version : 0};
-        h = md_hash64(v, sizeof(v), h);
-    }
-    return h;
+    return c && md_attribute_view(c, MD_ATTRIBUTE_TYPE_F64, 3, 1) && find(sys, gostshyp_path::amplitude);
 }
 
 bool gostshyp_read(GostshypTesserae* d, const md_system_t& sys) {
@@ -68,111 +44,28 @@ bool gostshyp_read(GostshypTesserae* d, const md_system_t& sys) {
     const uint32_t n = c->format.shape[0];
     const double* xyz  = view<double>(sys, gostshyp_path::coordinate,   MD_ATTRIBUTE_TYPE_F64, 3, n);
     const double* nrm  = view<double>(sys, gostshyp_path::normal,       MD_ATTRIBUTE_TYPE_F64, 3, n);
-    const double* area = view<double>(sys, gostshyp_path::area,         MD_ATTRIBUTE_TYPE_F64, 1, n);
     const double* amp  = view<double>(sys, gostshyp_path::amplitude,    MD_ATTRIBUTE_TYPE_F64, 1, n);
     const double* zeta = view<double>(sys, gostshyp_path::exponent,     MD_ATTRIBUTE_TYPE_F64, 1, n);
     const double* lam  = view<double>(sys, gostshyp_path::decay_length, MD_ATTRIBUTE_TYPE_F64, 1, n);
-    const double* F    = view<double>(sys, gostshyp_path::switching,    MD_ATTRIBUTE_TYPE_F64, 1, n);
-    const double* w    = view<double>(sys, gostshyp_path::lebedev,      MD_ATTRIBUTE_TYPE_F64, 1, n);
-    const uint32_t* atom = view<uint32_t>(sys, gostshyp_path::atom_index, MD_ATTRIBUTE_TYPE_U32, 1, n);
-    const md_attribute_t* r = find(sys, gostshyp_path::radius);
-    const double* rad = r && r->format.rank == 1 ? (const double*)md_attribute_view(r, MD_ATTRIBUTE_TYPE_F64, 1, 1) : nullptr;
-    if (!xyz || !nrm || !area || !amp || !zeta || !lam || !F || !w || !atom || !rad) {
+    if (!xyz || !nrm || !amp || !zeta || !lam) {
         MD_LOG_ERROR("GOSTSHYP: the tesserae are incomplete");
         return false;
     }
-    const uint32_t num_atoms = r->format.shape[0];
-    const double* qm = view<double>(sys, gostshyp_path::qm_coord, MD_ATTRIBUTE_TYPE_F64, 3, num_atoms);
-    const uint32_t* map = view<uint32_t>(sys, gostshyp_path::qm_map, MD_ATTRIBUTE_TYPE_U32, 1, num_atoms);
+    const md_attribute_t* q = find(sys, gostshyp_path::qm_coord);
+    const uint32_t num_atoms = q && q->format.rank == 1 ? q->format.shape[0] : 0;
+    const double* qm = num_atoms ? view<double>(sys, gostshyp_path::qm_coord, MD_ATTRIBUTE_TYPE_F64, 3, num_atoms) : nullptr;
     if (!qm) {
         MD_LOG_ERROR("GOSTSHYP: the QM atoms are not where the cavity is (qm/atom/coordinate)");
         return false;
     }
-
     d->num = n;
     d->num_atoms = num_atoms;
     d->pos.assign(xyz, xyz + 3 * n);
     d->nrm.assign(nrm, nrm + 3 * n);
-    d->area.assign(area, area + n);
     d->amp.assign(amp, amp + n);
     d->zeta.assign(zeta, zeta + n);
     d->lambda.assign(lam, lam + n);
-    d->switching.assign(F, F + n);
-    d->lebedev.assign(w, w + n);
-    d->atom.assign(atom, atom + n);
-    for (uint32_t j = 0; j < n; ++j) {
-        if (d->atom[j] >= num_atoms) {
-            MD_LOG_ERROR("GOSTSHYP: tessera %u names atom %u of %u", j, d->atom[j], num_atoms);
-            *d = GostshypTesserae{};
-            return false;
-        }
-    }
     d->qm_xyz.assign(qm, qm + 3 * num_atoms);
-    d->radius.assign(rad, rad + num_atoms);
-    d->sys_idx.resize(num_atoms);
-    for (uint32_t i = 0; i < num_atoms; ++i) {
-        d->sys_idx[i] = map ? map[i] : i;
-        if (d->sys_idx[i] >= sys.atom.count) {
-            MD_LOG_ERROR("GOSTSHYP: QM atom %u is atom %u of a system of %zu", i, d->sys_idx[i], sys.atom.count);
-            *d = GostshypTesserae{};
-            return false;
-        }
-    }
-    if (const md_attribute_t* p = find(sys, gostshyp_path::pressure)) {
-        if (const double* v = (const double*)md_attribute_view(p, MD_ATTRIBUTE_TYPE_F64, 1, 0)) d->pressure_gpa = *v;
-    }
-    return true;
-}
-
-double gostshyp_energy_per_area(const GostshypTesserae& t, uint32_t j) {
-    return GPA_A3_KJMOL * t.pressure_gpa * t.lambda[j];
-}
-
-double gostshyp_energy(const GostshypTesserae& t, uint32_t j) {
-    return GPA_A3_KJMOL * t.pressure_gpa * t.area[j] * t.lambda[j];
-}
-
-double gostshyp_wall_density(const GostshypTesserae& t, uint32_t j) {
-    // <rho|g> = P a lambda / p, in atomic units
-    const double p = t.amp[j];
-    return p > 0 ? (t.pressure_gpa / AU_PRESSURE_GPA) * (t.area[j] / (BOHR_A * BOHR_A)) * (t.lambda[j] / BOHR_A) / p : 0.0;
-}
-
-bool gostshyp_place(GostshypPlacement* out, const GostshypTesserae& t, const md_float3_t* xyz, size_t count, const uint32_t* idx, double scale) {
-    *out = GostshypPlacement{};
-    out->scale = scale;
-    const uint32_t m = t.num_atoms;
-    if (!xyz || m == 0) return false;
-    for (uint32_t i = 0; i < m; ++i) {
-        if ((idx ? idx[i] : i) >= count) return false;
-    }
-    // The rigid motion taking the QM atoms of the file (scaled) onto where they are (Kabsch)
-    double cf[3] = {0, 0, 0}, cw[3] = {0, 0, 0};
-    for (uint32_t i = 0; i < m; ++i) {
-        const md_float3_t w = xyz[idx ? idx[i] : i];
-        for (int k = 0; k < 3; ++k) cf[k] += t.qm_xyz[3 * i + k] * scale / m;
-        cw[0] += w.x / m; cw[1] += w.y / m; cw[2] += w.z / m;
-    }
-    md_float4_t* ref = (md_float4_t*)malloc(sizeof(md_float4_t) * m);
-    md_float4_t* trg = (md_float4_t*)malloc(sizeof(md_float4_t) * m);
-    if (!ref || !trg) { free(ref); free(trg); return false; }
-    double dev = 0;
-    for (uint32_t i = 0; i < m; ++i) {
-        const md_float3_t w = xyz[idx ? idx[i] : i];
-        ref[i] = {(float)(t.qm_xyz[3 * i + 0] * scale - cf[0]), (float)(t.qm_xyz[3 * i + 1] * scale - cf[1]), (float)(t.qm_xyz[3 * i + 2] * scale - cf[2]), 1.0f};
-        trg[i] = {(float)(w.x - cw[0]), (float)(w.y - cw[1]), (float)(w.z - cw[2]), 1.0f};
-        dev = fmax(dev, fabs(ref[i].x - trg[i].x) + fabs(ref[i].y - trg[i].y) + fabs(ref[i].z - trg[i].z));
-    }
-    // R maps the target onto the reference, R (q - cw) = p - cf; the cavity goes the other way: q = R^T (p - cf) + cw
-    if (m >= 3 && dev > 1e-4 * scale) {
-        const md_float3x3_t M = md_geom_optimal_rotation_rel(ref, trg, m);
-        for (int c = 0; c < 3; ++c)
-            for (int r = 0; r < 3; ++r) out->R[3 * c + r] = M.col[r].elem[c];   // the transpose, column major
-    }
-    free(ref);
-    free(trg);
-    const double* R = out->R;
-    for (int k = 0; k < 3; ++k) out->t[k] = cw[k] - (R[k] * cf[0] + R[3 + k] * cf[1] + R[6 + k] * cf[2]);
     return true;
 }
 

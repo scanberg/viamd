@@ -1,14 +1,14 @@
 #version 410 core
 
-// The glyphs of the tesserae of a cavity (cavity.h), one instance each: a quad facing the camera, as large as the
-// silhouette of the sphere that bounds the glyph. A cylinder from the tessera's point outward along its normal, or a
-// sphere centred on the point, of the radius and height the representation maps (cavity.cpp: upload_glyphs), never
+// The glyphs of a point set (glyphs.h), one instance each: a quad facing the camera, as large as the silhouette of
+// the sphere that bounds the glyph. A cylinder from the point along its normal (inward for a negative height), or a
+// sphere centred on the point, of the radius and height the representation maps (glyphs.cpp: upload_sizes), never
 // thinner than u_min_px pixels.
 
-uniform samplerBuffer u_tess_a;         // xyz: the point of the tessera (the frame of the file)
-uniform samplerBuffer u_tess_b;         // xyz: its normal, w: the value it is coloured by
-uniform samplerBuffer u_glyph;          // x: the radius (Angstrom), y: the height of a cylinder (Angstrom)
-uniform mat4  u_cavity_to_view;
+uniform samplerBuffer u_point;          // xyz: the point (world, Angstrom)
+uniform samplerBuffer u_normal;         // xyz: its normal (world), w: the value it is coloured by
+uniform samplerBuffer u_size;           // x: the radius (Angstrom), y: the height of a cylinder (Angstrom, signed)
+uniform mat4  u_world_to_view;
 uniform mat4  u_view_to_clip;
 uniform int   u_ortho;
 uniform int   u_only;                   // the one tessera to draw, or -1 for every instance
@@ -29,17 +29,17 @@ void cull() {
 
 void main() {
     int  j = (u_only >= 0) ? u_only : gl_InstanceID;
-    vec4 A = texelFetch(u_tess_a, j);
-    vec4 B = texelFetch(u_tess_b, j);
-    vec4 G = texelFetch(u_glyph, j);
-    float L = (u_sphere != 0) ? 0.0 : max(G.y, 1e-3);
-    vec3 p0 = (u_cavity_to_view * vec4(A.xyz, 1.0)).xyz;
-    vec3 ax = normalize(mat3(u_cavity_to_view) * B.xyz);
+    vec4 A = texelFetch(u_point, j);
+    vec4 B = texelFetch(u_normal, j);
+    vec4 G = texelFetch(u_size, j);
+    float L = (u_sphere != 0) ? 0.0 : (G.y < 0.0 ? min(G.y, -1e-3) : max(G.y, 1e-3));
+    vec3 p0 = (u_world_to_view * vec4(A.xyz, 1.0)).xyz;
+    vec3 ax = (dot(B.xyz, B.xyz) > 0.0) ? normalize(mat3(u_world_to_view) * B.xyz) : vec3(0.0, 0.0, 1.0);
     vec3 p1 = p0 + ax * L;
     vec3 c  = 0.5 * (p0 + p1);
     float px = (u_ortho != 0) ? u_pixel : u_pixel * max(-c.z, 1e-3);
     float r  = max(G.x, u_min_px * px);
-    float R  = 0.5 * L + r;
+    float R  = 0.5 * abs(L) + r;
 
     float d = length(c);
     if (u_ortho == 0 && d <= R * 1.0001) { cull(); return; }

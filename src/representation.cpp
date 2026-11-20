@@ -1,7 +1,6 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <representation.h>
-#include <gostshyp.h>
 #include <field.h>
 
 #include <md_system.h>
@@ -280,8 +279,11 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     // old one, whatever the frame says
     surface_field_invalidate(&rep->electronic_structure.field_vol);
     surface_field_invalidate(&rep->electronic_structure.source_vol);
-    // the cavity of the old one
-    cavity_invalidate(&rep->cavity);
+    // the points of the old one
+    glyphs_invalidate(&rep->glyphs);
+    if (rep->type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep->glyphs.points)) {
+        glyphs_select(&rep->glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
+    }
     // and its meshes of the old one's basis
     electronic_structure_mesh_free(state, &rep->electronic_structure);
 
@@ -302,7 +304,7 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
     rep->electronic_structure.source_span        = ColorScaleSpan{};
     rep->electronic_structure.iso_mesh           = nullptr;
-    rep->cavity.data                             = nullptr;
+    rep->glyphs.data                             = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -382,7 +384,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     surface_field_free(&rep.electronic_structure.field_vol);
     surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
-    cavity_free(&rep.cavity);
+    glyphs_free(&rep.glyphs);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -624,7 +626,7 @@ bool representation_uses_atom_colors(const Representation& rep) {
             return rep.electronic_structure.coloring == SurfaceColoring::AtomColors;
         case RepresentationType::DipoleMoment:
         case RepresentationType::SimulationBox:
-        case RepresentationType::Cavity:
+        case RepresentationType::Glyphs:
             return false;
         default:
             return true;
@@ -935,9 +937,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
         break;
-    case RepresentationType::Cavity:
-        // Read and placed every frame as the picking is reserved (cavity_update), which follows the frame
-        rep->type_is_valid = cavity_available(sys);
+    case RepresentationType::Glyphs:
+        // Read and placed every frame as the picking is reserved (glyphs_update), which follows the frame
+        rep->type_is_valid = glyphs_is_point_set(sys, rep->glyphs.points);
         break;
     default:
         MD_ASSERT(false);
@@ -1920,11 +1922,22 @@ done:
         box->enabled = false;
     }
 
-    if (cavity_available(state->mold.sys)) {
-        // A run under pressure: the cavity the pressure was held by, coloured by the energy of its wall
-        Representation* cav = create_representation(state, RepresentationType::Cavity);
-        snprintf(cav->name, sizeof(cav->name), "cavity");
-        cav->enabled = true;
+    {
+        // Every oriented point set (a cavity's tesserae: a run under pressure, in a continuum): its glyphs
+        md_attribute_id_t sets[16];
+        const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
+        for (size_t i = 0; i < n; ++i) {
+            if (!glyphs_is_oriented(state->mold.sys, sets[i])) continue;
+            Representation* g = create_representation(state, RepresentationType::Glyphs);
+            glyphs_select(&g->glyphs, state->mold.sys, sets[i]);
+            const md_str_t grp = glyphs_group(state->mold.sys, sets[i]);
+            const size_t sl = md_str_rfind_char(grp, '/');
+            const md_str_t parent = sl == MD_STR_NPOS ? grp : md_str_substr(grp, 0, sl);
+            const size_t sl2 = md_str_rfind_char(parent, '/');
+            const md_str_t nm = sl2 == MD_STR_NPOS ? parent : md_str_substr(parent, sl2 + 1, parent.len);
+            snprintf(g->name, sizeof(g->name), "%.*s", (int)nm.len, nm.ptr);
+            g->enabled = true;
+        }
     }
 
     if (electronic_structure_present) {
@@ -2007,9 +2020,7 @@ static const char* const surface_field_kind_names[]  = { "EmbeddingPotential", "
                                                          "ElectronLocalization", "LocalizedOrbitalLocator" };
 static const char* const es_surface_names[]          = { "Other", "Own" };
 static const char* const iso_rendering_names[]       = { "Raycast", "Mesh" };
-static const char* const cavity_shape_names[]        = { "Cylinder", "Sphere" };
-static const char* const cavity_attribute_names[]    = { "Constant", "Area", "DecayLength", "WallEnergyPerArea", "WallEnergy", "WallDensity",
-                                                         "Amplitude", "AmplitudePerArea", "Switching", "LebedevWeight" };
+static const char* const glyph_shape_names[]         = { "Cylinder", "Sphere" };
 static const char* const es_display_names[]          = { "Isosurface", "Volume", "Planes" };
 static const char* const plane_detail_names[]        = { "Coarse", "Fine", "Finest" };
 static const char* const es_value_kind_names[]       = { "Density", "Signed", "Localization", "Ranged", "SignedRanged" };
@@ -2027,8 +2038,7 @@ MD_STATIC_ASSERT(MD_COUNTOF(es_display_names)         == (size_t)ElectronicStruc
 MD_STATIC_ASSERT(MD_COUNTOF(plane_detail_names)       == (size_t)PlaneDetail::Count, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(es_value_kind_names)      == (size_t)ElectronicStructureValueKind::SignedRanged + 1, "a name for each value");
 MD_STATIC_ASSERT(MD_COUNTOF(es_surface_names)         == (size_t)ElectronicStructureSurface::Count, "a name for each value");
-MD_STATIC_ASSERT(MD_COUNTOF(cavity_shape_names)       == (size_t)CavityGlyphShape::Count, "a name for each value");
-MD_STATIC_ASSERT(MD_COUNTOF(cavity_attribute_names)   == (size_t)CavityAttribute::Count, "a name for each value");
+MD_STATIC_ASSERT(MD_COUNTOF(glyph_shape_names)        == (size_t)GlyphShape::Count, "a name for each value");
 
 // A colour scale. range_is_set: a range read is one somebody set, and turns the automatic range off. That is for the
 // scale of an attribute, whose range a workspace from before the range could follow the values kept without saying
@@ -2457,19 +2467,21 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
         write_electronic_structure(s, p.sub("ElectronicStructure"), rep.electronic_structure, sys);
     }
 
-    if (rep.type == RepresentationType::Cavity) {
-        const CavityRepresentation& cav = rep.cavity;
-        viamd::PathPrefix q = p.sub("Cavity");
-        viamd::write_enum(s, q("Shape"), (int)cav.shape, viamd::enum_names(cavity_shape_names));
+    if (rep.type == RepresentationType::Glyphs) {
+        // The point set and the quantities by their paths (none written: a constant, uniform)
+        const GlyphRepresentation& g = rep.glyphs;
+        viamd::PathPrefix q = p.sub("Glyphs");
+        write_attribute_path(s, q("Points"), attributes, g.points);
+        viamd::write_enum(s, q("Shape"), (int)g.shape, viamd::enum_names(glyph_shape_names));
         viamd::PathPrefix r = q.sub("Radius");
-        viamd::write_enum(s, r("Attribute"), (int)cav.radius.attribute, viamd::enum_names(cavity_attribute_names));
-        viamd::write_flt(s, r("Scale"), cav.radius.scale);
+        write_attribute_path(s, r("Quantity"), attributes, g.radius.quantity);
+        viamd::write_flt(s, r("Scale"), g.radius.scale);
         viamd::PathPrefix h = q.sub("Height");
-        viamd::write_enum(s, h("Attribute"), (int)cav.height.attribute, viamd::enum_names(cavity_attribute_names));
-        viamd::write_flt(s, h("Scale"), cav.height.scale);
-        viamd::write_enum(s, q("Color"), (int)cav.color, viamd::enum_names(cavity_attribute_names));
-        write_color_scale(s, q, cav.scale);
-        viamd::write_bool(s, q("Unlit"), cav.unlit);
+        write_attribute_path(s, h("Quantity"), attributes, g.height.quantity);
+        viamd::write_flt(s, h("Scale"), g.height.scale);
+        write_attribute_path(s, q("Color"), attributes, g.color);
+        write_color_scale(s, q, g.scale);
+        viamd::write_bool(s, q("Unlit"), g.unlit);
     }
 }
 
@@ -2645,18 +2657,22 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
 
     read_electronic_structure(e, p.sub("ElectronicStructure"), rep.electronic_structure);
 
-    CavityRepresentation& cav = rep.cavity;
-    viamd::PathPrefix q = p.sub("Cavity");
-    viamd::get_enum(e, q("Shape"), cav.shape, viamd::enum_names(cavity_shape_names));
+    GlyphRepresentation& g = rep.glyphs;
+    viamd::PathPrefix q = p.sub("Glyphs");
+    if (read_attribute_path(e, q("Points"), g.points)) {
+        // what is not written is none
+        g.radius.quantity = g.height.quantity = g.color = MD_ATTRIBUTE_INVALID;
+    }
+    viamd::get_enum(e, q("Shape"), g.shape, viamd::enum_names(glyph_shape_names));
     viamd::PathPrefix r = q.sub("Radius");
-    viamd::get_enum(e, r("Attribute"), cav.radius.attribute, viamd::enum_names(cavity_attribute_names));
-    viamd::get(e, r("Scale"), cav.radius.scale);
+    read_attribute_path(e, r("Quantity"), g.radius.quantity);
+    viamd::get(e, r("Scale"), g.radius.scale);
     viamd::PathPrefix h = q.sub("Height");
-    viamd::get_enum(e, h("Attribute"), cav.height.attribute, viamd::enum_names(cavity_attribute_names));
-    viamd::get(e, h("Scale"), cav.height.scale);
-    viamd::get_enum(e, q("Color"), cav.color, viamd::enum_names(cavity_attribute_names));
-    read_color_scale(e, q, cav.scale, true);
-    viamd::get(e, q("Unlit"), cav.unlit);
+    read_attribute_path(e, h("Quantity"), g.height.quantity);
+    viamd::get(e, h("Scale"), g.height.scale);
+    read_attribute_path(e, q("Color"), g.color);
+    read_color_scale(e, q, g.scale, true);
+    viamd::get(e, q("Unlit"), g.unlit);
 }
 
 void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section) {
@@ -4107,107 +4123,161 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
-// The cavity's own properties: what colours it, how, and what it is. Returns whether it needs updating.
-// A size of the glyphs from a quantity of the tesserae (cavity.h): which, and its scale
-static bool draw_cavity_mapping(const char* label, const char* id, CavityMapping* m, bool radius) {
+// The name of an attribute as the controls show it: its label, else its leaf
+static md_str_t glyph_attribute_name(const md_attribute_t* a) {
+    return a->label.len ? a->label : md_attribute_leaf(a);
+}
+
+// A combo of the point set's quantities, or none ("Constant", "Uniform"): true when another was picked
+static bool glyph_quantity_combo(const char* id, md_attribute_id_t* q, const md_system_t& sys, md_attribute_id_t points, const char* none) {
+    md_attribute_id_t ids[256];
+    const size_t n = MD_MIN(glyphs_quantities(ids, MD_COUNTOF(ids), sys, points), MD_COUNTOF(ids));
+    const md_attribute_t* cur = *q != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, *q) : nullptr;
+    char preview[128];
+    if (cur) {
+        const md_str_t nm = glyph_attribute_name(cur);
+        snprintf(preview, sizeof(preview), "%.*s", (int)nm.len, nm.ptr);
+    } else {
+        snprintf(preview, sizeof(preview), "%s", none);
+    }
+    bool changed = false;
+    if (ImGui::BeginCombo(id, preview)) {
+        if (ImGui::Selectable(none, !cur)) { *q = MD_ATTRIBUTE_INVALID; changed = true; }
+        for (size_t i = 0; i < n; ++i) {
+            const md_attribute_t* a = md_attributes_get(&sys.attributes, ids[i]);
+            const md_str_t nm = glyph_attribute_name(a);
+            char label[160];
+            snprintf(label, sizeof(label), "%.*s##%u", (int)nm.len, nm.ptr, (unsigned)i);
+            if (ImGui::Selectable(label, ids[i] == *q)) { *q = ids[i]; changed = true; }
+            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+// A size of the glyphs from a quantity of the point set (glyphs.h): which, and its scale
+static bool draw_glyph_mapping(const char* label, const char* id, GlyphMapping* m, const md_system_t& sys, md_attribute_id_t points, bool radius) {
     bool changed = false;
     prop::row(label, radius ?
         "Constant: the scale in Å.\n"
-        "Area: the radius of a disc of the tessera's area, sqrt(a / pi), where its Gaussian is at half its peak; times the scale.\n"
-        "Decay length: as it is, times the scale.\n"
+        "A length: as it is, times the scale.\n"
+        "An area: the radius of a disc of it, sqrt(a / pi), times the scale.\n"
         "Another quantity: its square root over that of its 99th percentile, so that the cross section goes with it; the scale in Å there." :
         "Constant: the scale in Å.\n"
-        "Decay length: as it is, times the scale (how far the density reaches past the tessera).\n"
-        "Area: the radius of a disc of the tessera's area, times the scale.\n"
-        "Another quantity: over its 99th percentile, linearly; the scale in Å there.");
+        "A length: as it is, times the scale.\n"
+        "An area: the radius of a disc of it, times the scale.\n"
+        "Another quantity: over its 99th percentile, linearly; the scale in Å there.\n"
+        "A negative value stands inward.");
     ImGui::PushID(id);
-    int a = (int)m->attribute;
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.55f);
-    if (ImGui::Combo("##attribute", &a, cavity_attribute_str, (int)CavityAttribute::Count)) {
-        const bool was_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
-        m->attribute = (CavityAttribute)a;
-        const bool is_length = cavity_attribute_is_length(m->attribute) || m->attribute == CavityAttribute::Constant;
+    if (glyph_quantity_combo("##quantity", &m->quantity, sys, points, "Constant")) {
         // a factor and a size in Å are not the same scale: a sensible one for the new kind
-        if (was_length != is_length || m->attribute == CavityAttribute::Constant) {
-            m->scale = cavity_attribute_is_length(m->attribute) ? 1.0f : (radius ? 0.5f : 0.3f);
-            if (m->attribute == CavityAttribute::Constant) m->scale = radius ? 0.15f : 0.1f;
-        } else if (cavity_attribute_is_length(m->attribute)) {
-            m->scale = 1.0f;
-        }
+        m->scale = glyphs_default_scale(sys, m->quantity, radius);
         changed = true;
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
-    const bool factor = cavity_attribute_is_length(m->attribute);
+    const bool factor = glyphs_scale_is_factor(sys, m->quantity);
     changed |= ImGui::SliderFloat("##scale", &m->scale, factor ? 0.1f : 0.01f, factor ? 5.0f : 2.0f, factor ? "%.2f x" : "%.2f Å",
                                   ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
     ImGui::PopID();
     return changed;
 }
 
-static bool draw_representation_cavity(Representation& rep) {
+// A glyph representation's own properties: which point set, how its glyphs are sized and coloured, and what the set's
+// group holds besides. Returns whether it needs updating.
+static bool draw_representation_glyphs(Representation& rep, const md_system_t& sys) {
     bool update_rep = false;
-    CavityRepresentation& cav = rep.cavity;
+    GlyphRepresentation& g = rep.glyphs;
     if (prop::section("Glyphs")) {
-        prop::row("shape", "A glyph per tessera of the GOSTSHYP cavity, picking as the tessera.\n"
-                           "Cylinder: from the tessera's point outward along its normal; its radius, height and colour.\n"
+        prop::row("points", "The point set: an attribute group with a coordinate series (and a normal series for cylinders).\n"
+                            "A cavity's tesserae, the QM atoms, ... whatever is published as one.");
+        {
+            md_attribute_id_t sets[64];
+            const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), sys), MD_COUNTOF(sets));
+            const md_str_t cur = glyphs_group(sys, g.points);
+            char preview[160];
+            snprintf(preview, sizeof(preview), "%.*s", (int)cur.len, cur.ptr);
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##glyph_points", cur.len ? preview : "(none)")) {
+                for (size_t i = 0; i < n; ++i) {
+                    const md_str_t grp = glyphs_group(sys, sets[i]);
+                    char label[176];
+                    snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
+                    if (ImGui::Selectable(label, sets[i] == g.points) && sets[i] != g.points) {
+                        glyphs_select(&g, sys, sets[i]);
+                        update_rep = true;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+        const bool oriented = glyphs_is_oriented(sys, g.points);
+        prop::row("shape", "Cylinder: from the point along its normal; its radius, height and colour (a point set with normals).\n"
                            "Sphere: centred on the point; its radius and colour.\n"
-                           "Never thinner than a pixel or two, so that the smallest tesserae can be hovered.\n"
-                           "The fields of the wall over space (its potential, the effective potential, its energy density)\n"
-                           "are in the electronic structure representation, as a source and as fields of its isosurfaces.");
-        int shape = (int)cav.shape;
-        if (ImGui::Combo("##cavity_shape", &shape, cavity_glyph_shape_str, (int)CavityGlyphShape::Count)) {
-            cav.shape = (CavityGlyphShape)shape;
+                           "Never thinner than a pixel or two, so that the smallest can be hovered.");
+        int shape = oriented ? (int)g.shape : (int)GlyphShape::Sphere;
+        ImGui::BeginDisabled(!oriented);
+        if (ImGui::Combo("##glyph_shape", &shape, glyph_shape_str, (int)GlyphShape::Count)) {
+            g.shape = (GlyphShape)shape;
             update_rep = true;
         }
-        update_rep |= draw_cavity_mapping("radius", "radius", &cav.radius, true);
-        if (cav.shape == CavityGlyphShape::Cylinder) {
-            update_rep |= draw_cavity_mapping("height", "height", &cav.height, false);
+        ImGui::EndDisabled();
+        update_rep |= draw_glyph_mapping("radius", "radius", &g.radius, sys, g.points, true);
+        if (oriented && g.shape == GlyphShape::Cylinder) {
+            update_rep |= draw_glyph_mapping("height", "height", &g.height, sys, g.points, false);
         }
         prop::row("unlit", "The colours as they are, not shaded");
-        update_rep |= ImGui::Checkbox("##cavity_unlit", &cav.unlit);
+        update_rep |= ImGui::Checkbox("##glyph_unlit", &g.unlit);
         prop::section_end();
     }
     if (prop::section("Color")) {
-        prop::row("by", "Wall energy per area: P lambda_j, the energy p_j <rho|g_j> of the wall at a tessera over its area.\n"
-                        "Wall energy: P a_j lambda_j, at the tessera.\n"
-                        "Decay length: lambda_j = <rho|g_j> / (-d/dn <rho|g_j>), how far the density reaches past the wall.\n"
-                        "Wall density: <rho|g_j>, the density the tessera's Gaussian sees.\n"
-                        "Amplitude: p_j; per area, p_j / a_j = P / (-d/dn <rho|g_j>): the stiffer the density, the less.\n"
-                        "Switching: F_j, how much of its Lebedev share the switching left it.\n"
-                        "Area, Lebedev weight: what the discretization made of it (a = w R^2 F).");
-        int c = (int)cav.color;
-        if (ImGui::Combo("##cavity_color", &c, cavity_attribute_str, (int)CavityAttribute::Count)) {
-            cav.color = (CavityAttribute)c;
-            cav.scale.auto_range = true;
+        prop::row("by", "A quantity of the point set, or a uniform colour");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        md_attribute_id_t c = g.color;
+        if (glyph_quantity_combo("##glyph_color", &c, sys, g.points, "Uniform")) {
+            glyphs_select_color(&g, sys, c);
             update_rep = true;
         }
-        if (cav.color != CavityAttribute::Constant) {
-            if (cavity_attribute_unit_str[(int)cav.color][0]) {
+        if (const md_attribute_t* a = g.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, g.color) : nullptr) {
+            // in the display units where they follow them, else as published (glyphs_unit_print)
+            char unit[64];
+            const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+            if (!display && unit[0]) {
                 prop::row("unit");
-                ImGui::TextUnformatted(cavity_attribute_unit_str[(int)cav.color]);
+                ImGui::TextUnformatted(unit);
             }
-            update_rep |= color_scale_draw_controls(&cav.scale, cavity_span(cav), md_unit_none(), "tesserae", "Over the tesserae: the 1st to 99th percentile");
+            update_rep |= color_scale_draw_controls(&g.scale, glyphs_span(g), display ? a->unit : md_unit_none(), "points", "Over the points: the 1st to 99th percentile");
         }
         prop::section_end();
     }
-    CavitySummary sum = {};
-    if (cavity_summary(&sum, cav) && prop::section("Data", false)) {
-        prop::row("pressure");
-        ImGui::Text("%.3g GPa", sum.pressure_gpa);
-        prop::row("tesserae", "Kept by the switching, on the spheres of this many atoms");
-        ImGui::Text("%u on %u spheres", sum.num_tesserae, sum.num_spheres);
-        prop::row("area", "The sum of the areas of the tesserae");
-        ImGui::Text("%.1f Å²", sum.tessera_area);
-        prop::row("wall energy", "sum_j p_j <rho|g_j> = P sum_j a_j lambda_j");
-        ImGui::Text("%.1f kJ/mol", sum.wall_energy);
-        prop::row("volume", "sum_j a_j lambda_j: the wall energy over the pressure, the volume of the skin of density the wall holds");
-        ImGui::Text("%.1f Å³", sum.effective_volume);
-        prop::row("inside others", "Tesserae inside the sphere of another atom: the switching keeps them where the spheres overlap,\n"
-                                   "with small areas, so the cavity of the calculation is a smoothed union of the spheres.\n"
-                                   "Their share of the area of the tesserae.");
-        ImGui::Text("%u (%.0f%% of the area)", sum.num_buried, 100.0f * sum.buried_area);
-        prop::section_end();
+    // What the point set's group holds besides: its single values (a cavity's pressure, area, energy, ...)
+    const md_str_t group = glyphs_group(sys, g.points);
+    const size_t slash = md_str_rfind_char(group, '/');
+    if (group.len && slash != MD_STR_NPOS) {
+        const md_str_t parent = md_str_substr(group, 0, slash);
+        bool open = false, any = false;
+        for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, parent); md_attributes_next(&it);) {
+            const md_attribute_t* a = it.attr;
+            if (!md_str_eq(md_attribute_group(a), parent) || a->format.rank != 0 || a->format.components != 1 || !md_attribute_type_is_numeric(a->format.type)) continue;
+            if (!any) { any = true; open = prop::section("Data", false); }
+            if (!open) break;
+            double v = 0.0;
+            if (md_attribute_extract_f64(&v, 1, &sys.attributes, a, md_attribute_slice_all(), a->unit) != 1) continue;
+            char unit[64];
+            double f = 1.0;
+            glyphs_unit_print(unit, sizeof(unit), &f, a->unit);
+            const md_str_t nm = glyph_attribute_name(a);
+            char row[128];
+            snprintf(row, sizeof(row), "%.*s", (int)nm.len, nm.ptr);
+            char tip[256];
+            snprintf(tip, sizeof(tip), "%.*s", (int)a->path.len, a->path.ptr);
+            prop::row(row, a->description.len ? nullptr : tip);
+            ImGui::Text(unit[0] ? "%.4g %s" : "%.4g", v * f, unit);
+            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+        }
+        if (open) prop::section_end();
     }
     return update_rep;
 }
@@ -4225,12 +4295,15 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 // one, and a file without an SCF block can still carry density properties
                 if (es_source_mask(state->mold.sys) == 0) continue;
             }
-            if (i == (int)RepresentationType::Cavity && !cavity_available(state->mold.sys)) continue;
+            if (i == (int)RepresentationType::Glyphs && glyphs_point_sets(nullptr, 0, state->mold.sys) == 0) continue;
             if (ImGui::Selectable(representation_type_str[(int)i], i == (int)rep.type)) {
                 rep.type = (RepresentationType)i;
                 if (rep.type == RepresentationType::ElectronicStructure) {
                     // The default source is orbitals, which this system may not have
                     electronic_structure_select_available_source(&rep.electronic_structure, state->mold.sys);
+                }
+                if (rep.type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep.glyphs.points)) {
+                    glyphs_select(&rep.glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
                 }
                 update_rep = true;
             }
@@ -4391,8 +4464,8 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             prop::section_end();
         }
         break;
-    case RepresentationType::Cavity:
-        update_rep |= draw_representation_cavity(rep);
+    case RepresentationType::Glyphs:
+        update_rep |= draw_representation_glyphs(rep, state->mold.sys);
         break;
     default: {
         const bool one_row = representation_geometry_is_one_row(rep);
@@ -4720,16 +4793,16 @@ void draw_representation_legends(ApplicationState& state) {
             }
         }
 
-        if (rep.type == RepresentationType::Cavity && rep.type_is_valid && rep.cavity.scale.show_legend && cavity_span(rep.cavity).valid &&
-            rep.cavity.color != CavityAttribute::Constant) {
-            char label[96];
-            const int c = (int)rep.cavity.color;
-            if (cavity_attribute_unit_str[c][0]) {
-                snprintf(label, sizeof(label), "%s (%s)", cavity_attribute_str[c], cavity_attribute_unit_str[c]);
-            } else {
-                snprintf(label, sizeof(label), "%s", cavity_attribute_str[c]);
+        if (rep.type == RepresentationType::Glyphs && rep.type_is_valid && rep.glyphs.scale.show_legend && glyphs_span(rep.glyphs).valid) {
+            if (const md_attribute_t* a = rep.glyphs.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&state.mold.sys.attributes, rep.glyphs.color) : nullptr) {
+                const md_str_t nm = glyph_attribute_name(a);
+                char unit[64];
+                const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+                char label[160];
+                if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
+                else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
+                color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
             }
-            color_scale_draw_legend(rep.cavity.scale, md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
             continue;
         }
 

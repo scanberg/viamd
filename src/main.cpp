@@ -589,7 +589,7 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
-static void draw_cavity_marks(ApplicationState* state);
+static void draw_glyph_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
@@ -1158,8 +1158,8 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Off the view, no tessera is under the cursor
-        if (!surface_state.hovered) state.cavity_hover = {};
+        // Off the view, no glyph is under the cursor
+        if (!surface_state.hovered) state.glyph_hover = {};
 
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
@@ -7767,12 +7767,12 @@ static void render(ApplicationState* state) {
     // it, nor in its history. Drawn again when they change, or the scene was made.
     const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
     const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool cavity_hovered = state->cavity_hover.rep_id != 0 || state->cavity_hover_ui.rep_id != 0;
-    const bool draw_marks = !selection_empty || !highlight_empty || cavity_hovered;
+    const bool glyph_hovered = state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
+    const bool draw_marks = !selection_empty || !highlight_empty || glyph_hovered;
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
-        marks_key = md_hash64(&state->cavity_hover, sizeof(state->cavity_hover), marks_key);
-        marks_key = md_hash64(&state->cavity_hover_ui, sizeof(state->cavity_hover_ui), marks_key);
+        marks_key = md_hash64(&state->glyph_hover, sizeof(state->glyph_hover), marks_key);
+        marks_key = md_hash64(&state->glyph_hover_ui, sizeof(state->glyph_hover_ui), marks_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
         marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
         marks_key = marks_key ? marks_key : 1;
@@ -7780,7 +7780,7 @@ static void render(ApplicationState* state) {
             PUSH_GPU_SECTION("Marks")
             gbuffer_marks_begin(&state->gbuffer);
             draw_representations_marks(state);
-            draw_cavity_marks(state);
+            draw_glyph_marks(state);
             gbuffer_marks_end(&state->gbuffer);
             POP_GPU_SECTION()
             lazy.marks_key = marks_key;
@@ -8182,28 +8182,28 @@ static void draw_representations_opaque(ApplicationState* state) {
         draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
     }
 
-    // The glyphs of the cavities' tesserae, ray cast by a pass of their own, picking as their tesserae
+    // The glyphs of the point sets, ray cast by a pass of their own, picking as their points
     {
         const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = state->representation.reps[i];
-            if (rep.type != RepresentationType::Cavity || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-            const PickingRange* tess = space ? picking_space_find_range(*space, PickingDomain_Tessera, rep.node.id) : nullptr;
-            if (!tess) continue;
-            cavity_draw_glyphs(rep.cavity, state->view.param, tess->beg);
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+            const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Glyph, rep.node.id) : nullptr;
+            if (!range) continue;
+            glyphs_draw(rep.glyphs, state->view.param, range->beg);
         }
     }
 }
 
-// The glyph of the tessera hovered, into the marks of the highlight
-static void draw_cavity_marks(ApplicationState* state) {
-    const bool ui = state->cavity_hover_ui.rep_id != 0;
-    const uint32_t rep_id  = ui ? state->cavity_hover_ui.rep_id : state->cavity_hover.rep_id;
-    const uint32_t tessera = ui ? state->cavity_hover_ui.tessera : state->cavity_hover.tessera;
+// The glyph hovered, into the marks of the highlight
+static void draw_glyph_marks(ApplicationState* state) {
+    const bool ui = state->glyph_hover_ui.rep_id != 0;
+    const uint32_t rep_id = ui ? state->glyph_hover_ui.rep_id : state->glyph_hover.rep_id;
+    const uint32_t point  = ui ? state->glyph_hover_ui.point : state->glyph_hover.point;
     if (!rep_id) return;
     const Representation* rep = find_representation(state, rep_id);
-    if (!rep || rep->type != RepresentationType::Cavity || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
-    cavity_draw_marks(rep->cavity, tessera, state->gbuffer, state->view.param);
+    if (!rep || rep->type != RepresentationType::Glyphs || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
+    glyphs_draw_marks(rep->glyphs, point, state->gbuffer, state->view.param);
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
@@ -8268,8 +8268,8 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             const float field_map[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
             h = md_hash64(field_map, sizeof(field_map), h);
         }
-        if (rep.type == RepresentationType::Cavity) {
-            const uint64_t c = cavity_hash(rep.cavity);
+        if (rep.type == RepresentationType::Glyphs) {
+            const uint64_t c = glyphs_hash(rep.glyphs);
             h = md_hash64(&c, sizeof(c), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
