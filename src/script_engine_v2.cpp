@@ -165,8 +165,10 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
     for (size_t i = 0; i < nm; ++i) {
         md_vial_hover_t h;
         if (!md_vial_expr_info(x->prog, mk[i].expr, &h)) continue;
+        // The type, the value where known, and a note about the expression: the frame an at() reads and its time
         char buf[256];
-        const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
+        int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
+        if (h.note[0] && len > 0 && len < (int)sizeof(buf)) len += snprintf(buf + len, sizeof(buf) - (size_t)len, " (%s)", h.note);
         Mark m = {range_of(mk[i].span), (int)mk[i].depth, md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), Ref{x->id, mk[i].expr}};
         m.unit = h.unit;
         m.unit_at = h.unit_at;
