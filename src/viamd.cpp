@@ -591,29 +591,25 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     // The chemical piece of its molecule it is in
     tooltip_fragment_row(req, sys, atom_idx);
 
-    // Its chemistry
-    md_str_writer_t chem = md_str_writer_create(req->alloc);
+    // Its chemistry: a row per keyword of particle() which selects it, keyed as the keyword and with the value as a
+    // script writes it, unquoted (hybridization='sp2', aromatic=True, hydrogens=1, formal_charge=-1). A row says what
+    // the atom has, so none where it has nothing to say.
     const md_hybridization_t hyb = md_atom_flags_hybridization(flags);
-    if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_list_add(&chem, md_hybridization_name(hyb));
-    if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_list_add(&chem, "aromatic");
-    // Of a metallic phase: an atom of a metallic bond, which has no bond of the graph (md_bond_metallic_atoms)
-    // Without bonds there is no connectivity (conn.offset is NULL), which the iterator, unlike md_bond_conn_count, allows for
-    md_bond_iter_t graph = md_bond_iter(&sys.bond, atom_idx);
-    if (!md_bond_iter_has_next(&graph)) {
+    if (hyb != MD_HYBRIDIZATION_UNKNOWN) tooltip_row(req, MD_STR_LIT("hybridization"), "%s", md_hybridization_name(hyb));
+    if (flags & MD_ATOM_FLAG_AROMATIC)   tooltip_row(req, MD_STR_LIT("aromatic"), "True");
+    // Of a metallic phase: an atom of a metallic bond (md_bond_metallic_atoms), which only a metal is. A metal takes no
+    // part in the perception, which gives it no hybridization, so only an atom without one is looked for in the bonds.
+    if (hyb == MD_HYBRIDIZATION_UNKNOWN && z > 1) {
         for (size_t i = 0; i < sys.bond.count; ++i) {
             const md_atom_pair_t p = sys.bond.pairs[i];
             if (md_bond_kind(sys.bond.flags[i]) == MD_BOND_KIND_METALLIC && (p.idx[0] == (md_atom_idx_t)atom_idx || p.idx[1] == (md_atom_idx_t)atom_idx)) {
-                tooltip_list_add(&chem, "metallic");
+                tooltip_row(req, MD_STR_LIT("metallic"), "True");
                 break;
             }
         }
     }
-    if (num_h > 0) md_str_writer_fmt(&chem, "%s%d H", md_str_writer_empty(&chem) ? "" : ", ", num_h);
-    tooltip_row_list(req, MD_STR_LIT("chemistry"), chem);
-
-    if (formal_charge) {
-        tooltip_row(req, MD_STR_LIT("formal charge"), "%+d", formal_charge);
-    }
+    if (num_h > 0)     tooltip_row(req, MD_STR_LIT("hydrogens"), "%d", num_h);
+    if (formal_charge) tooltip_row(req, MD_STR_LIT("formal_charge"), "%+d", formal_charge);
     if (md_atom_is_qm(&sys.atom, atom_idx)) {
         tooltip_row(req, MD_STR_LIT("region"), "QM");
     }
