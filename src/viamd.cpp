@@ -644,27 +644,25 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_append_place(&title, sys, place[0], &place[1]);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    // What it is: an aromatic or delocalized bond is that before it is of an order
-    static const char* order_names[] = {"", "single", "double", "triple", "quadruple"};
-    md_str_writer_t kind = md_str_writer_create(req->alloc);
-    if (flags & MD_BOND_FLAG_AROMATIC) {
-        tooltip_list_add(&kind, "aromatic");
-    } else if (flags & MD_BOND_FLAG_DELOCALIZED) {
-        tooltip_list_add(&kind, "delocalized");
-    } else if (0 < order && order < (int)MD_COUNTOF(order_names)) {
-        tooltip_list_add(&kind, order_names[order]);
+    // What it is, as bond() selects it: its kind, its order and, below, its origin, each as the keyword writes it
+    if (source == PickedBondSource::Unbonded) {
+        tooltip_row(req, MD_STR_LIT("kind"), "no bond (a pair of the representation)");
+    } else {
+        tooltip_row(req, MD_STR_LIT("kind"), "%s", bond_kind_str(flags));
+        // A resonance's word, else 1 to 4; none where it is unknown, as a coordinate bond's
+        md_str_writer_t ord = md_str_writer_create(req->alloc);
+        if (flags & MD_BOND_FLAG_AROMATIC) {
+            ord += MD_STR_LIT("aromatic");
+        } else if (flags & MD_BOND_FLAG_DELOCALIZED) {
+            ord += MD_STR_LIT("delocalized");
+        } else if (order > 0) {
+            md_str_writer_fmt(&ord, "%d", order);
+        }
+        if (!md_str_empty(md_str_writer_to_str(&ord))) {
+            if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) ord += MD_STR_LIT(" (perceived)");
+            tooltip_row_list(req, MD_STR_LIT("order"), ord);
+        }
     }
-    switch (md_bond_kind(flags)) {
-    case MD_BOND_KIND_COORDINATE:  tooltip_list_add(&kind, "coordinate"); break;
-    case MD_BOND_KIND_ELASTIC:     tooltip_list_add(&kind, "elastic (a spring of the force field, not a bond)"); break;
-    case MD_BOND_KIND_METALLIC:    tooltip_list_add(&kind, "metallic (to a nearest neighbour in a metal)"); break;
-    case MD_BOND_KIND_INTERACTION: tooltip_list_add(&kind, "non-covalent interaction"); break;
-    case MD_BOND_KIND_HYDROGEN:    tooltip_list_add(&kind, "hydrogen bond"); break;
-    default: break;
-    }
-    // Of no flags
-    if (source == PickedBondSource::Unbonded) tooltip_list_add(&kind, "no bond (a pair of the representation)");
-    tooltip_row_list(req, MD_STR_LIT("kind"), kind);
 
     // The fragment it is within, or the two it joins: "amine / phenyl"
     if (source == PickedBondSource::System) {
@@ -686,15 +684,12 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
     tooltip_row(req, source == PickedBondSource::Unbonded ? MD_STR_LIT("distance") : MD_STR_LIT("length"), "%.3f " TOOLTIP_ANGSTROM, md_float3_length(d));
 
-    md_str_writer_t from = md_str_writer_create(req->alloc);
     if (source == PickedBondSource::Formed) {
-        // Not a bond of the system: tracked, of this frame alone
-        tooltip_list_add(&from, "formed in this frame");
+        // Not a bond of the system: tracked, of this frame alone, inferred from its distances
+        tooltip_row(req, MD_STR_LIT("origin"), "%s (formed in this frame)", md_bond_origin_name(md_bond_origin(flags)));
     } else if (source == PickedBondSource::System) {
-        tooltip_list_add(&from, md_bond_origin_name(md_bond_origin(flags)));
-        if (flags & MD_BOND_FLAG_ORDER_PERCEIVED) tooltip_list_add(&from, "order perceived");
+        tooltip_row(req, MD_STR_LIT("origin"), "%s", md_bond_origin_name(md_bond_origin(flags)));
     }
-    tooltip_row_list(req, MD_STR_LIT("source"), from);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
     tooltip_index_pair(&index, state.script.language, "atom", pair.idx[0], pair.idx[1]);
