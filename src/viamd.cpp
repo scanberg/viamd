@@ -480,6 +480,15 @@ static void tooltip_append_atom_name(md_str_writer_t* sb, const md_system_t& sys
     }
 }
 
+// An attribute's row as a script reads it: bfactor(s) for the B-factors, attr(name, of=s) with the name below atom/ for
+// the others; the label, which is the representation's, only for one outside atom/
+static md_str_t tooltip_attribute_key(const md_attribute_t* attr) {
+    if (md_str_eq(attr->path, MD_STR_LIT("atom/b_factor"))) return MD_STR_LIT("bfactor");
+    const md_str_t atom = MD_STR_LIT("atom/");
+    if (attr->path.len > atom.len && md_str_begins_with(attr->path, atom)) return md_str_substr(attr->path, atom.len);
+    return atom_attribute_label(attr);
+}
+
 // Values of the attribute table for one atom: the field a visible representation is coloured by, at the variant it
 // shows, which is the value behind the colour; then every field with one value per atom (a partial charge, a B-factor,
 // an occupancy). Fields the atom's rows already give from the system itself are skipped, as are absent values.
@@ -527,7 +536,7 @@ static void tooltip_atom_attribute_rows(PickingTooltipTextRequest* req, const Ap
         float value = 0.0f;
         if (md_attribute_extract_f32(&value, 1, &sys.attributes, attr, slice, md_unit_none()) != 1 || atom_attribute_value_absent(value)) continue;
 
-        md_str_t key = atom_attribute_label(attr);
+        md_str_t key = tooltip_attribute_key(attr);
         if (variant >= 0) {
             key = md_alloc_printf(req->alloc, MD_STR_FMT " (%d)", MD_STR_ARG(key), variant + 1);
         }
