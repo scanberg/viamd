@@ -579,20 +579,10 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     // hangs off it that is no side (main), the side (an amino acid's side chain, a nucleotide's nucleoside) and a
     // nucleotide's finer base and sugar, its end of the strand, and the QM region. terminus, either end, is left out, as
     // the end it is says it.
-    const md_atom_flags_t side_flags = MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE;
-    bool is_main = flags & MD_ATOM_FLAG_BACKBONE;
-    if (!is_main && !(flags & side_flags) && place.res_idx != -1) {
-        md_bond_iter_t it = md_bond_iter(&sys.bond, atom_idx);
-        for (; md_bond_iter_has_next(&it) && !is_main; md_bond_iter_next(&it)) {
-            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
-            is_main = b >= 0 && (md_system_atom_flags(&sys, (size_t)b) & MD_ATOM_FLAG_BACKBONE) &&
-                   md_system_residue_find_by_atom_idx(&sys, (size_t)b) == place.res_idx;
-        }
-    }
     md_str_writer_t role = md_str_writer_create(req->alloc);
-    if (flags & MD_ATOM_FLAG_BACKBONE) tooltip_list_add(&role, "backbone");
-    if (is_main)                       tooltip_list_add(&role, "main");
-    if (flags & side_flags)            tooltip_list_add(&role, "side");
+    if (flags & MD_ATOM_FLAG_BACKBONE)   tooltip_list_add(&role, "backbone");
+    if (flags & MD_ATOM_FLAG_MAIN_CHAIN) tooltip_list_add(&role, "main");
+    if (flags & (MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE)) tooltip_list_add(&role, "side");
     if (flags & MD_ATOM_FLAG_NUCLEOBASE) {
         tooltip_list_add(&role, "base");
     } else if (flags & MD_ATOM_FLAG_NUCLEOSIDE) {
