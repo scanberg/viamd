@@ -3950,14 +3950,6 @@ static void normal_link_set(uint32_t vol_tex, uint32_t normal_tex) {
     *slot = {vol_tex, normal_tex, volume::data_version(vol_tex)};
 }
 
-uint32_t es_normals_of(uint32_t vol_tex) {
-    if (!vol_tex) return 0;
-    for (const NormalLink& l : g_normal_links) {
-        if (l.vol_tex == vol_tex) return l.version == volume::data_version(vol_tex) ? l.normal_tex : 0;
-    }
-    return 0;
-}
-
 // The gradient scratch for grid (ApplicationState::gpu_grad): made, or grown, to hold it; false past GPU_GRAD_MAX_VOXELS
 static bool gpu_grad_ensure(ApplicationState* state, const md_grid_t& grid) {
     if ((size_t)grid.dim[0] * grid.dim[1] * grid.dim[2] > GPU_GRAD_MAX_VOXELS) return false;
@@ -4336,6 +4328,18 @@ static void gpu_volume_activities_update(const ApplicationState* state) {
 }
 
 #endif // MD_ENABLE_GPU
+
+uint32_t es_normals_of(uint32_t vol_tex) {
+#if MD_ENABLE_GPU
+    if (!vol_tex) return 0;
+    for (const NormalLink& l : g_normal_links) {
+        if (l.vol_tex == vol_tex) return l.version == volume::data_version(vol_tex) ? l.normal_tex : 0;
+    }
+#else
+    (void)vol_tex;
+#endif
+    return 0;
+}
 
 void gpu_volume_jobs_poll(ApplicationState* state) {
     MD_ASSERT(state);
