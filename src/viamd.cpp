@@ -2284,28 +2284,18 @@ static bool next_list_name(md_str_t* tok, md_str_t* list) {
     return true;
 }
 
-// The kinds proper of md_bond_kind_names, one per md_bond_kind_t: every name but 'noncovalent', which is two of them
-static bool bond_kind_proper(const md_bond_kind_name_t& name) {
-    return name.mask == MD_BOND_FLAG_KIND_MASK;
-}
-
 const char* bond_kind_str(md_bond_flags_t flags) {
-    size_t count = 0;
-    const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
-    for (size_t i = 0; i < count; ++i) {
-        if (bond_kind_proper(kinds[i]) && (flags & kinds[i].mask) == kinds[i].value) return kinds[i].name;
-    }
-    return "";
+    return md_bond_kind_name(md_bond_kind(flags));
 }
 
 bool bond_kind_parse(md_bond_flags_t* out, md_str_t str) {
     MD_ASSERT(out);
     str = md_str_trim(str);
-    size_t count = 0;
-    const md_bond_kind_name_t* kinds = md_bond_kind_names(&count);
-    for (size_t i = 0; i < count; ++i) {
-        if (bond_kind_proper(kinds[i]) && md_str_eq_cstr(str, kinds[i].name)) {
-            *out = kinds[i].value;
+    // 'interaction' was the word of a contact before it named every interaction
+    if (md_str_eq_cstr(str, "interaction")) str = MD_STR_LIT("contact");
+    for (uint32_t v = 0; v <= (uint32_t)MD_BOND_FLAG_KIND_MASK; v += 0x20u) {
+        if (md_str_eq_cstr(str, md_bond_kind_name((md_bond_kind_t)v))) {
+            *out = (md_bond_flags_t)v;
             return true;
         }
     }
@@ -2719,9 +2709,9 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     md_str_t str;
                     md_bond_flags_t kind = MD_BOND_FLAG_NONE;
                     if (!viamd::extract_str(str, arg) || !bond_kind_parse(&kind, str)) {
-                        // An interaction, which is no particular kind and leaves the molecules as they are
-                        VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as an interaction");
-                        kind = (md_bond_flags_t)MD_BOND_KIND_INTERACTION;
+                        // A contact, which is no particular kind and leaves the molecules as they are
+                        VIAMD_LOG_INFO("A user bond of the workspace has a kind that is not known; it is kept as a contact");
+                        kind = (md_bond_flags_t)MD_BOND_KIND_CONTACT;
                     }
                     md_bond_flags_t* last = md_array_last(edits.flags);
                     *last = md_bond_flags_set_origin(kind | MD_BOND_FLAG_KIND_GIVEN, md_bond_origin(*last)) | (*last & MD_BOND_FLAG_INACTIVE);

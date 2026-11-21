@@ -4038,7 +4038,7 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         prop::row("radius", "As the sticks of a licorice of the same scale");
         update_rep |= ImGui::SliderFloat("##radius", &rep.scale[0], 0.1f, 4.0f, scale_fmt);
         {
-            prop::row("dashed", "Which bonds are drawn as dashes rather than sticks, each in the style of its kind: coordinate bonds thick with long dashes, hydrogen bonds with even dashes, interactions with short sparse ones (and covalent bonds thick with long dashes, where all are)");
+            prop::row("dashed", "Which bonds are drawn as dashes rather than sticks, each in the style of its kind: coordinate bonds thick with long dashes, then ionic, hydrogen and halogen bonds, each thinner with shorter dashes, and contacts with short sparse ones (and covalent bonds thick with long dashes, where all are)");
             const char* items[] = {"By kind (not covalent)", "None", "All"};
             static_assert(MD_COUNTOF(items) == (size_t)BondDashes::Count, "One item per BondDashes");
             int dashes = (int)rep.bond_dashes;
@@ -4098,7 +4098,7 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
         if (state->mold.sys.bond.noncovalent_count > 0) {
-            prop::row("non-covalent bonds", "The non-covalent bonds of the system among its atoms (hydrogen bonds and interactions a file gives or a user marks), dashed and thinner than the sticks: hydrogen bonds with even dashes, interactions with short sparse ones. Off to leave them to a Bonds representation");
+            prop::row("interactions", "The interactions of the system among its atoms, the non-covalent bonds (hydrogen, ionic and halogen bonds and contacts a file gives or a user marks), dashed and thinner than the sticks, each kind in a style of its own: hydrogen bonds with even dashes, contacts with short sparse ones. Off to leave them to a Bonds representation");
             update_rep |= ImGui::Checkbox("##noncovalent_bonds", &rep.noncovalent_bonds);
         }
         if (system_has_bond_kind(state->mold.sys, MD_BOND_KIND_COORDINATE)) {

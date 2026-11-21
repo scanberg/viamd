@@ -2666,8 +2666,9 @@ void system_core_edit_begin(ApplicationState* app);
 // drawn of it, the script (whose properties are of the topology) and the representations follow once that is in place.
 void system_core_changed(ApplicationState* app);
 
-// The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
-// bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.
+// The kind of a bond by its word (md_bond_kind_name: "coordinate", "hydrogen"), as a workspace stores it.
+// bond_kind_parse reads it back (flags of the kind alone), false for a word which is not of one kind; "interaction", of
+// workspaces from before it named every interaction, is a contact.
 const char* bond_kind_str(md_bond_flags_t flags);
 bool        bond_kind_parse(md_bond_flags_t* out, md_str_t str);
 // Origins of bonds, a mask of 1 << md_bond_origin_t, by name: "file,inferred"

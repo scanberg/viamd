@@ -3325,9 +3325,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         {"Bond",          MD_BOND_FLAG_NONE,
                          "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal\n(drawn dashed, thick with long dashes). It joins the molecules of its atoms."},
                         {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
-                         "Non-covalent, drawn with even dashes. bond(kind='hydrogen') in the script."},
-                        {"Interaction",   md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION),
-                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn with\nshort, sparse dashes. bond(kind='interaction') in the script."},
+                         "Non-covalent, D-H...A, drawn with even dashes. bond(kind='hydrogen') in the script."},
+                        {"Ionic Bond",    md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_IONIC),
+                         "Non-covalent, between two ions or charged groups (a salt bridge), drawn with dashes\nthicker and longer than a hydrogen bond's. bond(kind='ionic') in the script."},
+                        {"Halogen Bond",  md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HALOGEN),
+                         "Non-covalent, C-X...A, drawn with dashes thinner and shorter than a hydrogen bond's.\nbond(kind='halogen') in the script."},
+                        {"Contact",       md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_CONTACT),
+                         "Non-covalent, of no particular kind, drawn with short, sparse dashes.\nbond(kind='contact') in the script; bond(kind='interaction') takes in all four."},
                     };
                     for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
