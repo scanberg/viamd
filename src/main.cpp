@@ -2666,11 +2666,10 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 ImGui::SameLine();
-                // VIAL has no bond changes per frame yet: its bonds() are the system's
                 const bool v2 = data->script.language == script::Language::V2;
-                ImGui::BeginDisabled(v2);
                 if (ImGui::SmallButton("Copy to Script")) {
-                    // The same as a script value, to count or plot: formed(d), broken(d), bond(d)
+                    // The same as a script value, to count or plot. v1: formed(d), broken(d), bond(d) of a bond_delta();
+                    // VIAL: formed() and broken() of the scope, with the tracking's tolerance and breakable origins
                     char args[512] = "";
                     int len = 0;
                     const md_str_t scope = md_str_trim(md_str_from_cstr(tracking.scope.text));
@@ -2679,23 +2678,32 @@ static void draw_main_menu(ApplicationState* data) {
                         len += snprintf(args + len, sizeof(args) - len, "%stolerance=%.3g", len ? ", " : "", tracking.tolerance);
                     }
                     if (tracking.breakable != MD_BOND_DELTA_BREAKABLE && len < (int)sizeof(args)) {
-                        len += snprintf(args + len, sizeof(args) - len, "%sbreakable={", len ? ", " : "");
+                        len += snprintf(args + len, sizeof(args) - len, "%sbreakable=%s", len ? ", " : "", v2 ? "[" : "{");
                         bool first = true;
                         for (int o = MD_BOND_ORIGIN_FILE; o <= MD_BOND_ORIGIN_INFERRED && len < (int)sizeof(args); ++o) {
                             if (!(tracking.breakable & (1u << o))) continue;
                             len += snprintf(args + len, sizeof(args) - len, "%s'%s'", first ? "" : ", ", md_bond_origin_name((md_bond_origin_t)o));
                             first = false;
                         }
-                        if (len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, "}");
+                        if (len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, "%s", v2 ? "]" : "}");
                     }
-                    const md_str_t ident = create_unique_identifier(data->script.ir, MD_STR_LIT("bonds_delta"), data->allocator.frame);
                     char line[640];
-                    snprintf(line, sizeof(line), MD_STR_FMT " = bond_delta(%s);", MD_STR_ARG(ident), args);
-                    script_editor::append_line(data->editor, md_str_from_cstr(line));
+                    if (v2) {
+                        const md_str_t formed = create_unique_identifier(data->script.ir, MD_STR_LIT("formed"), data->allocator.frame);
+                        const md_str_t broken = create_unique_identifier(data->script.ir, MD_STR_LIT("broken"), data->allocator.frame);
+                        snprintf(line, sizeof(line), MD_STR_FMT " = formed(%s)", MD_STR_ARG(formed), args);
+                        script_editor::append_line(data->editor, md_str_from_cstr(line));
+                        snprintf(line, sizeof(line), MD_STR_FMT " = broken(%s)", MD_STR_ARG(broken), args);
+                        script_editor::append_line(data->editor, md_str_from_cstr(line));
+                    } else {
+                        const md_str_t ident = create_unique_identifier(data->script.ir, MD_STR_LIT("bonds_delta"), data->allocator.frame);
+                        snprintf(line, sizeof(line), MD_STR_FMT " = bond_delta(%s);", MD_STR_ARG(ident), args);
+                        script_editor::append_line(data->editor, md_str_from_cstr(line));
+                    }
                 }
-                ImGui::EndDisabled();
                 if (v2) {
-                    ImGui::SetItemTooltip("VIAL does not track bond changes yet: bond() gives the bonds of the system");
+                    ImGui::SetItemTooltip("Add the same bond changes to the script, per frame: formed() and broken() with this\n"
+                                          "scope, tolerance and breakable origins, to count them (len(...)) or select them");
                 } else {
                     ImGui::SetItemTooltip("Add the same bond changes to the script, to count them over the frames\n"
                                           "(count(formed(d))) or select them (bond(d) is the bonds of each frame)");
