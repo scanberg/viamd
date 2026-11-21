@@ -556,9 +556,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
     const bool nucleotide = place.res_idx != -1 && md_system_residue_kind(&sys, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
 
-    // What it is
+    // What it is: of a particle that is no atom, its kind as particle(kind=...) takes it
     if (particle != MD_PARTICLE_ATOM) {
-        tooltip_row(req, MD_STR_LIT("particle"), "%s", md_particle_kind_name(particle));
+        tooltip_row(req, MD_STR_LIT("kind"), "%s", particle == MD_PARTICLE_VIRTUAL_SITE ? "virtual" : md_particle_kind_name(particle));
     }
     if (z) {
         const md_str_t symbol = md_atomic_number_symbol(z);
@@ -575,17 +575,32 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
         if (mass > 0.0f) tooltip_row(req, MD_STR_LIT("mass"), "%.3f Da", mass);
     }
 
-    // Its part in the residue. A nucleoside is the sugar and the base: what of it is not the base is the sugar.
+    // Its roles, as particle(role=...) takes them: what the strand runs through (backbone), it and what of its residue
+    // hangs off it that is no side (main), the side (an amino acid's side chain, a nucleotide's nucleoside) and a
+    // nucleotide's finer base and sugar, its end of the strand, and the QM region. terminus, either end, is left out, as
+    // the end it is says it.
+    const md_atom_flags_t side_flags = MD_ATOM_FLAG_SIDE_CHAIN | MD_ATOM_FLAG_NUCLEOSIDE;
+    bool is_main = flags & MD_ATOM_FLAG_BACKBONE;
+    if (!is_main && !(flags & side_flags) && place.res_idx != -1) {
+        md_bond_iter_t it = md_bond_iter(&sys.bond, atom_idx);
+        for (; md_bond_iter_has_next(&it) && !is_main; md_bond_iter_next(&it)) {
+            const md_atom_idx_t b = md_bond_iter_atom_index(&it);
+            is_main = b >= 0 && (md_system_atom_flags(&sys, (size_t)b) & MD_ATOM_FLAG_BACKBONE) &&
+                   md_system_residue_find_by_atom_idx(&sys, (size_t)b) == place.res_idx;
+        }
+    }
     md_str_writer_t role = md_str_writer_create(req->alloc);
-    if (flags & MD_ATOM_FLAG_BACKBONE)   tooltip_list_add(&role, "backbone");
-    if (flags & MD_ATOM_FLAG_SIDE_CHAIN) tooltip_list_add(&role, "side chain");
+    if (flags & MD_ATOM_FLAG_BACKBONE) tooltip_list_add(&role, "backbone");
+    if (is_main)                       tooltip_list_add(&role, "main");
+    if (flags & side_flags)            tooltip_list_add(&role, "side");
     if (flags & MD_ATOM_FLAG_NUCLEOBASE) {
         tooltip_list_add(&role, "base");
     } else if (flags & MD_ATOM_FLAG_NUCLEOSIDE) {
         tooltip_list_add(&role, "sugar");
     }
-    if (flags & MD_ATOM_FLAG_TERMINAL_BEG) tooltip_list_add(&role, nucleotide ? "5' end" : "N-terminus");
-    if (flags & MD_ATOM_FLAG_TERMINAL_END) tooltip_list_add(&role, nucleotide ? "3' end" : "C-terminus");
+    if (flags & MD_ATOM_FLAG_TERMINAL_BEG) tooltip_list_add(&role, nucleotide ? "5_terminus" : "n_terminus");
+    if (flags & MD_ATOM_FLAG_TERMINAL_END) tooltip_list_add(&role, nucleotide ? "3_terminus" : "c_terminus");
+    if (md_atom_is_qm(&sys.atom, atom_idx)) tooltip_list_add(&role, "qm");
     tooltip_row_list(req, MD_STR_LIT("role"), role);
 
     // The chemical piece of its molecule it is in
@@ -610,9 +625,6 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     }
     if (num_h > 0)     tooltip_row(req, MD_STR_LIT("hydrogens"), "%d", num_h);
     if (formal_charge) tooltip_row(req, MD_STR_LIT("formal_charge"), "%+d", formal_charge);
-    if (md_atom_is_qm(&sys.atom, atom_idx)) {
-        tooltip_row(req, MD_STR_LIT("region"), "QM");
-    }
 
     tooltip_atom_attribute_rows(req, state, atom_idx);
 
