@@ -273,7 +273,7 @@ bool gl::init_texture_2D(GLuint* texture, int width, int height, GLenum format) 
 
 bool gl::init_texture_3D(GLuint* texture, int width, int height, int depth, GLenum format) {
     MD_ASSERT(texture);
-    MD_ASSERT(format == GL_R32F || format == GL_R16F || format == GL_R8 || format == GL_RGBA8);
+    MD_ASSERT(format == GL_R32F || format == GL_R16F || format == GL_R8 || format == GL_RGBA8 || format == GL_RGB10_A2);
 
     if (glIsTexture(*texture)) {
         int x, y, z;
@@ -347,6 +347,10 @@ static inline bool get_pixel_channel_type(GLenum& channel, GLenum& type, GLenum 
         channel = GL_RED;
         type = GL_FLOAT;
         return true;
+    case GL_RGB10_A2:   // x in the low bits (md_gto_gpu_gradient_pack)
+        channel = GL_RGBA;
+        type = GL_UNSIGNED_INT_2_10_10_10_REV;
+        return true;
     default:
         channel = 0;
         type = 0;
@@ -362,6 +366,8 @@ static inline size_t get_bytes_per_pixel(GLenum format) {
         return 4 * sizeof(float);
     case GL_R32F:
         return sizeof(float);
+    case GL_RGB10_A2:
+        return sizeof(uint32_t);
     default:
         return 0;
     }

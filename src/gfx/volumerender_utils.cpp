@@ -108,6 +108,10 @@ static const char* iso_variant_defines[IsoVariant_Count] = {
     "#define USE_FIELD",
 };
 
+// Each variant with and without normals of their own (texture.normal_volume, USE_NORMALS): program index variant, and
+// variant + IsoVariant_Count with them
+static constexpr int ISO_PROGRAM_COUNT = 2 * IsoVariant_Count;
+
 // How the rays find the surfaces: isosurface_fast.frag samples once per voxel, isosurface.frag intersects
 // every cell exactly. Both read the same IsoUniforms.
 enum IsoMode {
@@ -136,6 +140,8 @@ struct IsoProgram {
     GLint  loc_isoline_hover_value = -1;
     GLint  loc_isoline_width = -1;
     GLint  loc_field_grad_scale = -1;
+    GLint  loc_tex_normals = -1;
+    GLint  loc_normal_to_view = -1;
     GLint  block_index = -1;
 };
 
@@ -197,8 +203,8 @@ struct BlockGrid {
 };
 
 static struct {
-    IsoProgram prog[IsoMode_Count][IsoVariant_Count];          // compiled on first use
-    bool       prog_failed[IsoMode_Count][IsoVariant_Count];
+    IsoProgram prog[IsoMode_Count][ISO_PROGRAM_COUNT];          // compiled on first use
+    bool       prog_failed[IsoMode_Count][ISO_PROGRAM_COUNT];
     GLuint ubo = 0;
     GLuint fbo = 0;
     GLuint vao = 0;     // empty: full screen triangle and proxy boxes both come from gl_VertexID
@@ -264,13 +270,17 @@ static void iso_program_setup(IsoProgram* p, GLuint v_shader, md_str_t source, m
     p->loc_isoline_hover_value = glGetUniformLocation(prog, "u_isoline_hover_value");
     p->loc_isoline_width       = glGetUniformLocation(prog, "u_isoline_width");
     p->loc_field_grad_scale    = glGetUniformLocation(prog, "u_field_grad_scale");
+    p->loc_tex_normals         = glGetUniformLocation(prog, "u_tex_normals");
+    p->loc_normal_to_view      = glGetUniformLocation(prog, "u_normal_to_view");
     p->block_index            = glGetUniformBlockIndex(prog, "IsoUniforms");
 }
 
 static void iso_program_compile(int mode, int variant, GLuint v_shader) {
     const md_str_t source = (mode == IsoMode_Exact) ? md_str_t{(const char*)isosurface_frag,      isosurface_frag_size}
                                                  : md_str_t{(const char*)isosurface_fast_frag, isosurface_fast_frag_size};
-    iso_program_setup(&iso.prog[mode][variant], v_shader, source, md_str_from_cstr(iso_variant_defines[variant]));
+    char defines[128];
+    snprintf(defines, sizeof(defines), "%s\n%s", iso_variant_defines[variant % IsoVariant_Count], variant >= IsoVariant_Count ? "#define USE_NORMALS" : "");
+    iso_program_setup(&iso.prog[mode][variant], v_shader, source, md_str_from_cstr(defines));
     iso.prog_failed[mode][variant] = iso.prog[mode][variant].program == 0;
 }
 
@@ -297,7 +307,7 @@ static void iso_initialize() {
     }
     // Programs already made are rebuilt (a reinitialize picks up shader changes); the others wait until used
     for (int m = 0; m < IsoMode_Count; ++m) {
-        for (int v = 0; v < IsoVariant_Count; ++v) {
+        for (int v = 0; v < ISO_PROGRAM_COUNT; ++v) {
             iso.prog_failed[m][v] = false;
             if (iso.prog[m][v].program) {
                 iso_program_compile(m, v, v_shader);
@@ -685,7 +695,8 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
     // A field takes the place of the colour volume: the two are alternatives, never both
     const bool use_field        = desc.iso.use_field && desc.texture.field_volume && desc.texture.field_colormap;
     const bool use_color_volume = !use_field && desc.iso.use_color_volume && desc.texture.color_volume;
-    const int variant = use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform;
+    const bool use_normals      = desc.texture.normal_volume != 0;
+    const int variant = (use_field ? IsoVariant_Field : use_color_volume ? IsoVariant_ColorVolume : IsoVariant_Uniform) + (use_normals ? IsoVariant_Count : 0);
     int mode = desc.iso.exact ? IsoMode_Exact : IsoMode_Fast;
     const IsoProgram* pp = iso_program_get(mode, variant);
     if (!pp) {
@@ -809,6 +820,10 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, use_proxy ? iso.proxy.tex_exit : 0);
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_3D, grid ? grid->minmax : 0);
+        if (use_normals) {
+            glActiveTexture(GL_TEXTURE8);
+            glBindTexture(GL_TEXTURE_3D, desc.texture.normal_volume);
+        }
         glActiveTexture(GL_TEXTURE0);
 
         glUseProgram(p.program);
@@ -821,6 +836,13 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glUniform1i(p.loc_tex_entry, 5);
         glUniform1i(p.loc_tex_exit,  6);
         glUniform1i(p.loc_tex_minmax, 7);
+        if (p.loc_tex_normals != -1) {
+            // the normals are directions in the space model maps to: to view space by the inverse transpose of view
+            const md_float4x4_t n = md_float4x4_transpose(md_float4x4_inverse(desc.matrix.view));
+            const float m3[9] = { n.elem[0][0], n.elem[0][1], n.elem[0][2], n.elem[1][0], n.elem[1][1], n.elem[1][2], n.elem[2][0], n.elem[2][1], n.elem[2][2] };
+            glUniform1i(p.loc_tex_normals, 8);
+            glUniformMatrix3fv(p.loc_normal_to_view, 1, GL_FALSE, m3);
+        }
         glUniform1fv(p.loc_iso_values, count, values);
         glUniform4fv(p.loc_iso_colors, count, (const float*)colors);
         glUniform1fv(p.loc_iso_tau,    count, tau);
@@ -859,6 +881,10 @@ bool render_isosurfaces(const IsoRenderDesc& desc) {
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE7);
         glBindTexture(GL_TEXTURE_3D, 0);
+        if (use_normals) {
+            glActiveTexture(GL_TEXTURE8);
+            glBindTexture(GL_TEXTURE_3D, 0);
+        }
         glActiveTexture(GL_TEXTURE0);
     }
     POP_GPU_SECTION()

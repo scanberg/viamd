@@ -3933,6 +3933,77 @@ static inline md_gpu_texture_t gpu_eval_target(const ApplicationState* state) {
     return state->gpu_eval_target ? state->gpu_eval_target : state->gpu_volume;
 }
 
+// Which normals a density volume's texels came with: set when both are uploaded (gpu_volume_job_complete), at the
+// volume's data version then. Any later upload into the volume (notify_data_changed) leaves the link behind.
+struct NormalLink {
+    uint32_t vol_tex = 0, normal_tex = 0;
+    uint64_t version = 0;
+};
+static NormalLink g_normal_links[32];
+
+static void normal_link_set(uint32_t vol_tex, uint32_t normal_tex) {
+    NormalLink* slot = &g_normal_links[0];
+    for (NormalLink& l : g_normal_links) {
+        if (l.vol_tex == vol_tex) { slot = &l; break; }
+        if (l.version < slot->version) slot = &l;     // else the stalest
+    }
+    *slot = {vol_tex, normal_tex, volume::data_version(vol_tex)};
+}
+
+uint32_t es_normals_of(uint32_t vol_tex) {
+    if (!vol_tex) return 0;
+    for (const NormalLink& l : g_normal_links) {
+        if (l.vol_tex == vol_tex) return l.version == volume::data_version(vol_tex) ? l.normal_tex : 0;
+    }
+    return 0;
+}
+
+// The gradient scratch for grid (ApplicationState::gpu_grad): made, or grown, to hold it; false past GPU_GRAD_MAX_VOXELS
+static bool gpu_grad_ensure(ApplicationState* state, const md_grid_t& grid) {
+    if ((size_t)grid.dim[0] * grid.dim[1] * grid.dim[2] > GPU_GRAD_MAX_VOXELS) return false;
+    if (state->gpu_grad && grid.dim[0] <= state->gpu_grad_dim[0] && grid.dim[1] <= state->gpu_grad_dim[1] && grid.dim[2] <= state->gpu_grad_dim[2]) return true;
+    int dim[3];
+    for (int i = 0; i < 3; ++i) dim[i] = MD_MAX(grid.dim[i], state->gpu_grad_dim[i]);
+    if ((size_t)dim[0] * dim[1] * dim[2] > GPU_GRAD_MAX_VOXELS) {
+        for (int i = 0; i < 3; ++i) dim[i] = grid.dim[i];
+    }
+    if (state->gpu_grad) md_gpu_texture_destroy(state->gpu_grad);
+    if (state->gpu_normals) md_gpu_texture_destroy(state->gpu_normals);
+    md_gpu_texture_desc_t desc = {
+        .type = MD_GPU_TEX_3D, .format = MD_GPU_FORMAT_RGBA32_FLOAT, .usage = MD_GPU_TEX_STORAGE,
+        .width = (uint32_t)dim[0], .height = (uint32_t)dim[1], .depth_or_layers = (uint32_t)dim[2], .label = "Evaluation gradient",
+    };
+    state->gpu_grad = md_gpu_texture_create(state->gpu_stream, &desc);
+    desc.format = MD_GPU_FORMAT_R32_UINT;
+    desc.label  = "Evaluation normals";
+    state->gpu_normals = md_gpu_texture_create(state->gpu_stream, &desc);
+    if (!state->gpu_grad || !state->gpu_normals) {
+        MD_LOG_ERROR("Failed to create the GPU gradient scratch (%dx%dx%d): %s", dim[0], dim[1], dim[2], md_gpu_last_error());
+        if (state->gpu_grad) md_gpu_texture_destroy(state->gpu_grad);
+        if (state->gpu_normals) md_gpu_texture_destroy(state->gpu_normals);
+        state->gpu_grad = state->gpu_normals = nullptr;
+        for (int i = 0; i < 3; ++i) state->gpu_grad_dim[i] = 0;
+        return false;
+    }
+    for (int i = 0; i < 3; ++i) state->gpu_grad_dim[i] = dim[i];
+    return true;
+}
+
+// Where an evaluation launched now writes its gradient: gpu_grad when normals are asked for (gpu_eval_normals) of an
+// evaluation into gpu_volume, noted for the readback (gpu_grad_written); else none
+static md_gpu_texture_t gpu_grad_target(ApplicationState* state) {
+    if (!state->gpu_eval_normals || !state->gpu_grad || gpu_eval_target(state) != state->gpu_volume) return nullptr;
+    state->gpu_grad_written = true;
+    return state->gpu_grad;
+}
+
+// The normals texture a readback queued now fills: the one asked for, when the evaluation wrote its gradient
+static uint32_t gpu_normals_take(ApplicationState* state) {
+    const uint32_t tex = state->gpu_grad_written ? state->gpu_eval_normals : 0;
+    state->gpu_grad_written = false;
+    return tex;
+}
+
 static ApplicationState::GpuVolumeJob* gpu_volume_job_acquire(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         if (!state->gpu_volume_jobs[i].in_flight) {
@@ -3965,8 +4036,14 @@ static void gpu_volume_job_complete(void* user) {
     ApplicationState* self = job->owner;
     if (self && job->tex_id) {
         gpu_volume_upload_to_gl(job->tex_id, job->rb.cpu, job->size);
+        if (job->normal_tex && job->rb_normals.cpu) {
+            gl::set_texture_3D_data(job->normal_tex, 0, job->rb_normals.cpu, GL_RGB10_A2);
+            normal_link_set(job->tex_id, job->normal_tex);
+        }
     }
     if (self && job->rb.gpu) md_gpu_free(self->gpu_stream, job->rb.gpu);
+    if (self && job->rb_normals.gpu) md_gpu_free(self->gpu_stream, job->rb_normals.gpu);
+    job->rb_normals = {};
     if (job->issued_job) {
         MD_LOG_DEBUG("Density volume %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (" MD_GTO_GPU_GEMM_PIECES_REVISION ")",
                      (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0));
@@ -3978,7 +4055,7 @@ static void gpu_volume_job_complete(void* user) {
 }
 
 // Used when no job slot is free, and when a caller genuinely needs the data before it returns.
-static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size) {
+static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size, uint32_t normal_tex) {
     md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
     if (!rb.cpu) return false;
     const md_gpu_tex_region_t region = {
@@ -3986,9 +4063,22 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
     };
     bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, gpu_eval_target(state), &region);
+    md_gpu_mem_t rbn = {};
+    if (ok && normal_tex) {
+        rbn = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);    // 4 bytes a voxel, as the values
+        md_gto_gpu_gradient_pack(state->gpu_stream, state->gpu_grad, state->gpu_normals, &grid);
+        if (!rbn.cpu || !md_gpu_copy_from_texture(state->gpu_stream, rbn.gpu, state->gpu_normals, &region)) normal_tex = 0;
+    }
     md_gpu_stream_sync(state->gpu_stream);
-    if (ok) gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
+    if (ok) {
+        gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
+        if (normal_tex) {
+            gl::set_texture_3D_data(normal_tex, 0, rbn.cpu, GL_RGB10_A2);
+            normal_link_set(vol_tex, normal_tex);
+        }
+    }
     md_gpu_free(state->gpu_stream, rb.gpu);
+    if (rbn.gpu) md_gpu_free(state->gpu_stream, rbn.gpu);
     return ok;
 }
 
@@ -4057,6 +4147,7 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         return false;
     }
     const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+    const uint32_t normal_tex = gpu_normals_take(state);
 
     // Never allow two outstanding readbacks for the same texture. Two reasons, both of which
     // produce a wrong image rather than a slow one:
@@ -4078,9 +4169,10 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         job = gpu_volume_job_acquire(state);
     }
     if (!job) {
-        return gpu_volume_readback_blocking(state, vol_tex, grid, size);
+        return gpu_volume_readback_blocking(state, vol_tex, grid, size, normal_tex);
     }
     job->src = gpu_eval_target(state);
+    job->normal_tex = normal_tex;
     return gpu_volume_readback_issue(state, job, vol_tex, grid);
 }
 
@@ -4104,6 +4196,16 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
         job->in_flight = false;
         return false;
     }
+    // the normals of its gradient beside it, packed on the device: 4 bytes a voxel
+    if (job->normal_tex) {
+        md_gto_gpu_gradient_pack(state->gpu_stream, state->gpu_grad, state->gpu_normals, &grid);
+        job->rb_normals = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
+        if (!job->rb_normals.cpu || !md_gpu_copy_from_texture(state->gpu_stream, job->rb_normals.gpu, state->gpu_normals, &region)) {
+            if (job->rb_normals.gpu) md_gpu_free(state->gpu_stream, job->rb_normals.gpu);
+            job->rb_normals = {};
+            job->normal_tex = 0;
+        }
+    }
 
     job->tex_id = vol_tex;
     job->rb     = rb;
@@ -4115,7 +4217,13 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
         MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
         md_gpu_stream_sync(state->gpu_stream);
         gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
+        if (job->normal_tex && job->rb_normals.cpu) {
+            gl::set_texture_3D_data(job->normal_tex, 0, job->rb_normals.cpu, GL_RGB10_A2);
+            normal_link_set(vol_tex, job->normal_tex);
+        }
         md_gpu_free(state->gpu_stream, rb.gpu);
+        if (job->rb_normals.gpu) md_gpu_free(state->gpu_stream, job->rb_normals.gpu);
+        job->rb_normals = {};
         job->in_flight = false;
         return true;
     }
@@ -4144,6 +4252,7 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
     }
     job->tex_id = vol_tex;
     job->src = gpu_eval_target(state);
+    job->normal_tex = gpu_normals_take(state);
     job->grid = grid;
     job->density_job = dj;
     job->t0 = md_tick_now();
@@ -4552,7 +4661,24 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
     rep->electronic_structure.grid = grid;
     rep->electronic_structure.box_to_world = rep->electronic_structure.density_vol.texture_to_world;
     rep->electronic_structure.has_box = true;
-    return es_evaluate_into(state, es, rep->electronic_structure.density_vol.tex_id, grid);
+
+    // Raycast isosurfaces are shaded with the analytic normals of what the GPU evaluates with its gradient (the
+    // orbitals and densities: gpu_grad_target), where it fits the scratch; the others with the volume's differences
+    bool normals = false;
+#if MD_ENABLE_GPU
+    normals = es.display == ElectronicStructureDisplay::Isosurface && !es_mesh_mode(state, es) && gpu_evaluation_ready(state) &&
+              gpu_grad_ensure(state, grid);
+    if (normals) gl::init_texture_3D(&rep->electronic_structure.normal_tex, grid.dim[0], grid.dim[1], grid.dim[2], GL_RGB10_A2);
+    state->gpu_eval_normals = normals ? rep->electronic_structure.normal_tex : 0;
+    state->gpu_grad_written = false;
+#endif
+    const bool ok = es_evaluate_into(state, es, rep->electronic_structure.density_vol.tex_id, grid);
+#if MD_ENABLE_GPU
+    state->gpu_eval_normals = 0;
+    state->gpu_grad_written = false;
+#endif
+    (void)normals;
+    return ok;
 }
 
 // What the representation's source is, evaluated over grid into tex_id (a GL 3D texture of the grid's dims): the
@@ -4911,6 +5037,7 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
             .atom_xyz     = state->mold.gpu_atoms,
             .coeff        = state->gpu_coeff,
             .out_tex      = gpu_eval_target(state),
+            .out_grad     = gpu_grad_target(state),
             .grid         = &grid,
             .sample_offset = {0.5f, 0.5f, 0.5f},
             .num_orbitals = 1,
@@ -4973,6 +5100,7 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
         .coeff         = dmat ? 0 : (coeff ? coeff : state->gpu_coeff),
         .dmat          = dmat,
         .out_tex       = gpu_eval_target(state),
+        .out_grad      = gpu_grad_target(state),
         .grid          = &grid,
         .sample_offset = {0.5f, 0.5f, 0.5f},
         .op            = op,
