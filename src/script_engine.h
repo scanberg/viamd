@@ -283,6 +283,8 @@ enum DrawFlags : uint32_t {
     DRAW_ATOMS    = 2,
     DRAW_SDF      = 4,
     DRAW_TEXT     = 8,
+    // What a hover over a property shows of it, wherever the property is hovered: all but an sdf's structures
+    DRAW_HOVER    = DRAW_GEOMETRY | DRAW_ATOMS | DRAW_TEXT,
 };
 
 struct DrawCtx {

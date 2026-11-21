@@ -93,7 +93,6 @@
 // What a frame spends issuing the GPU jobs' next pieces, all of them (gpu_job.h): the pieces are the GPU's time, this
 // is the frame's
 #define GPU_JOBS_BUDGET_MS 6.0
-#define VIS_FLAGS (script::DRAW_ATOMS | script::DRAW_GEOMETRY | script::DRAW_TEXT)
 
 // Global data for application
 // Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
@@ -3232,7 +3231,7 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     }
     if (ImGui::IsItemHovered()) {
         // What the line picks or measures is shown in the viewport
-        script_visualize_str(state, s.text, VIS_FLAGS);
+        script_visualize_str(state, s.text, script::DRAW_HOVER);
         if (cut || !md_str_empty(s.hint)) {
             ImGui::BeginTooltip();
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
@@ -3977,7 +3976,7 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
             }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
-                    script_visualize_ref(data, vis_ref, k, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                    script_visualize_ref(data, vis_ref, k, script::DRAW_HOVER);
                     script_set_hovered_property(data, md_str_from_cstr(script_ident), k);
                 }
                 *hovered_pop_idx = k;
@@ -4011,7 +4010,7 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     if (ImGui::IsItemHovered()) {
         const md_str_t ident = series_script_ident(key);
         if (!md_str_empty(ident)) {
-            script_visualize_ref(data, script::output_ref(data->script.eval_ir, ident), -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+            script_visualize_ref(data, script::output_ref(data->script.eval_ir, ident), -1, script::DRAW_HOVER);
             script_set_hovered_property(data, ident);
         } else {
             ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
@@ -4537,7 +4536,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_HOVER);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
@@ -4668,7 +4667,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
-                        script_visualize_ref(data, v.vis_ref, pop_idx, ~script::DRAW_SDF);
+                        script_visualize_ref(data, v.vis_ref, pop_idx, script::DRAW_HOVER);
                         script_set_hovered_property(data, md_str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
@@ -5377,7 +5376,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident), member);
-                                script_visualize_ref(data, v.vis_ref, member, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, member, script::DRAW_HOVER);
                             }
                             if (v.num_periods > 0 && hovered_bin >= 0) {
                                 if (hovered_pop_idx >= 0 && v.periods[hovered_pop_idx].id != 0) {
@@ -5406,7 +5405,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_HOVER);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
