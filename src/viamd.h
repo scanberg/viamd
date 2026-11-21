@@ -3136,15 +3136,15 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
 // cannot, and what would be evaluated ahead of being asked for should not be asked for.
 bool gpu_volume_evaluation_available(const ApplicationState* state);
 
+// The analytic normals of a density volume's texels (RGB10_A2: ElectronicStructureRepresentation::normal_tex), where its
+// last evaluation made them along with it; 0 where it did not (the texels came without: from the CPU, of ELF, or before)
+uint32_t es_normals_of(uint32_t vol_tex);
+
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
 // gpu_volume) and leaves it there, for a consumer which records another kernel over it on the same
 // stream instead of reading it back. False when the GPU backend is unavailable, in which case there
 // is no scratch volume to run anything over.
-// The analytic normals of a density volume's texels (RGB10_A2: ElectronicStructureRepresentation::normal_tex), where its
-// last evaluation made them along with it; 0 where it did not (the texels came without: from the CPU, of ELF, or before)
-uint32_t es_normals_of(uint32_t vol_tex);
-
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
 
