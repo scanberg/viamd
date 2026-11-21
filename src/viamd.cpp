@@ -411,36 +411,19 @@ static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const
     }
 }
 
-// A fragment (md_fragment.h) by its name, then its kind where the name does not say it: "phenyl (ring system)",
-// "amide (functional group)", but "backbone", "C16 tail", "C3 linker"; and a fragment which is all of its molecule
-// (a water, an ion) by its name alone, as it is no piece of anything
+// A fragment (md_fragment.h) by its name, as fragment(name) selects it: "phenyl", "peptide", "C3 linker". Its kind,
+// which a script does not select by, only where it has no name
 static void tooltip_append_fragment(md_str_writer_t* sb, const md_system_t& sys, md_fragment_idx_t frag) {
     const md_str_t name = md_system_fragment_name(&sys, frag);
-    const size_t mol = md_system_fragment_molecule(&sys, frag);
-    if (!md_str_empty(name) && md_system_fragment_atom_count(&sys, frag) == md_system_molecule_atom_count(&sys, mol)) {
-        *sb += name;
-        return;
-    }
-    const md_str_t kind = md_str_from_cstr(md_fragment_kind_str(md_system_fragment_kind(&sys, frag)));
-    // The last word of the kind: "tail" of "lipid tail"
-    md_str_t word = kind;
-    for (size_t i = kind.len; i > 0; --i) {
-        if (kind.ptr[i - 1] == ' ') {
-            word = md_str_substr(kind, i, SIZE_MAX);
-            break;
-        }
-    }
-    if (md_str_empty(name)) {
-        *sb += kind;
-    } else if (md_str_empty(word) || md_str_contains_str(name, word)) {
+    if (!md_str_empty(name)) {
         *sb += name;
     } else {
-        md_str_writer_fmt(sb, MD_STR_FMT " (" MD_STR_FMT ")", MD_STR_ARG(name), MD_STR_ARG(kind));
+        *sb += md_str_from_cstr(md_fragment_kind_str(md_system_fragment_kind(&sys, frag)));
     }
 }
 
 // The fragment row of an atom: what chemical piece of its molecule it is in, and, as fragments and residues do not
-// nest, the other residues that piece is of: "ester (functional group), with POPC 12". The fragments are of the
+// nest, the other residues that piece is of: "ester, with POPC 12". The fragments are of the
 // system's bonds, which the frame shown may have changed.
 static void tooltip_fragment_row(PickingTooltipTextRequest* req, const md_system_t& sys, size_t atom_idx) {
     const md_fragment_idx_t frag = md_system_fragment_find_by_atom_idx(&sys, atom_idx);
