@@ -79,6 +79,7 @@ uint32_t     output_flags(const Program* p, md_str_t name) { return (uint32_t)md
 Range        output_range(const Program* p, md_str_t name) { return range_of(md_script_ir_property_range(v1_ir(p), name)); }
 uint64_t     output_fingerprint(const Program* p, md_str_t name) { return md_script_ir_property_fingerprint(v1_ir(p), name); }
 Ref          output_ref(const Program* p, md_str_t name) { return ref_of(md_script_ir_property_vis_ref(v1_ir(p), name)); }
+size_t       output_atoms(const Program*, md_str_t, int, uint32_t, uint32_t*, size_t) { return 0; }
 
 bool  ref_valid(const Program* p, Ref ref) { return md_script_vis_ref_valid(v1_ir(p), v1_ref(ref)); }
 md_str_t ref_name(const Program* p, Ref ref) { return md_script_vis_ref_ident(v1_ir(p), v1_ref(ref)); }
@@ -141,6 +142,8 @@ void eval_interrupt(Eval* e) { if (e) md_script_eval_interrupt(e->v1); }
 void eval_reset_interrupt(Eval* e) { if (e) md_script_eval_reset_interrupt(e->v1); }
 
 const md_attributes_t* attributes(const Eval* e) { return e ? md_script_eval_attributes(e->v1) : nullptr; }
+
+const md_pair_frames_t* eval_pairs(const Eval*, md_str_t) { return nullptr; }
 
 // ### WHAT AN EDIT CHANGES ###
 

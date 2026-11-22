@@ -352,11 +352,14 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
         break;
     }
 
-    // A temporal property goes to a timeline (which a distribution takes as well), a distribution to a distribution,
-    // a volume to the density volume
+    // A matrix goes to the heatmaps, a temporal property to a timeline (which a distribution takes as well), a
+    // distribution to a distribution, a volume to the density volume
     const char* dnd_type = nullptr;
     const char* hint = "";
-    if (m.kinds & script::OUTPUT_TEMPORAL) {
+    if (m.kinds & script::OUTPUT_MATRIX) {
+        dnd_type = HEATMAP_SERIES_DND;
+        hint = "Drag into the Heatmaps window";
+    } else if (m.kinds & script::OUTPUT_TEMPORAL) {
         dnd_type = TIMELINE_SERIES_DND;
         hint = "Drag into a Timelines or Distributions subplot";
     } else if (m.kinds & script::OUTPUT_DISTRIBUTION) {

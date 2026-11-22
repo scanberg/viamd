@@ -83,6 +83,9 @@ Range output_range(const Program* prog, md_str_t name) {
 uint64_t output_fingerprint(const Program* prog, md_str_t name) {
     return lang_of(prog) == Language::V2 ? v2::output_fingerprint(prog, name) : v1::output_fingerprint(prog, name);
 }
+size_t output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap) {
+    return lang_of(prog) == Language::V2 ? v2::output_atoms(prog, name, dim, index, out, cap) : v1::output_atoms(prog, name, dim, index, out, cap);
+}
 Ref output_ref(const Program* prog, md_str_t name) {
     return lang_of(prog) == Language::V2 ? v2::output_ref(prog, name) : v1::output_ref(prog, name);
 }
@@ -142,6 +145,9 @@ void eval_reset_interrupt(Eval* eval) {
 }
 const md_attributes_t* attributes(const Eval* eval) {
     return lang_of(eval) == Language::V2 ? v2::attributes(eval) : v1::attributes(eval);
+}
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name) {
+    return lang_of(eval) == Language::V2 ? v2::eval_pairs(eval, name) : v1::eval_pairs(eval, name);
 }
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc) {
     return lang_of(prog) == Language::V2 ? v2::plan(out, cap, out_pending, eval, prog, num_frames, alloc) : v1::plan(out, cap, out_pending, eval, prog, num_frames, alloc);

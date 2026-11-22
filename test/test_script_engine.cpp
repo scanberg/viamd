@@ -11,6 +11,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_bitset.h>
 #include <core/md_writer.h>
+#include <core/md_pair_frames.h>
 
 #include <core/md_os.h>
 
@@ -372,6 +373,41 @@ UTEST(script_v2, value_plot) {
     for (uint32_t i = 0; i < 8; ++i) total += vp.data[i];
     EXPECT_EQ((double)peptide()->num_frames, total);
     EXPECT_FALSE(script::value_plot(&vp, mark_of("backbone_angles(residue)"), -1, ctx, alloc));
+    script::eval_free(e);
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A matrix of truths per frame: kept as pairs, not as script/<name>; its rows stand for the residues
+UTEST(script_v2, matrices) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "m = contacts(residue)\n"
+        "d = distance(particle(name='CA')[0], particle(name='CA')[14])\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    const uint32_t fm = script::output_flags(p, MD_STR_LIT("m"));
+    EXPECT_TRUE(fm & script::OUTPUT_MATRIX);
+    EXPECT_TRUE(fm & script::OUTPUT_TEMPORAL);
+    EXPECT_FALSE(script::output_flags(p, MD_STR_LIT("d")) & script::OUTPUT_MATRIX);
+    const md_urange_t r2 = md_system_residue_atom_range(&peptide()->sys, 2);
+    uint32_t atoms[64];
+    ASSERT_EQ((size_t)(r2.end - r2.beg), script::output_atoms(p, MD_STR_LIT("m"), 1, 2, atoms, 64));
+    EXPECT_EQ(r2.beg, atoms[0]);
+    EXPECT_EQ(0u, script::output_atoms(p, MD_STR_LIT("d"), 0, 0, atoms, 64));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    ASSERT_TRUE(script::eval_frames(e, p, &peptide()->sys, MD_STR_LIT("run"), nullptr, 0));
+    const md_pair_frames_t* pf = script::eval_pairs(e, MD_STR_LIT("m"));
+    ASSERT_TRUE(pf != nullptr);
+    EXPECT_EQ(15u, md_pair_frames_rows(pf));
+    EXPECT_EQ((uint64_t)peptide()->num_frames, md_bitset_count(md_pair_frames_added(pf, alloc)));
+    EXPECT_GT(md_pair_frames_count(pf), 0u);
+    EXPECT_TRUE(script::eval_pairs(e, MD_STR_LIT("d")) == nullptr);
+    const md_attributes_t* attrs = script::attributes(e);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m")) == nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m/column_labels")) != nullptr);
     script::eval_free(e);
     script::program_free(p);
     md_arena_allocator_destroy(alloc);

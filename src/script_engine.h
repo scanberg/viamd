@@ -25,6 +25,7 @@ struct md_system_t;
 struct md_system_state_t;
 struct md_attribute_t;
 struct md_attributes_t;
+struct md_pair_frames_t;
 struct md_atom_pair_t;
 struct md_writer_i;
 
@@ -135,6 +136,7 @@ enum OutputFlags : uint32_t {
     OUTPUT_VOLUME       = 0x0004,   // an aggregate over frames: a grid
     OUTPUT_PERIODIC     = 0x0008,   // temporal values that wrap, such as angles; see script/<name>/period and /seam
     OUTPUT_SDF          = 0x0010,
+    OUTPUT_MATRIX       = 0x0020,   // two dimensions: rows /labels, columns /column_labels; truths per frame by eval_pairs
 };
 
 size_t       num_outputs(const Program* prog);
@@ -143,6 +145,9 @@ uint32_t     output_flags(const Program* prog, md_str_t name);         // OUTPUT
 Range        output_range(const Program* prog, md_str_t name);         // where it is named; empty for none
 uint64_t     output_fingerprint(const Program* prog, md_str_t name);   // what it is computed from; 0 for none
 Ref          output_ref(const Program* prog, md_str_t name);           // empty for none
+// v2: the atoms index `index` of dimension dim of an output stands for, where that runs over a selection (the residue
+// of a row of contacts(residue)), at most cap into out; returns how many there are, 0 for none
+size_t       output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap);
 
 // Whether ref was made by this compilation of prog, and so resolves in it
 bool  ref_valid(const Program* prog, Ref ref);
@@ -206,6 +211,11 @@ void eval_reset_interrupt(Eval* eval);
 // The outputs as attributes: script/<name>, with /range, /mean, /variance, /extent, /labels beside a temporal one,
 // and /weight, /bin beside a distribution. Created with the evaluation, written in place as frames are evaluated.
 const md_attributes_t* attributes(const Eval* eval);
+
+// v2: an output that is a matrix of truths per frame (OUTPUT_MATRIX and OUTPUT_TEMPORAL, of bools), which has no
+// script/<name>, as the frames each entry is true in (md_pair_frames.h): written as frames are evaluated and read
+// meanwhile. NULL for any other output, and in v1. The evaluation's.
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name);
 
 // ### WHAT AN EDIT CHANGES ###
 // How a program's outputs stand against an evaluation of an earlier one: what eval_create(eval, prog) would take

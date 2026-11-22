@@ -47,6 +47,7 @@
 #define TIMELINE_SERIES_DND     "TIMELINE_SERIES"
 #define DISTRIBUTION_SERIES_DND "DISTRIBUTION_SERIES"
 #define VOLUME_SERIES_DND       "VOLUME_SERIES"     // a script volume, for the density volume
+#define HEATMAP_SERIES_DND      "HEATMAP_SERIES"    // a script matrix (script::OUTPUT_MATRIX), for the Heatmaps window
 
 struct ApplicationState;
 struct md_attribute_t;

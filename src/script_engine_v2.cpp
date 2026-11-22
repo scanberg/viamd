@@ -265,12 +265,18 @@ uint32_t output_flags(const Program* p, md_str_t name) {
     if (o->flags & MD_VIAL_OUTPUT_PERIODIC)     f |= OUTPUT_PERIODIC;
     if (o->flags & MD_VIAL_OUTPUT_VOLUME)       f |= OUTPUT_VOLUME;
     if (o->flags & MD_VIAL_OUTPUT_SDF)          f |= OUTPUT_SDF;
+    if (o->flags & MD_VIAL_OUTPUT_MATRIX)       f |= OUTPUT_MATRIX;
     return f;
 }
 
 Range output_range(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? range_of(o->span) : Range{}; }
 
 uint64_t output_fingerprint(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? o->fingerprint : 0; }
+
+size_t output_atoms(const Program* p, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap) {
+    if (!pv(p) || dim < 0 || dim > 1) return 0;
+    return md_vial_output_atoms(vp(p), name, (uint8_t)dim, index, out, cap);
+}
 
 Ref output_ref(const Program* p, md_str_t name) {
     const md_vial_output_t* o = output_of(p, name);
@@ -489,6 +495,8 @@ void eval_interrupt(Eval* e) { if (ve(e)) md_vial_eval_interrupt(ve(e)); }
 void eval_reset_interrupt(Eval* e) { if (ve(e)) md_vial_eval_reset_interrupt(ve(e)); }
 
 const md_attributes_t* attributes(const Eval* e) { return ve(e) ? md_vial_eval_attributes(ve(e)) : nullptr; }
+
+const md_pair_frames_t* eval_pairs(const Eval* e, md_str_t name) { return ve(e) ? md_vial_eval_pairs(ve(e), name) : nullptr; }
 
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc) {
     ProgramV2* x = pv(prog);
