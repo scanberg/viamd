@@ -680,15 +680,27 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 }
 
 // A backbone segment stands for its residue: the cartoon and ribbons have no atoms to speak of. What the segment adds is
-// the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
-// dihedrals, as VIAL's backbone_angles() gives them of the coordinates shown (md_backbone_segment_dihedrals): phi
-// needs a neighbour before it in the chain, psi and omega one after it, and a trace has none.
+// its secondary structure, as residue(ss=) selects it: DSSP of the frame shown (the state's), and the state the cartoon
+// draws where that differs, as the cartoon smooths the states over frames; and its dihedrals, as VIAL's
+// backbone_angles() gives them of the coordinates shown (md_backbone_segment_dihedrals): phi needs a neighbour before
+// it in the chain, psi and omega one after it, and a trace has none.
 static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
 
-    if (const md_secondary_structure_t* ss = displayed_secondary_structure(&state)) {
-        tooltip_row(req, MD_STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
+    // Indexed by md_secondary_structure_t, as residue(ss=) spells them; unknown has none
+    static const char* ss_words[] = { "", "coil", "turn", "bend", "helix_310", "helix_alpha", "helix_pi", "sheet", "bridge" };
+    auto ss_word = [](const md_secondary_structure_t* ss, uint32_t i) -> const char* {
+        return ss && (size_t)ss[i] < MD_COUNTOF(ss_words) ? ss_words[ss[i]] : "";
+    };
+    const md_secondary_structure_t* drawn = displayed_secondary_structure(&state);
+    const md_secondary_structure_t* frame = md_system_state_secondary_structure(&state.mold.state, &sys);
+    const char* ss = frame ? ss_word(frame, seg_idx) : ss_word(drawn, seg_idx);
+    const char* ss_drawn = ss_word(drawn, seg_idx);
+    if (ss[0] && ss_drawn[0] && strcmp(ss, ss_drawn) != 0) {
+        tooltip_row(req, MD_STR_LIT("ss"), "%s (drawn as %s)", ss, ss_drawn);
+    } else if (ss[0]) {
+        tooltip_row(req, MD_STR_LIT("ss"), "%s", ss);
     }
 
     const md_system_state_t& sys_state = state.mold.state;
