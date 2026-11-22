@@ -368,7 +368,7 @@ static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, co
 // molecule, by its type, where that says more than the part (a glycoprotein, a molecule of a topology, named as the
 // topology names it)
 static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const md_system_t& sys, const TooltipPlace& place) {
-    md_str_t part_desc = {};
+    md_str_t part_name = {};
     if (place.part_idx != -1) {
         const md_str_t name = md_vial_part_name(&sys, (size_t)place.part_idx);
         const char* kind = md_vial_part_kind(&sys, (size_t)place.part_idx);
@@ -377,9 +377,7 @@ static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const
         } else {
             tooltip_row(req, MD_STR_LIT("part"), MD_STR_FMT " (%s)", MD_STR_ARG(name), kind);
         }
-        // An inferred molecule is named by its parts' descriptions, as mdlib spells them ("DNA" for the part dna)
-        const md_part_type_idx_t type = md_system_part_type_idx(&sys, (size_t)place.part_idx);
-        part_desc = type != -1 ? md_system_part_type_description(&sys, (size_t)type) : name;
+        part_name = name;
     }
     int atom = place.atom_idx;
     if (atom == -1 && place.res_idx != -1) atom = (int)md_system_residue_atom_range(&sys, place.res_idx).beg;
@@ -387,7 +385,7 @@ static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const
     if (mol != -1) {
         const md_molecule_type_idx_t type = md_system_molecule_type_idx(&sys, (size_t)mol);
         const md_str_t name = type != -1 ? md_system_molecule_type_name(&sys, (size_t)type) : md_str_t{};
-        if (!md_str_empty(name) && !md_str_eq(name, part_desc)) {
+        if (!md_str_empty(name) && !md_str_eq(name, part_name)) {
             tooltip_row(req, MD_STR_LIT("molecule"), MD_STR_FMT, MD_STR_ARG(name));
         }
     }
@@ -683,8 +681,8 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
 
 // A backbone segment stands for its residue: the cartoon and ribbons have no atoms to speak of. What the segment adds is
 // the secondary structure shown for it (what shapes the cartoon and colours it by secondary structure) and its
-// dihedrals. phi and psi need a neighbour on either side within the chain, so the ends of a chain, and chains too
-// short to assign, have none (md_backbone_angles_compute).
+// dihedrals, as VIAL's backbone_angles() gives them of the coordinates shown (md_backbone_segment_dihedrals): phi
+// needs a neighbour before it in the chain, psi and omega one after it, and a trace has none.
 static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
@@ -693,18 +691,19 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
         tooltip_row(req, MD_STR_LIT("sec. structure"), "%s", md_secondary_structure_name(ss[seg_idx]));
     }
 
-    const md_backbone_angles_t* angles = md_system_state_backbone_angles(&state.mold.state, &sys);
-    if (angles && bb.range.offset) {
-        for (size_t i = 0; i < bb.range.count; ++i) {
-            const uint32_t beg = bb.range.offset[i];
-            const uint32_t end = bb.range.offset[i + 1];
-            if (seg_idx < beg || end <= seg_idx) continue;
-            if (end - beg >= 4 && beg < seg_idx && seg_idx + 1 < end && !md_protein_backbone_range_is_trace(&bb, i)) {
-                // phi, psi and the degree sign in UTF-8 escapes
-                tooltip_row(req, MD_STR_LIT("\xCF\x86, \xCF\x88"), "%.1f\xC2\xB0, %.1f\xC2\xB0", MD_RAD_TO_DEG(angles[seg_idx].phi), MD_RAD_TO_DEG(angles[seg_idx].psi));
-            }
-            break;
+    const md_system_state_t& sys_state = state.mold.state;
+    float a[3];
+    const uint32_t has = sys_state.xyz ? md_backbone_segment_dihedrals(a, seg_idx, sys_state.xyz, &sys_state.unitcell, &bb) : 0;
+    if (has) {
+        // phi, psi, omega and the degree sign in UTF-8 escapes
+        static const char* names[3] = { "\xCF\x86", "\xCF\x88", "\xCF\x89" };
+        md_str_writer_t angles = md_str_writer_create(req->alloc);
+        for (int c = 0; c < 3; ++c) {
+            if (!(has & (1u << c))) continue;
+            if (!md_str_writer_empty(&angles)) angles += ", ";
+            md_str_writer_fmt(&angles, "%s %.1f\xC2\xB0", names[c], MD_RAD_TO_DEG(a[c]));
         }
+        tooltip_row(req, MD_STR_LIT("backbone_angles"), "%s", md_str_writer_to_cstr(&angles));
     }
 }
 
