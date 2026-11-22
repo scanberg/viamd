@@ -3308,12 +3308,12 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
 
             md_system_t& sys = state->mold.sys;
             md_bond_idx_t bond_idx = md_system_bond_find(&sys, idx[0], idx[1]);
-            if (bond_idx == -1) bond_idx = md_bond_find_noncovalent(&sys.bond, idx[0], idx[1]);
+            if (bond_idx == -1) bond_idx = md_bond_find_interaction(&sys.bond, idx[0], idx[1]);
             if (bond_idx == -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::BeginMenu(buf)) {
-                    // Of the bond graph, or a non-covalent bond: those are not followed by the structures, the rings or the
+                    // Of the bond graph, or an interaction: those are not followed by the structures, the rings or the
                     // bonds tracked. Each kind but covalent is drawn dashed, in a style of its own. A kind chosen is kept
                     // as given.
                     struct BondKind {
@@ -3325,13 +3325,13 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         {"Bond",          MD_BOND_FLAG_NONE,
                          "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal\n(drawn dashed, thick with long dashes). It joins the molecules of its atoms."},
                         {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
-                         "Non-covalent, D-H...A, drawn with even dashes. bond(kind='hydrogen') in the script."},
+                         "An interaction, D-H...A, drawn with even dashes. bond(kind='hydrogen') in the script."},
                         {"Ionic Bond",    md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_IONIC),
-                         "Non-covalent, between two ions or charged groups (a salt bridge), drawn with dashes\nthicker and longer than a hydrogen bond's. bond(kind='ionic') in the script."},
+                         "An interaction, between two ions or charged groups (a salt bridge), drawn with dashes\nthicker and longer than a hydrogen bond's. bond(kind='ionic') in the script."},
                         {"Halogen Bond",  md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HALOGEN),
-                         "Non-covalent, C-X...A, drawn with dashes thinner and shorter than a hydrogen bond's.\nbond(kind='halogen') in the script."},
+                         "An interaction, C-X...A, drawn with dashes thinner and shorter than a hydrogen bond's.\nbond(kind='halogen') in the script."},
                         {"Contact",       md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_CONTACT),
-                         "Non-covalent, of no particular kind, drawn with short, sparse dashes.\nbond(kind='contact') in the script; bond(kind='interaction') takes in all four."},
+                         "An interaction of no particular kind, drawn with short, sparse dashes.\nbond(kind='contact') in the script; bond(kind='interaction') takes in all four."},
                     };
                     for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
@@ -3358,7 +3358,7 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                         ImGui::CloseCurrentPopup();
                     }
                     ImGui::SetItemTooltip("A representation of this bond alone, drawn over the sticks, to style it by.\n"
-                                          "Turn off 'non-covalent bonds' in a licorice or ball and stick to have it drawn only here.");
+                                          "Turn off 'interactions' in a licorice or ball and stick to have it drawn only here.");
                     bool separated = false;
                     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
                         Representation& rep = state->representation.reps[i];
@@ -7086,7 +7086,7 @@ static void update_md_buffers(ApplicationState* data) {
         // The orders of the frame shown where the bonds tracked changed them (bond_tracking_chem)
         md_gl_mol_set_bond_orders(data->mold.gl_mol, &sys, delta, bond_tracking_chem(data));
 
-        // The non-covalent bonds of the system are drawn dashed by the licorice and ball and stick representations
+        // The interactions of the system are drawn dashed by the licorice and ball and stick representations
         for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
             representation_set_weak_bonds(data, &data->representation.reps[i]);
         }
@@ -7880,7 +7880,7 @@ static void draw_representations_opaque(ApplicationState* state) {
                 const md_gl_draw_op_t op = representation_draw_op(rep);
                 const size_t beg = md_array_size(draw_ops);
                 md_array_push(draw_ops, op, frame_alloc);
-                // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
+                // The weak bonds it draws over its sticks (the interactions of the system), in its copies
                 representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
                 place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
             }
@@ -8011,7 +8011,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
-        h = md_hash64(&rep.noncovalent_bonds, sizeof(rep.noncovalent_bonds), h);
+        h = md_hash64(&rep.interaction_bonds, sizeof(rep.interaction_bonds), h);
         h = md_hash64(&rep.coordinate_bonds_dashed, sizeof(rep.coordinate_bonds_dashed), h);
         if (rep.type == RepresentationType::Bonds) {
             h = md_hash64(&rep.bond_dashes, sizeof(rep.bond_dashes), h);

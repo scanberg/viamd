@@ -993,7 +993,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
     if (rep->type == RepresentationType::Licorice || rep->type == RepresentationType::BallAndStick) {
         pairs = sys.bond.pairs ? sys.bond.pairs + sys.bond.count : nullptr;
         flags = sys.bond.flags ? sys.bond.flags + sys.bond.count : nullptr;
-        count = pairs && flags ? sys.bond.noncovalent_count : 0;
+        count = pairs && flags ? sys.bond.interaction_count : 0;
     } else if (rep->type == RepresentationType::Bonds) {
         pairs = rep->bond_pairs;
         count = md_array_size(rep->bond_pairs);
@@ -1011,8 +1011,8 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         // The bonds a filter picked are pairs of atoms: their kinds are those of the bonds of the system between them. A
         // pair without one (a bond formed in a frame) counts as covalent.
         md_bond_flags_t* found = (md_bond_flags_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_bond_flags_t) * count);
-        // The non-covalent bonds have no connectivity: sorted by their atoms once, to be found by bisection
-        const size_t nc_count = sys.bond.pairs && sys.bond.flags ? sys.bond.noncovalent_count : 0;
+        // The interactions have no connectivity: sorted by their atoms once, to be found by bisection
+        const size_t nc_count = sys.bond.pairs && sys.bond.flags ? sys.bond.interaction_count : 0;
         uint64_t* nc_keys = nc_count ? (uint64_t*)md_vm_arena_push(state->allocator.frame, sizeof(uint64_t) * nc_count) : nullptr;
         auto pair_key = [](int32_t a, int32_t b) -> uint64_t {
             const uint32_t lo = (uint32_t)MD_MIN(a, b), hi = (uint32_t)MD_MAX(a, b);
@@ -1050,7 +1050,7 @@ size_t representation_weak_bond_count(const ApplicationState& state, const Repre
     const md_system_t& sys = state.mold.sys;
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         // As representation_set_weak_bonds gives them
-        return rep.noncovalent_bonds && sys.bond.pairs && sys.bond.flags ? sys.bond.noncovalent_count : 0;
+        return rep.interaction_bonds && sys.bond.pairs && sys.bond.flags ? sys.bond.interaction_count : 0;
     }
     if (rep.type == RepresentationType::Bonds) {
         return md_array_size(rep.bond_pairs);
@@ -1064,7 +1064,7 @@ bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState&
     if (idx < 0) return false;
     const Representation& rep = state.representation.reps[idx];
     if (i >= representation_weak_bond_count(state, rep)) return false;
-    // Those of a licorice are the non-covalent bonds of the system, all of them in order
+    // Those of a licorice are the interactions of the system, all of them in order
     *pair = rep.type == RepresentationType::Bonds ? rep.bond_pairs[i] : state.mold.sys.bond.pairs[state.mold.sys.bond.count + i];
     return true;
 }
@@ -1083,7 +1083,7 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
         .rep = rep.md_rep,
     };
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-        // The non-covalent bonds of the system among its atoms, in their colours: thinner than its sticks, each in the
+        // The interactions of the system among its atoms, in their colours: thinner than its sticks, each in the
         // style of its kind (md_gl), between the joints or the balls
         const md_gl_draw_op_t sticks = representation_draw_op(rep);
         const bool licorice = rep.type == RepresentationType::Licorice;
@@ -2487,7 +2487,7 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
     }
     viamd::write_bool(s, b("CoordinateDashed"), rep.coordinate_bonds_dashed);
     viamd::write_bool(s, b("Elastic"), rep.elastic_bonds);
-    viamd::write_bool(s, b("Noncovalent"), rep.noncovalent_bonds);
+    viamd::write_bool(s, b("Interactions"), rep.interaction_bonds);
 
     // The glyphs of the lipids and nucleic acids
     viamd::PathPrefix c = p.sub("Cartoon");
@@ -2677,7 +2677,8 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     }
     viamd::get(e, b("CoordinateDashed"), rep.coordinate_bonds_dashed);
     viamd::get(e, b("Elastic"), rep.elastic_bonds);
-    viamd::get(e, b("Noncovalent"), rep.noncovalent_bonds);
+    viamd::get(e, b("Noncovalent"), rep.interaction_bonds);    // From before the interactions had their word
+    viamd::get(e, b("Interactions"), rep.interaction_bonds);
 
     viamd::PathPrefix c = p.sub("Cartoon");
     viamd::get(e, c("TwoHeadSpheres"), rep.two_head_spheres);
@@ -4097,9 +4098,9 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
         prop::row("bond orders", "Double and triple bonds as two and three sticks, aromatic rings with a circle (dashed in fused aromatic systems, whose sextets are not assigned to particular rings), delocalized bonds with a dashed line");
         update_rep |= ImGui::Checkbox("##bond_orders", &rep.bond_orders);
-        if (state->mold.sys.bond.noncovalent_count > 0) {
+        if (state->mold.sys.bond.interaction_count > 0) {
             prop::row("interactions", "The interactions of the system among its atoms, the non-covalent bonds (hydrogen, ionic and halogen bonds and contacts a file gives or a user marks), dashed and thinner than the sticks, each kind in a style of its own: hydrogen bonds with even dashes, contacts with short sparse ones. Off to leave them to a Bonds representation");
-            update_rep |= ImGui::Checkbox("##noncovalent_bonds", &rep.noncovalent_bonds);
+            update_rep |= ImGui::Checkbox("##interaction_bonds", &rep.interaction_bonds);
         }
         if (system_has_bond_kind(state->mold.sys, MD_BOND_KIND_COORDINATE)) {
             prop::row("dashed coordinate bonds", "The coordinate bonds (between a metal and a non-metal) as thick dashes with long dashes and narrow gaps, which tell them from covalent bonds and from the weaker non-covalent ones. Off to draw them as sticks");

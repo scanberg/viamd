@@ -1177,7 +1177,7 @@ struct Dataset : viamd::EventHandler {
         size_t bonds_file = 0;
         size_t bonds_elastic = 0;   // Not bonds of the molecules, and so in none of the above
         size_t bonds_metallic = 0;  // Nor these: the first shells of the atoms of a metal
-        size_t bonds_noncovalent = 0; // Of those above, the ones after the bond graph (md_bond_data_t)
+        size_t bonds_interaction = 0; // Of those above, the ones after the bond graph (md_bond_data_t)
 
         size_t atoms_without_element = 0;   // neither an element nor a coarse grained bead, and with mass
         size_t unresolved_amino = 0;        // named like amino acids, backbone not found
@@ -1387,9 +1387,9 @@ struct Dataset : viamd::EventHandler {
             c.charge += row.charge;
         }
 
-        // Both ranges: the bond graph, then the non-covalent bonds
-        c.bonds_noncovalent = sys.bond.noncovalent_count;
-        for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
+        // Both ranges: the bond graph, then the interactions
+        c.bonds_interaction = sys.bond.interaction_count;
+        for (size_t b = 0; b < sys.bond.count + sys.bond.interaction_count; ++b) {
             const uint32_t f = sys.bond.flags ? (uint32_t)sys.bond.flags[b] : 0u;
             if (md_bond_kind((md_bond_flags_t)f) == MD_BOND_KIND_ELASTIC) {
                 c.bonds_elastic += 1;
@@ -1915,7 +1915,7 @@ struct Dataset : viamd::EventHandler {
             part(c.bonds_file,     "from the file");
             part(c.bonds_inferred, "guessed from distances");
             part(c.bonds_user,     "added by you");
-            part(c.bonds_noncovalent, "of them non-covalent");
+            part(c.bonds_interaction, "of them interactions");
             ImGui::SameLine();
             ImGui::TextDisabled("(%s)", buf);
         }
@@ -1994,7 +1994,7 @@ struct Dataset : viamd::EventHandler {
             if (ImGui::IsItemHovered()) {
                 md_bitmask_t* hb = &data.selection.highlight_mask;
                 md_bitmask_clear(hb);
-                for (size_t b = 0; b < sys.bond.count + sys.bond.noncovalent_count; ++b) {
+                for (size_t b = 0; b < sys.bond.count + sys.bond.interaction_count; ++b) {
                     if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
                         md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[0]);
                         md_bitmask_set_bit(hb, (uint32_t)sys.bond.pairs[b].idx[1]);
@@ -3661,7 +3661,7 @@ struct Dataset : viamd::EventHandler {
     struct BondCounts {
         uint64_t key = 0;
         size_t   origin[4] = {};    // md_bond_origin_t
-        size_t   noncovalent = 0;
+        size_t   interactions = 0;
     } bond_counts;
 
     // "ALA 23 CA atom(12)": the residue the file gives the atom, its name, and its position as the script's language
@@ -3736,13 +3736,13 @@ struct Dataset : viamd::EventHandler {
         if (bond_counts.key != key) {
             bond_counts = {};
             bond_counts.key = key;
-            for (size_t i = 0; i < sys.bond.count + sys.bond.noncovalent_count; ++i) {
+            for (size_t i = 0; i < sys.bond.count + sys.bond.interaction_count; ++i) {
                 bond_counts.origin[md_bond_origin(sys.bond.flags[i]) & 3] += 1;
             }
-            bond_counts.noncovalent = sys.bond.noncovalent_count;
+            bond_counts.interactions = sys.bond.interaction_count;
         }
         const BondCounts& c = bond_counts;
-        ImGui::Text("%zu bonds, %zu of them non-covalent", sys.bond.count + sys.bond.noncovalent_count, c.noncovalent);
+        ImGui::Text("%zu bonds, %zu of them interactions", sys.bond.count + sys.bond.interaction_count, c.interactions);
         ImGui::TextDisabled("From the file %zu, a topology %zu, inferred %zu, added by the user %zu",
             c.origin[MD_BOND_ORIGIN_FILE], c.origin[MD_BOND_ORIGIN_TOPOLOGY], c.origin[MD_BOND_ORIGIN_INFERRED], c.origin[MD_BOND_ORIGIN_USER]);
         ImGui::TextDisabled("Right click a bond in the viewport to remove it, or two atoms to add one. Hover to highlight, shift click to select.");

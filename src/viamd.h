@@ -105,7 +105,7 @@ typedef uint64_t InteractionSurfaceID;
 constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
 // A bond: what the middle half of a bond picks as, the quarters at its ends picking as their atoms, however it is drawn.
 // Of the system (key 0): a bond of the graph, or one formed in the frame shown after them (picked_bond). Or a weak bond
-// of a representation (key: its id), in a range of its own: one of a Bonds representation, a non-covalent bond over the
+// of a representation (key: its id), in a range of its own: one of a Bonds representation, an interaction over the
 // sticks of a licorice.
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
@@ -1275,7 +1275,7 @@ struct Representation {
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
-    bool   noncovalent_bonds = true; // Licorice, ball and stick: the non-covalent bonds of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
+    bool   interaction_bonds = true; // Licorice, ball and stick: the interactions of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
     bool   coordinate_bonds_dashed = true; // Licorice, ball and stick: the coordinate bonds (MD_BOND_KIND_COORDINATE) dashed, rather than sticks
     // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed
     md_array(md_atom_pair_t) bond_pairs = nullptr;

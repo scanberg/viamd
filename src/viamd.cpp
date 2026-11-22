@@ -3132,8 +3132,8 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     }
 
     // The user's edits of the bonds (md_system_t::bond_edit), whether the system is inferred of them yet or not: the
-    // bonds added, of the graph and non-covalent, with the kind they were given, then the bonds removed (given by the
-    // data or inferred), each with its kind, which tells its range (the graph, the elastic or the non-covalent bonds),
+    // bonds added, of the graph and interactions, with the kind they were given, then the bonds removed (given by the
+    // data or inferred), each with its kind, which tells its range (the graph, the elastic bonds or the interactions),
     // and where it came from
     const md_bond_list_t& edits = app_state->mold.sys.bond_edit;
     const size_t num_edits = md_bond_list_count(&edits);
@@ -6934,14 +6934,14 @@ static md_bond_flags_t frame_bond_flags(const ApplicationState& app, size_t idx,
 }
 
 // The bond between the two atoms of a pair, as of the frame shown: of the system (the graph, the bonds outside of it in
-// its range, the non-covalent ones), or formed in the frame
+// its range, the interactions), or formed in the frame
 static PickedBondSource bond_between(const ApplicationState& app, md_atom_pair_t pair, md_bond_flags_t* flags) {
     const md_system_t& sys = app.mold.sys;
     *flags = MD_BOND_FLAG_NONE;
     const md_atom_idx_t a = pair.idx[0], b = pair.idx[1];
     if (a < 0 || b < 0 || (size_t)a >= sys.atom.count || (size_t)b >= sys.atom.count) return PickedBondSource::Unbonded;
     md_bond_idx_t idx = md_system_bond_find(&sys, a, b);
-    if (idx == -1) idx = md_bond_find_noncovalent(&sys.bond, a, b);
+    if (idx == -1) idx = md_bond_find_interaction(&sys.bond, a, b);
     if (idx == -1 && sys.bond.pairs && sys.bond.flags) {
         // The elastic and metallic bonds have no connectivity: all of the range is looked through, as for the tooltip
         // of an atom of a metal
@@ -7766,7 +7766,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // Each glyph representation shown: its points, keyed by the representation. Read and placed on the frame
             // here, so that what it reserves is what it draws this frame.
             // One range per shown representation which draws weak bonds (those of a Bonds representation, the
-            // non-covalent bonds over the sticks of a licorice), keyed by its id: weak bond i picks as beg + i
+            // interactions over the sticks of a licorice), keyed by its id: weak bond i picks as beg + i
             // (representation_weak_bond_draw_ops, picked_bond)
             for (size_t j = 0; j < md_array_size(state->representation.reps); ++j) {
                 Representation& rep = state->representation.reps[j];

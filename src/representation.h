@@ -34,7 +34,7 @@ void create_default_representations(ApplicationState* app);
 Representation* find_representation(ApplicationState* app, uint32_t id);
 
 // The bond between two atoms (pair, of the system) in a Bonds representation, picked by 'bond(i, j)'. Into
-// NULL: a new one at the top level, dashed for a non-covalent bond and over the sticks of a licorice otherwise, opened
+// NULL: a new one at the top level, dashed for an interaction and over the sticks of a licorice otherwise, opened
 // in the window to be styled. Otherwise added to the filter of 'into', which representation_can_show_bond allows;
 // false when the filter would not fit.
 bool representation_show_bond(ApplicationState* app, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into);
@@ -122,7 +122,7 @@ void update_all_representations(ApplicationState* app);
 void flag_representation_as_dirty(Representation* rep);
 
 // The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds), with their kinds, which give their
-// dashes: of a licorice or a ball and stick, the non-covalent bonds of the system among its atoms; of a Bonds
+// dashes: of a licorice or a ball and stick, the interactions of the system among its atoms; of a Bonds
 // representation, the bonds its filter picked.
 // Set again whenever the bonds of the system change.
 void representation_set_weak_bonds(ApplicationState* app, Representation* rep);
@@ -160,7 +160,7 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 // glyphs) are the caller's.
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
 // The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
-// dashed as it says (BondDashes), and the non-covalent bonds of the system, dashed by kind, over the sticks of a
+// dashed as it says (BondDashes), and the interactions of the system, dashed by kind, over the sticks of a
 // licorice or a ball and stick. They pick as bonds of the representation, in the range reserved for it this frame
 // (PickingDomain_Bond, keyed by its id), as long as that holds them all; otherwise as their atoms.
 // Nothing for the others. The copies and the subset are the caller's.

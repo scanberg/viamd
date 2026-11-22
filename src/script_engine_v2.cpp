@@ -1031,7 +1031,7 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr
             uint8_t* in = (uint8_t*)md_alloc(f.temp, na ? na : 1);
             memset(in, 0, na);
             for (uint32_t k = 0; k < v.offsets[v.num_sets]; ++k) if (v.atoms[k] < na) in[v.atoms[k]] = 1;
-            const size_t total = sys->bond.count + sys->bond.noncovalent_count;
+            const size_t total = sys->bond.count + sys->bond.interaction_count;
             for (size_t i = 0; i < total; ++i) {
                 const md_atom_pair_t p = sys->bond.pairs[i];
                 if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) md_array_push(*dst, p, alloc);
