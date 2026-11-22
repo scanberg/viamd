@@ -283,6 +283,11 @@ bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags) 
     return ok;
 }
 
+bool value_plot(ValuePlot* out, Ref, int, const DrawCtx&, md_allocator_i*) {
+    if (out) *out = {};
+    return false;
+}
+
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx) {
     const md_script_vis_ctx_t c = v1_ctx(ctx);
     return md_script_vis_value_text(buf, cap, v1_ref(ref), subidx, &c);

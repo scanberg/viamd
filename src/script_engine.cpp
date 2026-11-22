@@ -170,6 +170,9 @@ bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags) 
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx) {
     return lang_of(ctx.prog) == Language::V2 ? v2::value_text(buf, cap, ref, subidx, ctx) : v1::value_text(buf, cap, ref, subidx, ctx);
 }
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc) {
+    return lang_of(ctx.prog) == Language::V2 ? v2::value_plot(out, ref, subidx, ctx, alloc) : v1::value_plot(out, ref, subidx, ctx, alloc);
+}
 size_t num_keywords(Language lang) {
     return lang == Language::V2 ? v2::num_keywords(lang) : v1::num_keywords(lang);
 }

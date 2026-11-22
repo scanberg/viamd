@@ -81,6 +81,7 @@ void drawing_clear(Drawing* d);
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags);
 bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
 size_t num_keywords(Language lang);
 const md_str_t* keywords(Language lang);
 size_t builtin_names(Language lang, md_str_t* out, size_t cap);
@@ -140,6 +141,7 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags);
 bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
 size_t num_keywords(Language lang);
 const md_str_t* keywords(Language lang);
 size_t builtin_names(Language lang, md_str_t* out, size_t cap);

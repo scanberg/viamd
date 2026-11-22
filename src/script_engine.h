@@ -308,6 +308,34 @@ bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 // The value of what ref refers to in a few lines, at ctx.state; returns its length, 0 if nothing
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
 
+// How a value is plotted beside its text, as the language says (v2; v1 plots nothing)
+enum class PlotKind : uint8_t {
+    None = 0,
+    Histogram,      // the population of the numbers, binned: each column overlaid when of two dimensions
+    Bins,           // a distribution, its bins spanning range: each row overlaid when of two dimensions
+    Heatmap,        // a matrix, its rows and columns labels[0] and labels[1]
+};
+
+struct ValuePlot {
+    PlotKind        kind = PlotKind::None;
+    bool            truth = false;          // truths, each 0 or 1
+    uint8_t         ndim = 0;
+    uint32_t        dims[2] = {};
+    const double*   data = nullptr;         // [dims[0]][dims[1]], NaN where missing
+    md_unit_t       unit = {};
+    const md_str_t* labels[2] = {};         // what each index of a dimension is, or NULL
+    bool            has_period = false;     // on a circle from period[0] to period[1]
+    double          period[2] = {};
+    bool            has_range = false;      // of Bins: what they span, in range_unit
+    double          range[2] = {};
+    md_unit_t       range_unit = {};
+};
+
+// The numbers of what ref refers to and how they are plotted, from alloc; false when it is not plotted. Without ctx.eval
+// a value of a frame, computed at ctx.state; with it a value over the trajectory, read from the evaluation, which
+// nothing may evaluate meanwhile, and nothing computed.
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
+
 // ### EDITOR ###
 
 enum class CompletionKind : uint32_t {

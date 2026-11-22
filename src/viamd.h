@@ -2153,6 +2153,10 @@ struct ApplicationState {
         ScriptVisJob* vis_result = nullptr;
         task_system::Job vis_task;
         const script::Drawing* vis_shown = nullptr;
+        // The plot of a value over the trajectory hovered, read from eval on the main thread (script_vis_value_plot)
+        script::ValuePlot trajectory_plot = {};
+        uint64_t trajectory_plot_key = 0;
+        md_allocator_i* trajectory_plot_arena = nullptr;
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
@@ -3456,6 +3460,9 @@ void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, 
 // What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
 // beside the type. Empty while it is computed, and for a visualization of an expression.
 md_str_t script_vis_value_text(ApplicationState* state);
+// How that value is plotted beside its text (script::value_plot), its numbers at the frame shown; one over the trajectory
+// once evaluated, while nothing evaluates. NULL when it is not plotted, or while it is computed.
+const script::ValuePlot* script_vis_value_plot(ApplicationState* state);
 // Sets an expression, compiled against the script being edited (its identifiers)
 void script_visualize_str(ApplicationState* state, md_str_t str, uint32_t flags = 0);
 // Clears what is set. Start of every frame, before anything sets one.

@@ -5846,6 +5846,156 @@ static bool script_drop_text(char* buf, size_t cap, const ApplicationState* stat
     return false;
 }
 
+// A value's numbers drawn small beside its text in the editor's hover (script::value_plot): a population binned, each
+// column of it overlaid, a distribution over its bins, a matrix as a heatmap. Nothing in it reacts to the pointer,
+// which the tooltip follows.
+static void draw_value_plot(const script::ValuePlot& p) {
+    const float em = ImGui::GetFontSize();
+    const ImPlotFlags flags = ImPlotFlags_NoInputs | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_NoFrame;
+    const size_t n = (size_t)(p.ndim > 0 ? p.dims[0] : 1) * (p.ndim > 1 ? p.dims[1] : 1);
+    if (!p.data || n == 0) return;
+
+    if (p.kind == script::PlotKind::Heatmap) {
+        if (p.ndim != 2) return;
+        // At most 128 cells a side: blocks of cells as one, a truth where any of them is, a number their mean
+        const uint32_t rows = p.dims[0], cols = p.dims[1];
+        const uint32_t br = (rows + 127) / 128, bc = (cols + 127) / 128;
+        const int nr = (int)((rows + br - 1) / br), nc = (int)((cols + bc - 1) / bc);
+        ImVector<float> cells;
+        cells.resize(nr * nc);
+        double lo = INFINITY, hi = -INFINITY;
+        for (int r = 0; r < nr; ++r) {
+            for (int c = 0; c < nc; ++c) {
+                double sum = 0.0, top = -INFINITY;
+                int count = 0;
+                for (uint32_t i = r * br; i < MD_MIN((r + 1) * br, rows); ++i) {
+                    for (uint32_t j = c * bc; j < MD_MIN((c + 1) * bc, cols); ++j) {
+                        const double x = p.data[(size_t)i * cols + j];
+                        if (isnan(x)) continue;
+                        sum += x;
+                        top = MD_MAX(top, x);
+                        ++count;
+                    }
+                }
+                const double v = count == 0 ? NAN : p.truth ? top : sum / count;
+                cells[r * nc + c] = (float)v;
+                if (!isnan(v)) { lo = MD_MIN(lo, v); hi = MD_MAX(hi, v); }
+            }
+        }
+        if (p.truth) { lo = 0.0; hi = 1.0; }
+        if (!(hi >= lo)) return;
+        if (hi == lo) hi = lo + 1.0;
+        // Missing cells as the least
+        for (int i = 0; i < cells.Size; ++i) if (isnan(cells[i])) cells[i] = (float)lo;
+        const float w = 14.0f * em;
+        const float h = MD_CLAMP(w * (float)rows / (float)cols, 4.0f * em, 20.0f * em);
+        ImPlot::PushColormap(ImPlotColormap_Viridis);
+        if (ImPlot::BeginPlot("##value_heatmap", ImVec2(w, h), flags | ImPlotFlags_NoLegend | ImPlotFlags_NoTitle)) {
+            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+            ImPlot::PlotHeatmap("##cells", cells.Data, nr, nc, lo, hi, nullptr, ImPlotPoint(0, 0), ImPlotPoint(1, 1));
+            ImPlot::EndPlot();
+        }
+        ImPlot::PopColormap();
+        auto label = [&](int d, uint32_t i) { return p.labels[d] ? p.labels[d][i] : md_str_t{}; };
+        if (p.labels[0] && p.labels[1]) {
+            ImGui::TextDisabled("Rows " MD_STR_FMT " to " MD_STR_FMT ", columns " MD_STR_FMT " to " MD_STR_FMT,
+                MD_STR_ARG(label(0, 0)), MD_STR_ARG(label(0, rows - 1)), MD_STR_ARG(label(1, 0)), MD_STR_ARG(label(1, cols - 1)));
+        } else {
+            ImGui::TextDisabled("%u rows, %u columns", rows, cols);
+        }
+        if (!p.truth) {
+            char unit[64] = "";
+            const double f = display_units::factor_print(unit, sizeof(unit), p.unit);
+            ImGui::TextDisabled("From %.4g to %.4g %s", lo * f, hi * f, unit);
+        }
+        return;
+    }
+
+    // The series: a histogram's columns, the rows of bins; of one dimension, one
+    const bool hist = p.kind == script::PlotKind::Histogram;
+    if (!hist && (p.kind != script::PlotKind::Bins || !p.has_range)) return;
+    const uint32_t num_series = p.ndim == 2 ? (hist ? p.dims[1] : p.dims[0]) : 1;
+    const uint32_t len = p.ndim == 2 ? (hist ? p.dims[0] : p.dims[1]) : p.dims[0];
+    auto at = [&](uint32_t s, uint32_t i) { return p.ndim != 2 ? p.data[i] : hist ? p.data[(size_t)i * p.dims[1] + s] : p.data[(size_t)s * p.dims[1] + i]; };
+    char unit[64] = "";
+    const double f = display_units::factor_print(unit, sizeof(unit), hist ? p.unit : p.range_unit);
+
+    double lo, hi;
+    int bins;
+    if (hist) {
+        size_t num_finite = 0;
+        lo = INFINITY;
+        hi = -INFINITY;
+        for (uint32_t s = 0; s < num_series; ++s) {
+            for (uint32_t i = 0; i < len; ++i) {
+                const double x = at(s, i);
+                if (isnan(x)) continue;
+                lo = MD_MIN(lo, x);
+                hi = MD_MAX(hi, x);
+                ++num_finite;
+            }
+        }
+        if (num_finite == 0) return;
+        const double per_series = (double)num_finite / num_series;
+        if (p.has_period && p.period[1] > p.period[0]) {
+            // Over the circle, in bins of whole parts of it: of 360°, 30°, 10° or 5°
+            lo = p.period[0];
+            hi = p.period[1];
+            bins = per_series < 50 ? 12 : per_series < 500 ? 36 : 72;
+        } else {
+            if (hi == lo) { lo -= 0.5; hi += 0.5; }
+            bins = MD_CLAMP((int)ceil(2.0 * sqrt(per_series)), 8, 60);
+        }
+    } else {
+        lo = p.range[0];
+        hi = p.range[1];
+        bins = (int)len;
+    }
+    if (!(hi > lo) || bins <= 0) return;
+
+    // Edges, one more than the bins, the last bin's height repeated at the last edge to close it
+    ImVector<double> xs, ys;
+    xs.resize(bins + 1);
+    ys.resize((bins + 1) * (int)num_series);
+    for (int b = 0; b <= bins; ++b) xs[b] = (lo + (hi - lo) * b / bins) * f;
+    double top = 0.0;
+    for (uint32_t s = 0; s < num_series; ++s) {
+        double* y = ys.Data + (size_t)s * (bins + 1);
+        for (int b = 0; b <= bins; ++b) y[b] = 0.0;
+        if (hist) {
+            const double width = hi - lo;
+            for (uint32_t i = 0; i < len; ++i) {
+                const double x = at(s, i);
+                if (isnan(x)) continue;
+                double t = x - lo;
+                if (p.has_period) { t = fmod(t, width); if (t < 0) t += width; }
+                y[MD_CLAMP((int)(t / width * bins), 0, bins - 1)] += 1.0;
+            }
+        } else {
+            for (int b = 0; b < bins; ++b) { const double v = at(s, (uint32_t)b); y[b] = isnan(v) ? 0.0 : v; }
+        }
+        y[bins] = y[bins - 1];
+        for (int b = 0; b < bins; ++b) top = MD_MAX(top, y[b]);
+    }
+
+    const bool legend = hist && p.ndim == 2 && num_series > 1 && p.labels[1];
+    if (ImPlot::BeginPlot("##value_plot", ImVec2(20.0f * em, 8.0f * em), flags | ImPlotFlags_NoTitle | (legend ? 0 : ImPlotFlags_NoLegend))) {
+        ImPlot::SetupAxes(unit[0] ? unit : nullptr, nullptr, 0, ImPlotAxisFlags_NoTickLabels);
+        ImPlot::SetupAxisLimits(ImAxis_X1, xs[0], xs[bins], ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, top > 0.0 ? top * 1.08 : 1.0, ImPlotCond_Always);
+        if (legend) ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+        for (uint32_t s = 0; s < num_series; ++s) {
+            char name[64];
+            const md_str_t lbl = legend ? p.labels[1][s] : md_str_t{};
+            if (lbl.len) snprintf(name, sizeof(name), MD_STR_FMT "##%u", MD_STR_ARG(lbl), s);
+            else snprintf(name, sizeof(name), "##series%u", s);
+            ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+            ImPlot::PlotStairs(name, xs.Data, ys.Data + (size_t)s * (bins + 1), bins + 1, ImPlotStairsFlags_Shaded);
+        }
+        ImPlot::EndPlot();
+    }
+}
+
 static void draw_script_editor_window(ApplicationState* state) {
     MD_ASSERT(state);
 
@@ -6152,6 +6302,10 @@ static void draw_script_editor_window(ApplicationState* state) {
                         ImGui::Separator();
                         if (dynamic) ImGui::TextDisabled("At the frame shown");
                         ImGui::Text(MD_STR_FMT, MD_STR_ARG(value));
+                    }
+                    if (const script::ValuePlot* plot = script_vis_value_plot(state)) {
+                        ImGui::Separator();
+                        draw_value_plot(*plot);
                     }
                 }
                 if (state->script.sub_idx != -1) {

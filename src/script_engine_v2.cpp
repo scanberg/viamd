@@ -860,6 +860,41 @@ size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx
     return md_vial_value_text(buf, cap, &d, ref.node);
 }
 
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc) {
+    if (!out) return false;
+    *out = {};
+    if (!v2::ref_valid(ctx.prog, ref) || !ctx.sys || !alloc) return false;
+    md_vial_hover_t h;
+    if (!md_vial_expr_info(vp(ctx.prog), ref.node, &h)) return false;
+    const bool over_trajectory = h.stage == MD_VIAL_STAGE_TRAJECTORY || h.stage == MD_VIAL_STAGE_TRAJECTORY_PER_FRAME;
+    if (over_trajectory != (ctx.eval != nullptr)) return false;
+    const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
+    md_vial_value_t v;
+    if (!md_vial_value(&v, &d, ref.node, alloc)) return false;
+    switch (v.plot) {
+    case MD_VIAL_PLOT_HISTOGRAM: out->kind = PlotKind::Histogram; break;
+    case MD_VIAL_PLOT_BINS:      out->kind = PlotKind::Bins; break;
+    case MD_VIAL_PLOT_HEATMAP:   out->kind = PlotKind::Heatmap; break;
+    default: return false;
+    }
+    out->truth = v.truth;
+    out->ndim = v.ndim;
+    out->dims[0] = v.dims[0];
+    out->dims[1] = v.dims[1];
+    out->data = v.data;
+    out->unit = v.unit;
+    out->labels[0] = v.labels[0];
+    out->labels[1] = v.labels[1];
+    out->has_period = v.has_period;
+    out->period[0] = v.period[0];
+    out->period[1] = v.period[1];
+    out->has_range = v.has_range;
+    out->range[0] = v.range[0];
+    out->range[1] = v.range[1];
+    out->range_unit = v.range_unit;
+    return true;
+}
+
 // The language's lists, made once
 static const std::vector<md_str_t>& keyword_list() {
     static const std::vector<md_str_t> list = [] {

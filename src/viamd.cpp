@@ -8050,6 +8050,7 @@ struct ScriptVisJob {
     md_system_state_t state = {};
     script::Drawing vis = {};
     md_str_t value_text = {};          // Ref: what the value is where the atoms were (script::value_text), in the arena
+    script::ValuePlot plot = {};    // Ref: its numbers plotted beside that (script::value_plot), in the arena
     double value_scale = 1.0;       // Ref: into the display unit of its unit, as the mark's text shows it
     bool ok = false;
 };
@@ -8152,6 +8153,11 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
             if (len) {
                 job->value_text = md_alloc_str(job->arena, {buf, len});
             }
+        }
+        if (tgt.kind == ScriptVisTarget::Ref) {
+            // Without the evaluation, which may be freed or run meanwhile: a value over the trajectory is plotted on
+            // the main thread (script_vis_value_plot)
+            script::value_plot(&job->plot, tgt.ref, tgt.subidx, ctx, job->arena);
         }
     });
 
@@ -8283,6 +8289,44 @@ md_str_t script_vis_value_text(ApplicationState* state) {
     return sc.vis_result->value_text;
 }
 
+const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
+    MD_ASSERT(state);
+    auto& sc = state->script;
+    if (sc.vis_target.kind != ScriptVisTarget::Ref) return nullptr;
+    const uint64_t key = vis_target_key(state, sc.vis_target);
+    if (sc.vis_result && sc.vis_result->key == key && sc.vis_result->plot.kind != script::PlotKind::None) {
+        return &sc.vis_result->plot;
+    }
+    // Over the trajectory: the evaluation's, read here, where it is freed and its runs are started, while none is
+    // queued or running, and only if it is of the program the reference was made in
+    const script::Program* ir = script_ir_of(state, sc.vis_target.ref);
+    script::Eval* eval = sc.eval;
+    if (!ir || ir != sc.eval_ir || !eval || state->tasks.evaluate.running() || script::eval_fingerprint(eval) != script::fingerprint(ir)) {
+        return nullptr;
+    }
+    // A run's errors change version with every run that ends: what the plot is of
+    const uint64_t run = script::eval_errors(eval).version;
+    if (!run) return nullptr;
+    const int64_t frame = (int64_t)floor(state->mold.state.frame);
+    uint64_t h = md_hash64(&run, sizeof(run), key);
+    h = md_hash64(&eval, sizeof(eval), h);
+    h = md_hash64(&frame, sizeof(frame), h);
+    if (h != sc.trajectory_plot_key) {
+        sc.trajectory_plot_key = h;
+        if (!sc.trajectory_plot_arena) sc.trajectory_plot_arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
+        md_arena_allocator_reset(sc.trajectory_plot_arena);
+        script::DrawCtx ctx = {
+            .prog  = ir,
+            .sys   = &state->mold.sys,
+            .state = &state->mold.state,
+            .eval  = eval,
+            .run   = md_str_from_cstr(state->mold.run),
+        };
+        script::value_plot(&sc.trajectory_plot, sc.vis_target.ref, sc.vis_target.subidx, ctx, sc.trajectory_plot_arena);
+    }
+    return sc.trajectory_plot.kind != script::PlotKind::None ? &sc.trajectory_plot : nullptr;
+}
+
 void script_vis_reset(ApplicationState* state) {
     MD_ASSERT(state);
     auto& sc = state->script;
@@ -8295,6 +8339,10 @@ void script_vis_reset(ApplicationState* state) {
     sc.vis_result = nullptr;
     sc.vis_shown = nullptr;
     sc.vis_target = {};
+    if (sc.trajectory_plot_arena) md_arena_allocator_destroy(sc.trajectory_plot_arena);
+    sc.trajectory_plot_arena = nullptr;
+    sc.trajectory_plot = {};
+    sc.trajectory_plot_key = 0;
 }
 
 void script_set_hovered_property(ApplicationState* state, md_str_t label, int population_idx) {

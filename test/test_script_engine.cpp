@@ -313,6 +313,70 @@ UTEST(script_v2, evaluate) {
     script::program_free(p);
 }
 
+// What hover plots beside a value: a value of a frame computed without the evaluation, one over the trajectory read
+// from it and only from it
+UTEST(script_v2, value_plot) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "bb   = backbone_angles(residue)\n"
+        "ca   = particle(name='CA')\n"
+        "dc   = distance(ca[0], ca.xyz)\n"
+        "n    = len(ca)\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "h    = histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    script::DrawCtx ctx;
+    ctx.prog = p;
+    ctx.sys = &peptide()->sys;
+    ctx.state = &peptide()->state;
+    ctx.run = MD_STR_LIT("run");
+    auto mark_of = [&](const char* text) {
+        const size_t n = script::num_marks(p);
+        const script::Mark* m = script::marks(p);
+        const int beg = (int)(strstr(src, text) - src), end = beg + (int)strlen(text);
+        for (size_t i = 0; i < n; ++i) if (m[i].range.beg == beg && m[i].range.end == end) return m[i].ref;
+        return script::Ref{};
+    };
+    script::ValuePlot vp;
+    ASSERT_TRUE(script::value_plot(&vp, mark_of("backbone_angles(residue)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Histogram, (int)vp.kind);
+    ASSERT_EQ(2, (int)vp.ndim);
+    EXPECT_EQ(15u, vp.dims[0]);
+    EXPECT_EQ(3u, vp.dims[1]);
+    ASSERT_TRUE(vp.labels[1] != nullptr);
+    EXPECT_TRUE(md_str_eq(vp.labels[1][2], MD_STR_LIT("omega")));
+    EXPECT_TRUE(vp.has_period);
+    ASSERT_TRUE(script::value_plot(&vp, mark_of("distance(ca[0], ca.xyz)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Histogram, (int)vp.kind);
+    EXPECT_EQ(1, (int)vp.ndim);
+    EXPECT_FALSE(script::value_plot(&vp, mark_of("len(ca)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::None, (int)vp.kind);
+
+    // Over the trajectory: nothing without the evaluation; with it, once it has run, the bins and their range, and
+    // then nothing of a frame, which is computed apart
+    const script::Ref rh = mark_of("histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))");
+    EXPECT_FALSE(script::value_plot(&vp, rh, -1, ctx, alloc));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    ASSERT_TRUE(script::eval_frames(e, p, &peptide()->sys, MD_STR_LIT("run"), nullptr, 0));
+    ctx.eval = e;
+    ASSERT_TRUE(script::value_plot(&vp, rh, -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Bins, (int)vp.kind);
+    EXPECT_EQ(8u, vp.dims[0]);
+    ASSERT_TRUE(vp.has_range);
+    EXPECT_EQ(0.0, vp.range[0]);
+    EXPECT_EQ(50.0, vp.range[1]);
+    double total = 0.0;
+    for (uint32_t i = 0; i < 8; ++i) total += vp.data[i];
+    EXPECT_EQ((double)peptide()->num_frames, total);
+    EXPECT_FALSE(script::value_plot(&vp, mark_of("backbone_angles(residue)"), -1, ctx, alloc));
+    script::eval_free(e);
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(script_v2, drawing) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
@@ -415,8 +479,8 @@ UTEST(script_v2, filters) {
     // Bonds: the pairs bond() gives, or the bonds among atoms; the same for one residue
     md_array(md_atom_pair_t) b1 = nullptr;
     md_array(md_atom_pair_t) b2 = nullptr;
-    ASSERT_TRUE(script::filter_bonds(V2, &b1, MD_STR_LIT("bond(residue()[0])"), ctx, alloc).success);
-    ASSERT_TRUE(script::filter_bonds(V2, &b2, MD_STR_LIT("residue()[0]"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b1, nullptr, MD_STR_LIT("bond(residue()[0])"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b2, nullptr, MD_STR_LIT("residue()[0]"), ctx, alloc).success);
     EXPECT_GT(md_array_size(b1), 0u);
     EXPECT_EQ(md_array_size(b1), md_array_size(b2));
 
