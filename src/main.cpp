@@ -1222,6 +1222,7 @@ int main(int argc, char** argv) {
         if (time_changed) {
             state.mold.interpolate_system_state = true;
             time_stopped = false;
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdAnimationFrameChanged, viamd::EventPayloadType_ApplicationState, &state);
 
             PUSH_CPU_SECTION("Flag dynamic representations for update")
             flag_dynamic_representations_as_dirty(&state);
@@ -1373,6 +1374,7 @@ int main(int argc, char** argv) {
                             state.script.ir = nullptr;
                         }
                     }
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptCompiled, viamd::EventPayloadType_ApplicationState, &state);
                 }
             }
         }

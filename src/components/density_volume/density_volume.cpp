@@ -163,6 +163,8 @@ struct DensityVolume : viamd::EventHandler {
 
     bool dirty_rep = false;     // The reference structures are to be evaluated again
     bool dirty_vol = false;
+    bool frame_moved = false;   // The frame shown changed since the last update (EventType_ViamdAnimationFrameChanged)
+    bool program_moved = true;  // And what is evaluated: another evaluation, or none (EventType_ViamdScriptEvalInit, Free)
     bool view_pending = true;   // Another volume is shown: the view goes to it once its extent is known
 
     // How the volume shown stands against the script (series_state), what it is called ("v", "v[2]"), and how many
@@ -787,9 +789,8 @@ struct DensityVolume : viamd::EventHandler {
         }
         show_density_volume = selected;
 
-        static uint64_t s_script_fingerprint = 0;
-        if (s_script_fingerprint != script::fingerprint(state->script.eval_ir)) {
-            s_script_fingerprint = script::fingerprint(state->script.eval_ir);
+        if (program_moved) {
+            program_moved = false;
             dirty_vol = true;
             dirty_rep = true;
         }
@@ -808,13 +809,9 @@ struct DensityVolume : viamd::EventHandler {
             dirty_rep = true;
         }
 
-        static double s_frame = 0;
-        bool frame_changed = false;
-        if (s_frame != state->animation.frame) {
-            s_frame = state->animation.frame;
-            dirty_rep = true;
-            frame_changed = true;
-        }
+        const bool frame_changed = frame_moved;
+        frame_moved = false;
+        if (frame_changed) dirty_rep = true;
 
         if (dirty_rep) {
             if (vol_data && !script::ref_empty(vis_ref)) {
@@ -1973,6 +1970,13 @@ struct DensityVolume : viamd::EventHandler {
                 draw(state);
                 break;
             }
+            case viamd::EventType_ViamdAnimationFrameChanged:
+                frame_moved = true;
+                break;
+            case viamd::EventType_ViamdScriptEvalInit:
+            case viamd::EventType_ViamdScriptEvalFree:
+                program_moved = true;
+                break;
             case viamd::EventType_ViamdWindowMenuRequest:
                 viamd::window_menu_add(e, "Analysis/Density Volume", &show_window, {.order = 40});
                 break;
