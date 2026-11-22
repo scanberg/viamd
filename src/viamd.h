@@ -3446,6 +3446,9 @@ void script_set_language(ApplicationState* state, script::Language lang);
 void script_switch_language(ApplicationState* state, script::Language lang);
 void script_ir_collect(ApplicationState* state);
 
+// Frees state->script.eval, once what reads it has been told (EventType_ViamdScriptEvalFree), and leaves it NULL
+void script_eval_free(ApplicationState* state);
+
 // Script visualization
 // The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being
 // evaluated (whose properties the plots show). NULL if neither, e.g. once it has been recompiled.

@@ -60,6 +60,19 @@ enum : EventType {
     EventType_ViamdInteractionSurface				= HASH_STR_LIT("VIAMD Interaction Surface"),
     EventType_ViamdViewFit							= HASH_STR_LIT("VIAMD View Fit"),
 
+	// The script's evaluation, state.script.eval (payload ApplicationState).
+	//   Init   one has been made, taking over what an earlier one held
+	//   Free   it is about to be freed, and is still state.script.eval: stop and wait for whatever reads it on other
+	//          threads, and drop what points into it
+	//   Begin  it is about to be run over frames. Until End its attributes change (script::attributes) and are not
+	//          read; what it writes per frame for any thread to read goes on being read (script::eval_pairs,
+	//          script::eval_output_frames)
+	//   End    the run has ended, finished or interrupted: its attributes are what it published
+	EventType_ViamdScriptEvalInit					= HASH_STR_LIT("VIAMD Script Eval Initialize"),
+	EventType_ViamdScriptEvalFree					= HASH_STR_LIT("VIAMD Script Eval Free"),
+	EventType_ViamdScriptEvalBegin					= HASH_STR_LIT("VIAMD Script Eval Begin"),
+	EventType_ViamdScriptEvalEnd					= HASH_STR_LIT("VIAMD Script Eval End"),
+
 	// Every frame, for the task overlay (draw_async_task_window in main.cpp): a handler with long work under way that the
 	// task system does not show adds a line to the request (payload TaskProgressRequest)
 	EventType_ViamdTaskProgressRequest				= HASH_STR_LIT("VIAMD Task Progress Request"),

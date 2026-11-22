@@ -1496,10 +1496,7 @@ void free_trajectory_data(ApplicationState* state) {
     // The evaluation is of this run. Another run may have as many frames, and taking over from an evaluation of
     // this one (script::eval_create) would carry its values over to the other: the next one starts afresh.
     // The tasks which use it were stopped by the caller.
-    if (state->script.eval) {
-        script::eval_free(state->script.eval);
-        state->script.eval = nullptr;
-    }
+    script_eval_free(state);
 
     // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
     // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
@@ -1926,10 +1923,7 @@ void free_system_data(ApplicationState* data) {
     data->script.ir = nullptr;
     data->script.eval_ir = nullptr;
     script_ir_collect(data);
-    if (data->script.eval) {
-        script::eval_free(data->script.eval);
-        data->script.eval = nullptr;
-    }
+    script_eval_free(data);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemFree, viamd::EventPayloadType_ApplicationState, data);
 }
@@ -7985,6 +7979,13 @@ void script_switch_language(ApplicationState* state, script::Language lang) {
     state->editor.SetText(state->script.other_text);
     state->script.other_text = std::move(text);
     script_set_language(state, lang);
+}
+
+void script_eval_free(ApplicationState* state) {
+    if (!state->script.eval) return;
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, state);
+    script::eval_free(state->script.eval);
+    state->script.eval = nullptr;
 }
 
 void script_ir_collect(ApplicationState* state) {
