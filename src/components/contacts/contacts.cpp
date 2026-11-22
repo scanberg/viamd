@@ -13,6 +13,9 @@
 // provides when the file has it (a tpr). Otherwise there is no energy.
 //
 // A prototype: computed on demand in a background task from a copy of the coordinates.
+//
+// The groups in contact are shown as a map too, of the frame computed. Over the frames, the same is contacts() in the
+// script (VIAL), with the same criterion: Over Frames adds the line, whose mark drags into the Heatmaps window.
 
 #include <core/md_log.h>
 #include <core/md_allocator.h>
@@ -28,6 +31,8 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <script_engine.h>
+#include <script_editor.h>
 #include <event.h>
 #include <task_system.h>
 #include <serialization_utils.h>
@@ -37,6 +42,7 @@
 
 #include <atomic>
 #include <vector>
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -74,6 +80,7 @@ struct Result {
     std::vector<uint32_t> group_off;    // Particles of group g: group_atom[group_off[g], group_off[g + 1])
     std::vector<uint32_t> group_atom;
     uint64_t num_group_pairs = 0;       // Pairs of groups in contact
+    std::vector<uint64_t> group_pairs;  // Each of them, (gi << 32) | gj with gi < gj, ascending
     uint64_t num_pairs = 0;
     double   e_lj = 0, e_coul = 0;      // Between groups, each pair once
     double   seconds = 0;
@@ -132,6 +139,8 @@ struct Contacts : viamd::EventHandler {
     md_system_state_t frame = {};       // Private copy of the frame the task works on
 
     int hovered_group = -1;
+    int hovered_pair[2] = {-1, -1};     // The cell of the map under the pointer: two groups
+    bool highlighting = false;          // The highlight is ours, to clear when nothing is hovered
 
     Contacts() { viamd::event_system_register_handler(*this); }
 
@@ -280,6 +289,7 @@ struct Contacts : viamd::EventHandler {
                         res.groups[key & 0xFFFFFFFFu].contacts += 1;
                     }
                     res.num_group_pairs = keys.size();
+                    res.group_pairs = std::move(keys);
                     res.valid = true;
                 }
                 md_contact_pairs_free(&pairs);
@@ -296,8 +306,168 @@ struct Contacts : viamd::EventHandler {
         if (pending_ready.exchange(false)) {
             result = std::move(pending);
         }
-        if (!show_window || !app_state) return;
+        hovered_group = -1;
+        hovered_pair[0] = hovered_pair[1] = -1;
+        if (show_window && app_state) draw_contents();
+        if (app_state) highlight();
+    }
 
+    // What is hovered lit up in the view: a group of the table, or the two of a cell of the map
+    void highlight() {
+        const Result& res = result;
+        const int n = (int)res.groups.size();
+        md_bitmask_t* mask = &app_state->selection.highlight_mask;
+        auto light = [&](int g) {
+            for (uint32_t k = res.group_off[g]; k < res.group_off[g + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
+        };
+        const bool group = hovered_group >= 0 && hovered_group < n;
+        const bool pair = hovered_pair[0] >= 0 && hovered_pair[0] < n && hovered_pair[1] >= 0 && hovered_pair[1] < n;
+        if (group || pair) {
+            md_bitmask_clear(mask);
+            if (group) light(hovered_group);
+            if (pair) { light(hovered_pair[0]); light(hovered_pair[1]); }
+            highlighting = true;
+        } else if (highlighting) {
+            md_bitmask_clear(mask);
+            highlighting = false;
+        }
+    }
+
+    // The groups there would be now, of the system as it is
+    size_t num_groups_now() const {
+        const md_system_t& sys = app_state->mold.sys;
+        switch (group_by) {
+        case GroupBy_Residue:  return md_system_residue_count(&sys);
+        case GroupBy_Molecule: return md_system_molecule_count(&sys);
+        case GroupBy_Chain:    return md_system_chain_count(&sys);
+        case GroupBy_Part:     return md_system_part_count(&sys);
+        default:               return 0;
+        }
+    }
+
+    // A name the script binds nothing to: base1, base2, ...
+    std::string unique_identifier(const char* base) const {
+        const script::Program* ir = app_state->script.ir;
+        const size_t n = script::num_identifiers(ir);
+        const md_str_t* idents = script::identifiers(ir);
+        char buf[64];
+        for (int i = 1; i < 1000; ++i) {
+            snprintf(buf, sizeof(buf), "%s%d", base, i);
+            bool taken = false;
+            for (size_t k = 0; k < n && !taken; ++k) taken = md_str_eq(idents[k], md_str_from_cstr(buf));
+            if (!taken) return buf;
+        }
+        return base;
+    }
+
+    // The map over the frames: contacts() in the script, by the same criterion and groups, added as a line. Of the
+    // residues every pair counts, as here: min_separation=0 (contacts() leaves out a residue's two neighbours on
+    // either side by default).
+    void draw_over_frames() {
+        static const char* selector[GroupBy_Count] = { "residue", "molecule", "chain", "part" };
+        const bool v2 = app_state->script.language == script::Language::V2;
+        const size_t n = num_groups_now();
+        const bool too_many = n > 5000;
+        ImGui::BeginDisabled(!v2 || too_many || n < 2);
+        if (ImGui::Button("Over frames")) {
+            char args[128];
+            int len = snprintf(args, sizeof(args), "%s", selector[group_by]);
+            if (cutoff != 1.0f && len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, ", surface_distance=%.3g", cutoff);
+            if (group_by == GroupBy_Residue && len < (int)sizeof(args)) snprintf(args + len, sizeof(args) - len, ", min_separation=0");
+            char line[256];
+            snprintf(line, sizeof(line), "%s = contacts(%s)", unique_identifier("cmap").c_str(), args);
+            script_editor::append_line(app_state->editor, md_str_from_cstr(line));
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (!v2) {
+                ImGui::SetTooltip("Over the frames, the map is contacts() of a VIAL script: the script is in v1");
+            } else if (too_many) {
+                ImGui::SetTooltip("%zu groups: a map of %zu × %zu over the frames is too large.\n"
+                                  "Write contacts() of fewer in the script, such as contacts(protein.residue).", n, n, n);
+            } else {
+                ImGui::SetTooltip("Adds contacts() of these groups by this surface distance to the script, as a line: evaluated, it is\n"
+                                  "the map over every frame. Drag its mark from the gutter into the Heatmaps window to see it over\n"
+                                  "all frames or a period.");
+            }
+        }
+    }
+
+    void group_label(char* buf, size_t cap, int g) const {
+        const md_system_t& sys = app_state->mold.sys;
+        switch (result.group_by) {
+        case GroupBy_Residue: {
+            const md_str_t name = md_system_residue_name(&sys, (size_t)g);
+            snprintf(buf, cap, MD_STR_FMT "%d", MD_STR_ARG(name), (int)md_system_residue_seq_id(&sys, (size_t)g));
+            break;
+        }
+        case GroupBy_Chain: {
+            const md_str_t id = md_system_chain_id(&sys, (size_t)g);
+            if (id.len) snprintf(buf, cap, "Chain " MD_STR_FMT, MD_STR_ARG(id));
+            else snprintf(buf, cap, "Chain %d", g + 1);
+            break;
+        }
+        default:
+            snprintf(buf, cap, "%s %d", group_by_lbl[result.group_by], g + 1);
+            break;
+        }
+    }
+
+    // The groups in contact at the frame computed, group 0 at the top left. At most 256 cells a side of what is in view
+    // are drawn, a cell lit where any pair of its groups is in contact, so zooming in shows every group.
+    void draw_map() {
+        const Result& res = result;
+        const uint32_t n = (uint32_t)res.groups.size();
+        if (n == 0) return;
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImPlot::PushColormap(ImPlotColormap_Viridis);
+        if (ImPlot::BeginPlot("##contact_map", ImVec2(-1, MD_MAX(avail.y, 200.0f)), ImPlotFlags_NoLegend | ImPlotFlags_NoTitle | ImPlotFlags_NoMouseText | ImPlotFlags_Equal)) {
+            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoGridLines, ImPlotAxisFlags_NoGridLines);
+            ImPlot::SetupAxisFormat(ImAxis_X1, [](double v, char* buf, int size, void*) { return snprintf(buf, size, "%d", (int)floor(v + 1e-6) + 1); }, nullptr);
+            ImPlot::SetupAxisFormat(ImAxis_Y1, [](double v, char* buf, int size, void* d) { return snprintf(buf, size, "%d", (int)floor(*(const uint32_t*)d - v + 1e-6) + 1); }, (void*)&n);
+            ImPlot::SetupAxesLimits(0, n, 0, n, ImPlotCond_Once);
+            const ImPlotRect lim = ImPlot::GetPlotLimits();
+            const uint32_t c0 = (uint32_t)MD_CLAMP(floor(lim.X.Min), 0.0, (double)n), c1 = (uint32_t)MD_CLAMP(ceil(lim.X.Max), 0.0, (double)n);
+            const uint32_t r0 = (uint32_t)MD_CLAMP(floor((double)n - lim.Y.Max), 0.0, (double)n), r1 = (uint32_t)MD_CLAMP(ceil((double)n - lim.Y.Min), 0.0, (double)n);
+            if (c1 > c0 && r1 > r0) {
+                const uint32_t bc = (c1 - c0 + 255) / 256, br = (r1 - r0 + 255) / 256;
+                const uint32_t nc = (c1 - c0 + bc - 1) / bc, nr = (r1 - r0 + br - 1) / br;
+                std::vector<float> cells((size_t)nr * nc, 0.0f);
+                auto mark = [&](uint32_t r, uint32_t c) {
+                    if (r < r0 || r >= r1 || c < c0 || c >= c1) return;
+                    cells[(size_t)((r - r0) / br) * nc + (c - c0) / bc] = 1.0f;
+                };
+                for (uint64_t key : res.group_pairs) {
+                    const uint32_t a = (uint32_t)(key >> 32), b = (uint32_t)(key & 0xFFFFFFFFu);
+                    mark(a, b);
+                    mark(b, a);
+                }
+                ImPlot::PlotHeatmap("##cells", cells.data(), (int)nr, (int)nc, 0.0, 1.0, nullptr,
+                                    ImPlotPoint(c0, (double)n - (r0 + (double)nr * br)), ImPlotPoint(c0 + (double)nc * bc, (double)n - r0));
+            }
+            if (ImPlot::IsPlotHovered()) {
+                const ImPlotPoint mp = ImPlot::GetPlotMousePos();
+                const long c = (long)floor(mp.x), r = (long)floor((double)n - mp.y);
+                if (c >= 0 && r >= 0 && (uint32_t)c < n && (uint32_t)r < n && r != c) {
+                    hovered_pair[0] = (int)r;
+                    hovered_pair[1] = (int)c;
+                    const uint64_t key = ((uint64_t)MD_MIN(r, c) << 32) | (uint64_t)MD_MAX(r, c);
+                    const bool in = std::binary_search(res.group_pairs.begin(), res.group_pairs.end(), key);
+                    const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint((double)c, (double)n - r));
+                    const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint((double)c + 1, (double)n - r - 1));
+                    ImPlot::GetPlotDrawList()->AddRect(p0, p1, IM_COL32(255, 255, 255, 220), 0.0f, 0, 1.5f);
+                    char la[64], lb[64];
+                    group_label(la, sizeof(la), (int)r);
+                    group_label(lb, sizeof(lb), (int)c);
+                    ImGui::SetTooltip("%s and %s\n%s", la, lb, in ? "In contact" : "Not in contact");
+                }
+            }
+            ImPlot::EndPlot();
+        }
+        ImPlot::PopColormap();
+    }
+
+    void draw_contents() {
         ImGui::SetNextWindowSize(ImVec2(600, 500), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Contacts", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
             // Settings
@@ -326,6 +496,8 @@ struct Contacts : viamd::EventHandler {
             ImGui::BeginDisabled(busy);
             if (ImGui::Button(busy ? "Computing..." : "Compute for current frame")) compute();
             ImGui::EndDisabled();
+            ImGui::SameLine();
+            draw_over_frames();
 
             ImGui::Separator();
             draw_result();
@@ -346,6 +518,20 @@ struct Contacts : viamd::EventHandler {
                 res.e_lj, res.e_coul, res.e_lj + res.e_coul, res.energy_cutoff * 0.1);
         }
 
+        if (!ImGui::BeginTabBar("##contact_views")) return;
+        if (ImGui::BeginTabItem("Map")) {
+            draw_map();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Groups")) {
+            draw_groups();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    void draw_groups() {
+        const Result& res = result;
         // Distributions over the groups: contacts, and energy when there is one. Side by side when both.
         std::vector<double> v(res.groups.size());
         const float plot_w = res.has_energy ? (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * 0.5f : -1.0f;
@@ -365,7 +551,6 @@ struct Contacts : viamd::EventHandler {
             }
         }
 
-        hovered_group = -1;
         const int num_cols = res.has_energy ? 6 : 3;
         const ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_Sortable | ImGuiTableFlags_Resizable;
         if (ImGui::BeginTable("groups", num_cols, flags)) {
@@ -422,12 +607,6 @@ struct Contacts : viamd::EventHandler {
                 }
             }
             ImGui::EndTable();
-        }
-
-        if (hovered_group >= 0 && hovered_group < (int)res.groups.size()) {
-            md_bitmask_t* mask = &app_state->selection.highlight_mask;
-            md_bitmask_clear(mask);
-            for (uint32_t k = res.group_off[hovered_group]; k < res.group_off[hovered_group + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
         }
     }
 };
