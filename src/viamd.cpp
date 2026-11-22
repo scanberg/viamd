@@ -280,60 +280,41 @@ static int tooltip_polymer_position(const md_system_t& sys, int part_idx) {
     return pos;
 }
 
-// What a place is filed under: "chain A", the id the data gives; where it gives none, the strand of a polymer it is of,
-// "polymer 2", by its position as polymer(2) finds it. A part of no polymer in no chain (a water the data gives no
-// chain id) is named by its residue alone: -1, nothing appended.
-static bool tooltip_append_label(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& place) {
-    const int chain = tooltip_place_chain(sys, place);
-    if (chain >= 0) {
-        md_str_writer_fmt(sb, "chain " MD_STR_FMT, MD_STR_ARG(md_system_chain_id(&sys, (size_t)chain)));
-        return true;
-    }
-    const int pos = tooltip_polymer_position(sys, place.part_idx);
-    if (pos >= 0) {
-        md_str_writer_fmt(sb, "polymer %d", pos + 1);
-        return true;
-    }
-    return false;
-}
-
-// The label a place is filed under, as an identity to compare: its chain, else its strand, else none
-static int64_t tooltip_label_key(const md_system_t& sys, const TooltipPlace& place) {
-    const int chain = tooltip_place_chain(sys, place);
-    if (chain >= 0) return chain;
-    const int pos = tooltip_polymer_position(sys, place.part_idx);
-    return pos >= 0 ? ((int64_t)1 << 32) + pos : -1;
+// "chain A", the id the data gives the chain (md_chain_data_t: a chain is only where the data names one)
+static void tooltip_append_chain(md_str_writer_t* sb, const md_system_t& sys, int chain) {
+    md_str_writer_fmt(sb, "chain " MD_STR_FMT, MD_STR_ARG(md_system_chain_id(&sys, (size_t)chain)));
 }
 
 // The rest of a title: " · ALA 42 · chain A" for one place, and for the two ends of a bond that crosses over
-// " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B"
+// " · ALA 42 / GLY 43 · chain A" or " · CYS 10 · chain A / CYS 50 · chain B". A place in no chain is named by its
+// residue alone; where it is in a script's terms (polymer(2), molecule(7)) is the index row's.
 static void tooltip_append_place(md_str_writer_t* sb, const md_system_t& sys, const TooltipPlace& a, const TooltipPlace* b = nullptr) {
     auto sep = [sb]() { if (!md_str_writer_empty(sb)) *sb += TOOLTIP_SEP; };
-    const int64_t label_a = tooltip_label_key(sys, a);
-    const int64_t label_b = b ? tooltip_label_key(sys, *b) : -1;
-    const bool two_labels = b && label_b != label_a;
+    const int chain_a = tooltip_place_chain(sys, a);
+    const int chain_b = b ? tooltip_place_chain(sys, *b) : -1;
+    const bool two_chains = b && chain_b != chain_a;
     const bool two_residues = b && b->res_idx != a.res_idx;
 
     if (a.res_idx != -1) {
         sep();
         tooltip_append_residue(sb, sys, a.res_idx);
-        if (two_residues && !two_labels && b->res_idx != -1) {
+        if (two_residues && !two_chains && b->res_idx != -1) {
             *sb += " / ";
             tooltip_append_residue(sb, sys, b->res_idx);
         }
     }
-    if (label_a != -1) {
+    if (chain_a != -1) {
         sep();
-        tooltip_append_label(sb, sys, a);
+        tooltip_append_chain(sb, sys, chain_a);
     }
-    if (two_labels && (b->res_idx != -1 || label_b != -1)) {
+    if (two_chains && (b->res_idx != -1 || chain_b != -1)) {
         *sb += " / ";
         if (b->res_idx != -1) {
             tooltip_append_residue(sb, sys, b->res_idx);
-            if (label_b != -1) *sb += TOOLTIP_SEP;
+            if (chain_b != -1) *sb += TOOLTIP_SEP;
         }
-        if (label_b != -1) {
-            tooltip_append_label(sb, sys, *b);
+        if (chain_b != -1) {
+            tooltip_append_chain(sb, sys, chain_b);
         }
     }
 }
