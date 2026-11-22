@@ -14,6 +14,9 @@
 //
 // A prototype: computed on demand in a background task from a copy of the coordinates.
 //
+// Groups joined by a path of at most the bond separation's bonds are in no contact (md_contact_bonded_pairs): 4 leaves
+// out a residue's two neighbours on either side along a protein. Their energy counts all the same.
+//
 // The groups in contact are shown as a map too, of the frame computed. Over the frames, the same is contacts() in the
 // script (VIAL), with the same criterion: Over Frames adds the line, whose mark drags into the Heatmaps window.
 
@@ -74,6 +77,7 @@ struct Result {
     bool   valid = false;
     bool   has_energy = false;
     double cutoff = 0;          // Å, between van der Waals surfaces
+    int    bond_separation = 0; // Groups joined by a path of at most this many bonds are in no contact
     double energy_cutoff = 0;   // Å
     GroupBy group_by = GroupBy_Residue;
     std::vector<GroupResult> groups;
@@ -81,6 +85,7 @@ struct Result {
     std::vector<uint32_t> group_atom;
     uint64_t num_group_pairs = 0;       // Pairs of groups in contact
     std::vector<uint64_t> group_pairs;  // Each of them, (gi << 32) | gj with gi < gj, ascending
+    std::vector<uint64_t> bonded_pairs; // Those left out by the bond separation, alike
     uint64_t num_pairs = 0;
     double   e_lj = 0, e_coul = 0;      // Between groups, each pair once
     double   seconds = 0;
@@ -93,6 +98,8 @@ struct StreamCtx {
     float cutoff;
     Result* res;
     std::vector<uint64_t>* keys;
+    const uint64_t* bonded;     // The group pairs within the bond separation, (gi << 32) | gj, gi < gj, ascending
+    size_t num_bonded;
 };
 
 static void stream_pairs(const uint32_t* a, const uint32_t* b, const float* r, size_t count, void* user) {
@@ -101,11 +108,12 @@ static void stream_pairs(const uint32_t* a, const uint32_t* b, const float* r, s
     for (size_t k = 0; k < count; ++k) {
         const uint32_t i = a[k], j = b[k];
         const uint32_t gi = s->label[i], gj = s->label[j];
-        if (r[k] - s->radius[i] - s->radius[j] < s->cutoff) {
+        const uint64_t key = ((uint64_t)std::min(gi, gj) << 32) | std::max(gi, gj);
+        if (r[k] - s->radius[i] - s->radius[j] < s->cutoff && !std::binary_search(s->bonded, s->bonded + s->num_bonded, key)) {
             res.groups[gi].pairs += 1;
             res.groups[gj].pairs += 1;
             res.num_pairs += 1;
-            s->keys->push_back(((uint64_t)std::min(gi, gj) << 32) | std::max(gi, gj));
+            s->keys->push_back(key);
         }
         if (s->ff) {
             double elj, ec;
@@ -130,6 +138,7 @@ struct Contacts : viamd::EventHandler {
     // Settings
     GroupBy group_by = GroupBy_Residue;
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
+    int   bond_separation = 4;          // Groups joined by a path of at most this many bonds are in no contact
 
     // Computation
     task_system::Job task;
@@ -155,6 +164,7 @@ struct Contacts : viamd::EventHandler {
             case viamd::EventType_ViamdDeserializeBegin:
                 group_by = GroupBy_Residue;
                 cutoff = 1.0f;
+                bond_separation = 4;
                 break;
             case viamd::EventType_ViamdShutdown:
                 task.cancel_and_wait();
@@ -177,6 +187,7 @@ struct Contacts : viamd::EventHandler {
                 viamd::write_section_header(state, MD_STR_LIT("Contacts"));
                 viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
                 viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
+                viamd::write_int(state, MD_STR_LIT("BondSeparation"), bond_separation);
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
@@ -188,6 +199,9 @@ struct Contacts : viamd::EventHandler {
                             viamd::extract_enum(group_by, arg, GroupBy_Count);
                         } else if (md_str_eq(ident, MD_STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
+                        } else if (md_str_eq(ident, MD_STR_LIT("BondSeparation"))) {
+                            viamd::extract_int(bond_separation, arg);
+                            bond_separation = MD_CLAMP(bond_separation, 0, 254);
                         }
                     }
                 }
@@ -213,6 +227,7 @@ struct Contacts : viamd::EventHandler {
         pending = Result{};
         pending.group_by = group_by;
         pending.cutoff = cutoff;
+        pending.bond_separation = bond_separation;
         std::vector<uint32_t>& off = pending.group_off;
         std::vector<uint32_t>& atoms = pending.group_atom;
         auto push_range = [&](md_urange_t r) { for (uint32_t k = r.beg; k < r.end && k < N; ++k) atoms.push_back(k); };
@@ -280,7 +295,15 @@ struct Contacts : viamd::EventHandler {
             md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
             std::vector<uint64_t> keys;
             if (md_contact_pairs_init(&pairs, &desc, &sys, arena)) {
-                StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys };
+                // The group pairs joined by few bonds, left out as contacts() leaves them out; their energy counts
+                std::vector<md_bitset_t> groups(num_groups);
+                for (size_t g = 0; g < num_groups; ++g) {
+                    groups[g] = md_bitset_from_indices(res.group_atom.data() + res.group_off[g], res.group_off[g + 1] - res.group_off[g], arena);
+                }
+                uint64_t* bonded = nullptr;
+                const size_t num_bonded = num_groups ? md_contact_bonded_pairs(&bonded, groups.data(), num_groups, nullptr, 0, (uint32_t)res.bond_separation, &sys, arena) : 0;
+                res.bonded_pairs.assign(bonded, bonded + num_bonded);
+                StreamCtx ctx = { ff, label.data(), radius.data(), (float)res.cutoff, &res, &keys, bonded, num_bonded };
                 if (md_contact_pairs_for_each(&pairs, &frame, stream_pairs, &ctx)) {
                     std::sort(keys.begin(), keys.end());
                     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
@@ -360,9 +383,7 @@ struct Contacts : viamd::EventHandler {
         return base;
     }
 
-    // The map over the frames: contacts() in the script, by the same criterion and groups, added as a line. Of the
-    // residues every pair counts, as here: min_separation=0 (contacts() leaves out a residue's two neighbours on
-    // either side by default).
+    // The map over the frames: contacts() in the script, by the same criterion, bond separation and groups, as a line
     void draw_over_frames() {
         static const char* selector[GroupBy_Count] = { "residue", "molecule", "chain", "part" };
         const bool v2 = app_state->script.language == script::Language::V2;
@@ -373,7 +394,7 @@ struct Contacts : viamd::EventHandler {
             char args[128];
             int len = snprintf(args, sizeof(args), "%s", selector[group_by]);
             if (cutoff != 1.0f && len < (int)sizeof(args)) len += snprintf(args + len, sizeof(args) - len, ", surface_distance=%.3g", cutoff);
-            if (group_by == GroupBy_Residue && len < (int)sizeof(args)) snprintf(args + len, sizeof(args) - len, ", min_separation=0");
+            if (bond_separation != 4 && len < (int)sizeof(args)) snprintf(args + len, sizeof(args) - len, ", bond_separation=%d", bond_separation);
             char line[256];
             snprintf(line, sizeof(line), "%s = contacts(%s)", unique_identifier("cmap").c_str(), args);
             script_editor::append_line(app_state->editor, md_str_from_cstr(line));
@@ -386,7 +407,7 @@ struct Contacts : viamd::EventHandler {
                 ImGui::SetTooltip("%zu groups: a map of %zu × %zu over the frames is too large.\n"
                                   "Write contacts() of fewer in the script, such as contacts(protein.residue).", n, n, n);
             } else {
-                ImGui::SetTooltip("Adds contacts() of these groups by this surface distance to the script, as a line: evaluated, it is\n"
+                ImGui::SetTooltip("Adds contacts() of these groups, by this surface distance and bond separation, to the script: evaluated, it is\n"
                                   "the map over every frame. Drag its mark from the gutter into the Heatmaps window to see it over\n"
                                   "all frames or a period.");
             }
@@ -453,13 +474,15 @@ struct Contacts : viamd::EventHandler {
                     hovered_pair[1] = (int)c;
                     const uint64_t key = ((uint64_t)MD_MIN(r, c) << 32) | (uint64_t)MD_MAX(r, c);
                     const bool in = std::binary_search(res.group_pairs.begin(), res.group_pairs.end(), key);
+                    const bool near = std::binary_search(res.bonded_pairs.begin(), res.bonded_pairs.end(), key);
                     const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint((double)c, (double)n - r));
                     const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint((double)c + 1, (double)n - r - 1));
                     ImPlot::GetPlotDrawList()->AddRect(p0, p1, IM_COL32(255, 255, 255, 220), 0.0f, 0, 1.5f);
                     char la[64], lb[64];
                     group_label(la, sizeof(la), (int)r);
                     group_label(lb, sizeof(lb), (int)c);
-                    ImGui::SetTooltip("%s and %s\n%s", la, lb, in ? "In contact" : "Not in contact");
+                    if (near) ImGui::SetTooltip("%s and %s\nWithin %d bonds of each other: not counted", la, lb, res.bond_separation);
+                    else ImGui::SetTooltip("%s and %s\n%s", la, lb, in ? "In contact" : "Not in contact");
                 }
             }
             ImPlot::EndPlot();
@@ -481,6 +504,11 @@ struct Contacts : viamd::EventHandler {
             ImGui::InputFloat("Surface distance (Å)", &cutoff, 0.1f, 1.0f, "%.2f");
             cutoff = MD_CLAMP(cutoff, -10.0f, 100.0f);
             ImGui::SetItemTooltip("Contact when the van der Waals surfaces of two particles are closer than this.\n0 is touching, a negative value asks for overlap.");
+            ImGui::InputInt("Bond separation", &bond_separation);
+            bond_separation = MD_CLAMP(bond_separation, 0, 254);
+            ImGui::SetItemTooltip("Groups joined by a path of at most this many bonds are in no contact. A residue is 1 bond from its\n"
+                                  "neighbours along a protein and 4 from theirs, so 4 leaves out the two on either side; across a\n"
+                                  "chain break nothing is left out. 0 counts every pair. Their energy is counted all the same."); 
             ImGui::PopItemWidth();
 
             if (const md_nb_forcefield_t* ff = app_state->mold.sys.nonbonded) {
@@ -511,8 +539,9 @@ struct Contacts : viamd::EventHandler {
             ImGui::TextDisabled("No result");
             return;
         }
-        ImGui::Text("%zu groups (%s), surfaces within %.2f Å: %llu group pairs in contact, %llu particle pairs (%.2f s)",
-            res.groups.size(), group_by_lbl[res.group_by], res.cutoff, (unsigned long long)res.num_group_pairs, (unsigned long long)res.num_pairs, res.seconds);
+        ImGui::Text("%zu groups (%s), surfaces within %.2f Å, more than %d bonds apart: %llu group pairs in contact, %llu particle pairs (%.2f s)",
+            res.groups.size(), group_by_lbl[res.group_by], res.cutoff, res.bond_separation, (unsigned long long)res.num_group_pairs,
+            (unsigned long long)res.num_pairs, res.seconds);
         if (res.has_energy) {
             ImGui::Text("Energy between groups: LJ %.3f, Coulomb %.3f, total %.3f kJ/mol (pairs within %.2f nm)",
                 res.e_lj, res.e_coul, res.e_lj + res.e_coul, res.energy_cutoff * 0.1);
