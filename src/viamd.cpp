@@ -8,6 +8,7 @@
 #include "density_cache.h"
 #include <md_gto_iso.h>
 #include <md_vial.h>
+#include <md_pucker.h>
 #include <vector>
 #include <algorithm>
 
@@ -836,8 +837,9 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const ApplicationS
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
-// A ring (the circle of an aromatic ring): what it is, its atoms around it and their elements, and how flat it is in the
-// current frame, the RMS distance of its atoms from their plane (the plane the circle is drawn in, ring.vert)
+// A ring (the circle of an aromatic ring): what it is, its atoms around it and their elements, how flat it is in the
+// current frame, the RMS distance of its atoms from their plane (the plane the circle is drawn in, ring.vert), and its
+// pucker
 static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t ring_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_system_state_t& sys_state = state.mold.state;
@@ -931,6 +933,25 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
                 sum2 += h * h;
             }
             tooltip_row(req, MD_STR_LIT("planarity"), "%.3f " TOOLTIP_ANGSTROM, sqrtf(sum2 / (float)count));
+        }
+    }
+
+    // Its pucker, as VIAL's ring(pucker=) selects it and pucker() and pseudorotation() give it (md_pucker_ring): the kind
+    // of its conformation, Q, and theta and phi where the ring's order is fixed by its chemistry, theta of a ring of six;
+    // the pseudorotation of a furanose. A ring of the frame is none of the system's, which VIAL knows
+    md_pucker_ring_t pr;
+    if (!frame_ring && md_pucker_ring(&pr, &sys, &sys_state, ring_idx)) {
+        // Indexed by md_pucker_kind_t, as ring(pucker=) spells them
+        static const char* kinds[] = { "", "planar", "chair", "boat", "skew", "half_chair", "envelope", "twist" };
+        const md_pucker_kind_t kind = md_pucker_conformer(&pr.cp).kind;
+        md_str_writer_t pucker = md_str_writer_create(req->alloc);
+        if ((size_t)kind < MD_COUNTOF(kinds) && kinds[kind][0]) md_str_writer_fmt(&pucker, "%s, ", kinds[kind]);
+        md_str_writer_fmt(&pucker, "Q %.2f " TOOLTIP_ANGSTROM, pr.cp.amplitude);
+        if (pr.anchored && pr.size == 6) md_str_writer_fmt(&pucker, ", \xCE\xB8 %.1f\xC2\xB0", pr.cp.theta);
+        if (pr.anchored) md_str_writer_fmt(&pucker, ", \xCF\x86 %.1f\xC2\xB0", pr.cp.phi2);
+        tooltip_row(req, MD_STR_LIT("pucker"), "%s", md_str_writer_to_cstr(&pucker));
+        if (pr.has_pseudo) {
+            tooltip_row(req, MD_STR_LIT("pseudorotation"), "P %.1f\xC2\xB0, \xCF\x84m %.1f\xC2\xB0", pr.pseudo_phase, pr.pseudo_amplitude);
         }
     }
 
