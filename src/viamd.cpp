@@ -7,6 +7,7 @@
 #include <md_qm.h>
 #include "density_cache.h"
 #include <md_gto_iso.h>
+#include <md_vial.h>
 #include <vector>
 #include <algorithm>
 
@@ -362,23 +363,23 @@ static void tooltip_append_index(md_str_writer_t* sb, const md_system_t& sys, co
     if (mol != -1) script_write_position(sb, lang, "molecule", mol);
 }
 
-// What a place is of: its part, by the type of it (an mmCIF entity, or inferred: the kind of a polymer, the residue names
-// of anything else), and its molecule, by its type, where that says more than the part (a glycoprotein, a molecule of a
-// topology, named as the topology names it)
+// What a place is of: its part, by its name and its kind as part(name=, kind=) take them (the name its type's
+// description, an mmCIF entity's, or inferred: the kind of a polymer, the residue names of anything else), and its
+// molecule, by its type, where that says more than the part (a glycoprotein, a molecule of a topology, named as the
+// topology names it)
 static void tooltip_part_and_molecule_rows(PickingTooltipTextRequest* req, const md_system_t& sys, const TooltipPlace& place) {
     md_str_t part_desc = {};
     if (place.part_idx != -1) {
-        const md_part_type_idx_t type = md_system_part_type_idx(&sys, (size_t)place.part_idx);
-        if (type != -1) {
-            part_desc = md_system_part_type_description(&sys, (size_t)type);
-            const char* kind = md_part_kind_name(md_system_part_type_kind(&sys, (size_t)type));
-            if (md_str_empty(part_desc) || md_str_eq_cstr(part_desc, kind)) {
-                tooltip_row(req, MD_STR_LIT("part"), "%s", kind);
-                part_desc = md_str_from_cstr(kind);
-            } else {
-                tooltip_row(req, MD_STR_LIT("part"), MD_STR_FMT " (%s)", MD_STR_ARG(part_desc), kind);
-            }
+        const md_str_t name = md_vial_part_name(&sys, (size_t)place.part_idx);
+        const char* kind = md_vial_part_kind(&sys, (size_t)place.part_idx);
+        if (md_str_empty(name) || md_str_eq_cstr(name, kind)) {
+            tooltip_row(req, MD_STR_LIT("part"), "%s", kind);
+        } else {
+            tooltip_row(req, MD_STR_LIT("part"), MD_STR_FMT " (%s)", MD_STR_ARG(name), kind);
         }
+        // An inferred molecule is named by its parts' descriptions, as mdlib spells them ("DNA" for the part dna)
+        const md_part_type_idx_t type = md_system_part_type_idx(&sys, (size_t)place.part_idx);
+        part_desc = type != -1 ? md_system_part_type_description(&sys, (size_t)type) : name;
     }
     int atom = place.atom_idx;
     if (atom == -1 && place.res_idx != -1) atom = (int)md_system_residue_atom_range(&sys, place.res_idx).beg;
@@ -707,6 +708,34 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
     }
 }
 
+// What a residue is, a row per keyword of residue() which selects it, keyed as the keyword and with the value as a script
+// writes it, unquoted: its kind (kind='amino_acid'), its ends (role='n_terminus'; terminus, either end, is left out, as
+// the end it is says it), a break of its chain beside it (gap='before') and, of an amino acid or a nucleotide whose
+// backbone was not found, resolved=False
+static void tooltip_residue_rows(PickingTooltipTextRequest* req, const md_system_t& sys, int res_idx) {
+    const md_residue_kind_t  kind  = md_system_residue_kind(&sys, res_idx);
+    const md_residue_flags_t flags = md_system_residue_flags(&sys, res_idx);
+    const bool nucleotide = kind == MD_RESIDUE_KIND_NUCLEOTIDE;
+
+    // Indexed by md_residue_kind_t, as residue(kind=) spells them
+    static const char* kinds[] = { "other", "amino_acid", "nucleotide", "water", "ion", "lipid" };
+    if ((size_t)kind < MD_COUNTOF(kinds)) tooltip_row(req, MD_STR_LIT("kind"), "%s", kinds[kind]);
+
+    md_str_writer_t role = md_str_writer_create(req->alloc);
+    if (flags & MD_RESIDUE_FLAG_TERMINAL_BEG) tooltip_list_add(&role, nucleotide ? "5_terminus" : "n_terminus");
+    if (flags & MD_RESIDUE_FLAG_TERMINAL_END) tooltip_list_add(&role, nucleotide ? "3_terminus" : "c_terminus");
+    tooltip_row_list(req, MD_STR_LIT("role"), role);
+
+    md_str_writer_t gap = md_str_writer_create(req->alloc);
+    if (flags & MD_RESIDUE_FLAG_BREAK_BEFORE) tooltip_list_add(&gap, "before");
+    if (flags & MD_RESIDUE_FLAG_BREAK_AFTER)  tooltip_list_add(&gap, "after");
+    tooltip_row_list(req, MD_STR_LIT("gap"), gap);
+
+    if ((kind == MD_RESIDUE_KIND_AMINO_ACID || nucleotide) && !(flags & MD_RESIDUE_FLAG_RESOLVED)) {
+        tooltip_row(req, MD_STR_LIT("resolved"), "False");
+    }
+}
+
 static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t seg_idx) {
     const md_system_t& sys = state.mold.sys;
     const md_protein_backbone_data_t& bb = sys.protein_backbone;
@@ -730,18 +759,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    const md_residue_kind_t    kind  = md_system_residue_kind(&sys, res_idx);
-    const md_residue_flags_t flags = md_system_residue_flags(&sys, res_idx);
-    const bool nucleotide = kind == MD_RESIDUE_KIND_NUCLEOTIDE;
-
-    md_str_writer_t kind_list = md_str_writer_create(req->alloc);
-    if (kind != MD_RESIDUE_KIND_OTHER) tooltip_list_add(&kind_list, md_residue_kind_name(kind));
-    if ((kind == MD_RESIDUE_KIND_AMINO_ACID || nucleotide) && !(flags & MD_RESIDUE_FLAG_RESOLVED)) tooltip_list_add(&kind_list, "unresolved");
-    if (flags & MD_RESIDUE_FLAG_TERMINAL_BEG) tooltip_list_add(&kind_list, nucleotide ? "5' end" : "N-terminus");
-    if (flags & MD_RESIDUE_FLAG_TERMINAL_END) tooltip_list_add(&kind_list, nucleotide ? "3' end" : "C-terminus");
-    if (flags & MD_RESIDUE_FLAG_BREAK_BEFORE) tooltip_list_add(&kind_list, "chain break before");
-    if (flags & MD_RESIDUE_FLAG_BREAK_AFTER)    tooltip_list_add(&kind_list, "chain break after");
-    tooltip_row_list(req, MD_STR_LIT("kind"), kind_list);
+    tooltip_residue_rows(req, sys, res_idx);
 
     tooltip_backbone_segment_geometry(req, state, seg_idx);
 
@@ -935,17 +953,24 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
 
+    // The title says what part of the residue the point is, which no keyword selects: "DPPC 12 · head"
     md_str_writer_t title = md_str_writer_create(req->alloc);
     tooltip_append_place(&title, sys, place);
+    if (glyphs.point_kind[point_idx] < MD_COUNTOF(parts)) {
+        title += TOOLTIP_SEP;
+        title += md_str_from_cstr(parts[glyphs.point_kind[point_idx]]);
+    }
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
-    md_str_writer_t kind_list = md_str_writer_create(req->alloc);
-    const md_residue_kind_t kind = md_system_residue_kind(&sys, res_idx);
-    if (kind != MD_RESIDUE_KIND_OTHER) tooltip_list_add(&kind_list, md_residue_kind_name(kind));
-    if (glyphs.point_kind[point_idx] < MD_COUNTOF(parts)) tooltip_list_add(&kind_list, parts[glyphs.point_kind[point_idx]]);
-    tooltip_row_list(req, MD_STR_LIT("kind"), kind_list);
+    tooltip_residue_rows(req, sys, res_idx);
 
     tooltip_row(req, MD_STR_LIT("atoms"), "%u", range.end - range.beg);
+
+    tooltip_part_and_molecule_rows(req, sys, place);
+
+    md_str_writer_t index = md_str_writer_create(req->alloc);
+    tooltip_append_index(&index, sys, place, state.script.language);
+    tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
 // The hit names the group and the element outright - its range was reserved against that group's attribute - so there
