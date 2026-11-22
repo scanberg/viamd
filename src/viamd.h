@@ -1277,8 +1277,11 @@ struct Representation {
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   interaction_bonds = true; // Licorice, ball and stick: the interactions of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
     bool   coordinate_bonds_dashed = true; // Licorice, ball and stick: the coordinate bonds (MD_BOND_KIND_COORDINATE) dashed, rather than sticks
-    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed
+    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed. In
+    // VIAL also the flags (md_bond_flags_t) of each pair's bond, the system's or one found for the frame (a hydrogen bond
+    // bond() finds, a bond formed()): empty in v1, whose pairs are told by the system's bonds
     md_array(md_atom_pair_t) bond_pairs = nullptr;
+    md_array(uint32_t) bond_flags = nullptr;
     BondDashes bond_dashes = BondDashes::ByKind;
     bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
     double invalid_since = 0.0;     // ImGui::GetTime() when its filter was found not valid, for the notice in the viewport; 0 while valid
@@ -2696,6 +2699,7 @@ bool picked_ring(const ApplicationState& app, size_t idx, const int32_t** atoms,
 enum class PickedBondSource {
     System,     // A bond of the system
     Formed,     // Formed in the frame shown, the bonds tracked (bond_tracking): not a bond of the system
+    Found,      // Found for the frame shown by the filter of a Bonds representation (a hydrogen bond, a bond formed): not a bond of the system
     Unbonded,   // No bond: two atoms a representation draws a bond between (a pair its filter gave) which none joins
 };
 

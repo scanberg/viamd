@@ -194,8 +194,8 @@ FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const Filter
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     return lang == Language::V2 ? v2::filter_sets(lang, dst, expr, ctx, alloc) : v1::filter_sets(lang, dst, expr, ctx, alloc);
 }
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
-    return lang == Language::V2 ? v2::filter_bonds(lang, dst, expr, ctx, alloc) : v1::filter_bonds(lang, dst, expr, ctx, alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    return lang == Language::V2 ? v2::filter_bonds(lang, dst, flags, expr, ctx, alloc) : v1::filter_bonds(lang, dst, flags, expr, ctx, alloc);
 }
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
     return lang == Language::V2 ? v2::filter_complete(lang, expr, cursor, ctx, alloc) : v1::filter_complete(lang, expr, cursor, ctx, alloc);

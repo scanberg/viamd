@@ -169,6 +169,9 @@ void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const App
 size_t representation_weak_bond_count(const ApplicationState& app, const Representation& rep);
 // The atoms of weak bond i of the representation of id rep_id, as it draws them; false when there is none such
 bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState& app, uint32_t rep_id, size_t i);
+// The flags of weak bond i of a Bonds representation as its filter gave them (VIAL): of the system's bond of the pair, or
+// of one found for the frame; MD_BOND_FLAG_INACTIVE for none. False where the filter gave none (v1, another type).
+bool representation_weak_bond_flags(md_bond_flags_t* flags, const ApplicationState& app, uint32_t rep_id, size_t i);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the

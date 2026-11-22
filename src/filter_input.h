@@ -34,8 +34,9 @@ struct AtomFilter {
 bool filter_evaluate(AtomFilter* filter, md_bitset_t* atoms, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc);
 // The same, one set for each structure it gives (see script::filter_sets)
 bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc);
-// The bonds it picks (see script::filter_bonds), pushed to bonds once it is cleared, allocated with alloc
-bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc);
+// The bonds it picks (see script::filter_bonds), pushed to bonds once it is cleared, and the flags of their bonds to
+// flags where the language gives them (may be NULL), allocated with alloc
+bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, md_array(uint32_t)* flags, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc);
 
 // The input of a filter, written in lang. ctx is what it is completed against: its system, the script whose names it may use, and the
 // atoms it is evaluated within, if any. Returns true when the text changes. With confirmed given, it is set when Enter

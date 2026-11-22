@@ -89,7 +89,7 @@ md_str_t attr_path(Language lang, const md_attributes_t* table, const md_attribu
 bool name_valid(Language lang, md_str_t name);
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 }  // namespace v1
 
@@ -148,7 +148,7 @@ md_str_t attr_path(Language lang, const md_attributes_t* table, const md_attribu
 bool name_valid(Language lang, md_str_t name);
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 }  // namespace v2
 

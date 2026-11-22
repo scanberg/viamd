@@ -687,6 +687,9 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
     if (source == PickedBondSource::Formed) {
         // Not a bond of the system: tracked, of this frame alone, inferred from its distances
         tooltip_row(req, MD_STR_LIT("origin"), "%s (formed in this frame)", md_bond_origin_name(md_bond_origin(flags)));
+    } else if (source == PickedBondSource::Found) {
+        // Not a bond of the system: what the filter found for this frame, a hydrogen bond or a bond formed
+        tooltip_row(req, MD_STR_LIT("origin"), "%s (found in this frame)", md_bond_origin_name(md_bond_origin(flags)));
     } else if (source == PickedBondSource::System) {
         tooltip_row(req, MD_STR_LIT("origin"), "%s", md_bond_origin_name(md_bond_origin(flags)));
     }
@@ -6969,9 +6972,15 @@ static PickedBondSource bond_between(const ApplicationState& app, md_atom_pair_t
 bool picked_bond(const ApplicationState& app, const PickingHit& hit, md_atom_pair_t* pair, md_bond_flags_t* flags, PickedBondSource* source) {
     if (hit.domain != PickingDomain_Bond) return false;
     if (hit.key != 0) {
-        // A weak bond of a representation: its atoms are what it has of its own
+        // A weak bond of a representation: its atoms are what it has of its own, and a bond its filter found for the
+        // frame where the system has none (a hydrogen bond bond() finds)
         if (!representation_weak_bond_pair(pair, app, (uint32_t)hit.key, hit.local_idx)) return false;
         *source = bond_between(app, *pair, flags);
+        md_bond_flags_t found = MD_BOND_FLAG_NONE;
+        if (*source == PickedBondSource::Unbonded && representation_weak_bond_flags(&found, app, (uint32_t)hit.key, hit.local_idx) && !(found & MD_BOND_FLAG_INACTIVE)) {
+            *flags = found;
+            *source = PickedBondSource::Found;
+        }
         return true;
     }
     const md_system_t& sys = app.mold.sys;

@@ -297,6 +297,7 @@ static void clear_owned(Representation* rep) {
     rep->glyph_rep = {};
     rep->atom_mask = {};
     rep->bond_pairs = nullptr;
+    rep->bond_flags = nullptr;
     rep->electronic_structure.density_vol.tex_id = 0;
     rep->electronic_structure.color_vol.tex_id   = 0;
     rep->electronic_structure.normal_tex         = 0;
@@ -370,6 +371,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     auto& rep = state->representation.reps[idx];
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_array_free(rep.bond_pairs, state->allocator.persistent);
+    md_array_free(rep.bond_flags, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
     md_gl_rep_destroy(rep.glyph_rep);
     // A readback queued for this representation's volume would land in a texture that no longer
@@ -897,9 +899,12 @@ static void update_representation(ApplicationState* state, Representation* rep) 
             } else if (rep->type == RepresentationType::Bonds) {
                 // The bonds, and the atoms at their ends: those are what is coloured, and shown
                 md_array(md_atom_pair_t) pairs = nullptr;
-                if (filter_evaluate_bonds(&rep->filter, &pairs, state->script.language, representation_filter_context(*state, ctx), alloc)) {
+                md_array(uint32_t) flags = nullptr;
+                if (filter_evaluate_bonds(&rep->filter, &pairs, &flags, state->script.language, representation_filter_context(*state, ctx), alloc)) {
                     md_array_free(rep->bond_pairs, alloc);
+                    md_array_free(rep->bond_flags, alloc);
                     rep->bond_pairs = pairs;
+                    rep->bond_flags = flags;
                     md_bitmask_t ends = md_bitmask_create(0, (uint32_t)num_atoms, frame_alloc);
                     for (size_t i = 0; i < md_array_size(rep->bond_pairs); ++i) {
                         md_bitmask_set_bit(&ends, (uint32_t)rep->bond_pairs[i].idx[0]);
@@ -909,6 +914,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
                     rep->atom_mask = md_bitmask_extract(&ends, alloc);
                 } else {
                     md_array_free(pairs, alloc);
+                    md_array_free(flags, alloc);
                 }
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else {
@@ -1007,6 +1013,12 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         atom_a[i] = (uint32_t)pairs[i].idx[0];
         atom_b[i] = (uint32_t)pairs[i].idx[1];
     }
+    if (count && !flags && md_array_size(rep->bond_flags) == count) {
+        // As the filter gave them (VIAL): of a bond found for the frame too, a hydrogen bond in its dashes
+        md_bond_flags_t* given = (md_bond_flags_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_bond_flags_t) * count);
+        for (size_t i = 0; i < count; ++i) given[i] = (md_bond_flags_t)rep->bond_flags[i];
+        flags = given;
+    }
     if (count && !flags) {
         // The bonds a filter picked are pairs of atoms: their kinds are those of the bonds of the system between them. A
         // pair without one (a bond formed in a frame) counts as covalent.
@@ -1056,6 +1068,16 @@ size_t representation_weak_bond_count(const ApplicationState& state, const Repre
         return md_array_size(rep.bond_pairs);
     }
     return 0;
+}
+
+bool representation_weak_bond_flags(md_bond_flags_t* flags, const ApplicationState& state, uint32_t rep_id, size_t i) {
+    MD_ASSERT(flags);
+    const int idx = find_rep_idx(state, rep_id);
+    if (idx < 0) return false;
+    const Representation& rep = state.representation.reps[idx];
+    if (rep.type != RepresentationType::Bonds || i >= md_array_size(rep.bond_flags) || md_array_size(rep.bond_flags) != md_array_size(rep.bond_pairs)) return false;
+    *flags = (md_bond_flags_t)rep.bond_flags[i];
+    return true;
 }
 
 bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState& state, uint32_t rep_id, size_t i) {
@@ -4333,8 +4355,13 @@ static bool draw_representation_properties(ApplicationState* state, Representati
             if (ctx.group) {
                 ImGui::SetTooltip("Within the context of the representation group '%s': %s", ctx.group->name, ctx.group->filter.text);
             } else if (bonds) {
-                ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bond(bond_delta()).\n"
-                                  "A set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
+                if (state->script.language == script::Language::V2) {
+                    ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), found at each frame, bond(kind='interaction'), "
+                                      "bond(origin='user'), formed().\nA set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
+                } else {
+                    ImGui::SetTooltip("%zu bonds.\nA set of bonds: bond(kind='hydrogen'), bond(origin='user'), bond(bond_delta()).\n"
+                                      "A set of atoms: the bonds among them, of the system.", md_array_size(rep.bond_pairs));
+                }
             }
         }
 

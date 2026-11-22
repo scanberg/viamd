@@ -1009,12 +1009,14 @@ FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, md_str_t expr, co
     return r;
 }
 
-FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
-    // bond(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    // bond(...) gives pairs of one particle each, with the flags of their bonds; atoms give the system's bonds among
+    // them, every kind, as v1 does
     Filtered f;
     run_filter(&f, expr, ctx);
     if (f.r.success && dst) {
         md_array_shrink(*dst, 0);
+        if (flags) md_array_shrink(*flags, 0);
         const md_vial_filter_t& v = f.f;
         bool pairs = v.ndim == 2 && v.dims[1] == 2;
         for (size_t i = 0; pairs && i < v.num_sets; ++i) pairs = v.offsets[i + 1] - v.offsets[i] == 1;
@@ -1024,6 +1026,7 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr
                 p.idx[0] = (md_atom_idx_t)v.atoms[v.offsets[i]];
                 p.idx[1] = (md_atom_idx_t)v.atoms[v.offsets[i + 1]];
                 md_array_push(*dst, p, alloc);
+                if (flags) md_array_push(*flags, v.pair_flags ? v.pair_flags[i / 2] : (uint32_t)MD_BOND_FLAG_INACTIVE, alloc);
             }
         } else {
             const md_system_t* sys = ctx.sys;
@@ -1034,7 +1037,10 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr
             const size_t total = sys->bond.count + sys->bond.interaction_count;
             for (size_t i = 0; i < total; ++i) {
                 const md_atom_pair_t p = sys->bond.pairs[i];
-                if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) md_array_push(*dst, p, alloc);
+                if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) {
+                    md_array_push(*dst, p, alloc);
+                    if (flags) md_array_push(*flags, (uint32_t)sys->bond.flags[i], alloc);
+                }
             }
         }
     }

@@ -350,7 +350,8 @@ FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, md_str_t expr, co
     return result_of(md_filter_sets(dst, expr, &c, alloc));
 }
 
-FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    if (flags) md_array_shrink(*flags, 0);
     const md_filter_context_t c = v1_filter_ctx(ctx);
     return result_of(md_filter_bonds(dst, expr, &c, alloc));
 }
