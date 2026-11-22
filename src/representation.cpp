@@ -1014,7 +1014,7 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         atom_b[i] = (uint32_t)pairs[i].idx[1];
     }
     if (count && !flags && md_array_size(rep->bond_flags) == count) {
-        // As the filter gave them (VIAL): of a bond found for the frame too, a hydrogen bond in its dashes
+        // As the filter gave them (VIAL): of a bond found for the frame too, a hydrogen, ionic or halogen bond in its dashes
         md_bond_flags_t* given = (md_bond_flags_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_bond_flags_t) * count);
         for (size_t i = 0; i < count; ++i) given[i] = (md_bond_flags_t)rep->bond_flags[i];
         flags = given;

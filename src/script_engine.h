@@ -366,7 +366,7 @@ struct FilterResult {
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 // The bonds it picks, pairs of atoms, and in VIAL the flags (md_bond_flags_t) of the bond of each: the system's, or the
-// one its evaluation computed for the frame (a hydrogen bond found, a bond formed), MD_BOND_FLAG_INACTIVE for a pair of
+// one its evaluation computed for the frame (a hydrogen, ionic or halogen bond found, a bond formed), MD_BOND_FLAG_INACTIVE for a pair of
 // no bond. v1 gives no flags (flags is left empty, and may be NULL).
 FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions  filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
