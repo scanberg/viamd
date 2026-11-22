@@ -13,12 +13,17 @@
 //   a period dropped   from the timeline, the fractions or the mean over its frames
 //   wheel, drag        zoom and pan; double-click fits
 //
-// A matrix of truths is held as what is true over the frames it is shown over, sorted: its size is that, not rows ×
-// cols. It is drawn in tiles of 128 × 128 cells, a cell 2^level entries a side, at the level that makes a cell a pixel
-// or a little more, so what is drawn is never more than the screen shows. A tile is made when it first comes into
-// view, from the rows it covers, and kept as a texture; those drawn least recently go when there are many. A cell of
-// many entries is the highest of them for truths and fractions, so a contact is not lost from far away, and their mean
-// for other numbers. A tile not made yet in this frame is drawn as it was, or from a coarser tile.
+// It is drawn in tiles of 128 × 128 cells, a cell 2^level entries a side, at the level that makes a cell a pixel or a
+// little more, so what is drawn is never more than the screen shows. A cell of many entries is the highest of them for
+// truths and fractions, so a contact is not lost from far away, and their mean for other numbers.
+//
+// Nothing of it is made on the main thread, which only draws and uploads. What a heatmap shows is a View, made by a job
+// whenever what it is over changes: for a matrix of truths, the frames counted and an index of where its entries are
+// kept, so that a tile costs what is true in it (heatmaps_core.h); for any other, the matrix. Tiles in view that are
+// not of the view shown are then made by another job, over the threads, and a large tile's cell rows over them too;
+// each is uploaded as a texture as soon as it is done, and kept, those drawn least recently going when there are many.
+// One job runs at a time, and a View or its index is replaced only when none does. Until a tile is made it is drawn as
+// it was, or from a coarser tile, or as a blank, with a spinner once it has waited a while.
 
 #include <core/md_common.h>
 #include <core/md_allocator.h>
@@ -27,7 +32,6 @@
 #include <core/md_hash.h>
 #include <core/md_str.h>
 #include <core/md_array.h>
-#include <core/md_os.h>
 #include <core/md_pair_frames.h>
 
 #include <md_attributes.h>
@@ -42,6 +46,7 @@
 #include <timeline_periods.h>
 #include <timeline_periods_ui.h>
 #include <display_units.h>
+#include <task_system.h>
 #include <heatmaps/heatmaps_core.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
@@ -51,6 +56,9 @@
 #include <implot.h>
 #include <implot_internal.h>
 
+#include <atomic>
+#include <memory>
+#include <string>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -70,79 +78,87 @@ enum Over : int {
 static const md_str_t over_ini[Over_Count] = { MD_STR_LIT("frame"), MD_STR_LIT("all"), MD_STR_LIT("period") };
 
 using heatmaps::TILE;
+using heatmaps::Index;
+using heatmaps::View;
+using heatmaps::ViewSource;
 
-#define TILE_BUDGET_MS  4.0     // Tiles made in a frame: until this much time has gone
+#define TILES_PER_JOB   256     // Tiles made by one job, those nearest the middle of the view first
 #define TILE_KEEP       512     // Tiles kept, or twice those in view when more
+#define SPINNER_AFTER   0.15    // Seconds a tile waits before it shows that it does
 
 struct Tile {
-    GLuint   tex = 0;           // TILE × TILE, RGBA8, its first row at the top
-    uint64_t gen = 0;           // Of what it shows
-    int      used = 0;          // The frame it was last drawn in
+    GLuint   tex = 0;               // TILE × TILE, RGBA8, its first row at the top
+    uint64_t gen = 0;               // Of the view it shows
+    int      used = 0;              // The frame it was last drawn in
+    double   waiting = 0;           // Since when it has been in view and not of the view shown, 0 when it is
 };
+
+// A tile a job makes: its cells, colored, then done
+struct TileWork {
+    uint64_t key = 0;
+    uint32_t level = 0, tx = 0, ty = 0;
+    std::vector<uint32_t> rgba;
+    std::atomic<int> done{0};
+};
+
+enum Work : int { Work_None = 0, Work_View, Work_Tiles };
 
 struct Heatmap {
     char     name[64] = "";
     Over     over = Over_All;
     uint32_t period = 0;            // Of Over_Period, by id
     bool     select = false;        // Its tab, next frame
-
-    // What it shows. A matrix of truths: the entries true in some of its frames, i * cols + j, ascending, and in how
-    // many. Any other: the whole matrix, row by row, NaN where nothing is known.
-    std::vector<uint32_t> entries, counts;
-    std::vector<float> values;
-    uint64_t gen = 0;               // Made again
-    uint32_t rows = 0, cols = 0;
-    bool     pairs = false;         // A matrix of truths per frame, as pairs
     bool     temporal = false;
-    bool     truth = false;         // Truths, of the frame shown
-    bool     fraction = false;      // Fractions of frames, of truths
-    size_t   num_frames = 0;        // Of a fraction or a mean: over how many frames
-    md_unit_t unit = {};
-    float    lo = 0.0f, hi = 1.0f;
-    uint64_t key = 0;
-    char     status[192] = "";
+    bool     blank = false;         // Nothing to show now: status says why
+    char     status[192] = "";      // Why, or what is being made
+    uint64_t want = 0;              // What it should show, as a key
+    uint64_t made = 0;              // What the view shown, or the one being made, is of
+    uint64_t gen = 0;
 
-    // Made as they come into view, by level and place (tile_key)
-    std::unordered_map<uint64_t, Tile> tiles;
+    // Shown; and made by a view job, taken in when it has finished
+    std::unique_ptr<View>  view, next_view;
+    std::unique_ptr<Index> index, next_index;
+    uint32_t rows = 0, cols = 0;    // Of the tiles kept
+    uint32_t lut[256] = {};         // The colormap, for the tile job
 
-    bool shown() const { return pairs ? num_frames > 0 : !values.empty(); }
+    // Labels of rows and columns, read where the evaluation's attributes are not being changed
+    std::vector<std::string> row_labels, col_labels;
+    bool labels_stale = true;
 
-    heatmaps::Sparse sparse() const { return { entries.data(), counts.data(), entries.size(), num_frames, rows, cols }; }
+    std::unordered_map<uint64_t, Tile> tiles;   // By tile_key
+    std::vector<uint64_t> wanted;               // In view and not of the view shown, this frame, nearest the middle first
+    std::unique_ptr<TileWork[]> work;
+    size_t   num_work = 0;
+    Work     doing = Work_None;     // What job runs
+    bool     from_attr = false;     // A view job reading the evaluation's attributes
+    Work     last = Work_None;      // And the one that ran before: a view and its tiles take turns, so that a view
+                                    // made again at every frame (the frame shown, while playing) has its tiles made
+    task_system::Job job;           // Last: it goes first, and nothing it reads goes before it
 
-    // Entry (i, j) as it is shown
-    float value(uint32_t i, uint32_t j) const {
-        if (pairs) return heatmaps::sparse_value(sparse(), i, j);
-        return values.empty() ? NAN : values[(size_t)i * cols + j];
+    Heatmap() = default;
+    Heatmap(const Heatmap&) = delete;
+    Heatmap& operator=(const Heatmap&) = delete;
+    ~Heatmap() {
+        job.cancel_and_wait();
+        for (auto& kv : tiles) gl::free_texture(&kv.second.tex);
     }
 };
 
 static inline uint64_t tile_key(uint32_t level, uint32_t tx, uint32_t ty) {
     return (uint64_t)level << 58 | (uint64_t)ty << 29 | tx;
 }
+static inline uint32_t key_level(uint64_t k) { return (uint32_t)(k >> 58); }
+static inline uint32_t key_ty(uint64_t k) { return (uint32_t)(k >> 29) & ((1u << 29) - 1); }
+static inline uint32_t key_tx(uint64_t k) { return (uint32_t)k & ((1u << 29) - 1); }
 
 static void free_tiles(Heatmap& h) {
     for (auto& kv : h.tiles) gl::free_texture(&kv.second.tex);
     h.tiles.clear();
 }
 
-static float attr_value(const md_attribute_t* a, size_t i) {
-    switch (a->format.type) {
-    case MD_ATTRIBUTE_TYPE_F32: return ((const float*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_F64: return (float)((const double*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_U8:  return (float)((const uint8_t*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_I8:  return (float)((const int8_t*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_U16: return (float)((const uint16_t*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_I16: return (float)((const int16_t*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_U32: return (float)((const uint32_t*)a->data)[i];
-    case MD_ATTRIBUTE_TYPE_I32: return (float)((const int32_t*)a->data)[i];
-    default: return NAN;
-    }
-}
-
 // A tick's text: the label of the row or column it is the edge of, else its index
 struct AxisLabels {
-    const md_attributes_t* attrs = nullptr;
-    const md_attribute_t*  labels = nullptr;
+    const std::vector<std::string>* labels = nullptr;
     uint32_t n = 0;
     bool     rows = false;          // The y axis, rows from the top
 };
@@ -152,22 +168,21 @@ static int axis_label(double value, char* buf, int size, void* data) {
     const double at = a->rows ? (double)a->n - value : value;
     const long i = (long)floor(at + 1e-6);
     if (i < 0 || (uint32_t)i >= a->n) return snprintf(buf, size, "%s", "");
-    if (a->labels) {
-        const md_str_t s = md_attribute_str(a->attrs, a->labels, (size_t)i);
-        if (s.len) return snprintf(buf, size, MD_STR_FMT, MD_STR_ARG(s));
-    }
+    if (a->labels && (size_t)i < a->labels->size() && !(*a->labels)[i].empty()) return snprintf(buf, size, "%s", (*a->labels)[i].c_str());
     return snprintf(buf, size, "%ld", i);
+}
+
+// Waiting, drawn over a tile
+static void spinner(ImDrawList* dl, ImVec2 c, float r, double t) {
+    const float a = (float)fmod(t * 5.0, 2.0 * 3.14159265358979);
+    dl->PathArcTo(c, r, a, a + 4.5f, 20);
+    dl->PathStroke(IM_COL32(235, 235, 235, 210), 0, MD_MAX(1.5f, r * 0.22f));
 }
 
 struct Heatmaps : viamd::EventHandler {
     bool show_window = false;
     ApplicationState* app = nullptr;
-    std::vector<Heatmap> maps;
-
-    // A tile in the making
-    std::vector<float>    cell;
-    std::vector<uint32_t> known;
-    std::vector<ImU32>    rgba;
+    std::vector<std::unique_ptr<Heatmap>> maps;
 
     // The cell under the pointer, this frame: whose rows and columns are lit up
     int  hovered_map = -1;
@@ -184,9 +199,29 @@ struct Heatmaps : viamd::EventHandler {
                 app = (ApplicationState*)e.payload;
                 workspace_register_window("Heatmaps", &show_window);
                 break;
+            case viamd::EventType_ViamdShutdown:
             case viamd::EventType_ViamdDeserializeBegin:
-                for (Heatmap& h : maps) free_tiles(h);
                 maps.clear();
+                break;
+            case viamd::EventType_ViamdScriptEvalFree:
+                // Nothing of it is read from now on: its jobs stopped, and the views of it gone. Tiles stay, drawn as
+                // they were until those of the next evaluation are made.
+                for (auto& h : maps) drop_views(*h);
+                break;
+            case viamd::EventType_ViamdScriptEvalBegin:
+                // A view made from its attributes stops: they change while it runs
+                for (auto& h : maps) {
+                    if (h->doing != Work_View || !h->from_attr) continue;
+                    h->job.cancel_and_wait();
+                    h->made = 0;
+                }
+                break;
+            case viamd::EventType_ViamdScriptEvalInit:
+            case viamd::EventType_ViamdScriptEvalEnd:
+                for (auto& h : maps) {
+                    h->made = 0;
+                    h->labels_stale = true;
+                }
                 break;
             case viamd::EventType_ViamdFrameTick:
                 draw_window();
@@ -197,10 +232,10 @@ struct Heatmaps : viamd::EventHandler {
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, MD_STR_LIT("Heatmaps"));
-                for (const Heatmap& h : maps) {
-                    viamd::write_str(state, MD_STR_LIT("Matrix"), md_str_from_cstr(h.name));
-                    viamd::write_str(state, MD_STR_LIT("Over"), over_ini[h.over]);
-                    if (h.over == Over_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)h.period);
+                for (const auto& h : maps) {
+                    viamd::write_str(state, MD_STR_LIT("Matrix"), md_str_from_cstr(h->name));
+                    viamd::write_str(state, MD_STR_LIT("Over"), over_ini[h->over]);
+                    if (h->over == Over_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)h->period);
                 }
                 break;
             }
@@ -210,19 +245,18 @@ struct Heatmaps : viamd::EventHandler {
                     md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
                         if (md_str_eq(ident, MD_STR_LIT("Matrix"))) {
-                            Heatmap h;
-                            viamd::extract_to_char_buf(h.name, sizeof(h.name), arg);
-                            maps.push_back(h);
+                            maps.push_back(std::make_unique<Heatmap>());
+                            viamd::extract_to_char_buf(maps.back()->name, sizeof(maps.back()->name), arg);
                         } else if (maps.empty()) {
                             continue;
                         } else if (md_str_eq(ident, MD_STR_LIT("Over"))) {
                             md_str_t s = {};
                             viamd::extract_str(s, arg);
-                            for (int o = 0; o < Over_Count; ++o) if (md_str_eq(s, over_ini[o])) maps.back().over = (Over)o;
+                            for (int o = 0; o < Over_Count; ++o) if (md_str_eq(s, over_ini[o])) maps.back()->over = (Over)o;
                         } else if (md_str_eq(ident, MD_STR_LIT("Period"))) {
                             int id = 0;
                             viamd::extract_int(id, arg);
-                            maps.back().period = (uint32_t)id;
+                            maps.back()->period = (uint32_t)id;
                         }
                     }
                 }
@@ -237,14 +271,27 @@ struct Heatmaps : viamd::EventHandler {
     // A matrix of the script, by the path its mark drags ("script/<name>"); one already here is selected
     void add(const char* path) {
         const char* name = strncmp(path, "script/", 7) == 0 ? path + 7 : path;
-        for (Heatmap& h : maps) {
-            if (strcmp(h.name, name) == 0) { h.select = true; return; }
+        for (auto& h : maps) {
+            if (strcmp(h->name, name) == 0) { h->select = true; return; }
         }
-        Heatmap h;
+        maps.push_back(std::make_unique<Heatmap>());
+        Heatmap& h = *maps.back();
         snprintf(h.name, sizeof(h.name), "%s", name);
         h.select = true;
-        maps.push_back(h);
         show_window = true;
+    }
+
+    // Its job stopped and waited for, and every view and index dropped: what they read is about to go
+    static void drop_views(Heatmap& h) {
+        h.job.cancel_and_wait();
+        h.work.reset();
+        h.num_work = 0;
+        h.next_view.reset();
+        h.next_index.reset();
+        h.view.reset();
+        h.index.reset();
+        h.made = 0;
+        h.labels_stale = true;
     }
 
     // The frames [beg, end) of what h is over, false when it covers none
@@ -275,163 +322,207 @@ struct Heatmaps : viamd::EventHandler {
         }
     }
 
-    // Its shape; the tiles of another go
-    static void set_shape(Heatmap& h, uint32_t rows, uint32_t cols) {
-        if (rows != h.rows || cols != h.cols) free_tiles(h);
-        h.rows = rows;
-        h.cols = cols;
+    // The labels of its rows and columns, copied: read while the evaluation's attributes do not change
+    void read_labels(Heatmap& h) {
+        h.labels_stale = false;
+        h.row_labels.clear();
+        h.col_labels.clear();
+        const md_attributes_t* attrs = app->script.eval ? script::attributes(app->script.eval) : nullptr;
+        if (!attrs) return;
+        for (int d = 0; d < 2; ++d) {
+            char path[SERIES_PATH_CAP + 16];
+            snprintf(path, sizeof(path), d ? "script/%s/column_labels" : "script/%s/labels", h.name);
+            const md_attribute_t* a = md_attributes_find(attrs, md_str_from_cstr(path));
+            if (!a || a->format.type != MD_ATTRIBUTE_TYPE_STR) continue;
+            std::vector<std::string>& out = d ? h.col_labels : h.row_labels;
+            out.resize(a->format.shape[0]);
+            for (uint32_t k = 0; k < a->format.shape[0]; ++k) {
+                const md_str_t s = md_attribute_str(attrs, a, k);
+                out[k].assign(s.ptr ? s.ptr : "", s.len);
+            }
+        }
     }
 
-    // What h shows, made again when anything it is made from has changed, and four times a second while evaluating
-    void update(Heatmap& h) {
+    // What h should show, as a key, and a job to make its view when that is not what it shows. On the main thread
+    // nothing is computed here: what is read is what a view is made from.
+    void request(Heatmap& h) {
         const script::Eval* eval = app->script.eval;
         const script::Program* ir = app->script.eval_ir;
         const md_str_t name = md_str_from_cstr(h.name);
         const uint32_t flags = ir ? script::output_flags(ir, name) : 0;
-        uint32_t beg = 0, end = 0;
-        const bool have_frames = frames_of(h, &beg, &end);
         const bool running = app->tasks.evaluate.running();
-        const uint64_t version = eval ? script::eval_errors(eval).version : 0;
-        const int tick = running ? (int)(ImGui::GetTime() * 4.0) : 0;
-        uint64_t key = md_hash64(h.name, strlen(h.name), (uint64_t)(uintptr_t)eval);
-        key = md_hash64(&flags, sizeof(flags), key);
-        const uint32_t state[6] = { (uint32_t)h.over, h.period, have_frames ? beg : ~0u, end, (uint32_t)tick, (uint32_t)version };
-        key = md_hash64(state, sizeof(state), key ^ version);
-        if (key == h.key) return;
-        h.key = key;
-        h.gen += 1;
-
-        h.entries.clear();
-        h.counts.clear();
-        h.values.clear();
-        h.pairs = h.temporal = h.truth = h.fraction = false;
-        h.num_frames = 0;
-        h.unit = {};
+        h.temporal = (flags & script::OUTPUT_TEMPORAL) != 0;
+        h.blank = false;
         h.status[0] = '\0';
+        if (h.labels_stale && !running) read_labels(h);
         if (!(flags & script::OUTPUT_MATRIX)) {
-            set_shape(h, 0, 0);
+            h.blank = true;
             snprintf(h.status, sizeof(h.status), "The script publishes no matrix '%s'", h.name);
             return;
         }
-        h.temporal = (flags & script::OUTPUT_TEMPORAL) != 0;
         if (!eval) {
-            set_shape(h, 0, 0);
+            h.blank = true;
             snprintf(h.status, sizeof(h.status), "Not evaluated: Evaluate in the script editor");
             return;
         }
-        const md_attributes_t* attrs = script::attributes(eval);
-        char path[SERIES_PATH_CAP];
-        snprintf(path, sizeof(path), "script/%s", h.name);
-        const md_attribute_t* attr = attrs ? md_attributes_find(attrs, md_str_from_cstr(path)) : nullptr;
-
-        if (const md_pair_frames_t* pf = script::eval_pairs(eval, name)) {
-            h.pairs = true;
-            set_shape(h, md_pair_frames_rows(pf), md_pair_frames_cols(pf));
-            h.lo = 0.0f;
-            h.hi = 1.0f;
-            h.truth = h.over == Over_Frame;
-            h.fraction = !h.truth;
+        uint32_t beg = 0, end = 0;
+        const bool have_frames = frames_of(h, &beg, &end);
+        ViewSource src;
+        snprintf(src.name, sizeof(src.name), "%s", h.name);
+        src.frame = h.over == Over_Frame;
+        src.pf = script::eval_pairs(eval, name);
+        if (src.pf) {
             if (!have_frames) {
+                h.blank = true;
                 snprintf(h.status, sizeof(h.status), "The period covers none of the frames");
                 return;
             }
-            md_allocator_i* heap = md_get_heap_allocator();
-            uint32_t* entries = nullptr;
-            uint32_t* counts = nullptr;
-            h.num_frames = md_pair_frames_counts(&entries, &counts, pf, md_bitset_range(beg, end), heap);
-            h.entries.assign(entries, entries + md_array_size(entries));
-            h.counts.assign(counts, counts + md_array_size(counts));
-            md_array_free(entries, heap);
-            md_array_free(counts, heap);
-            if (h.truth) {
-                if (h.num_frames) snprintf(h.status, sizeof(h.status), "Frame %u: %zu entries true", beg, h.entries.size());
-                else snprintf(h.status, sizeof(h.status), "Frame %u is not evaluated yet", beg);
-            } else if (h.num_frames == 0) {
-                snprintf(h.status, sizeof(h.status), "None of its %u frames is evaluated yet", end - beg);
-            } else {
-                snprintf(h.status, sizeof(h.status), "The fraction of %zu frames%s each entry is true in: %zu true in some, of %zu ever",
-                         h.num_frames, h.num_frames < end - beg ? " evaluated so far" : "", h.entries.size(), md_pair_frames_count(pf));
-            }
-            return;
-        }
-
-        if (!attr || !attr->data || (attr->format.rank != 2 && attr->format.rank != 3)) {
-            set_shape(h, 0, 0);
-            snprintf(h.status, sizeof(h.status), running ? "Being evaluated" : "Not evaluated: Evaluate in the script editor");
-            return;
-        }
-        const bool per_frame = attr->format.rank == 3;
-        set_shape(h, attr->format.shape[per_frame ? 1 : 0], attr->format.shape[per_frame ? 2 : 1]);
-        h.unit = attr->unit;
-        const size_t n = (size_t)h.rows * h.cols;
-        h.values.assign(n, NAN);
-        if (!per_frame) {
-            for (size_t i = 0; i < n; ++i) h.values[i] = attr_value(attr, i);
-        } else if (!have_frames) {
-            snprintf(h.status, sizeof(h.status), "The period covers none of the frames");
         } else {
-            const uint32_t nf = attr->format.shape[0];
-            end = MD_MIN(end, nf);
-            // The frames it holds: a frame not computed yet is NaN, or 0 for integers, and is left out
-            md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
-            const md_bitset_t held = script::eval_output_frames(eval, name, temp);
-            const uint64_t num = beg < end ? md_bitset_count_range(held, beg, end) : 0;
-            if (num == 0) {
-                snprintf(h.status, sizeof(h.status), h.over == Over_Frame ? "Frame %u is not evaluated yet" : "None of its frames is evaluated yet", beg);
-            } else if (n * num > ((size_t)1 << 27)) {
-                snprintf(h.status, sizeof(h.status), "Too many values to average here (%zu × %llu frames): mean(%s, axis='frame') in the script",
-                         n, (unsigned long long)num, h.name);
-            } else {
-                std::vector<uint32_t> count(n, 0);
-                std::vector<double> sum(n, 0.0);
-                md_bitset_iter_t it = md_bitset_iter_range(held, beg, end);
-                while (md_bitset_iter_next(&it)) {
-                    const size_t base = (size_t)it.idx * n;
-                    for (size_t i = 0; i < n; ++i) {
-                        const float v = attr_value(attr, base + i);
-                        if (std::isnan(v)) continue;
-                        sum[i] += v;
-                        count[i] += 1;
-                    }
-                }
-                for (size_t i = 0; i < n; ++i) h.values[i] = count[i] ? (float)(sum[i] / count[i]) : NAN;
-                h.num_frames = (size_t)num;
-                if (h.over == Over_Frame) snprintf(h.status, sizeof(h.status), "Frame %u", beg);
-                else snprintf(h.status, sizeof(h.status), "The mean over %llu frames", (unsigned long long)num);
+            // From its attribute, which is not read while the evaluation runs: what was made stays
+            if (running) {
+                h.blank = !h.view;
+                snprintf(h.status, sizeof(h.status), "Being evaluated");
+                return;
             }
-            md_arena_allocator_destroy(temp);
+            char path[SERIES_PATH_CAP];
+            snprintf(path, sizeof(path), "script/%s", h.name);
+            const md_attributes_t* attrs = script::attributes(eval);
+            const md_attribute_t* attr = attrs ? md_attributes_find(attrs, md_str_from_cstr(path)) : nullptr;
+            if (!attr || !attr->data || (attr->format.rank != 2 && attr->format.rank != 3)) {
+                h.blank = true;
+                snprintf(h.status, sizeof(h.status), "Not evaluated: Evaluate in the script editor");
+                return;
+            }
+            if (attr->format.rank == 3 && !have_frames) {
+                h.blank = true;
+                snprintf(h.status, sizeof(h.status), "The period covers none of the frames");
+                return;
+            }
+            src.attr = *attr;
+            src.eval = eval;
+            src.factor = display_units::factor(nullptr, attr->unit);
         }
-        // Its range, in the display unit
-        const double f = display_units::factor(nullptr, h.unit);
-        float lo = INFINITY, hi = -INFINITY;
-        for (float& v : h.values) {
-            if (std::isnan(v)) continue;
-            v = (float)(v * f);
-            lo = MD_MIN(lo, v);
-            hi = MD_MAX(hi, v);
+        src.beg = beg;
+        src.end = end;
+
+        // While evaluating, made again four times a second
+        const uint64_t version = script::eval_errors(eval).version;
+        const int tick = running ? (int)(ImGui::GetTime() * 4.0) : 0;
+        uint64_t key = md_hash64(h.name, strlen(h.name), (uint64_t)(uintptr_t)eval ^ ((uint64_t)(uintptr_t)src.pf << 1));
+        const uint32_t state[7] = { flags, (uint32_t)h.over, h.period, have_frames ? beg : ~0u, end, (uint32_t)tick, (uint32_t)version };
+        key = md_hash64(state, sizeof(state), key ^ version);
+        key = md_hash64(&src.factor, sizeof(src.factor), key);
+        h.want = key ? key : 1;
+        if (h.want != h.made && !h.job.running() && !(h.last == Work_View && !h.wanted.empty())) start_view(h, src);
+    }
+
+    void start_view(Heatmap& h, const ViewSource& src) {
+        h.made = h.want;
+        h.next_view.reset(new View);
+        h.next_view->gen = ++h.gen;
+        h.next_index.reset();
+        h.doing = Work_View;
+        h.from_attr = !src.pf;
+        Heatmap* hp = &h;
+        const Index* cur = h.index.get();
+        h.job.start(MD_STR_LIT(""), [hp, cur, src]() { heatmaps::make_view(*hp->next_view, &hp->next_index, cur, src); },
+                    [hp](task_system::Status st) { finish_view(*hp, st); });
+    }
+
+    // On the main thread, with no job running: the view made shown, and the index it is of kept
+    static void finish_view(Heatmap& h, task_system::Status st) {
+        h.doing = Work_None;
+        h.last = Work_View;
+        if (st != task_system::Status::Completed || !h.next_view) {
+            h.next_view.reset();
+            h.next_index.reset();
+            h.made = 0;
+            return;
         }
-        if (!(hi >= lo)) { lo = 0.0f; hi = 1.0f; }
-        if (hi == lo) hi = lo + 1.0f;
-        h.lo = lo;
-        h.hi = hi;
+        if (h.next_view->rows != h.rows || h.next_view->cols != h.cols) {
+            free_tiles(h);
+            h.rows = h.next_view->rows;
+            h.cols = h.next_view->cols;
+        }
+        h.view = std::move(h.next_view);
+        if (h.next_index) h.index = std::move(h.next_index);
+        else if (!h.view->pairs) h.index.reset();
+    }
+
+    // The tiles wanted, those nearest the middle first, made by a job of the view shown: unless another view is to be
+    // made, and its turn has come
+    void start_tiles(Heatmap& h) {
+        if (h.job.running() || !h.view || h.wanted.empty() || (h.want != h.made && h.last != Work_View)) return;
+        const size_t n = MD_MIN(h.wanted.size(), (size_t)TILES_PER_JOB);
+        h.work.reset(new TileWork[n]);
+        h.num_work = n;
+        for (size_t k = 0; k < n; ++k) {
+            TileWork& w = h.work[k];
+            w.key = h.wanted[k];
+            w.level = key_level(w.key);
+            w.tx = key_tx(w.key);
+            w.ty = key_ty(w.key);
+        }
+        for (int i = 0; i < 256; ++i) h.lut[i] = ImGui::ColorConvertFloat4ToU32(ImPlot::SampleColormap((float)i / 255.0f, ImPlotColormap_Viridis));
+        h.doing = Work_Tiles;
+        Heatmap* hp = &h;
+        h.job.start(MD_STR_LIT(""), [hp]() {
+            const View& v = *hp->view;
+            task_system::parallel_for((uint32_t)hp->num_work, 1, [&](uint32_t beg, uint32_t end) {
+                for (uint32_t k = beg; k < end && !task_system::cancelled(); ++k) {
+                    TileWork& w = hp->work[k];
+                    w.rgba.resize(TILE * TILE);
+                    if (heatmaps::make_tile(w.rgba.data(), v, w.level, w.tx, w.ty, hp->lut, IM_COL32(90, 90, 90, 255))) w.done.store(1, std::memory_order_release);
+                }
+            });
+        }, [hp](task_system::Status) {
+            upload_done(*hp);
+            hp->work.reset();
+            hp->num_work = 0;
+            hp->doing = Work_None;
+            hp->last = Work_Tiles;
+        });
+    }
+
+    // Tiles a job has made, uploaded: as soon as each is done
+    static void upload_done(Heatmap& h) {
+        if (!h.work || !h.view) return;
+        for (size_t k = 0; k < h.num_work; ++k) {
+            TileWork& w = h.work[k];
+            if (w.done.load(std::memory_order_acquire) != 1) continue;
+            w.done.store(2, std::memory_order_relaxed);
+            Tile& t = h.tiles[w.key];
+            if (!t.tex) {
+                gl::init_texture_2D(&t.tex, TILE, TILE, GL_RGBA8);
+                glBindTexture(GL_TEXTURE_2D, t.tex);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            }
+            gl::set_texture_2D_data(t.tex, 0, w.rgba.data(), GL_RGBA8);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            t.gen = h.view->gen;
+            t.waiting = 0;
+            w.rgba = {};
+        }
     }
 
     // The value of a cell as the tooltip says it
-    void cell_text(char* buf, size_t cap, const Heatmap& h, float v) const {
-        if (std::isnan(v)) { snprintf(buf, cap, "Not known"); return; }
-        if (h.truth) { snprintf(buf, cap, v > 0.5f ? "True" : "False"); return; }
-        if (h.fraction) {
-            const size_t k = (size_t)llround((double)v * (double)h.num_frames);
-            snprintf(buf, cap, "True in %zu of %zu frames (%.0f%%)", k, h.num_frames, 100.0 * v);
+    static void cell_text(char* buf, size_t cap, const View& v, float x) {
+        if (std::isnan(x)) { snprintf(buf, cap, "Not known"); return; }
+        if (v.truth) { snprintf(buf, cap, x > 0.5f ? "True" : "False"); return; }
+        if (v.fraction) {
+            const size_t k = (size_t)llround((double)x * (double)v.num_frames);
+            snprintf(buf, cap, "True in %zu of %zu frames (%.0f%%)", k, v.num_frames, 100.0 * x);
             return;
         }
         char unit[64] = "";
-        display_units::factor_print(unit, sizeof(unit), h.unit);
-        snprintf(buf, cap, "%.4g%s%s", v, unit[0] ? " " : "", unit);
+        display_units::factor_print(unit, sizeof(unit), v.unit);
+        snprintf(buf, cap, "%.4g%s%s", x, unit[0] ? " " : "", unit);
     }
 
     void draw_map(Heatmap& h, int idx) {
-        const md_attributes_t* attrs = app->script.eval ? script::attributes(app->script.eval) : nullptr;
+        const View* v = h.view.get();
+        h.wanted.clear();       // Of what is drawn below
         // What it is over: the frame shown, every frame, a period
         if (h.temporal) {
             const TimelinePeriod* cur = h.over == Over_Period ? timeline_periods_find(&app->timeline.periods, h.period) : nullptr;
@@ -452,25 +543,18 @@ struct Heatmaps : viamd::EventHandler {
                 }
                 ImGui::EndCombo();
             }
-            ImGui::SetItemTooltip(h.pairs ? "Truths at the frame shown, or the fraction of frames each entry is true in.\nA period dropped here from the timeline: over its frames."
-                                          : "The values at the frame shown, or their mean over frames.\nA period dropped here from the timeline: over its frames.");
+            ImGui::SetItemTooltip(v && v->pairs ? "Truths at the frame shown, or the fraction of frames each entry is true in.\nA period dropped here from the timeline: over its frames."
+                                                : "The values at the frame shown, or their mean over frames.\nA period dropped here from the timeline: over its frames.");
             ImGui::SameLine();
         }
-        ImGui::TextDisabled("%s", h.status);
-        if (!h.rows || !h.cols) return;
+        ImGui::TextDisabled("%s", h.status[0] ? h.status : v ? v->status : "Being made");
+        if (h.blank || !h.rows || !h.cols) return;
 
-        char row_path[SERIES_PATH_CAP + 16], col_path[SERIES_PATH_CAP + 16];
-        snprintf(row_path, sizeof(row_path), "script/%s/labels", h.name);
-        snprintf(col_path, sizeof(col_path), "script/%s/column_labels", h.name);
-        const md_attribute_t* rl = attrs ? md_attributes_find(attrs, md_str_from_cstr(row_path)) : nullptr;
-        const md_attribute_t* cl = attrs ? md_attributes_find(attrs, md_str_from_cstr(col_path)) : nullptr;
-        if (rl && (rl->format.type != MD_ATTRIBUTE_TYPE_STR || rl->format.shape[0] != h.rows)) rl = nullptr;
-        if (cl && (cl->format.type != MD_ATTRIBUTE_TYPE_STR || cl->format.shape[0] != h.cols)) cl = nullptr;
-        AxisLabels ax = { attrs, cl, h.cols, false }, ay = { attrs, rl, h.rows, true };
-
+        AxisLabels ax = { &h.col_labels, h.cols, false }, ay = { &h.row_labels, h.rows, true };
         const float scale_w = 70.0f;
         const ImVec2 avail = ImGui::GetContentRegionAvail();
         const ImVec2 size(MD_MAX(avail.x - scale_w - ImGui::GetStyle().ItemSpacing.x, 100.0f), MD_MAX(avail.y, 100.0f));
+        const bool shown = v && v->shown();
         ImPlot::PushColormap(ImPlotColormap_Viridis);
         char id[96];
         snprintf(id, sizeof(id), "##heatmap_%s", h.name);
@@ -479,7 +563,8 @@ struct Heatmaps : viamd::EventHandler {
             ImPlot::SetupAxisFormat(ImAxis_X1, axis_label, &ax);
             ImPlot::SetupAxisFormat(ImAxis_Y1, axis_label, &ay);
             ImPlot::SetupAxesLimits(0, h.cols, 0, h.rows, ImPlotCond_Once);
-            if (h.shown()) draw_tiles(h);
+            upload_done(h);
+            if (!v || shown) draw_tiles(h);
             // A fit, by double-click, is to the whole matrix: there is no item to fit to
             if (ImPlot::FitThisFrame()) {
                 ImPlot::FitPoint(ImPlotPoint(0, 0));
@@ -496,7 +581,7 @@ struct Heatmaps : viamd::EventHandler {
                 ImPlot::EndDragDropTarget();
             }
 
-            if (ImPlot::IsPlotHovered() && h.shown()) {
+            if (ImPlot::IsPlotHovered() && shown) {
                 const ImPlotPoint mp = ImPlot::GetPlotMousePos();
                 const long c = (long)floor(mp.x), r = (long)floor((double)h.rows - mp.y);
                 if (c >= 0 && r >= 0 && (uint32_t)c < h.cols && (uint32_t)r < h.rows) {
@@ -506,19 +591,23 @@ struct Heatmaps : viamd::EventHandler {
                     const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint((double)c, (double)h.rows - r));
                     const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint((double)c + 1, (double)h.rows - r - 1));
                     ImPlot::GetPlotDrawList()->AddRect(p0, p1, IM_COL32(255, 255, 255, 220), 0.0f, 0, 1.5f);
-                    draw_cell_tooltip(h, (uint32_t)r, (uint32_t)c, rl, cl, attrs);
+                    draw_cell_tooltip(h, *v, (uint32_t)r, (uint32_t)c);
                 }
             }
             ImPlot::EndPlot();
         }
         ImGui::SameLine();
-        ImPlot::ColormapScale("##scale", h.lo, h.hi, ImVec2(scale_w, size.y), h.truth || h.fraction ? "%.2f" : "%.3g");
+        const float lo = v ? v->lo : 0.0f, hi = v ? v->hi : 1.0f;
+        ImPlot::ColormapScale("##scale", lo, hi, ImVec2(scale_w, size.y), v && (v->truth || v->fraction) ? "%.2f" : "%.3g");
         ImPlot::PopColormap();
+        start_tiles(h);
     }
 
-    // The tiles in view, at the level that makes a cell a pixel or a little more: those not made for what h shows now
-    // made while there is time in this frame, the rest drawn as they were, or from a coarser tile
+    // The tiles in view, at the level that makes a cell a pixel or a little more. Those not of the view shown are
+    // wanted, and drawn as they were, from a coarser tile, or blank; with a spinner once they have waited a while.
     void draw_tiles(Heatmap& h) {
+        const View* v = h.view.get();
+        const uint64_t gen = v ? v->gen : 0;
         const ImPlotRect lim = ImPlot::GetPlotLimits();
         const ImVec2 size = ImPlot::GetPlotSize();
         const ImVec2 fb = ImGui::GetIO().DisplayFramebufferScale;
@@ -526,44 +615,68 @@ struct Heatmaps : viamd::EventHandler {
         const uint32_t top = heatmaps::tile_top(h.rows, h.cols);
         const uint32_t level = heatmaps::tile_level(per_px, h.rows, h.cols);
         const uint64_t span = (uint64_t)TILE << level;
+        h.wanted.clear();
 
         const uint32_t c0 = (uint32_t)MD_CLAMP(floor(lim.X.Min), 0.0, (double)h.cols), c1 = (uint32_t)MD_CLAMP(ceil(lim.X.Max), 0.0, (double)h.cols);
         const uint32_t r0 = (uint32_t)MD_CLAMP(floor((double)h.rows - lim.Y.Max), 0.0, (double)h.rows), r1 = (uint32_t)MD_CLAMP(ceil((double)h.rows - lim.Y.Min), 0.0, (double)h.rows);
         if (c1 <= c0 || r1 <= r0) return;
         const uint32_t tx0 = (uint32_t)(c0 / span), tx1 = (uint32_t)((c1 - 1) / span);
         const uint32_t ty0 = (uint32_t)(r0 / span), ty1 = (uint32_t)((r1 - 1) / span);
+        const double mx = 0.5 * (lim.X.Min + lim.X.Max), my = (double)h.rows - 0.5 * (lim.Y.Min + lim.Y.Max);
 
-        ImU32 lut[256];
-        for (int i = 0; i < 256; ++i) lut[i] = ImGui::ColorConvertFloat4ToU32(ImPlot::SampleColormap((float)i / 255.0f, ImPlotColormap_Viridis));
         const int now = ImGui::GetFrameCount();
-        const md_tick_t start = md_tick_now();
+        const double t_now = ImGui::GetTime();
+        std::vector<std::pair<double, uint64_t>> want;
         ImPlot::PushPlotClipRect();
         ImDrawList* dl = ImPlot::GetPlotDrawList();
+        const ImVec2 clip0 = ImPlot::GetPlotPos(), clip1(clip0.x + size.x, clip0.y + size.y);
         for (uint32_t ty = ty0; ty <= ty1; ++ty) {
             for (uint32_t tx = tx0; tx <= tx1; ++tx) {
                 const uint64_t key = tile_key(level, tx, ty);
-                auto it = h.tiles.find(key);
-                Tile* t = it != h.tiles.end() ? &it->second : nullptr;
-                if ((!t || t->gen != h.gen) && md_tick_to_milliseconds(md_tick_now() - start) < TILE_BUDGET_MS) {
-                    if (!t) t = &h.tiles[key];
-                    make_tile(*t, h, level, tx, ty, lut);
+                Tile& t = h.tiles[key];
+                t.used = now;
+                const bool current = t.tex && v && t.gen == gen;
+                if (current) {
+                    t.waiting = 0;
+                } else {
+                    if (t.waiting == 0) t.waiting = t_now;
+                    if (v) {
+                        const double dx = ((double)tx + 0.5) * span - mx, dy = ((double)ty + 0.5) * span - my;
+                        want.emplace_back(dx * dx + dy * dy, key);
+                    }
                 }
-                if (t) {
-                    t->used = now;
-                    draw_tile(dl, h, *t, level, tx, ty, level, tx, ty);
-                    continue;
+                if (t.tex) {
+                    draw_tile(dl, h, t, level, tx, ty, level, tx, ty);
+                } else {
+                    bool drawn = false;
+                    for (uint32_t l = level + 1; l <= top && !drawn; ++l) {
+                        const uint32_t s = l - level;
+                        auto p = h.tiles.find(tile_key(l, tx >> s, ty >> s));
+                        if (p == h.tiles.end() || !p->second.tex) continue;
+                        p->second.used = now;
+                        draw_tile(dl, h, p->second, l, tx >> s, ty >> s, level, tx, ty);
+                        drawn = true;
+                    }
+                    // Blank, where the matrix is
+                    if (!drawn) {
+                        const ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint((double)tx * span, (double)h.rows - (double)ty * span));
+                        const ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint(MD_MIN((double)(tx + 1) * span, (double)h.cols), MD_MAX((double)h.rows - (double)(ty + 1) * span, 0.0)));
+                        dl->AddRectFilled(a, b, IM_COL32(48, 48, 48, 255));
+                    }
                 }
-                for (uint32_t l = level + 1; l <= top; ++l) {
-                    const uint32_t s = l - level;
-                    auto p = h.tiles.find(tile_key(l, tx >> s, ty >> s));
-                    if (p == h.tiles.end()) continue;
-                    p->second.used = now;
-                    draw_tile(dl, h, p->second, l, tx >> s, ty >> s, level, tx, ty);
-                    break;
+                // Waited a while: a spinner in the middle of what is seen of it
+                if (!current && t_now - t.waiting > SPINNER_AFTER) {
+                    const ImVec2 a = ImPlot::PlotToPixels(ImPlotPoint((double)tx * span, (double)h.rows - (double)ty * span));
+                    const ImVec2 b = ImPlot::PlotToPixels(ImPlotPoint(MD_MIN((double)(tx + 1) * span, (double)h.cols), MD_MAX((double)h.rows - (double)(ty + 1) * span, 0.0)));
+                    const ImVec2 q0(MD_MAX(a.x, clip0.x), MD_MAX(a.y, clip0.y)), q1(MD_MIN(b.x, clip1.x), MD_MIN(b.y, clip1.y));
+                    const float w = q1.x - q0.x, ht = q1.y - q0.y;
+                    if (w >= 24.0f && ht >= 24.0f) spinner(dl, ImVec2(0.5f * (q0.x + q1.x), 0.5f * (q0.y + q1.y)), MD_MIN(10.0f, 0.2f * MD_MIN(w, ht)), t_now);
                 }
             }
         }
         ImPlot::PopPlotClipRect();
+        std::sort(want.begin(), want.end());
+        for (const auto& w : want) h.wanted.push_back(w.second);
 
         // The least recently drawn go, none drawn now
         const size_t keep = MD_MAX((size_t)TILE_KEEP, 2 * (size_t)(tx1 - tx0 + 1) * (ty1 - ty0 + 1));
@@ -579,63 +692,33 @@ struct Heatmaps : viamd::EventHandler {
         }
     }
 
-    // Tile (level, tx, ty), as h shows it now, colored; past the matrix, nothing
-    void make_tile(Tile& t, const Heatmap& h, uint32_t level, uint32_t tx, uint32_t ty, const ImU32 lut[256]) {
-        cell.resize(TILE * TILE);
-        known.resize(TILE * TILE);
-        if (h.pairs) heatmaps::tile_cells(cell.data(), known.data(), h.sparse(), level, tx, ty);
-        else heatmaps::tile_cells(cell.data(), known.data(), h.values.data(), h.rows, h.cols, level, tx, ty);
-        const heatmaps::TileSpan span = heatmaps::tile_span(h.rows, h.cols, level, tx, ty);
-        const float range = h.hi - h.lo;
-        rgba.resize(TILE * TILE);
-        for (uint32_t r = 0; r < TILE; ++r) {
-            for (uint32_t c = 0; c < TILE; ++c) {
-                const size_t idx = (size_t)r * TILE + c;
-                if (r >= span.nr || c >= span.nc) { rgba[idx] = 0; continue; }
-                if (!known[idx]) { rgba[idx] = IM_COL32(90, 90, 90, 255); continue; }      // Nothing known
-                const float u = MD_CLAMP((cell[idx] - h.lo) / range, 0.0f, 1.0f);
-                rgba[idx] = lut[(int)(u * 255.0f + 0.5f)];
-            }
-        }
-        if (!t.tex) {
-            gl::init_texture_2D(&t.tex, TILE, TILE, GL_RGBA8);
-            glBindTexture(GL_TEXTURE_2D, t.tex);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        }
-        gl::set_texture_2D_data(t.tex, 0, rgba.data(), GL_RGBA8);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        t.gen = h.gen;
-    }
-
     // Where tile (level, tx, ty) is, drawn from t, tile (tl, ttx, tty), the same or one coarser holding it
     static void draw_tile(ImDrawList* dl, const Heatmap& h, const Tile& t, uint32_t tl, uint32_t ttx, uint32_t tty, uint32_t level, uint32_t tx, uint32_t ty) {
         const double s = (double)((uint64_t)TILE << level), ts = (double)((uint64_t)TILE << tl);
         const double x = tx * s, y = ty * s;        // Its first column and row
-        const double u = x - ttx * ts, v = y - tty * ts;
+        const double u = x - ttx * ts, w = y - tty * ts;
         const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(x, (double)h.rows - y));
         const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(x + s, (double)h.rows - y - s));
-        dl->AddImage((ImTextureID)(intptr_t)t.tex, p0, p1, ImVec2((float)(u / ts), (float)(v / ts)), ImVec2((float)((u + s) / ts), (float)((v + s) / ts)));
+        dl->AddImage((ImTextureID)(intptr_t)t.tex, p0, p1, ImVec2((float)(u / ts), (float)(w / ts)), ImVec2((float)((u + s) / ts), (float)((w + s) / ts)));
     }
 
-    void draw_cell_tooltip(const Heatmap& h, uint32_t r, uint32_t c, const md_attribute_t* rl, const md_attribute_t* cl, const md_attributes_t* attrs) {
-        const md_str_t rs = rl ? md_attribute_str(attrs, rl, r) : md_str_t{};
-        const md_str_t cs = cl ? md_attribute_str(attrs, cl, c) : md_str_t{};
+    void draw_cell_tooltip(const Heatmap& h, const View& v, uint32_t r, uint32_t c) {
+        const char* rs = r < h.row_labels.size() ? h.row_labels[r].c_str() : "";
+        const char* cs = c < h.col_labels.size() ? h.col_labels[c].c_str() : "";
         char text[128];
-        cell_text(text, sizeof(text), h, h.value(r, c));
+        cell_text(text, sizeof(text), v, v.value(r, c));
         ImGui::BeginTooltip();
-        if (rs.len) ImGui::Text(MD_STR_FMT, MD_STR_ARG(rs)); else ImGui::Text("Row %u", r);
+        if (rs[0]) ImGui::TextUnformatted(rs); else ImGui::Text("Row %u", r);
         ImGui::SameLine();
         ImGui::TextDisabled("and");
         ImGui::SameLine();
-        if (cs.len) ImGui::Text(MD_STR_FMT, MD_STR_ARG(cs)); else ImGui::Text("column %u", c);
+        if (cs[0]) ImGui::TextUnformatted(cs); else ImGui::Text("column %u", c);
         ImGui::TextUnformatted(text);
         // A fraction: when, as a strip over the frames, the run's start at the left
-        const md_pair_frames_t* pf = h.fraction && app->script.eval ? script::eval_pairs(app->script.eval, md_str_from_cstr(h.name)) : nullptr;
-        if (pf) {
+        if (v.fraction && v.pf) {
             md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
-            const md_bitset_t when = md_pair_frames_entry(pf, r, c, temp);
-            const uint32_t nf = md_pair_frames_num_frames(pf);
+            const md_bitset_t when = heatmaps::sparse_frames(v.sparse(), r, c, temp);
+            const uint32_t nf = md_pair_frames_num_frames(v.pf);
             const float w = 18.0f * ImGui::GetFontSize(), ht = 0.8f * ImGui::GetFontSize();
             const ImVec2 o = ImGui::GetCursorScreenPos();
             ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -665,22 +748,19 @@ struct Heatmaps : viamd::EventHandler {
                 } else if (ImGui::BeginTabBar("##heatmaps", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_FittingPolicyScroll)) {
                     int remove = -1;
                     for (int i = 0; i < (int)maps.size(); ++i) {
-                        Heatmap& h = maps[i];
+                        Heatmap& h = *maps[i];
                         bool open = true;
                         const ImGuiTabItemFlags tf = h.select ? ImGuiTabItemFlags_SetSelected : 0;
                         h.select = false;
                         if (ImGui::BeginTabItem(h.name, &open, tf)) {
-                            update(h);
+                            request(h);
                             draw_map(h, i);
                             ImGui::EndTabItem();
                         }
                         if (!open) remove = i;
                     }
                     ImGui::EndTabBar();
-                    if (remove >= 0) {
-                        free_tiles(maps[remove]);
-                        maps.erase(maps.begin() + remove);
-                    }
+                    if (remove >= 0) maps.erase(maps.begin() + remove);
                 }
                 // A matrix dropped anywhere in the window
                 ImGuiWindow* win = ImGui::GetCurrentWindow();
@@ -696,7 +776,7 @@ struct Heatmaps : viamd::EventHandler {
 
         // The row and the column of the cell under the pointer, lit up in the view
         if (hovered_map >= 0 && hovered_map < (int)maps.size() && app->script.eval_ir) {
-            const Heatmap& h = maps[hovered_map];
+            const Heatmap& h = *maps[hovered_map];
             const md_str_t name = md_str_from_cstr(h.name);
             md_bitmask_t* mask = &app->selection.highlight_mask;
             md_bitmask_clear(mask);
