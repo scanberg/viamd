@@ -838,17 +838,16 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_append_place(&title, sys, place, &other);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
+    // Its kinds, each as ring(kind=...) selects it: every tag it has. fused_aromatic is a ring of a fused aromatic system
+    // (its circle is dashed), whose sextets are not assigned to particular rings.
     md_str_writer_t kind = md_str_writer_create(req->alloc);
     if (flags & MD_RING_FLAG_AROMATIC) tooltip_list_add(&kind, "aromatic");
     if (flags & MD_RING_FLAG_HETERO)   tooltip_list_add(&kind, "hetero");
-    // A ring of a fused aromatic system (its circle is dashed): its sextets are not assigned to particular rings
-    if ((flags & MD_RING_FLAG_AROMATIC) && (flags & MD_RING_FLAG_FUSED_AROMATIC)) {
-        tooltip_list_add(&kind, "fused aromatic system");
-    } else if (flags & MD_RING_FLAG_FUSED) {
-        tooltip_list_add(&kind, "fused");
-    }
+    if (flags & MD_RING_FLAG_FUSED)    tooltip_list_add(&kind, "fused");
+    if ((flags & MD_RING_FLAG_AROMATIC) && (flags & MD_RING_FLAG_FUSED_AROMATIC)) tooltip_list_add(&kind, "fused_aromatic");
     if (flags & MD_RING_FLAG_SUGAR)    tooltip_list_add(&kind, "sugar");
     tooltip_row_list(req, MD_STR_LIT("kind"), kind);
+    tooltip_row(req, MD_STR_LIT("size"), "%zu", count);
 
     // The ring system it is of, as a fragment: "indolyl"
     if (!frame_ring) {
@@ -878,8 +877,9 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_row(req, MD_STR_LIT("atoms"), "%s", md_str_writer_to_cstr(&names));
     }
 
-    // Planarity: the atoms the short way round from the first across a periodic boundary, the plane through their
-    // centroid with Newell's normal
+    // Planarity, as planarity() of VIAL has it: the RMS distance of the atoms from their plane of least spread (the
+    // eigenvector of the least eigenvalue of their scatter), the atoms the short way round from the first across a
+    // periodic boundary
     md_float3_t p[MD_RING_MAX_SIZE];
     if (count <= MD_COUNTOF(p)) {
         const md_float3_t p0 = md_state_coord(&sys_state, (size_t)atoms[0]);
@@ -891,10 +891,8 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
             c = md_float3_add(c, p[i]);
         }
         c = md_float3_mul1(c, 1.0f / (float)count);
-        md_float3_t n = {0, 0, 0};
-        for (size_t i = 0; i < count; ++i) {
-            n = md_float3_add(n, md_float3_cross(md_float3_sub(p[i], c), md_float3_sub(p[(i + 1) % count], c)));
-        }
+        const md_float3x3_eigen_t eig = md_float3x3_eigen(md_float3x3_covariance_matrix(p, nullptr, nullptr, count, c));
+        md_float3_t n = eig.vectors.col[2];     // of the least eigenvalue: they are in descending order
         const float len = md_float3_length(n);
         if (len > 0.0f) {
             n = md_float3_mul1(n, 1.0f / len);
@@ -903,7 +901,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
                 const float h = md_float3_dot(md_float3_sub(p[i], c), n);
                 sum2 += h * h;
             }
-            tooltip_row(req, MD_STR_LIT("planarity"), "%.3f " TOOLTIP_ANGSTROM " RMS", sqrtf(sum2 / (float)count));
+            tooltip_row(req, MD_STR_LIT("planarity"), "%.3f " TOOLTIP_ANGSTROM, sqrtf(sum2 / (float)count));
         }
     }
 
