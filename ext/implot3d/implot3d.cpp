@@ -2838,7 +2838,9 @@ void HandleInput(ImPlot3DPlot& plot) {
     // Handle context click with right mouse button
     if (plot.Held && btn_clicked(map.Menu) && !ImPlot3D::ImHasFlag(plot.Flags, ImPlot3DFlags_NoMenus))
         plot.ContextClick = true;
-    if (rotating || (btn_double(map.ResetRotation) && allow_rotate))
+    // [viamd] Nor after a drag of the menu's button (which may pan)
+    if (rotating || (btn_double(map.ResetRotation) && allow_rotate) ||
+        (map.Menu >= 0 && IO.MouseDragMaxDistanceSqr[map.Menu] > MOUSE_CURSOR_DRAG_THRESHOLD))
         plot.ContextClick = false;
 
     // Handle context menu (should not happen if it is not a double click action)
