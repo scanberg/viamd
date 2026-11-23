@@ -600,6 +600,24 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
+// The index of the system's bond of this pair and kind (md_bond_data_t), as VIAL's bond[i] numbers it; -1 when it stores
+// none. The graph's and the interactions' are looked up; the elastic and metallic bonds, which the graph leaves out, are
+// looked for along the first range.
+static md_bond_idx_t tooltip_stored_bond(const md_system_t& sys, md_atom_pair_t pair, md_bond_flags_t flags) {
+    const md_bond_data_t* bd = &sys.bond;
+    const md_bond_kind_t kind = md_bond_kind(flags);
+    md_bond_idx_t b = md_bond_find(bd, pair.idx[0], pair.idx[1]);
+    if (b >= 0 && md_bond_kind(bd->flags[b]) == kind) return b;
+    b = md_bond_find_interaction(bd, pair.idx[0], pair.idx[1]);
+    if (b >= 0 && md_bond_kind(bd->flags[b]) == kind) return b;
+    for (size_t i = 0; i < bd->count; ++i) {
+        const md_atom_pair_t p = bd->pairs[i];
+        const bool same = (p.idx[0] == pair.idx[0] && p.idx[1] == pair.idx[1]) || (p.idx[0] == pair.idx[1] && p.idx[1] == pair.idx[0]);
+        if (same && md_bond_kind(bd->flags[i]) == kind) return (md_bond_idx_t)i;
+    }
+    return -1;
+}
+
 // A bond of the system, one formed in the frame shown, or two atoms a representation draws a bond between which none
 // joins (picked_bond)
 static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState& state, md_atom_pair_t pair, md_bond_flags_t flags, PickedBondSource source) {
@@ -675,7 +693,13 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_row(req, MD_STR_LIT("origin"), "%s", md_bond_origin_name(md_bond_origin(flags)));
     }
 
+    // A bond the system stores has its number in VIAL, bond[i], beside its particles; one found or formed in a frame is
+    // stored nowhere, and is named by its particles alone, which is also what stays the same one whatever is inferred
     md_str_writer_t index = md_str_writer_create(req->alloc);
+    if (source == PickedBondSource::System && state.script.language == script::Language::V2) {
+        const md_bond_idx_t b = tooltip_stored_bond(sys, pair, flags);
+        if (b >= 0) md_str_writer_fmt(&index, "bond[%lld]", (long long)b);
+    }
     tooltip_index_pair(&index, state.script.language, "atom", pair.idx[0], pair.idx[1]);
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
