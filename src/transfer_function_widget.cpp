@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 #include <implot.h>
+#include <plot_input.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -188,7 +189,7 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         }
         if (remove >= 0) changed |= transfer_function_remove(tf, remove);
         // (ctrl: ImPlot leaves the mouse alone while it is held, where a double click is its fitting of the axes)
-        if (!colors_only && !point_hovered && ImPlot::IsPlotHovered() && ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && fabsf(ext) > 0.0f) {
+        if (!colors_only && !point_hovered && plot_input_hovered() && ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && fabsf(ext) > 0.0f) {
             const ImPlotPoint m = ImPlot::GetPlotMousePos();
             const float t = (float)((m.x - tf->range_beg) / ext);
             if (t >= 0.0f && t <= 1.0f) changed |= transfer_function_insert(tf, t, (float)m.y) >= 0;
@@ -196,7 +197,7 @@ bool transfer_function_editor(const char* id, TransferFunction* tf, TransferFunc
         // How it is used, once the mouse rests on the plot (not while it is being worked: it would be in the way)
         static float rest = 0.0f;
         const ImGuiIO& io = ImGui::GetIO();
-        const bool resting = ImPlot::IsPlotHovered() && io.MouseDelta.x == 0.0f && io.MouseDelta.y == 0.0f && !ImGui::IsAnyMouseDown();
+        const bool resting = plot_input_hovered() && io.MouseDelta.x == 0.0f && io.MouseDelta.y == 0.0f && !ImGui::IsAnyMouseDown();
         rest = resting ? rest + io.DeltaTime : 0.0f;
         if (rest > 1.0f) {
             ImGui::SetTooltip(colors_only ? "The colour map over its range, the values' histogram behind.\n"

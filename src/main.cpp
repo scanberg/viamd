@@ -61,6 +61,7 @@
 #include <imgui_widgets.h>
 #include <property_grid.h>
 #include <implot_widgets.h>
+#include <plot_input.h>
 #include <task_system.h>
 #include <color_utils.h>
 #include <image.h>
@@ -4452,7 +4453,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     bool print_timeline_tooltip = false;
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         md_bitmask_clear(&data->selection.highlight_mask);
                         script_set_hovered_property(data,  MD_STR_LIT(""));
 
@@ -4581,7 +4582,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     if (is_dragging) {
                         time = ImPlot::GetPlotMousePos().x;
                         time_moved = true;
-                    } else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                    } else if (plot_input_hovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                         is_dragging = true;
                     }
 
@@ -4719,7 +4720,7 @@ static void draw_timeline_window(ApplicationState* data) {
                         time_moved = true;
                     }
 
-                    if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
+                    if (plot_input_hovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
                         script_visualize_ref(data, v.vis_ref, pop_idx, script::DRAW_HOVER);
@@ -5314,7 +5315,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     int  hovered_bin       = -1;
                     char hovered_label[192] = "";
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         script_set_hovered_property(data, MD_STR_LIT(""));
 
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
@@ -5678,7 +5679,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::EndDragDropTarget();
                     }
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};

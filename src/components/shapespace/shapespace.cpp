@@ -2315,7 +2315,7 @@ struct Shapespace : viamd::EventHandler {
             draw_triangle();
             density_map_plot_canvas(render_densities());
             // Nothing hovered while it is panned (plot_input.h)
-            draw_points(ImPlot::IsPlotHovered() && !plot_input_navigating());
+            draw_points(plot_input_hovered());
 
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {

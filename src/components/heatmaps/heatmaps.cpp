@@ -54,6 +54,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
+#include <plot_input.h>
 #include <implot_internal.h>
 
 #include <atomic>
@@ -581,7 +582,7 @@ struct Heatmaps : viamd::EventHandler {
                 ImPlot::EndDragDropTarget();
             }
 
-            if (ImPlot::IsPlotHovered() && shown) {
+            if (plot_input_hovered() && shown) {
                 const ImPlotPoint mp = ImPlot::GetPlotMousePos();
                 const long c = (long)floor(mp.x), r = (long)floor((double)h.rows - mp.y);
                 if (c >= 0 && r >= 0 && (uint32_t)c < h.cols && (uint32_t)r < h.rows) {

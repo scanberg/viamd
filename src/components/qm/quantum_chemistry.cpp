@@ -48,6 +48,7 @@
 #include "fragment_tree.h"
 
 #include <implot_widgets.h>
+#include <plot_input.h>
 #include <implot_internal.h>
 
 #include <algorithm>
@@ -4101,11 +4102,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // Dropped whenever the cursor is inside the plot, hidden or not, so that a hover taken
         // before the item was toggled off cannot keep driving a tooltip in the caller.
-        if (ImPlot::IsPlotHovered()) {
+        if (plot_input_hovered()) {
             hovered = -1;
         }
 
-        if (item_visible && ImPlot::IsPlotHovered()) {
+        if (item_visible && plot_input_hovered()) {
             // Calculate the hovered index as the closest peak or 'bar' to the mouse position
             // This comparison needs to be done in pixel space
 
@@ -4149,7 +4150,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // Update selected peak on click
         if (item_visible && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
-            ImPlot::IsPlotHovered()) {
+            plot_input_hovered()) {
             selected = hovered == selected ? -1 : hovered;
         }
 
@@ -4513,7 +4514,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const float bar_thickness_in_pixels = 2.0f;
         hovered = -1;
 
-        if (ImPlot::IsPlotHovered() && r.num_core > 0) {
+        if (plot_input_hovered() && r.num_core > 0) {
             const ImVec2 mouse_pos = ImGui::GetMousePos();
             const float  tolerance = 7.0f;
             double min_dist = DBL_MAX;
@@ -4709,7 +4710,7 @@ struct QuantumChemistry : viamd::EventHandler {
             ImPlot::SetAxis(ImAxis_Y2);
             plot_peaks("Cross Section", peaks_x, peaks_y, num_peaks, r.selected_final, r.hovered_final);
 
-            if (ImPlot::IsPlotHovered() && r.hovered_final != -1) {
+            if (plot_input_hovered() && r.hovered_final != -1) {
                 const int i = r.hovered_final;
                 if (ImGui::BeginTooltip()) {
                     if (use_elastic && (size_t)i == F) {
@@ -4805,7 +4806,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // Clicking anywhere in the map moves the spectrum to the closest incoming photon energy.
             // Released rather than clicked, and dragging excluded, so that panning the plot does not
             // change the selection.
-            if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+            if (plot_input_hovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
                 !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && r.num_rows > 0) {
                 const double y = ImPlot::GetPlotMousePos().y;
 
@@ -4826,7 +4827,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
 
-            if (ImPlot::IsPlotHovered()) {
+            if (plot_input_hovered()) {
                 const ImPlotPoint p = ImPlot::GetPlotMousePos();
 
                 // Map the cursor back onto a cell to read out the intensity.
@@ -4880,7 +4881,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndTooltip();
                 }
 
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && plot_input_hovered()) {
                     r.selected_core = (r.hovered_core == r.selected_core) ? -1 : r.hovered_core;
                 }
 
@@ -5037,7 +5038,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const ImPlotNextItemData& s = ImPlot::GetItemData();
         const ImVec4 item_color = s.Colors[ImPlotCol_Fill];
 
-        const bool  plot_hovered = ImPlot::IsPlotHovered();
+        const bool  plot_hovered = plot_input_hovered();
         const ImVec2 mouse_pos   = ImGui::GetMousePos();
         const double min_line_d2  = pow(bar_width_in_pixels * 0.5 + 7.0, 2);
         const double min_point_d2 = pow(point_radius_in_pixels + 7.0, 2);
@@ -5280,7 +5281,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             // ---- Interaction ---------------------------------------------------------------------
-            const bool plot_hovered = ImPlot::IsPlotHovered();
+            const bool plot_hovered = plot_input_hovered();
             // An index into the FLAT columns, which is why plot_xps_sticks was handed the group's
             // offset as its base: a hover survives being compared against entries from any group.
             const int  hov = (xps.hovered >= 0 && xps.hovered < (int)num_entries) ? xps.hovered : -1;
@@ -6561,7 +6562,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::PlotScatter("Transition State", &x, &y, 1);
                             }
 
-                            if (ImPlot::IsPlotHovered() && opt.hovered != -1) {
+                            if (plot_input_hovered() && opt.hovered != -1) {
                                 ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, y_vals[opt.hovered]);
                             }
 
@@ -7072,7 +7073,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 int hovered = -1;
                                 plot_peaks("Samples", x_samples, y_samples, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                                if (ImPlot::IsPlotHovered() && hovered != -1) {
+                                if (plot_input_hovered() && hovered != -1) {
                                     double x_val = x_samples[hovered];
                                     double y_val = y_samples[hovered];
                                     const char* x_unit = x_unit_short_str[rsp.x_unit];
@@ -7091,7 +7092,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::SetAxis(ImAxis_Y2);
                                 plot_peaks("Oscillator Strength", x_peaks, y_peaks_osc, num_peaks, rsp.selected, rsp.hovered);
 
-                                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                                if (plot_input_hovered() && rsp.hovered != -1) {
                                     double x_val = x_peaks[rsp.hovered];
                                     double y_val = y_peaks_osc[rsp.hovered];
                                     int state_idx = rsp.hovered + 1;
@@ -7199,7 +7200,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 int hovered = -1;
                                 plot_peaks("Samples", x_samples, y_samples_delta_epsilons, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                                if (ImPlot::IsPlotHovered() && hovered != -1) {
+                                if (plot_input_hovered() && hovered != -1) {
                                     double x_val = x_samples[hovered];
                                     double y_val = y_samples_delta_epsilons[hovered];
                                     const char* x_unit = x_unit_short_str[rsp.x_unit];
@@ -7218,7 +7219,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::SetAxis(ImAxis_Y2);
                                 plot_peaks("Rotatory Strength", x_peaks, y_peaks_cgs, num_peaks, rsp.selected, rsp.hovered);
 
-                                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                                if (plot_input_hovered() && rsp.hovered != -1) {
                                     double x_val = x_peaks[rsp.hovered];
                                     double y_val = y_peaks_cgs[rsp.hovered];
                                     int state_idx = rsp.hovered + 1;
@@ -7292,7 +7293,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             int hovered = -1;
                             plot_peaks("Samples", x_samples, y_samples_ord, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                            if (ImPlot::IsPlotHovered() && hovered != -1) {
+                            if (plot_input_hovered() && hovered != -1) {
                                 double x_val = x_samples[hovered];
                                 double y_val = y_samples_ord[hovered];
                                 const char* x_unit = x_unit_short_str[rsp.x_unit];                                    

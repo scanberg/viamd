@@ -42,6 +42,7 @@
 
 #include <imgui.h>
 #include <implot.h>
+#include <plot_input.h>
 
 #include <atomic>
 #include <vector>
@@ -466,7 +467,7 @@ struct Contacts : viamd::EventHandler {
                 ImPlot::PlotHeatmap("##cells", cells.data(), (int)nr, (int)nc, 0.0, 1.0, nullptr,
                                     ImPlotPoint(c0, (double)n - (r0 + (double)nr * br)), ImPlotPoint(c0 + (double)nc * bc, (double)n - r0));
             }
-            if (ImPlot::IsPlotHovered()) {
+            if (plot_input_hovered()) {
                 const ImPlotPoint mp = ImPlot::GetPlotMousePos();
                 const long c = (long)floor(mp.x), r = (long)floor((double)n - mp.y);
                 if (c >= 0 && r >= 0 && (uint32_t)c < n && (uint32_t)r < n && r != c) {

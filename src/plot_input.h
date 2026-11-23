@@ -36,6 +36,13 @@ static inline bool plot_input_navigating() {
            ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
 }
 
+// Whether the plot being drawn (between BeginPlot and EndPlot) is hovered, for what is under the pointer: its tooltips,
+// highlights and picks. Not while a view is navigated: then it is as if the pointer were off the plot. Use it rather than
+// ImPlot::IsPlotHovered for all of that.
+static inline bool plot_input_hovered() {
+    return ImPlot::IsPlotHovered() && !plot_input_navigating();
+}
+
 // ImPlot (2D): left or right drag pans, double-click fits, the wheel zooms, a right click opens the menu. Shift is for
 // selecting, which the views do themselves: ImPlot ignores the mouse while it is held.
 static inline void plot_input_house(ImPlotInputMap* map) {

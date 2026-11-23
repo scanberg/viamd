@@ -4,6 +4,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
+#include <plot_input.h>
 #include <imgui_widgets.h>
 #include <frame_axis.h>
 #include <app/IconsFontAwesome6.h>
@@ -734,7 +735,7 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     ImPlot::PopPlotClipRect();
 
     // Shift-press in a plot starts a period there; the lane follows it from the next frame on
-    if (ui.drag.kind == Drag_None && ImPlot::IsPlotHovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (ui.drag.kind == Drag_None && plot_input_hovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         start_create(nearest_frame(axis, ImPlot::GetPlotMousePos().x));
     }
 }

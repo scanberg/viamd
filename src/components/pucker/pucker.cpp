@@ -27,6 +27,7 @@
 
 #include <imgui.h>
 #include <implot.h>
+#include <plot_input.h>
 
 #include <vector>
 #include <string>
@@ -447,7 +448,7 @@ struct Pucker : viamd::EventHandler {
 
     // Nearest point to the mouse within a few pixels: the row hovered on a map
     int pick(const std::vector<double>& xs, const std::vector<double>& ys, const std::vector<int>& idx) const {
-        if (!ImPlot::IsPlotHovered()) return -1;
+        if (!plot_input_hovered()) return -1;
         const ImVec2 m = ImGui::GetMousePos();
         float best = 8.0f * 8.0f;
         int hit = -1;

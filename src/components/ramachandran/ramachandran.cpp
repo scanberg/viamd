@@ -54,6 +54,7 @@
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
+#include <plot_input.h>
 #include <imgui_internal.h>
 #include <implot_internal.h>
 
@@ -1913,7 +1914,7 @@ struct Ramachandran : viamd::EventHandler {
             ImPlot::PopPlotClipRect();
         }
 
-        const bool hovered = ImPlot::IsPlotHovered();
+        const bool hovered = plot_input_hovered();
         draw_points(panel, hovered);
 
         // The class and how many residues of it there are, in the corner; the labels of the axes along the edges
