@@ -1152,6 +1152,28 @@ int main(int argc, char** argv) {
 
         PUSH_GPU_SECTION("Update");
 
+        // Play and pause, from wherever the focus is: the viewport, a plot, any window. Unless the key is taken: by text
+        // being typed, by a window or an item that routes it to itself (ImGui's shortcut routing, of which this is the
+        // global, last, route), or by keyboard navigation (with its cursor shown, space presses the item it is on).
+        if (!ImGui::GetIO().WantTextInput && !ImGui::GetIO().NavVisible && ImGui::Shortcut(KEY_PLAY_PAUSE, ImGuiInputFlags_RouteGlobal)) {
+            switch (state.animation.mode) {
+                case PlaybackMode::Playing:
+                    state.animation.mode = PlaybackMode::Stopped;
+                    state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                    break;
+                case PlaybackMode::Stopped:
+                    state.animation.mode = PlaybackMode::Playing;
+                    if (state.animation.frame == max_frame && state.animation.fps > 0) {
+                        state.animation.frame = 0;
+                    } else if (state.animation.frame == 0 && state.animation.fps < 0) {
+                        state.animation.frame = max_frame;
+                    }
+                    break;
+                default:
+                    MD_ASSERT(false);
+            }
+        }
+
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
@@ -1168,26 +1190,6 @@ int main(int argc, char** argv) {
                 state.gl.shaders = md_gl_shaders_create(output_snippet(state));
                 state.gl.shaders_marks = md_gl_shaders_create(shader_output_snippet_marks);
                 render_invalidate(&state);
-            }
-
-            if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
-                switch (state.animation.mode) {
-                    case PlaybackMode::Playing:
-                        state.animation.mode = PlaybackMode::Stopped;
-                        state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        break;
-                    case PlaybackMode::Stopped:
-                        state.animation.mode = PlaybackMode::Playing;
-                        if (state.animation.frame == max_frame && state.animation.fps > 0) {
-                            state.animation.frame = 0;
-                        } else if (state.animation.frame == 0 && state.animation.fps < 0) {
-                            state.animation.frame = max_frame;
-                        }
-                        break;
-                    default:
-                        MD_ASSERT(false);
-                }
-
             }
 
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
@@ -4317,9 +4319,7 @@ static void draw_timeline_window(ApplicationState* data) {
             ImGui::EndMenuBar();
         }
 
-        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
-            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
-        }
+        // (Space plays and pauses from here as from anywhere: main())
 
         if (num_frames > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();

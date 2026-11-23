@@ -1425,9 +1425,7 @@ struct DensityVolume : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(800, 500), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Density Volume", &show_window, ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoFocusOnAppearing)) {
-            if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false) && !ImGui::GetIO().WantTextInput) {
-                state->animation.mode = state->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
-            }
+            // (Space plays and pauses from here as from anywhere: main())
 
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("Property")) {
