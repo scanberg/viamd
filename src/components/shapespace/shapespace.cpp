@@ -32,6 +32,9 @@
 // line through its shapes, smoothed over a window of frames or not, the frame shown a slice across it, the period under
 // the pointer two faces. Right-drag turns it, drag pans, the wheel zooms; hover, click and shift-drag select as in 2D,
 // what is drawn on the screen.
+//
+// The paths in 3D can be cut to a window of time (the time filter, of every layer, not of the 2D plot): fixed, or
+// following the frame shown (a tail behind it). The time axis is the window then.
 
 #include <core/md_log.h>
 #include <md_run.h>
@@ -377,6 +380,15 @@ struct Shapespace : viamd::EventHandler {
     } box;
 
     ViewMode     view_mode = ViewMode_2D;
+
+    // The window of time the paths in 3D are drawn over, in the run's own unit: fixed, the times [beg, end]; following
+    // the frame shown, offsets from its time ([-length, 0] is a tail behind it). Not of the 2D plot.
+    struct {
+        bool   enabled = false;
+        bool   follow = false;
+        double beg = 0.0;
+        double end = 0.0;
+    } time_filter;
     SelectTarget select_target = SelectTarget_Both;
 
     // The frame highlight (selection.frame_highlight_mask) is ours to clear, as the atoms' highlight
@@ -474,6 +486,7 @@ struct Shapespace : viamd::EventHandler {
                 show_grid = true;
                 view_mode = ViewMode_2D;
                 select_target = SelectTarget_Both;
+                time_filter = {};
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
@@ -1245,6 +1258,10 @@ struct Shapespace : viamd::EventHandler {
         viamd::write_str(state, MD_STR_LIT("View"), md_str_from_cstr(view_mode_names[view_mode]));
         static const md_str_t targets[SelectTarget_Count] = { MD_STR_LIT("both"), MD_STR_LIT("structures"), MD_STR_LIT("frames") };
         viamd::write_str(state, MD_STR_LIT("Selects"), targets[select_target]);
+        viamd::write_bool(state, MD_STR_LIT("TimeFilter"), time_filter.enabled);
+        viamd::write_bool(state, MD_STR_LIT("TimeFilterFollow"), time_filter.follow);
+        const double tf[2] = { time_filter.beg, time_filter.end };
+        viamd::write_dbl_vec(state, MD_STR_LIT("TimeFilterRange"), tf, 2);
         viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
         // In the order of the list: a group, then what is in it
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
@@ -1312,6 +1329,16 @@ struct Shapespace : viamd::EventHandler {
                     for (int k = 0; k < ViewMode_Count; ++k) {
                         if (md_str_eq_cstr(v, view_mode_names[k])) view_mode = (ViewMode)k;
                     }
+                }
+            } else if (md_str_eq_cstr(ident, "TimeFilter")) {
+                viamd::extract_bool(time_filter.enabled, arg);
+            } else if (md_str_eq_cstr(ident, "TimeFilterFollow")) {
+                viamd::extract_bool(time_filter.follow, arg);
+            } else if (md_str_eq_cstr(ident, "TimeFilterRange")) {
+                double tf[2];
+                if (viamd::extract_dbl_vec(tf, 2, arg) && tf[1] >= tf[0]) {
+                    time_filter.beg = tf[0];
+                    time_filter.end = tf[1];
                 }
             } else if (md_str_eq_cstr(ident, "Selects")) {
                 md_str_t v = {};
@@ -1592,7 +1619,9 @@ struct Shapespace : viamd::EventHandler {
 
     // The points of the layer, at most about max_points of them, of the shapes 'coords' laid out as the evaluation's
     // (smoothed ones) or of the evaluation's own (NULL)
-    bool point_source(PointSource* ps, const Layer& l, size_t max_points, const md_float2_t* coords = nullptr) const {
+    // Of the layer's frames only those in [frame_beg, frame_end) (the time filter, in 3D), when given.
+    bool point_source(PointSource* ps, const Layer& l, size_t max_points, const md_float2_t* coords = nullptr,
+                      uint32_t frame_beg = 0, uint32_t frame_end = UINT32_MAX) const {
         if (!l.structs_valid) return false;
         if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
             if (md_array_size(l.current_coords) == 0) return false;
@@ -1611,6 +1640,16 @@ struct Shapespace : viamd::EventHandler {
         md_bitset_t set = {};
         if (!layer_frames(l, &set)) return false;
         const uint32_t nf = (uint32_t)l.eval->num_frames;
+        // Frames skipped are counted from the first of the layer's, not of the window's: as the window moves (following
+        // the frame shown) the frames drawn stay the same ones
+        uint64_t rank = 0;
+        if (frame_beg > 0 || frame_end < nf) {
+            const uint32_t e = MD_MIN(frame_end, nf);
+            if (frame_beg >= e) return false;
+            rank = frame_beg > 0 ? md_bitset_count_range(set, 0, frame_beg) : 0;
+            set = md_bitset_and(set, md_bitset_range(frame_beg, e), app->allocator.frame);
+            if (md_bitset_empty(set)) return false;
+        }
         const uint64_t count = md_bitset_count_range(set, 0, nf);
         if (count == 0) return false;
         const uint64_t total = (uint64_t)l.eval->num_structures * count;
@@ -1618,7 +1657,7 @@ struct Shapespace : viamd::EventHandler {
         const size_t cap = (size_t)((count + step - 1) / step);
         uint32_t* list = (uint32_t*)md_alloc(app->allocator.frame, sizeof(uint32_t) * cap);
         size_t n = 0;
-        uint64_t i = 0;
+        uint64_t i = rank;
         uint32_t last = 0;
         md_bitset_iter_t it = md_bitset_iter_range(set, 0, nf);
         while (md_bitset_iter_next(&it)) {
@@ -2177,6 +2216,121 @@ struct Shapespace : viamd::EventHandler {
         return ImGui::ColorConvertFloat4ToU32(c);
     }
 
+    // The time filter's window now, in the run's own unit: following, around the time of the frame shown
+    void time_filter_window(double* tb, double* te) const {
+        const double tc = time_filter.follow ? run_time_at_frame(app, app->animation.frame) : 0.0;
+        *tb = tc + time_filter.beg;
+        *te = tc + time_filter.end;
+    }
+
+    // The frames whose times are in the window, [*fb, *fe): empty when it is beside the run
+    void time_filter_frames(uint32_t* fb, uint32_t* fe) const {
+        const double* t = run_frame_times(app);
+        const size_t n = run_num_frames(app);
+        *fb = *fe = 0;
+        if (!t || n == 0) return;
+        double tb, te;
+        time_filter_window(&tb, &te);
+        if (te < t[0] || tb > t[n - 1] || te < tb) return;
+        // The first frame at or after tb, and one past the last at or before te
+        uint32_t b = (uint32_t)ceil(frame_at_time(t, n, tb) - 1e-9);
+        uint32_t e = (uint32_t)floor(frame_at_time(t, n, te) + 1e-9);
+        while (e + 1 < n && t[e + 1] <= te) ++e;
+        *fb = b;
+        *fe = MD_MAX(b, e + 1);
+    }
+
+    // The whole run as the window, or a tail of a tenth of it behind the frame shown
+    void time_filter_reset() {
+        const double* t = run_frame_times(app);
+        const size_t n = run_num_frames(app);
+        const double span = (t && n > 1) ? t[n - 1] - t[0] : 0.0;
+        if (time_filter.follow) {
+            time_filter.beg = -0.1 * span;
+            time_filter.end = 0.0;
+        } else {
+            time_filter.beg = (t && n > 0) ? t[0] : 0.0;
+            time_filter.end = (t && n > 0) ? t[n - 1] : 0.0;
+        }
+    }
+
+    // Fixed or following, as the timeline's periods are: made to follow, it keeps its length as a tail behind the frame
+    // shown; made fixed, it covers what it covers now
+    void time_filter_set_follow(bool follow) {
+        if (follow == time_filter.follow) return;
+        if (follow) {
+            const double len = time_filter.end - time_filter.beg;
+            time_filter.beg = -len;
+            time_filter.end = 0.0;
+        } else {
+            double tb, te;
+            time_filter_window(&tb, &te);
+            const double* t = run_frame_times(app);
+            const size_t n = run_num_frames(app);
+            if (t && n > 0) {
+                tb = MD_CLAMP(tb, t[0], t[n - 1]);
+                te = MD_CLAMP(te, t[0], t[n - 1]);
+            }
+            time_filter.beg = tb;
+            time_filter.end = te;
+        }
+        time_filter.follow = follow;
+    }
+
+    // The toolbar's controls of the time filter: on or off, following or not, and its window, in the display unit
+    void draw_time_filter_controls() {
+        const double* t = run_frame_times(app);
+        const size_t n = run_num_frames(app);
+        const bool has_run = t && n > 1;
+        char unit[32] = "";
+        const double scl = display_units::factor_print(unit, sizeof(unit), run_time_unit(app));
+
+        auto toggle = [](const char* label, bool on) {
+            if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            const bool pressed = ImGui::Button(label);
+            if (on) ImGui::PopStyleColor();
+            return pressed;
+        };
+
+        if (!has_run) ImGui::BeginDisabled();
+        if (toggle(ICON_FA_FILTER, time_filter.enabled)) {
+            time_filter.enabled = !time_filter.enabled;
+            if (time_filter.enabled && !(time_filter.end > time_filter.beg)) time_filter_reset();
+            v3.fit = true;
+        }
+        if (!has_run) ImGui::EndDisabled();
+        ImGui::SetItemTooltip(has_run ? "The paths in 3D over a window of time only" : "The paths in 3D over a window of time only: there is no trajectory");
+        if (!time_filter.enabled || !has_run) return;
+        // On with no window yet (read so, or the run loaded after): the default one
+        if (time_filter.beg == 0.0 && time_filter.end == 0.0) time_filter_reset();
+
+        ImGui::SameLine();
+        if (toggle(ICON_FA_PERSON_RUNNING, time_filter.follow)) time_filter_set_follow(!time_filter.follow);
+        ImGui::SetItemTooltip("Follow the frame shown: the window is around it (a tail behind it when it ends at 0)");
+
+        // In the display unit, as the timeline shows it. Fixed within the run; following, offsets up to its length.
+        const double span = t[n - 1] - t[0];
+        const double lo_bound = time_filter.follow ? -span : t[0];
+        const double hi_bound = time_filter.follow ?  span : t[n - 1];
+        float v[2] = { (float)(time_filter.beg * scl), (float)(time_filter.end * scl) };
+        char fmt[48];
+        snprintf(fmt, sizeof(fmt), time_filter.follow ? "%%+.5g%s%s" : "%%.5g%s%s", unit[0] ? " " : "", unit);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(MD_CLAMP(ImGui::GetContentRegionAvail().x * 0.35f, 120.0f, 260.0f));
+        if (ImGui::DragFloatRange2("##time_filter", &v[0], &v[1], (float)(span * scl / 500.0), (float)(lo_bound * scl), (float)(hi_bound * scl), fmt, fmt, ImGuiSliderFlags_AlwaysClamp)) {
+            time_filter.beg = v[0] / scl;
+            time_filter.end = MD_MAX(v[1], v[0]) / scl;
+        }
+        if (ImGui::BeginPopupContextItem("##time_filter_menu")) {
+            if (ImGui::MenuItem(time_filter.follow ? "A tail of a tenth of the run" : "The whole run")) time_filter_reset();
+            ImGui::EndPopup();
+        }
+        uint32_t fb, fe;
+        time_filter_frames(&fb, &fe);
+        if (fe > fb) ImGui::SetItemTooltip("Frames %u to %u, %u frames. Drag the ends or ctrl-click to type; right-click to reset.", fb, fe - 1, fe - fb);
+        else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click to reset.");
+    }
+
     void draw_plot3d() {
         v3.drawn = true;
         if (ImGui::GetContentRegionAvail().x < 32.0f || ImGui::GetContentRegionAvail().y < 32.0f) return;
@@ -2184,10 +2338,24 @@ struct Shapespace : viamd::EventHandler {
         const uint32_t nf = (uint32_t)run_num_frames(app);
         char unit[32] = "";
         time_scale = display_units::factor_print(unit, sizeof(unit), run_time_unit(app));
-        const double t0 = frame_time(0.0);
-        double t1 = nf > 1 ? frame_time((double)(nf - 1)) : t0 + 1.0;
-        if (!(t1 > t0)) t1 = t0 + 1.0;
-        const double tc = nf > 0 ? frame_time(app->animation.frame) : t0;
+        // The run, and the time axis: the run, or the time filter's window, which the paths are cut to
+        const double r0 = frame_time(0.0);
+        double r1 = nf > 1 ? frame_time((double)(nf - 1)) : r0 + 1.0;
+        if (!(r1 > r0)) r1 = r0 + 1.0;
+        const double tc = nf > 0 ? frame_time(app->animation.frame) : r0;
+        const bool filtered = time_filter.enabled && nf > 1;
+        uint32_t filter_beg = 0, filter_end = UINT32_MAX;
+        double t0 = r0, t1 = r1;
+        if (filtered) {
+            time_filter_frames(&filter_beg, &filter_end);
+            double tb, te;
+            time_filter_window(&tb, &te);
+            t0 = tb * time_scale;
+            t1 = te * time_scale;
+            if (!(t1 > t0)) t1 = t0 + (r1 - r0) * 1e-3;
+        }
+        // The prism of the run, within the axis
+        const double p0 = MD_MAX(r0, t0), p1 = MD_MIN(r1, t1);
 
         char x_label[64] = "Frame";
         if (unit[0] != '\0') snprintf(x_label, sizeof(x_label), "Time (%s)", unit);
@@ -2206,7 +2374,8 @@ struct Shapespace : viamd::EventHandler {
 
         const ImPlot3DAxisFlags shape_axis = ImPlot3DAxisFlags_NoLabel | ImPlot3DAxisFlags_NoTickLabels | ImPlot3DAxisFlags_NoTickMarks;
         ImPlot3D::SetupAxes(x_label, nullptr, nullptr, ImPlot3DAxisFlags_None, shape_axis, shape_axis);
-        ImPlot3D::SetupAxesLimits(t0, t1, -0.04, 1.04, -0.04, tri_iso.y + 0.04, v3.fit ? ImPlot3DCond_Always : ImPlot3DCond_Once);
+        // Filtered, the time axis is the window, as it moves
+        ImPlot3D::SetupAxesLimits(t0, t1, -0.04, 1.04, -0.04, tri_iso.y + 0.04, (v3.fit || filtered) ? ImPlot3DCond_Always : ImPlot3DCond_Once);
         v3.fit = false;
         // The triangle equilateral, time longer
         ImPlot3D::SetupBoxScale(1.3, 0.7, 0.7 * tri_iso.y);
@@ -2234,8 +2403,9 @@ struct Shapespace : viamd::EventHandler {
         const ImPlot3DItemFlags item_flags = ImPlot3DItemFlags_NoLegend | ImPlot3DItemFlags_NoFit;
         const md_float2_t corners[3] = { tri_lin, tri_pla, tri_iso };
 
-        // The prism of the run: the triangle at its first and last frames, and its corners along time
+        // The prism of the run: the triangle at its first and last frames (of those in the window), its corners along time
         {
+            const double pa = p1 > p0 ? p0 : t0, pb = p1 > p0 ? p1 : t1;
             double xs[18], ys[18], zs[18];
             int n = 0;
             auto seg = [&](double xa, md_float2_t a, double xb, md_float2_t b) {
@@ -2243,18 +2413,18 @@ struct Shapespace : viamd::EventHandler {
                 xs[n] = xb; ys[n] = b.x; zs[n] = b.y; ++n;
             };
             for (int c = 0; c < 3; ++c) {
-                seg(t0, corners[c], t0, corners[(c + 1) % 3]);
-                seg(t1, corners[c], t1, corners[(c + 1) % 3]);
-                seg(t0, corners[c], t1, corners[c]);
+                seg(pa, corners[c], pa, corners[(c + 1) % 3]);
+                seg(pb, corners[c], pb, corners[(c + 1) % 3]);
+                seg(pa, corners[c], pb, corners[c]);
             }
             ImPlot3DSpec spec;
             spec.LineColor = ImVec4(1, 1, 1, 0.28f);
             spec.LineWeight = 1.0f;
             spec.Flags = item_flags | ImPlot3DLineFlags_Segments;
             ImPlot3D::PlotLine("##prism", xs, ys, zs, n, spec);
-            ImPlot3D::PlotText("Linear", t0, tri_lin.x, tri_lin.y, 0.0, ImVec2(0, 12));
-            ImPlot3D::PlotText("Planar", t0, tri_pla.x, tri_pla.y, 0.0, ImVec2(0, 12));
-            ImPlot3D::PlotText("Spherical", t0, tri_iso.x, tri_iso.y, 0.0, ImVec2(0, -12));
+            ImPlot3D::PlotText("Linear", pa, tri_lin.x, tri_lin.y, 0.0, ImVec2(0, 12));
+            ImPlot3D::PlotText("Planar", pa, tri_pla.x, tri_pla.y, 0.0, ImVec2(0, 12));
+            ImPlot3D::PlotText("Spherical", pa, tri_iso.x, tri_iso.y, 0.0, ImVec2(0, -12));
         }
 
         // The frame shown, a slice across; the period under the pointer (in the timeline or a layer's row), two faces
@@ -2291,7 +2461,7 @@ struct Shapespace : viamd::EventHandler {
             Layer& l = layers[i];
             if (!layer_shown(l) || l.style != LayerStyle_Points || l.opacity <= 0.0f) continue;
             const md_float2_t* smooth = smoothed_coords(l);
-            if (!point_source(&sources[i], l, MAX_LINE_POINTS, smooth)) continue;
+            if (!point_source(&sources[i], l, MAX_LINE_POINTS, smooth, filter_beg, filter_end)) continue;
             has_source[i] = true;
             const PointSource& ps = sources[i];
             if (!ps.current) l.line_stride = ps.step;
@@ -2535,7 +2705,7 @@ struct Shapespace : viamd::EventHandler {
             dl->AddRect(a, b, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
         }
         if (!any_points && num_layers > 0) {
-            const char* msg = "Layers of points show here, over time";
+            const char* msg = filtered && filter_end <= filter_beg ? "No frames in the time filter's window" : "Layers of points show here, over time";
             const ImVec2 ts = ImGui::CalcTextSize(msg);
             dl->AddText(ImVec2(plot_rect.Min.x + 8.0f, plot_rect.Max.y - ts.y - 6.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), msg);
         }
@@ -2678,6 +2848,8 @@ struct Shapespace : viamd::EventHandler {
                 if (ImGui::MenuItem("At an angle")) v3.preset = 2;
                 ImGui::EndPopup();
             }
+            ImGui::SameLine();
+            draw_time_filter_controls();
         }
 
         ImGui::SameLine();
@@ -2701,6 +2873,7 @@ struct Shapespace : viamd::EventHandler {
             ImGui::TextDisabled("Shift-drag to select the structures and frames of the points, with the right button to deselect them.");
             ImGui::TextDisabled("Drop a period from the timeline on the plot to add its density.");
             ImGui::TextDisabled("In 3D: right-drag turns, drag pans, the wheel zooms, double-click fits.");
+            ImGui::TextDisabled("The time filter (" ICON_FA_FILTER ") cuts the paths in 3D to a window of time, fixed or following the frame shown.");
             ImGui::EndPopup();
         }
         ImGui::PopStyleVar();
