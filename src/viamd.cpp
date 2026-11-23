@@ -888,8 +888,9 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
         }
     }
 
+    // "ring", whatever it is: the kind row below says aromatic, as ring(kind=) selects it
     md_str_writer_t title = md_str_writer_create(req->alloc);
-    title += (flags & MD_RING_FLAG_AROMATIC) ? MD_STR_LIT("aromatic ring") : MD_STR_LIT("ring");
+    title += MD_STR_LIT("ring");
     tooltip_append_place(&title, sys, place, &other);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
