@@ -702,6 +702,9 @@ IMPLOT3D_API ImVec2 PlotToPixels(double x, double y, double z);
 // Convert a pixel coordinate to a ray in the current plot's coordinate system. Useful for 3D picking and intersection tests
 IMPLOT3D_API ImPlot3DRay PixelsToPlotRay(const ImVec2& pix);
 IMPLOT3D_API ImPlot3DRay PixelsToPlotRay(double x, double y);
+// [viamd] The edge of the box the axis' ticks and labels are drawn along, as it is turned now, in plot coordinates: false
+// when there is none (the axis points at the viewer). Within BeginPlot/EndPlot, after the setup.
+IMPLOT3D_API bool GetAxisEdge(ImAxis3D axis, ImPlot3DPoint* a, ImPlot3DPoint* b);
 
 // Convert a pixel coordinate to a point on one of the plot box's axis-aligned planes (XY, XZ, or YZ).
 // By default, the result is masked to the axis ranges. Set #mask=false to project to the infinite plane.

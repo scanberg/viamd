@@ -2186,6 +2186,25 @@ ImPlot3DRay PixelsToPlotRay(const ImVec2& pix) {
 
 ImPlot3DRay PixelsToPlotRay(double x, double y) { return PixelsToPlotRay(ImVec2((float)x, (float)y)); }
 
+// [viamd]
+bool GetAxisEdge(ImAxis3D axis, ImPlot3DPoint* a, ImPlot3DPoint* b) {
+    ImPlot3DContext& gp = *GImPlot3D;
+    IM_ASSERT_USER_ERROR(gp.CurrentPlot != nullptr, "GetAxisEdge() needs to be called between BeginPlot() and EndPlot()!");
+    IM_ASSERT_USER_ERROR(axis >= 0 && axis < 3, "GetAxisEdge(): no such axis");
+    SetupLock();
+    bool active_faces[3];
+    ImVec2 corners_pix[8];
+    ImPlot3DPoint corners[8];
+    int plane_2d = -1;
+    int axis_corners[3][2];
+    GetAxesParameters(*gp.CurrentPlot, active_faces, corners_pix, corners, plane_2d, axis_corners);
+    const int c0 = axis_corners[axis][0], c1 = axis_corners[axis][1];
+    if (c0 < 0 || c1 < 0) return false;
+    *a = corners[c0];
+    *b = corners[c1];
+    return true;
+}
+
 ImPlot3DPoint PixelsToPlotPlane(const ImVec2& pix, ImPlane3D plane, bool mask) {
     ImPlot3DContext& gp = *GImPlot3D;
     IM_ASSERT_USER_ERROR(gp.CurrentPlot != nullptr, "PixelsToPlotPlane() needs to be called between BeginPlot() and EndPlot()!");
