@@ -269,6 +269,7 @@ struct Layer {
     float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
 
     ImPlotColormap colormap = ImPlotColormap_Viridis;
+    ImPlotColormap structure_colormap = ImPlotColormap_Deep;    // Of points coloured by structure: in turn, by default
     bool     log_scale = false;
 
     PointColoring point_coloring = PointColoring_Layer;
@@ -757,6 +758,7 @@ struct Shapespace : viamd::EventHandler {
         md_memcpy(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
+        l->structure_colormap = src.structure_colormap;
         l->log_scale = src.log_scale;
         l->point_coloring = src.point_coloring;
         l->point_size = src.point_size;
@@ -1470,6 +1472,7 @@ struct Shapespace : viamd::EventHandler {
             if (l.bandwidth > 0.0f) viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
             else                    viamd::write_str(state, MD_STR_LIT("Bandwidth"), MD_STR_LIT("auto"));
             viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_str(state, MD_STR_LIT("StructureColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.structure_colormap)));
             viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
             static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("structure"), MD_STR_LIT("time") };
             viamd::write_str(state, MD_STR_LIT("PointColoring"), colorings[l.point_coloring]);
@@ -1625,6 +1628,11 @@ struct Shapespace : viamd::EventHandler {
                 md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
+            } else if (md_str_eq_cstr(ident, "StructureColormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                md_str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->structure_colormap = cm;
             } else if (md_str_eq_cstr(ident, "LogScale")) {
                 viamd::extract_bool(l->log_scale, arg);
             } else if (md_str_eq_cstr(ident, "PointColoring") && viamd::extract_str(s, arg)) {
@@ -1653,6 +1661,7 @@ struct Shapespace : viamd::EventHandler {
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
         if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+        if (l.structure_colormap < 0 || l.structure_colormap >= ImPlot::GetColormapCount()) l.structure_colormap = ImPlotColormap_Deep;
     }
 
     // From before there were layers: the structures of the filter over every frame (or the period), a colour each
@@ -1914,8 +1923,13 @@ struct Shapespace : viamd::EventHandler {
 
     ImVec4 point_color(const Layer& l, const PointSource& ps, uint32_t s, size_t k) const {
         switch (l.point_coloring) {
-        case PointColoring_Structure:
-            return ImPlot::GetColormapColor((int)s % ImPlot::GetColormapSize(ImPlotColormap_Deep), ImPlotColormap_Deep);
+        case PointColoring_Structure: {
+            // A qualitative map's colours in turn, over again past its last; a continuous one across the structures, in
+            // their order
+            const ImPlotColormap cm = l.structure_colormap;
+            if (ImPlot::ColormapQualitative(cm)) return ImPlot::GetColormapColor((int)(s % (uint32_t)ImPlot::GetColormapSize(cm)), cm);
+            return ImPlot::SampleColormap(ps.num_structures > 1 ? (float)s / (float)(ps.num_structures - 1) : 0.5f, cm);
+        }
         case PointColoring_Time: {
             if (ps.current || ps.num_frames <= 1) return l.color;
             const uint32_t f0 = ps.frames[0], f1 = ps.frames[ps.num_frames - 1];
@@ -3421,8 +3435,9 @@ struct Shapespace : viamd::EventHandler {
         const ImVec2 sw_min = ImVec2(row_min.x + pad + line_h + 8, row_min.y + (row_h - line_h) * 0.5f);
         const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
         const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
-        const bool by_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time;
-        density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, l.colormap, l.visible ? 1.0f : 0.35f);
+        const bool by_map = l.style == LayerStyle_Points && l.point_coloring != PointColoring_Layer;
+        const ImPlotColormap sw_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
+        density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, sw_map, l.visible ? 1.0f : 0.35f);
 
         const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
         const ImVec4 clip = ImVec4(text_min.x, row_min.y, row_min.x + row_w - pad, row_min.y + row_h);
@@ -3701,6 +3716,11 @@ struct Shapespace : viamd::EventHandler {
             prop::row("color by");
             int c = (int)l.point_coloring;
             if (ImGui::Combo("##coloring", &c, point_coloring_names, PointColoring_Count)) l.point_coloring = (PointColoring)c;
+            if (l.point_coloring == PointColoring_Structure) {
+                prop::row("colormap", "Of the structures. A qualitative map gives them its colours in turn, again from the first\n"
+                                      "past its last; a continuous one spreads them across it, in their order.");
+                ImPlot::ColormapSelection("##scmap", &l.structure_colormap);
+            }
             if (l.frames != LayerFrames_Current && l.point_stride > 1) {
                 prop::hint("Every %u frames, to keep to %u points", l.point_stride, (uint32_t)MAX_POINTS);
             }
