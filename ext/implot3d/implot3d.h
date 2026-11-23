@@ -64,6 +64,7 @@ struct ImPlot3DPlane;
 struct ImPlot3DBox;
 struct ImPlot3DRange;
 struct ImPlot3DQuat;
+struct ImPlot3DInputMap;
 
 // Enums
 typedef int ImPlot3DCond;     // -> ImPlot3DCond_              // Enum: Condition for flags
@@ -726,6 +727,9 @@ IMPLOT3D_API ImDrawList* GetPlotDrawList();
 
 // Get current style
 IMPLOT3D_API ImPlot3DStyle& GetStyle();
+
+// [viamd] The input map in use: change it before BeginPlot (and restore it after, to change it for one plot)
+IMPLOT3D_API ImPlot3DInputMap& GetInputMap();
 IMPLOT3D_API void SetStyle(const ImPlot3DStyle& style);
 
 // Set color styles
@@ -967,6 +971,15 @@ struct ImPlot3DRange {
 //-----------------------------------------------------------------------------
 // [SECTION] ImPlot3DQuat
 //-----------------------------------------------------------------------------
+
+// [viamd] The mouse buttons of the plot's interactions, which can be remapped. -1 turns one off.
+struct ImPlot3DInputMap {
+    ImGuiMouseButton Pan = ImGuiMouseButton_Left;            // Drag: pans the axes hovered
+    ImGuiMouseButton Fit = ImGuiMouseButton_Left;            // Double-click: fits the axes hovered
+    ImGuiMouseButton Rotate = ImGuiMouseButton_Right;        // Drag: turns the box
+    ImGuiMouseButton ResetRotation = ImGuiMouseButton_Right; // Double-click: turns the box back, or to face the plane hovered
+    ImGuiMouseButton Menu = ImGuiMouseButton_Right;          // Click: the context menu
+};
 
 // ImPlot3DQuat: Quaternion for representing 3D rotations
 struct ImPlot3DQuat {

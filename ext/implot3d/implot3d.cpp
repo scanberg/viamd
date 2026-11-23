@@ -2398,8 +2398,14 @@ void HandleInput(ImPlot3DPlot& plot) {
     ImGui::SetItemAllowOverlap(); // Handled by ButtonBehavior()
 #endif
 
+    // [viamd] The buttons of the input map; -1 is none
+    const ImPlot3DInputMap& map = GImPlot3D->InputMap;
+    auto btn_down = [](ImGuiMouseButton b) { return b >= 0 && ImGui::IsMouseDown(b); };
+    auto btn_clicked = [](ImGuiMouseButton b) { return b >= 0 && ImGui::IsMouseClicked(b); };
+    auto btn_double = [](ImGuiMouseButton b) { return b >= 0 && ImGui::IsMouseDoubleClicked(b); };
+
     // State
-    const ImVec2 rot_drag = ImGui::GetMouseDragDelta(ImGuiMouseButton_Right);
+    const ImVec2 rot_drag = map.Rotate >= 0 ? ImGui::GetMouseDragDelta(map.Rotate) : ImVec2(0, 0);
     const bool rotating = ImLengthSqr(rot_drag) > MOUSE_CURSOR_DRAG_THRESHOLD;
     const bool axis_equal = ImHasFlag(plot.Flags, ImPlot3DFlags_Equal);
     const bool allow_rotate = !ImHasFlag(plot.Flags, ImPlot3DFlags_NoRotate);
@@ -2425,7 +2431,7 @@ void HandleInput(ImPlot3DPlot& plot) {
     }
 
     // If the user is no longer pressing the translation/zoom buttons, set axes as not held
-    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+    if (!btn_down(map.Pan) && !ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
         for (int i = 0; i < 3; i++)
             plot.Axes[i].Held = false;
     }
@@ -2511,7 +2517,7 @@ void HandleInput(ImPlot3DPlot& plot) {
     // AUTO FIT -------------------------------------------------------------------
 
     // Handle translation/zoom fit with double click
-    if (plot_clicked && (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Middle)) &&
+    if (plot_clicked && (btn_double(map.Fit) || ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Middle)) &&
         (allow_pan && allow_zoom)) {
         plot.FitThisFrame = true;
         for (int i = 0; i < 3; i++)
@@ -2528,7 +2534,7 @@ void HandleInput(ImPlot3DPlot& plot) {
     // TRANSLATION -------------------------------------------------------------------
 
     // Handle translation with right mouse button
-    if (plot.Held && ImGui::IsMouseDown(ImGuiMouseButton_Left) && allow_pan) {
+    if (plot.Held && btn_down(map.Pan) && allow_pan) {
         ImVec2 delta(IO.MouseDelta.x, IO.MouseDelta.y);
 
         if (plot.Axes[0].Hovered && plot.Axes[1].Hovered && plot.Axes[2].Hovered) {
@@ -2643,7 +2649,7 @@ void HandleInput(ImPlot3DPlot& plot) {
     // ROTATION -------------------------------------------------------------------
 
     // Handle reset rotation with left mouse double click
-    if (plot.Held && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) && !plot.IsRotationLocked() && allow_rotate) {
+    if (plot.Held && btn_double(map.ResetRotation) && !plot.IsRotationLocked() && allow_rotate) {
         plot.RotationAnimationEnd = plot.Rotation;
 
         // Calculate rotation to align the z-axis with the camera direction
@@ -2704,7 +2710,7 @@ void HandleInput(ImPlot3DPlot& plot) {
     }
 
     // Handle rotation with left mouse dragging
-    if (plot.Held && ImGui::IsMouseDown(ImGuiMouseButton_Right) && !plot.IsRotationLocked() && allow_rotate) {
+    if (plot.Held && btn_down(map.Rotate) && !plot.IsRotationLocked() && allow_rotate) {
         ImVec2 delta(IO.MouseDelta.x, IO.MouseDelta.y);
 
         // Map delta to rotation angles (in radians)
@@ -2830,14 +2836,14 @@ void HandleInput(ImPlot3DPlot& plot) {
     // CONTEXT MENU -------------------------------------------------------------------
 
     // Handle context click with right mouse button
-    if (plot.Held && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImPlot3D::ImHasFlag(plot.Flags, ImPlot3DFlags_NoMenus))
+    if (plot.Held && btn_clicked(map.Menu) && !ImPlot3D::ImHasFlag(plot.Flags, ImPlot3DFlags_NoMenus))
         plot.ContextClick = true;
-    if (rotating || (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Right) && allow_rotate))
+    if (rotating || (btn_double(map.ResetRotation) && allow_rotate))
         plot.ContextClick = false;
 
     // Handle context menu (should not happen if it is not a double click action)
-    bool not_double_click = allow_rotate ? (float)(ImGui::GetTime() - IO.MouseClickedTime[ImGuiMouseButton_Right]) > IO.MouseDoubleClickTime : true;
-    if (plot.Hovered && plot.ContextClick && not_double_click && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+    bool not_double_click = (allow_rotate && map.Menu >= 0) ? (float)(ImGui::GetTime() - IO.MouseClickedTime[map.Menu]) > IO.MouseDoubleClickTime : true;
+    if (plot.Hovered && plot.ContextClick && not_double_click && !btn_down(map.Menu)) {
         plot.ContextClick = false;
         plot.OpenContextThisFrame = true;
     }
@@ -2997,6 +3003,8 @@ static const ImPlot3DStyleVarInfo* GetPlotStyleVarInfo(ImPlot3DStyleVar idx) {
 }
 
 ImPlot3DStyle& GetStyle() { return GImPlot3D->Style; }
+
+ImPlot3DInputMap& GetInputMap() { return GImPlot3D->InputMap; } // [viamd]
 void SetStyle(const ImPlot3DStyle& style) { GImPlot3D->Style = style; }
 
 void StyleColorsAuto(ImPlot3DStyle* dst) {
