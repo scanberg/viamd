@@ -38,6 +38,7 @@ extern "C" void gtk_disable_setlocale(void);
 #include <imgui.h>
 #include <implot.h>
 #include <implot3d.h>
+#include <plot_input.h>
 
 #include <app/imgui_impl_glfw.h>
 #include <app/imgui_impl_opengl3.h>
@@ -317,6 +318,9 @@ bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
     ImGui::CreateContext();
     ImPlot::CreateContext();
     ImPlot3D::CreateContext();
+    // The mouse as in every view (plot_input.h)
+    plot_input_house(&ImPlot::GetInputMap());
+    plot_input_house(&ImPlot3D::GetInputMap());
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;  // Enable Keyboard Controls
     // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls

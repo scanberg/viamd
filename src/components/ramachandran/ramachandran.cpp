@@ -2039,8 +2039,7 @@ struct Ramachandran : viamd::EventHandler {
 
         ImPlotInputMap& input = ImPlot::GetInputMap();
         const ImPlotInputMap saved_input = input;
-        // Shift is for selecting: the plots do not pan or zoom meanwhile
-        input.OverrideMod = ImGuiMod_Shift;
+        // (Shift is for selecting, so the plots do not pan or zoom meanwhile: plot_input.h)
         limit_zoom_rate(&input.ZoomRate);
 
         // Edge to edge: the labels are within the plots. Side by side, a few pixels between them to tell them apart.

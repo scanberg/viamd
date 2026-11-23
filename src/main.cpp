@@ -4333,10 +4333,12 @@ static void draw_timeline_window(ApplicationState* data) {
                 is_dragging = false;
             }
 
-            // Shift-drag marks a period and ctrl-drag moves the current frame: neither may pan the plots
-            // meanwhile, and nor may a period being dragged in the lane
+            // Shift-drag marks a period and ctrl-drag moves the current frame: neither may pan the plots meanwhile, and
+            // nor may a period being dragged in the lane. The left button is theirs then; the right still pans
+            // (plot_input.h).
             if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl || timeline_periods_dragging()) {
-                ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
+                ImPlot::GetInputMap().Pan = ImGuiMouseButton_Right;
+                ImPlot::GetInputMap().PanAlt = -1;
             }
 
             // A run without time of its own has its frames numbered: its unit prints as nothing, and the factor is one
