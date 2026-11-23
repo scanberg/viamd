@@ -97,7 +97,7 @@ constexpr int MAX_LAYERS      = 16;
 constexpr int MAX_LEVELS      = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS   = 100000;     // Of a layer of points over frames: frames are skipped beyond
 constexpr size_t MAX_LINE_POINTS = 60000;   // Of a layer's lines in 3D, whose segments are sorted by depth every frame
-constexpr int MAX_SMOOTHING   = 501;        // Frames, of the window a line in 3D is smoothed over
+constexpr int MAX_SMOOTHING   = 501;        // Frames, of the window the shapes are smoothed over (Shapespace::smoothing)
 constexpr float MAX_BANDWIDTH = 0.06f;      // The domain has room around the triangle for images within 4 sigma of it
 
 static const ImVec4 layer_palette[] = {
@@ -156,10 +156,16 @@ struct Evaluation {
     md_allocator_i* arena = nullptr;
     md_array(md_bitset_t) structures = 0;   // In arena
     bool     use_mass = true;
+    uint32_t first_frame = 0;               // Of the run: its frames are [first_frame, first_frame + num_frames)
     size_t   num_frames = 0;
     size_t   num_structures = 0;
-    md_float2_t*  coords = nullptr;              // [structure * num_frames + frame], in the triangle: NaN for frames not done
+    md_float2_t*  coords = nullptr;              // [structure * num_frames + frame - first_frame], in the triangle: NaN for frames not done
     std::atomic<uint32_t> frames_done{0};
+
+    // Its shapes smoothed over smoothed_window frames (Shapespace::smoothing), laid out as coords: made on the main
+    // thread once it is complete, and held by what reads them elsewhere (a density job) while the window changes
+    std::shared_ptr<const std::vector<md_float2_t>> smoothed;
+    int smoothed_window = 0;
     task_system::Job task;
 
     bool complete() const { return num_frames > 0 && frames_done.load() >= num_frames; }
@@ -267,10 +273,8 @@ struct Layer {
     PointColoring point_coloring = PointColoring_Layer;
     float    point_size = 4.0f;
 
-    // In 3D: points over frames as lines, as points or both, smoothed over a window of frames (a moving average; 1 is
-    // not smoothed), which is what is selected there too
+    // In 3D: points over frames as lines, as points or both
     Trajectory trajectory = Trajectory_Lines;
-    int      smoothing = 1;
     float    trajectory_width = 1.0f;
 
     // ### Derived, not saved
@@ -285,6 +289,12 @@ struct Layer {
     // Of the frame shown
     md_array(md_float2_t) current_coords = 0;
     uint64_t current_key = 0;
+
+    // Of the frame shown, smoothed, when its structures follow it: theirs over the frames of the window about it
+    EvaluationRef window;
+    md_array(md_float2_t) window_coords = 0;     // Smoothed shapes of window_structs, the last that were done
+    md_array(md_bitset_t) window_structs = 0;    // Heap allocated
+    uint64_t window_key = 0;                     // Of what window_coords are of
 
     // The density
     uint32_t tex = 0;
@@ -303,19 +313,16 @@ struct Layer {
     uint64_t point_count = 0;
     uint32_t line_stride = 1;       // Of the lines in 3D
 
-    // The evaluation's shapes smoothed over 'smoothing' frames, as its coords; of the evaluation and window of smooth_key
-    md_array(md_float2_t) smooth_coords = 0;
-    uint64_t smooth_key = 0;
 };
 
 // Scott's rule for two dimensions, sigma n^(-1/6), of the spread of the samples (both axes alike, as the plane is
 // isotropic): what smooths a single gaussian best, and much of anything else well enough. From at most some 100k of them.
-static float scott_bandwidth(const Evaluation& e, md_bitset_t frames) {
+static float scott_bandwidth(const Evaluation& e, const md_float2_t* coords, md_bitset_t frames) {
     const uint64_t total = (uint64_t)e.num_structures * md_bitset_count(frames);
     const uint32_t step = (uint32_t)MD_MAX((uint64_t)1, total / 100000);
     double n = 0, sx = 0, sy = 0, sxx = 0, syy = 0;
     for (size_t s = 0; s < e.num_structures; ++s) {
-        const md_float2_t* c = e.coords + s * e.num_frames;
+        const md_float2_t* c = coords + s * e.num_frames;
         md_bitset_iter_t it = md_bitset_iter_range(frames, 0, (uint32_t)e.num_frames);
         uint32_t k = 0;
         while (md_bitset_iter_next(&it)) {
@@ -389,6 +396,11 @@ struct Shapespace : viamd::EventHandler {
     } box;
 
     ViewMode     view_mode = ViewMode_2D;
+
+    // The shapes over frames are smoothed over a window of this many frames (a moving average; 1 is not smoothed), of
+    // every layer and view alike: the points and densities in 2D, the paths in 3D, the points of the frame shown (as the
+    // smoothed shapes there) and what is selected. Once a layer's evaluation is complete; not of what is exported.
+    int smoothing = 1;
 
     // The window of time the 3D plot shows and cuts the paths to (### The time window of the 3D plot), in the run's own
     // unit: of its own, the times [beg, end] (all of the run when end <= beg); following the frame shown, offsets from
@@ -500,6 +512,7 @@ struct Shapespace : viamd::EventHandler {
                 view_mode = ViewMode_2D;
                 select_target = SelectTarget_Both;
                 time_win = {};
+                smoothing = 1;
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
@@ -532,13 +545,12 @@ struct Shapespace : viamd::EventHandler {
             Layer& l = layers[i];
             cancel_job(l, wait);
             l.eval.reset();
+            window_clear(l);
             l.has_result = false;
             l.shown_hash = 0;
             l.want_hash = 0;
             l.structs_key = 0;
             l.current_key = 0;
-            l.smooth_key = 0;
-            md_array_shrink(l.smooth_coords, 0);
         }
         for (EvaluationRef& e : evaluations) e->task.cancel();
         for (EvaluationRef& e : retired) e->task.cancel();
@@ -660,6 +672,7 @@ struct Shapespace : viamd::EventHandler {
         if (num_layers >= MAX_LAYERS) return nullptr;
         Layer& l = layers[num_layers++];
         l.eval.reset();
+        l.window.reset();
         new (&l) Layer();
         l.id = next_layer_id++;
         l.node.id = l.id;
@@ -684,17 +697,23 @@ struct Shapespace : viamd::EventHandler {
         for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitset_free(&l.structures[i], heap);
         md_array_free(l.structures, heap);
         md_array_free(l.current_coords, heap);
-        md_array_free(l.smooth_coords, heap);
+        window_clear(l);
+        md_array_free(l.window_coords, heap);
+        md_array_free(l.window_structs, heap);
         l.eval.reset();
+        l.window.reset();
     }
 
     // Layers are moved as bytes but for their evaluation, which is counted: moved from one to the other
     static void move_into(Layer& dst, Layer& src) {
-        EvaluationRef e = std::move(src.eval);
+        EvaluationRef e = std::move(src.eval), w = std::move(src.window);
         dst.eval.reset();
+        dst.window.reset();
         md_memcpy((void*)&dst, (const void*)&src, sizeof(Layer));
         new (&dst.eval) EvaluationRef(std::move(e));
+        new (&dst.window) EvaluationRef(std::move(w));
         new (&src.eval) EvaluationRef();
+        new (&src.window) EvaluationRef();
     }
 
     void remove_layer(uint32_t id) {
@@ -704,6 +723,7 @@ struct Shapespace : viamd::EventHandler {
         for (int i = idx; i + 1 < num_layers; ++i) move_into(layers[i], layers[i + 1]);
         num_layers -= 1;
         layers[num_layers].eval.reset();
+        layers[num_layers].window.reset();
         new (&layers[num_layers]) Layer();
         if (selected_layer == id) selected_layer = num_layers > 0 ? layers[MD_MIN(idx, num_layers - 1)].id : 0;
         tree_changed();
@@ -738,7 +758,6 @@ struct Shapespace : viamd::EventHandler {
         l->point_coloring = src.point_coloring;
         l->point_size = src.point_size;
         l->trajectory = src.trajectory;
-        l->smoothing = src.smoothing;
         l->trajectory_width = src.trajectory_width;
         l->node.order = order;
         tree_changed();
@@ -948,13 +967,16 @@ struct Shapespace : viamd::EventHandler {
         if (nf == 0) return;
         const uint64_t num_samples = (uint64_t)eval->num_structures * nf;
         const uint32_t num_chunks = (uint32_t)MD_MIN((uint64_t)MD_MIN(8u, nf), (num_samples >> 20) + 1);
-        auto source = [eval, list](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
+        // The shapes as shown: the smoothed ones held by the job, as the window may change while it runs
+        std::shared_ptr<const std::vector<md_float2_t>> smoothed = eval_shapes(*eval) == eval->coords ? nullptr : eval->smoothed;
+        auto source = [eval, list, smoothed](uint32_t chunk, uint32_t chunks, DensityMapBins& bins, const std::atomic<int32_t>& cancel) {
             const uint32_t n = (uint32_t)list->size();
             const uint32_t k0 = (uint32_t)((uint64_t)n * chunk / chunks);
             const uint32_t k1 = (uint32_t)((uint64_t)n * (chunk + 1) / chunks);
+            const md_float2_t* coords = smoothed ? smoothed->data() : eval->coords;
             for (size_t s = 0; s < eval->num_structures; ++s) {
                 if (cancel.load(std::memory_order_relaxed)) return;
-                const md_float2_t* c = eval->coords + s * eval->num_frames;
+                const md_float2_t* c = coords + s * eval->num_frames;
                 for (uint32_t k = k0; k < k1; ++k) {
                     const uint32_t f = (*list)[k];
                     if (coord_valid(c[f])) bins.add(0, c[f].x, c[f].y);
@@ -1024,19 +1046,90 @@ struct Shapespace : viamd::EventHandler {
         l.structs_hash = h;
     }
 
-    // The evaluation of the layer's structures and weighting over the run: one shared, or a new one started
-    void update_evaluation(Layer& l) {
-        if (l.frames == LayerFrames_Current || !l.structs_valid) {
-            l.eval.reset();
-            return;
+    // Whether the layer's structures follow the frame shown (what picks them depends on the coordinates): then they are
+    // not the same over frames, and their smoothed shapes are of a window about the frame shown (update_window)
+    bool structures_follow_frame(const Layer& l) const {
+        if (l.filter.text[0] && l.filter.result.is_dynamic) return true;
+        const LayerGroup* g = layer_group(l);
+        return l.filter.text[0] == '\0' && g && !g->follow_selection && g->filter.result.is_dynamic;
+    }
+
+    // Whether the points of the frame shown are the smoothed shapes there, of an evaluation over the run, rather than the
+    // shapes of the state shown
+    bool current_smoothed(const Layer& l) const {
+        return l.frames == LayerFrames_Current && smoothing > 1 && run_num_frames(app) >= 2 && !structures_follow_frame(l);
+    }
+
+    // The smoothed shape at frame f of the run (of num_frames) from the shapes c of frames [first, ...) about it: the
+    // mean of those valid in a centred window of `smoothing` frames that shrinks at the ends, so that it stays centred.
+    // As VIAL's smooth(x, n), so that smooth(shape_weights(s), n) gives the same shapes. NaN when none is valid.
+    md_float2_t smoothed_at(const md_float2_t* c, uint32_t first, size_t num_frames, size_t f) const {
+        const size_t w = MD_MIN((size_t)(smoothing / 2), MD_MIN(f, num_frames - 1 - f));
+        double sx = 0, sy = 0;
+        uint32_t n = 0;
+        for (size_t g = f - w; g <= f + w; ++g) {
+            const md_float2_t p = c[g - first];
+            if (!coord_valid(p)) continue;
+            sx += p.x;
+            sy += p.y;
+            n += 1;
         }
+        return n ? md_float2_t{ (float)(sx / n), (float)(sy / n) } : md_float2_t{ NAN, NAN };
+    }
+
+    // The evaluation's shapes smoothed (smoothed_at), made once it is complete and again when the window changes
+    void update_smoothed(Evaluation& e) {
+        if (smoothing <= 1 || !e.complete()) return;
+        if (e.smoothed && e.smoothed_window == smoothing) return;
+        const size_t nf = e.num_frames;
+        const size_t half = (size_t)(smoothing / 2);
+        auto out = std::make_shared<std::vector<md_float2_t>>(e.num_structures * nf);
+        for (size_t s = 0; s < e.num_structures; ++s) {
+            const md_float2_t* c = e.coords + s * nf;
+            md_float2_t* o = out->data() + s * nf;
+            // A running sum over the window [f - w, f + w]: both ends only move forward, by two where it grows or shrinks
+            double sx = 0, sy = 0;
+            int64_t n = 0, lo = 0, hi = -1;
+            for (size_t f = 0; f < nf; ++f) {
+                const size_t w = MD_MIN(half, MD_MIN(f, nf - 1 - f));
+                const int64_t want_lo = (int64_t)(f - w), want_hi = (int64_t)(f + w);
+                while (hi < want_hi) {
+                    ++hi;
+                    if (coord_valid(c[hi])) { sx += c[hi].x; sy += c[hi].y; ++n; }
+                }
+                while (lo < want_lo) {
+                    if (coord_valid(c[lo])) { sx -= c[lo].x; sy -= c[lo].y; --n; }
+                    ++lo;
+                }
+                o[f] = n > 0 ? md_float2_t{ (float)(sx / n), (float)(sy / n) } : md_float2_t{ NAN, NAN };
+            }
+        }
+        e.smoothed = std::move(out);
+        e.smoothed_window = smoothing;
+    }
+
+    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own
+    const md_float2_t* eval_shapes(const Evaluation& e) const {
+        if (smoothing > 1 && e.smoothed && e.smoothed_window == smoothing) return e.smoothed->data();
+        return e.coords;
+    }
+
+    // The evaluation of the layer's structures and weighting over the run: one shared, or a new one started. Of a layer
+    // of the frame shown too, when its points there are the smoothed shapes.
+    void update_evaluation(Layer& l) {
         const size_t num_frames = run_num_frames(app);
-        if (num_frames == 0) {
+        if ((l.frames == LayerFrames_Current && !current_smoothed(l)) || !l.structs_valid || num_frames == 0) {
             l.eval.reset();
             return;
         }
         const uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, num_frames));
         if (l.eval && l.eval->key == key && !l.eval->failed()) return;
+        l.eval = evaluation(key, l.structures, l.use_mass, 0, num_frames);
+    }
+
+    // The evaluation of the key: one shared, or a new one started of the structures and weighting over the frames
+    // [first, first + count) of the run
+    EvaluationRef evaluation(uint64_t key, const md_array(md_bitset_t) structures, bool use_mass, uint32_t first, size_t count) {
         for (size_t i = 0; i < evaluations.size(); ++i) {
             if (evaluations[i]->key != key) continue;
             if (evaluations[i]->failed()) {
@@ -1044,26 +1137,25 @@ struct Shapespace : viamd::EventHandler {
                 retire(i);
                 break;
             }
-            l.eval = evaluations[i];
-            return;
+            return evaluations[i];
         }
-        l.eval.reset();
         EvaluationRef e = std::make_shared<Evaluation>();
         e->key = key;
-        e->use_mass = l.use_mass;
+        e->use_mass = use_mass;
         e->arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(1));
-        for (size_t i = 0; i < md_array_size(l.structures); ++i) {
-            md_array_push(e->structures, md_bitset_copy(l.structures[i], e->arena), e->arena);
+        for (size_t i = 0; i < md_array_size(structures); ++i) {
+            md_array_push(e->structures, md_bitset_copy(structures[i], e->arena), e->arena);
         }
         e->num_structures = md_array_size(e->structures);
-        e->num_frames = num_frames;
-        const size_t n = e->num_structures * num_frames;
-        e->coords = (md_float2_t*)md_alloc(e->arena, sizeof(md_float2_t) * n);
+        e->first_frame = first;
+        e->num_frames = count;
+        const size_t n = e->num_structures * count;
+        e->coords = (md_float2_t*)md_alloc(e->arena, sizeof(md_float2_t) * MD_MAX(n, (size_t)1));
         for (size_t i = 0; i < n; ++i) e->coords[i] = { NAN, NAN };
 
         Evaluation* ev = e.get();
         ApplicationState* state = app;
-        e->task.start_for(MD_STR_LIT("Shapespace"), (uint32_t)num_frames, 1, [ev, state](uint32_t beg, uint32_t end) {
+        e->task.start_for(MD_STR_LIT("Shapespace"), (uint32_t)count, 1, [ev, state](uint32_t beg, uint32_t end) {
             const md_system_t& sys = state->mold.sys;
             md_temp_scope_t temp = md_temp_begin();
             MD_DEFER { md_temp_end(temp); };
@@ -1087,7 +1179,7 @@ struct Shapespace : viamd::EventHandler {
                 md_system_state_t frame = {};
                 frame.num_atoms = sys.atom.count;
                 frame.xyz = xyz;
-                if (!md_system_extract_frame(ex, f, &frame)) {
+                if (!md_system_extract_frame(ex, ev->first_frame + f, &frame)) {
                     ev->frames_done.fetch_add(1);
                     continue;
                 }
@@ -1102,7 +1194,58 @@ struct Shapespace : viamd::EventHandler {
             }
         });
         evaluations.push_back(e);
-        l.eval = e;
+        return e;
+    }
+
+    // Whether the points of the frame shown are smoothed shapes of structures that follow the frame: of those picked in
+    // the state shown, over the frames of the window about it (they are not the same structures in other frames)
+    bool window_smoothed(const Layer& l) const {
+        return l.frames == LayerFrames_Current && smoothing > 1 && run_num_frames(app) >= 2 && structures_follow_frame(l);
+    }
+
+    void window_clear(Layer& l) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        l.window.reset();
+        l.window_key = 0;
+        md_array_shrink(l.window_coords, 0);
+        for (size_t i = 0; i < md_array_size(l.window_structs); ++i) md_bitset_free(&l.window_structs[i], heap);
+        md_array_shrink(l.window_structs, 0);
+    }
+
+    // The smoothed shapes of the frame shown, of structures that follow it: an evaluation of them over the frames of the
+    // windows about the frames on either side of it, whose means there are blended as the paths are drawn. Until it is
+    // done, those of the frame before stay shown (with their structures): a few frames late while playing, not raw.
+    void update_window(Layer& l) {
+        if (!window_smoothed(l) || !l.structs_valid) {
+            window_clear(l);
+            return;
+        }
+        const size_t nf = run_num_frames(app);
+        const double fr = MD_CLAMP(app->animation.frame, 0.0, (double)(nf - 1));
+        const size_t f0 = (size_t)fr, f1 = MD_MIN(f0 + 1, nf - 1);
+        const size_t half = (size_t)(smoothing / 2);
+        const size_t lo = f0 - MD_MIN(half, MD_MIN(f0, nf - 1 - f0));
+        const size_t hi = f1 + MD_MIN(half, MD_MIN(f1, nf - 1 - f1));     // Of the windows of f0 and f1, the frames
+        uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, nf));
+        key = md_hash64_combine(key, md_hash64_combine(0x3170 + lo, hi));
+        if (!l.window || l.window->key != key || l.window->failed()) l.window = evaluation(key, l.structures, l.use_mass, (uint32_t)lo, hi - lo + 1);
+        if (!l.window->complete()) return;
+
+        const uint64_t shown = md_hash64(&fr, sizeof(fr), md_hash64_combine(key, (uint64_t)smoothing));
+        if (shown == l.window_key) return;
+        l.window_key = shown;
+        md_allocator_i* heap = md_get_heap_allocator();
+        const Evaluation& e = *l.window;
+        const float a = (float)(fr - (double)f0);
+        md_array_resize(l.window_coords, e.num_structures, heap);
+        for (size_t s = 0; s < e.num_structures; ++s) {
+            const md_float2_t* c = e.coords + s * e.num_frames;
+            const md_float2_t p0 = smoothed_at(c, e.first_frame, nf, f0), p1 = smoothed_at(c, e.first_frame, nf, f1);
+            l.window_coords[s] = !coord_valid(p1) ? p0 : !coord_valid(p0) ? p1 : md_float2_t{ p0.x + (p1.x - p0.x) * a, p0.y + (p1.y - p0.y) * a };
+        }
+        for (size_t i = 0; i < md_array_size(l.window_structs); ++i) md_bitset_free(&l.window_structs[i], heap);
+        md_array_shrink(l.window_structs, 0);
+        for (size_t i = 0; i < e.num_structures; ++i) md_array_push(l.window_structs, md_bitset_copy(e.structures[i], heap), heap);
     }
 
     // The shapes of the structures in the state shown: found again when it changes
@@ -1223,15 +1366,18 @@ struct Shapespace : viamd::EventHandler {
                 update_current(l);
             }
             update_evaluation(l);
+            if (l.eval) update_smoothed(*l.eval);
+            update_window(l);
 
             if (!layer_draws_density(l) || !l.eval || !l.eval->complete()) continue;
             md_bitset_t frames = {};
             if (!layer_frames(l, &frames)) continue;
-            uint64_t h = md_hash64_combine(l.eval->key, layer_frames_hash(l, frames));
+            const int window = eval_shapes(*l.eval) == l.eval->coords ? 1 : smoothing;
+            uint64_t h = md_hash64_combine(md_hash64_combine(l.eval->key, layer_frames_hash(l, frames)), (uint64_t)window);
             // Found once for the samples, not at every frame
             if (h != l.auto_key) {
                 l.auto_key = h;
-                l.auto_bandwidth = scott_bandwidth(*l.eval, frames);
+                l.auto_bandwidth = scott_bandwidth(*l.eval, eval_shapes(*l.eval), frames);
             }
             const float sigma = l.bandwidth > 0.0f ? l.bandwidth : l.auto_bandwidth;
             h = md_hash64(&sigma, sizeof(sigma), h);
@@ -1276,6 +1422,7 @@ struct Shapespace : viamd::EventHandler {
         const double tw[2] = { time_win.beg, time_win.end };
         viamd::write_dbl_vec(state, MD_STR_LIT("TimeWindowRange"), tw, 2);
         viamd::write_bool(state, MD_STR_LIT("ShowPeriods"), time_win.show_periods);
+        viamd::write_int(state, MD_STR_LIT("Smoothing"), smoothing);
         viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
         // In the order of the list: a group, then what is in it
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
@@ -1325,7 +1472,6 @@ struct Shapespace : viamd::EventHandler {
             viamd::write_flt(state, MD_STR_LIT("PointSize"), l.point_size);
             static const md_str_t trajectories[Trajectory_Count] = { MD_STR_LIT("lines"), MD_STR_LIT("points"), MD_STR_LIT("both") };
             viamd::write_str(state, MD_STR_LIT("Trajectory"), trajectories[l.trajectory]);
-            viamd::write_int(state, MD_STR_LIT("Smoothing"), l.smoothing);
             viamd::write_flt(state, MD_STR_LIT("TrajectoryWidth"), l.trajectory_width);
         }
     }
@@ -1357,6 +1503,8 @@ struct Shapespace : viamd::EventHandler {
                 }
             } else if (md_str_eq_cstr(ident, "ShowPeriods")) {
                 viamd::extract_bool(time_win.show_periods, arg);
+            } else if (md_str_eq_cstr(ident, "Smoothing")) {
+                if (viamd::extract_int(smoothing, arg)) smoothing = MD_CLAMP(smoothing | 1, 1, MAX_SMOOTHING);
             } else if (md_str_eq_cstr(ident, "Selects")) {
                 md_str_t v = {};
                 if (viamd::extract_str(v, arg)) {
@@ -1479,8 +1627,6 @@ struct Shapespace : viamd::EventHandler {
                 viamd::extract_flt(l->point_size, arg);
             } else if (md_str_eq_cstr(ident, "Trajectory") && viamd::extract_str(s, arg)) {
                 l->trajectory = md_str_eq_cstr(s, "points") ? Trajectory_Points : md_str_eq_cstr(s, "both") ? Trajectory_Both : Trajectory_Lines;
-            } else if (md_str_eq_cstr(ident, "Smoothing")) {
-                viamd::extract_int(l->smoothing, arg);
             } else if (md_str_eq_cstr(ident, "TrajectoryWidth")) {
                 viamd::extract_flt(l->trajectory_width, arg);
             }
@@ -1497,7 +1643,6 @@ struct Shapespace : viamd::EventHandler {
         l.bandwidth = l.bandwidth > 0.0f ? MD_CLAMP(l.bandwidth, 0.005f, MAX_BANDWIDTH) : 0.0f;
         l.point_size = MD_CLAMP(l.point_size, 1.0f, 16.0f);
         l.trajectory = (Trajectory)MD_CLAMP((int)l.trajectory, 0, Trajectory_Count - 1);
-        l.smoothing = MD_CLAMP(l.smoothing, 1, MAX_SMOOTHING);
         l.trajectory_width = MD_CLAMP(l.trajectory_width, 0.5f, 6.0f);
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
@@ -1629,20 +1774,56 @@ struct Shapespace : viamd::EventHandler {
         md_bitset_t set = {};                    // The layer's frames (for this frame); empty for the frame shown
         uint32_t step = 1;
         bool     current = false;
+        const md_bitset_t* structures = nullptr; // Of the points, when not the layer's (smoothed, of the frame before)
 
         uint32_t frame(size_t k) const { return frames[k]; }
         uint32_t next(size_t k) const { return k + 1 < num_frames ? frames[k + 1] : frames_end; }
     };
 
-    // The points of the layer, at most about max_points of them, of the shapes 'coords' laid out as the evaluation's
-    // (smoothed ones) or of the evaluation's own (NULL)
-    // Of the layer's frames only those in [frame_beg, frame_end) (the time window, in 3D), when given.
-    bool point_source(PointSource* ps, const Layer& l, size_t max_points, const md_float2_t* coords = nullptr,
-                      uint32_t frame_beg = 0, uint32_t frame_end = UINT32_MAX) const {
+    // The points of the layer, at most about max_points of them, of its shapes as they are shown (smoothed or not:
+    // eval_shapes). Of the layer's frames only those in [frame_beg, frame_end) (the time window, in 3D), when given.
+    bool point_source(PointSource* ps, const Layer& l, size_t max_points, uint32_t frame_beg = 0, uint32_t frame_end = UINT32_MAX) const {
         if (!l.structs_valid) return false;
+        static const uint32_t zero = 0;
+        // Of the frame shown, smoothed: the smoothed shapes there, between the frames on either side of it as the paths
+        // are drawn, so that the points are on them
+        if (window_smoothed(l)) {
+            if (md_array_size(l.window_coords) == 0) return false;
+            *ps = PointSource{};
+            ps->coords = l.window_coords;
+            ps->stride = 1;
+            ps->num_structures = md_array_size(l.window_coords);
+            ps->frames = &zero;
+            ps->num_frames = 1;
+            ps->frames_end = 1;
+            ps->current = true;
+            ps->structures = l.window_structs;
+            return true;
+        }
+        if (current_smoothed(l) && l.eval && eval_shapes(*l.eval) != l.eval->coords) {
+            const Evaluation& e = *l.eval;
+            const md_float2_t* c = eval_shapes(e);
+            const size_t nf = e.num_frames;
+            const double f = MD_CLAMP(app->animation.frame, 0.0, (double)(nf - 1));
+            const size_t f0 = (size_t)f, f1 = MD_MIN(f0 + 1, nf - 1);
+            const float a = (float)(f - (double)f0);
+            md_float2_t* at = (md_float2_t*)md_alloc(app->allocator.frame, sizeof(md_float2_t) * MD_MAX(e.num_structures, (size_t)1));
+            for (size_t s = 0; s < e.num_structures; ++s) {
+                const md_float2_t p0 = c[s * nf + f0], p1 = c[s * nf + f1];
+                at[s] = !coord_valid(p1) ? p0 : !coord_valid(p0) ? p1 : md_float2_t{ p0.x + (p1.x - p0.x) * a, p0.y + (p1.y - p0.y) * a };
+            }
+            *ps = PointSource{};
+            ps->coords = at;
+            ps->stride = 1;
+            ps->num_structures = e.num_structures;
+            ps->frames = &zero;
+            ps->num_frames = 1;
+            ps->frames_end = 1;
+            ps->current = true;
+            return true;
+        }
         if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
             if (md_array_size(l.current_coords) == 0) return false;
-            static const uint32_t zero = 0;
             *ps = PointSource{};
             ps->coords = l.current_coords;
             ps->stride = 1;
@@ -1682,7 +1863,7 @@ struct Shapespace : viamd::EventHandler {
             if (i++ % step == 0 && n < cap) list[n++] = it.idx;
         }
         *ps = PointSource{};
-        ps->coords = coords ? coords : l.eval->coords;
+        ps->coords = eval_shapes(*l.eval);
         ps->stride = nf;
         ps->num_structures = l.eval->num_structures;
         ps->frames = list;
@@ -1742,6 +1923,7 @@ struct Shapespace : viamd::EventHandler {
 
     // The atoms of the structure s of layer l
     md_bitset_t structure_atoms(const Layer& l, const PointSource& ps, uint32_t s) const {
+        if (ps.structures) return s < ps.num_structures ? ps.structures[s] : md_bitset_empty_set();
         if (!ps.current && l.eval && s < l.eval->num_structures) return l.eval->structures[s];
         if (s < md_array_size(l.structures)) return l.structures[s];
         return md_bitset_empty_set();
@@ -2178,40 +2360,6 @@ struct Shapespace : viamd::EventHandler {
         const size_t n = run_num_frames(app);
         if (!t || n == 0) return frame;
         return time_at_frame(t, n, frame) * time_scale;
-    }
-
-    // The layer's shapes over frames smoothed over its window (a moving average over the frames of the run whose shapes
-    // there are), laid out as its evaluation's coords. Once the evaluation is complete; NULL before, or unsmoothed.
-    const md_float2_t* smoothed_coords(Layer& l) {
-        if (l.smoothing <= 1 || !l.eval || !l.eval->complete()) return nullptr;
-        const Evaluation& e = *l.eval;
-        const size_t nf = e.num_frames;
-        const uint64_t key = md_hash64_combine(e.key, (uint64_t)l.smoothing) | 1;
-        if (key == l.smooth_key && md_array_size(l.smooth_coords) == e.num_structures * nf) return l.smooth_coords;
-        md_array_resize(l.smooth_coords, e.num_structures * nf, md_get_heap_allocator());
-        const int64_t half = l.smoothing / 2;
-        for (size_t s = 0; s < e.num_structures; ++s) {
-            const md_float2_t* c = e.coords + s * nf;
-            md_float2_t* out = l.smooth_coords + s * nf;
-            // A running sum of the shapes in the window [f - half, f + half]
-            double sx = 0, sy = 0;
-            int64_t n = 0, lo = 0, hi = -1;
-            for (int64_t f = 0; f < (int64_t)nf; ++f) {
-                const int64_t want_hi = MD_MIN((int64_t)nf - 1, f + half);
-                const int64_t want_lo = MD_MAX((int64_t)0, f - half);
-                while (hi < want_hi) {
-                    ++hi;
-                    if (coord_valid(c[hi])) { sx += c[hi].x; sy += c[hi].y; ++n; }
-                }
-                while (lo < want_lo) {
-                    if (coord_valid(c[lo])) { sx -= c[lo].x; sy -= c[lo].y; --n; }
-                    ++lo;
-                }
-                out[f] = (coord_valid(c[f]) && n > 0) ? md_float2_t{ (float)(sx / n), (float)(sy / n) } : md_float2_t{ NAN, NAN };
-            }
-        }
-        l.smooth_key = key;
-        return l.smooth_coords;
     }
 
     // A point drawn in 3D: of structure s in the frame ps.frames[k] (or the frame shown), where it is on the screen
@@ -2654,8 +2802,7 @@ struct Shapespace : viamd::EventHandler {
         for (int i = num_layers - 1; i >= 0; --i) {
             Layer& l = layers[i];
             if (!layer_shown(l) || l.style != LayerStyle_Points || l.opacity <= 0.0f) continue;
-            const md_float2_t* smooth = smoothed_coords(l);
-            if (!point_source(&sources[i], l, MAX_LINE_POINTS, smooth, filter_beg, filter_end)) continue;
+            if (!point_source(&sources[i], l, MAX_LINE_POINTS, filter_beg, filter_end)) continue;
             has_source[i] = true;
             const PointSource& ps = sources[i];
             if (!ps.current) l.line_stride = ps.step;
@@ -3034,6 +3181,7 @@ struct Shapespace : viamd::EventHandler {
         md_array_push(values, NULL, temp);
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
+        const md_float2_t* shapes = eval_shapes(*eval);     // As shown: smoothed, when they are
         for (size_t s = 0; s < ns; ++s) {
             md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
             md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
@@ -3045,7 +3193,7 @@ struct Shapespace : viamd::EventHandler {
         for (size_t f = 0; f < nf; ++f) {
             md_array_push(values[0], has_time ? (float)(time[f] * time_scl) : (float)f, temp);
             for (size_t s = 0; s < ns; ++s) {
-                const md_float3_t w = shape_weights_of(eval->coords[s * nf + f]);
+                const md_float3_t w = shape_weights_of(shapes[s * nf + f]);
                 md_array_push(values[1 + s * 3 + 0], w.x, temp);
                 md_array_push(values[1 + s * 3 + 1], w.y, temp);
                 md_array_push(values[1 + s * 3 + 2], w.z, temp);
@@ -3119,6 +3267,13 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Grid of equal weights", &show_grid);
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+            if (ImGui::SliderInt("Smoothing", &smoothing, 1, MAX_SMOOTHING, smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
+                smoothing |= 1;     // Centred: odd
+            }
+            ImGui::SetItemTooltip("A moving average of the shapes over this many frames, centred, of every layer and view alike:\n"
+                                  "the points and densities in 2D, the paths in 3D, the points of the frame shown, what is selected\n"
+                                  "and what is exported. As smooth(shape_weights(...), n) in a script.");
             ImGui::SeparatorText("A selection selects");
             for (int k = 0; k < SelectTarget_Count; ++k) {
                 if (ImGui::RadioButton(select_target_names[k], select_target == k)) select_target = (SelectTarget)k;
@@ -3533,8 +3688,6 @@ struct Shapespace : viamd::EventHandler {
                     prop::row("line width");
                     ImGui::SliderFloat("##traj_width", &l.trajectory_width, 0.5f, 6.0f, "%.1f px");
                 }
-                prop::row("smoothing", "A moving average over this many frames, of what is drawn and selected in 3D (1: none). Once evaluated.");
-                ImGui::SliderInt("##smoothing", &l.smoothing, 1, MAX_SMOOTHING, l.smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
                 if (l.line_stride > 1) prop::hint("In 3D every %u frames, to keep to %u points", l.line_stride, (uint32_t)MAX_LINE_POINTS);
             }
         }
