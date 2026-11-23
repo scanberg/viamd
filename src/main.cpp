@@ -1574,7 +1574,9 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
-        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT) && !state.editor_focused) {
+        // Also while the script editor has the keyboard: it was held back from there when this was F1, which the editor
+        // takes to look up the word under the cursor; F2 means nothing to the editor
+        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
 			ViewFitRequest fit_request = {
 				.app = state,
 				.surface_id = interaction_surface_main,
