@@ -33,3 +33,9 @@ Volumes have no pairs here: v1's `sdf` counts each particle into one voxel of a 
 structures, VIAL's spreads it over eight and gives a density per structure, so the grids hold different numbers by
 design. mdlib's `vial_compare.sdf_agrees_with_v1` checks what they hold alike: the particles per structure in the box
 and where they are.
+
+Centres of mass have no pairs either. v1's `com` is the circular mean of the positions (`md_geom_com` with the cell);
+VIAL's `.com` is the mean of the group made whole (mdlib 55268c76). The two part wherever a group spreads across the
+cell: on 1ALA-560ns, by up to 6 Å for the whole peptide, which is whole in the file and wider than half the box in some
+frames, and still by 0.003 Å for a single residue, past the default tolerance. VIAL's is the mean; mdlib's
+`vial_compare.centres_are_means` checks it against the means of residues made whole.
