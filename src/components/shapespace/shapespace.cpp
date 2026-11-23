@@ -97,6 +97,7 @@ constexpr int MAX_LAYERS      = 16;
 constexpr int MAX_LEVELS      = DENSITY_MAP_MAX_LEVELS;
 constexpr size_t MAX_POINTS   = 100000;     // Of a layer of points over frames: frames are skipped beyond
 constexpr size_t MAX_LINE_POINTS = 60000;   // Of a layer's lines in 3D, whose segments are sorted by depth every frame
+constexpr float PERSPECTIVE_FOV = 0.5236f;   // Radians, 30 degrees: of the 3D view, in perspective
 constexpr int MAX_SMOOTHING   = 501;        // Frames, of the window the shapes are smoothed over (Shapespace::smoothing)
 constexpr float MAX_BANDWIDTH = 0.06f;      // The domain has room around the triangle for images within 4 sigma of it
 
@@ -401,6 +402,7 @@ struct Shapespace : viamd::EventHandler {
     // every layer and view alike: the points and densities in 2D, the paths in 3D, the points of the frame shown (as the
     // smoothed shapes there) and what is selected. Once a layer's evaluation is complete; not of what is exported.
     int smoothing = 1;
+    bool perspective = false;       // Of the 3D view: seen from a point (PERSPECTIVE_FOV), not from afar
 
     // The window of time the 3D plot shows and cuts the paths to (### The time window of the 3D plot), in the run's own
     // unit: of its own, the times [beg, end] (all of the run when end <= beg); following the frame shown, offsets from
@@ -513,6 +515,7 @@ struct Shapespace : viamd::EventHandler {
                 select_target = SelectTarget_Both;
                 time_win = {};
                 smoothing = 1;
+                perspective = false;
                 break;
             case viamd::EventType_ViamdDeserialize: {
                 viamd::deserialization_state_t& state = *(viamd::deserialization_state_t*)e.payload;
@@ -1423,6 +1426,7 @@ struct Shapespace : viamd::EventHandler {
         viamd::write_dbl_vec(state, MD_STR_LIT("TimeWindowRange"), tw, 2);
         viamd::write_bool(state, MD_STR_LIT("ShowPeriods"), time_win.show_periods);
         viamd::write_int(state, MD_STR_LIT("Smoothing"), smoothing);
+        viamd::write_bool(state, MD_STR_LIT("Perspective"), perspective);
         viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
         // In the order of the list: a group, then what is in it
         RepresentationNode* nodes[MAX_LAYERS + LAYER_MAX_GROUPS];
@@ -1503,6 +1507,8 @@ struct Shapespace : viamd::EventHandler {
                 }
             } else if (md_str_eq_cstr(ident, "ShowPeriods")) {
                 viamd::extract_bool(time_win.show_periods, arg);
+            } else if (md_str_eq_cstr(ident, "Perspective")) {
+                viamd::extract_bool(perspective, arg);
             } else if (md_str_eq_cstr(ident, "Smoothing")) {
                 if (viamd::extract_int(smoothing, arg)) smoothing = MD_CLAMP(smoothing | 1, 1, MAX_SMOOTHING);
             } else if (md_str_eq_cstr(ident, "Selects")) {
@@ -2599,8 +2605,9 @@ struct Shapespace : viamd::EventHandler {
         ImPlot3D::PushStyleColor(ImPlot3DCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         ImPlot3D::PushStyleColor(ImPlot3DCol_FrameBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         ImPlot3D::PushStyleVar(ImPlot3DStyleVar_ViewScaleFactor, v3.view_scale);
+        ImPlot3D::PushStyleVar(ImPlot3DStyleVar_Perspective, perspective ? PERSPECTIVE_FOV : 0.0f);
         MD_DEFER {
-            ImPlot3D::PopStyleVar();
+            ImPlot3D::PopStyleVar(2);
             ImPlot3D::PopStyleColor(2);
             ImPlot3D::GetInputMap() = saved_map;
         };
@@ -3029,6 +3036,7 @@ struct Shapespace : viamd::EventHandler {
         const md_float2_t mid = { 0.5f, tri_iso.y / 3.0f };
         const ImVec2 time_a = ImPlot3D::PlotToPixels(t0, mid.x, mid.y);
         const ImVec2 time_b = ImPlot3D::PlotToPixels(t1, mid.x, mid.y);
+        const ImVec2 time_m = ImPlot3D::PlotToPixels(0.5 * (t0 + t1), mid.x, mid.y);
         ImRect box_px(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
         for (int k = 0; k < 8; ++k) {
             const ImVec2 c = ImPlot3D::PlotToPixels(k & 1 ? t1 : t0, k & 2 ? 1.04 : -0.04, k & 4 ? tri_iso.y + 0.04 : -0.04);
@@ -3049,10 +3057,19 @@ struct Shapespace : viamd::EventHandler {
             const float len2 = ImLengthSqr(axis);
             const bool along = len2 > 400.0f;     // Not looking (nearly) down the time axis
             const double w0 = t0, w1 = t1;
+            // Of a point on the screen, how far along the window the time axis is under it, in [0, 1]. The axis drawn is
+            // foreshortened in perspective: its middle (time_m) is not halfway along it on the screen, and gives by how
+            // much (the ratio of the depths of its ends). Seen from afar, that is where the point is along it on the screen.
+            const float lm = len2 > 0.0f ? ImDot(time_m - time_a, axis) / len2 : 0.5f;
+            const float r = lm > 0.01f && lm < 0.99f ? 1.0f / lm - 1.0f : 1.0f;
+            auto time_u = [&](ImVec2 p) {
+                const float l = MD_CLAMP(ImDot(p - time_a, axis) / len2, 0.0f, 1.0f);
+                return l * r / (1.0f - l + l * r);
+            };
             if (hovered && !shift && !v3.active && nf > 1) {
                 ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindow()->ID);
                 if (io.MouseWheel != 0.0f) {
-                    const float u = along ? MD_CLAMP(ImDot(mouse - time_a, axis) / len2, 0.0f, 1.0f) : 0.5f;
+                    const float u = along ? time_u(mouse) : 0.5f;
                     const double tm = w0 + u * (w1 - w0);
                     const double f = pow(0.85, (double)io.MouseWheel);
                     time_window_set((tm - (tm - w0) * f) / time_scale, (tm + (w1 - tm) * f) / time_scale);
@@ -3060,7 +3077,7 @@ struct Shapespace : viamd::EventHandler {
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) v3.panning = true;
                 if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
                     v3.dollying = true;
-                    v3.dolly_u = along ? MD_CLAMP(ImDot(mouse - time_a, axis) / len2, 0.0f, 1.0f) : 0.5f;
+                    v3.dolly_u = along ? time_u(mouse) : 0.5f;
                 }
                 if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
             }
@@ -3078,8 +3095,13 @@ struct Shapespace : viamd::EventHandler {
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
                     v3.panning = false;
                 } else if (along && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
-                    // The paths move with the pointer: the window the other way
-                    const double dt = -(double)(ImDot(io.MouseDelta, axis) / len2) * (w1 - w0);
+                    // The paths move with the pointer: the window the other way. Past the ends of the axis too, as the
+                    // pointer leaves it, but not as far as where the axis would vanish in perspective
+                    auto u_of = [&](ImVec2 p) {
+                        const float l = MD_CLAMP(ImDot(p - time_a, axis) / len2, -0.5f, 1.5f);
+                        return l * r / MD_MAX(1.0f - l + l * r, 0.05f);
+                    };
+                    const double dt = -(double)(u_of(mouse) - u_of(mouse - io.MouseDelta)) * (w1 - w0);
                     time_window_set((w0 + dt) / time_scale, (w1 + dt) / time_scale);
                 }
             }
@@ -3249,6 +3271,10 @@ struct Shapespace : viamd::EventHandler {
                 if (ImGui::MenuItem("From the side")) v3.preset = 1;
                 ImGui::SetItemTooltip("Time across, the corners up and down");
                 if (ImGui::MenuItem("At an angle")) v3.preset = 2;
+                ImGui::Separator();
+                ImGui::MenuItem("Perspective", nullptr, &perspective);
+                ImGui::SetItemTooltip("Seen from nearby: what is nearer is larger. Off, seen from afar: sizes and parallels\n"
+                                      "are kept, and the lengths along an axis compare anywhere in the box.");
                 ImGui::EndPopup();
             }
             ImGui::SameLine();

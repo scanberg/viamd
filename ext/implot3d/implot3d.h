@@ -179,6 +179,7 @@ enum ImPlot3DStyleVar_ {
     ImPlot3DStyleVar_PlotPadding,     // ImVec2, padding between widget frame and plot area, labels, or outside legends (i.e. main padding)
     ImPlot3DStyleVar_LabelPadding,    // ImVec2, padding between axes labels, tick labels, and plot edge
     ImPlot3DStyleVar_ViewScaleFactor, // float, scale factor for 3D view, you can use it to make the whole plot larger or smaller
+    ImPlot3DStyleVar_Perspective,     // [viamd] float, vertical field of view of a perspective projection in radians; 0 is orthographic
     // Legend style
     ImPlot3DStyleVar_LegendPadding,      // ImVec2, legend padding from plot edges
     ImPlot3DStyleVar_LegendInnerPadding, // ImVec2, legend inner padding from legend edges
@@ -1056,6 +1057,7 @@ struct ImPlot3DStyle {
     ImVec2 PlotPadding;     // Padding between widget frame and plot area
     ImVec2 LabelPadding;    // Padding between axes labels, tick labels, and plot edge
     float ViewScaleFactor;  // Scale factor for 3D view
+    float Perspective;      // [viamd] Vertical field of view of a perspective projection, in radians; 0 is orthographic
     // Legend style
     ImVec2 LegendPadding;      // Legend padding from plot edges
     ImVec2 LegendInnerPadding; // Legend inner padding from legend edges

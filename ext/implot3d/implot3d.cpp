@@ -1240,10 +1240,29 @@ void ComputeBoxCorners(ImPlot3DPoint* corners, const ImPlot3DPoint& range_min, c
     corners[7] = ImPlot3DPoint(range_min.x, range_max.y, range_max.z); // 7
 }
 
+// [viamd] The distance of the eye from the centre of the box, in NDC, of a perspective projection; 0 when orthographic.
+// The plane through the centre, facing the eye, is seen at the size it has orthographically: panning there and the view
+// scale are as they were. Set by the field of view at a view scale factor of 1 (the plot's shorter side spans 1.8 in
+// NDC), and not by the scale factor, which zooms as a lens would: the box looks as deep at any zoom.
+static double PerspectiveEyeDistance() {
+    const float fov = GImPlot3D->Style.Perspective;
+    if (!(fov > 0.0f)) return 0.0;
+    return 0.9 / tan(0.5 * (double)ImClamp(fov, 0.01f, 2.5f));
+}
+
 // Convert a position in the plot's NDC to pixels
 ImVec2 NDCToPixels(const ImPlot3DPlot& plot, const ImPlot3DPoint& point) {
     ImVec2 center = plot.PlotRect.GetCenter();
     ImPlot3DPoint point_pix = plot.GetViewScale() * (plot.Rotation * point);
+    // [viamd] Perspective: smaller with the distance from the eye, on the screen's axis (towards the eye is +z); the
+    // eye is outside the box (of the NDC sizes ImPlot3D gives it), but not anything drawn in front of it
+    const double eye = PerspectiveEyeDistance();
+    if (eye > 0.0) {
+        const double depth = eye - point_pix.z / plot.GetViewScale();
+        const double k = eye / ImMax(depth, 0.05 * eye);
+        point_pix.x *= k;
+        point_pix.y *= k;
+    }
     point_pix.y *= -1.0f; // Invert y-axis
     point_pix.x += center.x;
     point_pix.y += center.y;
@@ -2362,6 +2381,12 @@ ImPlot3DRay PixelsToNDCRay(const ImVec2& pix) {
     // Define near and far points in NDC space along the z-axis
     ImPlot3DPoint ndc_near = plot.Rotation.Inverse() * ImPlot3DPoint(x, y, 10.0f);
     ImPlot3DPoint ndc_far = plot.Rotation.Inverse() * ImPlot3DPoint(x, y, -10.0f);
+    // [viamd] Perspective: from the eye, through the point at the centre's depth (seen at its orthographic size)
+    const double eye = PerspectiveEyeDistance();
+    if (eye > 0.0) {
+        ndc_near = plot.Rotation.Inverse() * ImPlot3DPoint(0.0f, 0.0f, (float)eye);
+        ndc_far = plot.Rotation.Inverse() * ImPlot3DPoint(x, y, 0.0f);
+    }
 
     // Create the ray in NDC space
     ImPlot3DRay ndc_ray;
@@ -3015,6 +3040,7 @@ static const ImPlot3DStyleVarInfo GPlot3DStyleVarInfo[] = {
     {ImGuiDataType_Float, 2, (ImU32)offsetof(ImPlot3DStyle, PlotPadding)},     // ImPlot3DStyleVar_PlotPadding
     {ImGuiDataType_Float, 2, (ImU32)offsetof(ImPlot3DStyle, LabelPadding)},    // ImPlot3DStyleVar_LabelPadding
     {ImGuiDataType_Float, 1, (ImU32)offsetof(ImPlot3DStyle, ViewScaleFactor)}, // ImPlot3DStyleVar_ViewScaleFactor
+    {ImGuiDataType_Float, 1, (ImU32)offsetof(ImPlot3DStyle, Perspective)},     // ImPlot3DStyleVar_Perspective
 
     // Legend style
     {ImGuiDataType_Float, 2, (ImU32)offsetof(ImPlot3DStyle, LegendPadding)},      // ImPlot3DStyleVar_LegendPadding
@@ -4120,6 +4146,7 @@ ImPlot3DStyle::ImPlot3DStyle() {
     PlotPadding = ImVec2(10, 10);
     LabelPadding = ImVec2(5, 5);
     ViewScaleFactor = 1.0f;
+    Perspective = 0.0f;
     // Legend style
     LegendPadding = ImVec2(10, 10);
     LegendInnerPadding = ImVec2(5, 5);
