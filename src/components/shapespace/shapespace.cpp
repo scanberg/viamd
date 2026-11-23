@@ -30,11 +30,13 @@
 //
 // In 3D the triangle is stood up across the time axis (the timeline's time): each structure of a layer over frames is a
 // line through its shapes, smoothed over a window of frames or not, the frame shown a slice across it, the period under
-// the pointer two faces. Right-drag turns it, drag pans, the wheel zooms; hover, click and shift-drag select as in 2D,
-// what is drawn on the screen.
+// the pointer two faces. As in the viewport, drag turns it; the triangle stays as it is (equilateral, all of it), and
+// what moves in time is the time filter's window: the wheel zooms it, right-drag pans it, double-click is the whole run
+// again. The box fills the plot. Hover, click and shift-drag select as in 2D, what is drawn on the screen.
 //
 // The paths in 3D can be cut to a window of time (the time filter, of every layer, not of the 2D plot): fixed, or
-// following the frame shown (a tail behind it). The time axis is the window then.
+// following the frame shown (a tail behind it). The time axis is the window then: zooming and panning in time in the
+// 3D plot are of the window.
 
 #include <core/md_log.h>
 #include <md_run.h>
@@ -397,7 +399,8 @@ struct Shapespace : viamd::EventHandler {
 
     // The 3D view
     struct {
-        bool   fit = true;              // The axes to the run's time and the triangle, at the next frame
+        float  view_scale = 1.0f;       // Of the box on the screen (ImPlot3D's ViewScaleFactor): to fill the plot
+        bool   panning = false;         // Right-drag, along time
         int    preset = -1;             // A view to turn to: 0 along the time axis, 1 from the side, 2 the default
         bool   drawn = false;           // This frame
         // Box selection, on the screen
@@ -2296,7 +2299,6 @@ struct Shapespace : viamd::EventHandler {
         if (toggle(ICON_FA_FILTER, time_filter.enabled)) {
             time_filter.enabled = !time_filter.enabled;
             if (time_filter.enabled && !(time_filter.end > time_filter.beg)) time_filter_reset();
-            v3.fit = true;
         }
         if (!has_run) ImGui::EndDisabled();
         ImGui::SetItemTooltip(has_run ? "The paths in 3D over a window of time only" : "The paths in 3D over a window of time only: there is no trajectory");
@@ -2331,6 +2333,43 @@ struct Shapespace : viamd::EventHandler {
         else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click to reset.");
     }
 
+    // The time filter's window set from the times [d0, d1] in the display unit, as zooming and panning in 3D move it: on,
+    // at least two frames long. Fixed, within the run, and off again when it is all of it; following, as offsets.
+    void time_filter_set_window(double d0, double d1) {
+        const double* t = run_frame_times(app);
+        const size_t n = run_num_frames(app);
+        if (!t || n < 2 || !(time_scale > 0.0)) return;
+        const double span = t[n - 1] - t[0];
+        const double min_len = 2.0 * span / (double)(n - 1);
+        double b = d0 / time_scale, e = d1 / time_scale;
+        if (e - b < min_len) {
+            const double c = 0.5 * (b + e);
+            b = c - 0.5 * min_len;
+            e = c + 0.5 * min_len;
+        }
+        if (!time_filter.enabled) {
+            time_filter.enabled = true;
+            time_filter.follow = false;
+        }
+        if (time_filter.follow) {
+            const double tc = run_time_at_frame(app, app->animation.frame);
+            time_filter.beg = MD_CLAMP(b - tc, -span, span);
+            time_filter.end = MD_CLAMP(e - tc, time_filter.beg, span);
+            return;
+        }
+        if (e - b >= span) {
+            time_filter.enabled = false;
+            time_filter.beg = t[0];
+            time_filter.end = t[n - 1];
+            return;
+        }
+        // Moved back into the run, as long as it is
+        if (b < t[0])     { e += t[0] - b; b = t[0]; }
+        if (e > t[n - 1]) { b -= e - t[n - 1]; e = t[n - 1]; }
+        time_filter.beg = b;
+        time_filter.end = e;
+    }
+
     void draw_plot3d() {
         v3.drawn = true;
         if (ImGui::GetContentRegionAvail().x < 32.0f || ImGui::GetContentRegionAvail().y < 32.0f) return;
@@ -2362,21 +2401,34 @@ struct Shapespace : viamd::EventHandler {
 
         const ImGuiIO& io = ImGui::GetIO();
         const bool shift = io.KeyShift;
-        ImPlot3DFlags flags = ImPlot3DFlags_CanvasOnly | ImPlot3DFlags_NoMenus;
-        // Shift is for selecting: the plot neither turns nor pans meanwhile
-        if (shift || v3.active) flags |= ImPlot3DFlags_NoRotate | ImPlot3DFlags_NoPan | ImPlot3DFlags_NoZoom;
+        // ImPlot3D only turns the box, with the left button as the viewport does; zooming and panning (in time, of the time
+        // filter's window) are ours. Shift is for selecting: the box does not turn meanwhile.
+        ImPlot3DFlags flags = ImPlot3DFlags_CanvasOnly | ImPlot3DFlags_NoMenus | ImPlot3DFlags_NoPan | ImPlot3DFlags_NoZoom;
+        if (shift || v3.active || v3.panning) flags |= ImPlot3DFlags_NoRotate;
+        ImPlot3DInputMap& input_map = ImPlot3D::GetInputMap();
+        const ImPlot3DInputMap saved_map = input_map;
+        input_map.Rotate = ImGuiMouseButton_Left;
+        input_map.ResetRotation = -1;
+        input_map.Pan = -1;
+        input_map.Fit = -1;
+        input_map.Menu = -1;
 
         ImPlot3D::PushStyleColor(ImPlot3DCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         ImPlot3D::PushStyleColor(ImPlot3DCol_FrameBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
-        MD_DEFER { ImPlot3D::PopStyleColor(2); };
+        ImPlot3D::PushStyleVar(ImPlot3DStyleVar_ViewScaleFactor, v3.view_scale);
+        MD_DEFER {
+            ImPlot3D::PopStyleVar();
+            ImPlot3D::PopStyleColor(2);
+            ImPlot3D::GetInputMap() = saved_map;
+        };
 
         if (!ImPlot3D::BeginPlot("##Shapespace3D", ImVec2(-1, -1), flags)) return;
 
-        const ImPlot3DAxisFlags shape_axis = ImPlot3DAxisFlags_NoLabel | ImPlot3DAxisFlags_NoTickLabels | ImPlot3DAxisFlags_NoTickMarks;
+        // The triangle all of it, always: the shape axes are fixed. The time axis is the run, or the time filter's window.
+        const ImPlot3DAxisFlags shape_axis = ImPlot3DAxisFlags_NoLabel | ImPlot3DAxisFlags_NoTickLabels | ImPlot3DAxisFlags_NoTickMarks |
+                                             ImPlot3DAxisFlags_NoGridLines | ImPlot3DAxisFlags_Lock;
         ImPlot3D::SetupAxes(x_label, nullptr, nullptr, ImPlot3DAxisFlags_None, shape_axis, shape_axis);
-        // Filtered, the time axis is the window, as it moves
-        ImPlot3D::SetupAxesLimits(t0, t1, -0.04, 1.04, -0.04, tri_iso.y + 0.04, (v3.fit || filtered) ? ImPlot3DCond_Always : ImPlot3DCond_Once);
-        v3.fit = false;
+        ImPlot3D::SetupAxesLimits(t0, t1, -0.04, 1.04, -0.04, tri_iso.y + 0.04, ImPlot3DCond_Always);
         // The triangle equilateral, time longer
         ImPlot3D::SetupBoxScale(1.3, 0.7, 0.7 * tri_iso.y);
         ImPlot3D::SetupBoxInitialRotation(20.0, -35.0);
@@ -2412,16 +2464,47 @@ struct Shapespace : viamd::EventHandler {
                 xs[n] = xa; ys[n] = a.x; zs[n] = a.y; ++n;
                 xs[n] = xb; ys[n] = b.x; zs[n] = b.y; ++n;
             };
-            for (int c = 0; c < 3; ++c) {
-                seg(pa, corners[c], pa, corners[(c + 1) % 3]);
-                seg(pb, corners[c], pb, corners[(c + 1) % 3]);
-                seg(pa, corners[c], pb, corners[c]);
-            }
+            for (int c = 0; c < 3; ++c) seg(pa, corners[c], pb, corners[c]);
             ImPlot3DSpec spec;
-            spec.LineColor = ImVec4(1, 1, 1, 0.28f);
+            spec.LineColor = ImVec4(1, 1, 1, 0.22f);
             spec.LineWeight = 1.0f;
             spec.Flags = item_flags | ImPlot3DLineFlags_Segments;
             ImPlot3D::PlotLine("##prism", xs, ys, zs, n, spec);
+
+            // The reference triangle at either end, with its grid of equal weights (as in 2D): where the shapes are
+            double gx[2 * 15], gy[2 * 15], gz[2 * 15];
+            double ex[2 * 3], ey[2 * 3], ez[2 * 3];
+            for (int end = 0; end < 2; ++end) {
+                const double x = end == 0 ? pa : pb;
+                int ng = 0, ne = 0;
+                auto line = [&](double* lx, double* ly, double* lz, int& k, md_float2_t a, md_float2_t b) {
+                    lx[k] = x; ly[k] = a.x; lz[k] = a.y; ++k;
+                    lx[k] = x; ly[k] = b.x; lz[k] = b.y; ++k;
+                };
+                for (int c = 0; c < 3; ++c) line(ex, ey, ez, ne, corners[c], corners[(c + 1) % 3]);
+                if (show_grid) {
+                    auto lerp2 = [](md_float2_t a, md_float2_t b, float u) { return md_float2_t{ a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u }; };
+                    const md_float2_t a = corners[0], b = corners[1], c = corners[2];
+                    for (int k = 1; k < 4; ++k) {
+                        const float u = k / 4.0f;
+                        line(gx, gy, gz, ng, lerp2(a, b, u), lerp2(a, c, u));
+                        line(gx, gy, gz, ng, lerp2(b, a, u), lerp2(b, c, u));
+                        line(gx, gy, gz, ng, lerp2(c, a, u), lerp2(c, b, u));
+                    }
+                }
+                char id[24];
+                ImPlot3DSpec es;
+                es.LineColor = ImVec4(1, 1, 1, 0.45f);
+                es.LineWeight = 1.0f;
+                es.Flags = item_flags | ImPlot3DLineFlags_Segments;
+                snprintf(id, sizeof(id), "##tri%d", end);
+                ImPlot3D::PlotLine(id, ex, ey, ez, ne, es);
+                if (ng > 0) {
+                    es.LineColor = ImVec4(1, 1, 1, 0.12f);
+                    snprintf(id, sizeof(id), "##grid%d", end);
+                    ImPlot3D::PlotLine(id, gx, gy, gz, ng, es);
+                }
+            }
             ImPlot3D::PlotText("Linear", pa, tri_lin.x, tri_lin.y, 0.0, ImVec2(0, 12));
             ImPlot3D::PlotText("Planar", pa, tri_pla.x, tri_pla.y, 0.0, ImVec2(0, 12));
             ImPlot3D::PlotText("Spherical", pa, tri_iso.x, tri_iso.y, 0.0, ImVec2(0, -12));
@@ -2681,7 +2764,52 @@ struct Shapespace : viamd::EventHandler {
         }
 
         const bool any_points = [&] { for (int i = 0; i < num_layers; ++i) if (num_points[i] > 0) return true; return false; }();
+        // Where time runs on the screen (along the middle of the prism), and how much of the plot the box takes: of this
+        // frame, for zooming, panning and the box's size
+        const md_float2_t mid = { 0.5f, tri_iso.y / 3.0f };
+        const ImVec2 time_a = ImPlot3D::PlotToPixels(t0, mid.x, mid.y);
+        const ImVec2 time_b = ImPlot3D::PlotToPixels(t1, mid.x, mid.y);
+        ImRect box_px(ImVec2(FLT_MAX, FLT_MAX), ImVec2(-FLT_MAX, -FLT_MAX));
+        for (int k = 0; k < 8; ++k) {
+            const ImVec2 c = ImPlot3D::PlotToPixels(k & 1 ? t1 : t0, k & 2 ? 1.04 : -0.04, k & 4 ? tri_iso.y + 0.04 : -0.04);
+            box_px.Add(c);
+        }
         ImPlot3D::EndPlot();
+
+        // The box fills the plot, with room for the time axis' labels. Not while it is turned by hand: it settles after.
+        if (box_px.GetWidth() > 1.0f && box_px.GetHeight() > 1.0f && !(ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsItemActive())) {
+            const float fit = MD_MIN(plot_rect.GetWidth() * 0.86f / box_px.GetWidth(), plot_rect.GetHeight() * 0.80f / box_px.GetHeight());
+            const float target = MD_CLAMP(v3.view_scale * fit, 0.2f, 8.0f);
+            v3.view_scale += (target - v3.view_scale) * 0.5f;
+        }
+
+        // Zooming and panning in time: of the time filter's window, about the time under the pointer
+        {
+            const ImVec2 axis = time_b - time_a;
+            const float len2 = ImLengthSqr(axis);
+            const bool along = len2 > 400.0f;     // Not looking (nearly) down the time axis
+            const double w0 = t0, w1 = t1;
+            if (hovered && !shift && !v3.active && nf > 1) {
+                ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindow()->ID);
+                if (io.MouseWheel != 0.0f) {
+                    const float u = along ? MD_CLAMP(ImDot(mouse - time_a, axis) / len2, 0.0f, 1.0f) : 0.5f;
+                    const double tm = w0 + u * (w1 - w0);
+                    const double f = pow(0.85, (double)io.MouseWheel);
+                    time_filter_set_window(tm - (tm - w0) * f, tm + (w1 - tm) * f);
+                }
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) v3.panning = true;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_filter.enabled = false;
+            }
+            if (v3.panning) {
+                if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                    v3.panning = false;
+                } else if (along && time_filter.enabled && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)) {
+                    // The paths move with the pointer: the window the other way
+                    const double dt = -(double)(ImDot(io.MouseDelta, axis) / len2) * (w1 - w0);
+                    time_filter_set_window(w0 + dt, w1 + dt);
+                }
+            }
+        }
 
         // Over the plot: the point under the pointer, the box
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -2857,9 +2985,9 @@ struct Shapespace : viamd::EventHandler {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + MD_MAX(0.0f, ImGui::GetContentRegionAvail().x - bw));
         if (ImGui::Button(ICON_FA_EXPAND)) {
             fit_view = true;
-            v3.fit = true;
+            if (view_mode != ViewMode_2D) time_filter.enabled = false;
         }
-        ImGui::SetItemTooltip("Fit the view (or double-click the plot)");
+        ImGui::SetItemTooltip(view_mode == ViewMode_2D ? "Fit the view (or double-click the plot)" : "Fit the view, in 3D the whole run (or double-click the plot)");
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
