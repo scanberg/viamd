@@ -2716,6 +2716,11 @@ void HandleInput(ImPlot3DPlot& plot) {
         // Map delta to rotation angles (in radians)
         float angle_x = delta.x * (3.1415f / 180.0f);
         float angle_y = delta.y * (3.1415f / 180.0f);
+        // [viamd] Relative to the plot's size, as a trackball's
+        if (map.RotateRate > 0.0f) {
+            angle_x = delta.x * map.RotateRate / ImMax(plot.PlotRect.GetWidth(), 1.0f);
+            angle_y = delta.y * map.RotateRate / ImMax(plot.PlotRect.GetHeight(), 1.0f);
+        }
 
         // If drag just started, determine and store the rotation axis
         if (plot.DragRotationAxis == ImPlot3DPoint(0.0f, 0.0f, 0.0f)) {

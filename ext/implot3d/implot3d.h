@@ -979,6 +979,8 @@ struct ImPlot3DInputMap {
     ImGuiMouseButton Rotate = ImGuiMouseButton_Right;        // Drag: turns the box
     ImGuiMouseButton ResetRotation = ImGuiMouseButton_Right; // Double-click: turns the box back, or to face the plane hovered
     ImGuiMouseButton Menu = ImGuiMouseButton_Right;          // Click: the context menu
+    float RotateRate = 0.0f;                                 // Radians a drag across all of the plot turns it (across its width or
+                                                             // its height), whatever its size; 0: ImPlot3D's own, a degree a pixel
 };
 
 // ImPlot3DQuat: Quaternion for representing 3D rotations
