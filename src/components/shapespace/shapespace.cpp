@@ -68,6 +68,7 @@
 #include <implot_widgets.h>
 #include <implot_internal.h>
 #include <implot3d.h>
+#include <plot_input.h>
 #include <task_system.h>
 
 #include <atomic>
@@ -2131,7 +2132,8 @@ struct Shapespace : viamd::EventHandler {
 
             draw_triangle();
             density_map_plot_canvas(render_densities());
-            draw_points(ImPlot::IsPlotHovered());
+            // Nothing hovered while it is panned (plot_input.h)
+            draw_points(ImPlot::IsPlotHovered() && !plot_input_navigating());
 
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
@@ -2682,7 +2684,9 @@ struct Shapespace : viamd::EventHandler {
 
         // Where the points are on the screen, for what the pointer is on and what a box covers
         Hover hover;
-        if (hovered || v3.active) {
+        // Nothing hovered while it is turned, panned or zoomed by a drag (plot_input.h); the box still covers what it covers
+        const bool hover_points = hovered && !plot_input_navigating();
+        if (hover_points || v3.active) {
             float best = 0.0f;
             for (int i = 0; i < num_layers; ++i) {
                 if (!has_source[i]) continue;
@@ -2691,7 +2695,7 @@ struct Shapespace : viamd::EventHandler {
                 for (size_t j = 0; j < num_points[i]; ++j) {
                     Point3D& p = points[i][j];
                     p.px = ImPlot3D::PlotToPixels(p.x, p.y, p.z);
-                    if (!hovered || v3.active || (hover.layer >= 0 && hover.layer < i)) continue;
+                    if (!hover_points || v3.active || (hover.layer >= 0 && hover.layer < i)) continue;
                     const float d2 = ImLengthSqr(p.px - mouse);
                     if (d2 < best) {
                         best = d2;
@@ -2703,7 +2707,7 @@ struct Shapespace : viamd::EventHandler {
 
         // The highlight: what the box covers, or the point under the pointer
         const bool box_is_click = v3.active && ImLengthSqr(mouse - v3.p0) < 9.0f;
-        if (hovered || v3.active) begin_highlight();
+        if (hover_points || v3.active) begin_highlight();
         if (v3.active && box_is_click) {
             if (v3.click_layer >= 0 && v3.click_layer < num_layers && v3.click_structure >= 0 && has_source[v3.click_layer]) {
                 const PointSource& ps = sources[v3.click_layer];

@@ -15,6 +15,9 @@
 //   right-click             without a drag: the context menu
 //   double-click            fit, or back to all of it
 //
+// Nothing is hovered while a view is navigated (turned, panned, dollied: plot_input_navigating), in any view: what
+// passes under the pointer then is not what it points at. The viewport has it from interaction_surface.
+//
 // There is no box zoom: the wheel and double-click do that. A view with something of its own to drag with the left
 // button (the timeline: ctrl-drag the current frame, shift-drag a period) keeps the left button for it while it does,
 // and pans with the right only.
@@ -24,6 +27,14 @@
 
 #include <implot.h>
 #include <implot3d.h>
+
+// Whether the mouse navigates a view: a plain drag (no modifier: shift selects, ctrl has tools of its own) of any button,
+// past ImGui's drag threshold. A press not dragged yet is still a click, on what is under it.
+static inline bool plot_input_navigating() {
+    if (ImGui::GetIO().KeyMods != ImGuiMod_None) return false;
+    return ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::IsMouseDragging(ImGuiMouseButton_Right) ||
+           ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
+}
 
 // ImPlot (2D): left or right drag pans, double-click fits, the wheel zooms, a right click opens the menu. Shift is for
 // selecting, which the views do themselves: ImPlot ignores the mouse while it is held.
@@ -38,7 +49,8 @@ static inline void plot_input_house(ImPlotInputMap* map) {
 }
 
 // ImPlot3D: left-drag turns, right-drag pans, middle-drag and the wheel zoom (its own), double-click fits, a right click
-// opens the menu
+// opens the menu. It turns as fast as the viewport: its trackball (camera_utils.cpp, 0.8 in NDC) turns about 2.5 radians
+// for a drag across all of the view, near its middle.
 static inline void plot_input_house(ImPlot3DInputMap* map) {
     *map = ImPlot3DInputMap();
     map->Rotate        = ImGuiMouseButton_Left;
@@ -46,4 +58,5 @@ static inline void plot_input_house(ImPlot3DInputMap* map) {
     map->Fit           = ImGuiMouseButton_Left;
     map->ResetRotation = -1;
     map->Menu          = ImGuiMouseButton_Right;
+    map->RotateRate    = 2.5f;
 }
