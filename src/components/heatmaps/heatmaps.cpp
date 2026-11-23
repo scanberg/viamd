@@ -47,7 +47,7 @@
 #include <timeline_periods_ui.h>
 #include <display_units.h>
 #include <task_system.h>
-#include <heatmaps/heatmaps_core.h>
+#include "heatmaps_core.h"
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
 
