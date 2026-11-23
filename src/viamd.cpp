@@ -155,7 +155,9 @@ void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
 // which stands for its residue. What a click selects is the highlight's to show, as that follows the selection
 // granularity; the tooltip does not change with it, so the same atom always reads the same.
 //
-// The title names the object and where it sits (residue, chain). Each row gives one property, grouped by what it means
+// The title starts with what the object is, the word VIAL selects it by (particle, bond, ring, residue), then names it
+// and where it sits (residue, chain): with a wider granularity, a residue's or a chain's atoms lit up, the title still
+// says that it is a particle that is described. Each row gives one property, grouped by what it means
 // rather than by the bitfield it is stored in: kind, role, chemistry, region, source. Keys, and values that are our own
 // words, are lower case; names from the file (atoms, residues, chains, entities) and element symbols are printed as
 // given. A row with nothing to say is left out. The index row spells the object in the script's terms, from 1.
@@ -516,7 +518,9 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_system_t& sys = state.mold.sys;
     const TooltipPlace place = tooltip_place_of_atom(sys, atom_idx);
 
+    // Titled by what it is, as every tooltip is: "particle · CA · ALA5 · A". The kind row says which: atom, bead, virtual
     md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += MD_STR_LIT("particle" TOOLTIP_SEP);
     tooltip_append_atom_name(&title, sys, atom_idx);
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
@@ -529,10 +533,8 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const ApplicationState&
     const md_atom_flags_t    flags    = frame_atom_flags(state, atom_idx, &formal_charge, &num_h);
     const bool nucleotide = place.res_idx != -1 && md_system_residue_kind(&sys, place.res_idx) == MD_RESIDUE_KIND_NUCLEOTIDE;
 
-    // What it is: of a particle that is no atom, its kind as particle(kind=...) takes it
-    if (particle != MD_PARTICLE_ATOM) {
-        tooltip_row(req, MD_STR_LIT("kind"), "%s", particle == MD_PARTICLE_VIRTUAL_SITE ? "virtual" : md_particle_kind_name(particle));
-    }
+    // What it is, its kind as particle(kind=...) takes it: atom, bead or virtual, as the kind row of a bond or a ring
+    tooltip_row(req, MD_STR_LIT("kind"), "%s", particle == MD_PARTICLE_VIRTUAL_SITE ? "virtual" : md_particle_kind_name(particle));
     if (z) {
         const md_str_t symbol = md_atomic_number_symbol(z);
         const md_str_t name   = tooltip_lower(req->alloc, md_atomic_number_name(z));
@@ -636,7 +638,9 @@ static void tooltip_bond(PickingTooltipTextRequest* req, const ApplicationState&
         tooltip_place_of_atom(sys, pair.idx[1]),
     };
 
+    // "bond · C1-C2 · LIG1"; two atoms a representation joins with no bond are a pair
     md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += source == PickedBondSource::Unbonded ? MD_STR_LIT("pair" TOOLTIP_SEP) : MD_STR_LIT("bond" TOOLTIP_SEP);
     tooltip_append_atom_name(&title, sys, pair.idx[0]);
     title += symbol;
     tooltip_append_atom_name(&title, sys, pair.idx[1]);
@@ -791,7 +795,9 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
 
+    // "residue · ALA5 · A": the segment stands for its residue
     md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += MD_STR_LIT("residue");
     tooltip_append_place(&title, sys, place);
     tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
 
@@ -1010,8 +1016,9 @@ static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const Applicat
     const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
     const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
 
-    // The title says what part of the residue the point is, which no keyword selects: "DPPC 12 · head"
+    // The title says what part of the residue the point is, which no keyword selects: "residue · DPPC 12 · head"
     md_str_writer_t title = md_str_writer_create(req->alloc);
+    title += MD_STR_LIT("residue");
     tooltip_append_place(&title, sys, place);
     if (glyphs.point_kind[point_idx] < MD_COUNTOF(parts)) {
         title += TOOLTIP_SEP;
