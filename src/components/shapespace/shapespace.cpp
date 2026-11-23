@@ -30,7 +30,7 @@
 //
 // In 3D the triangle is stood up across the time axis (the timeline's time): each structure of a layer over frames is a
 // line through its shapes, smoothed over a window of frames or not, the frame shown a slice across it, the timeline's
-// periods bands along its floor. As in every 3D view (plot_input.h), left-drag turns it. The triangle stays as it is
+// periods bands along the side of its time axis. As in every 3D view (plot_input.h), left-drag turns it. The triangle stays as it is
 // (equilateral, all of it, drawn at either end of the time shown); what moves is time: the wheel and middle-drag zoom
 // it, right-drag pans it, double-click shows all of it again. The time shown is the timeline's visible range (linked,
 // both ways), a window of its own, or a tail following the frame shown, and the paths are cut to it. The box fills the
@@ -2558,10 +2558,52 @@ struct Shapespace : viamd::EventHandler {
             ImPlot3D::PlotTriangle(id, xs, ys, zs, 3, spec);
         };
         if (nf > 0) slice("##current", tc, ImVec4(1, 1, 0, 0.75f), ImVec4(1, 1, 0, 0.05f));
-        // The timeline's periods along time, as it shades them: a band each on the prism's floor (the side of linear and
-        // planar), a line for a marker, named at its start. The one hovered (in the timeline, or a layer's) brighter.
+        // The timeline's periods along time, as it shades them: a band each across a side of the box along the edge the
+        // time axis is drawn on (as the box is turned), out to that axis, a line for a marker; named along the axis' edge,
+        // by its ticks. The one hovered (in the timeline, or a layer's) brighter.
         const uint32_t hot_period = timeline_periods_hovered();
         if (time_win.show_periods && nf > 1) {
+            const double y_lo = -0.04, y_hi = 1.04, z_lo = -0.04, z_hi = tri_iso.y + 0.04;
+            // The edge the time axis is drawn along, as the box is turned; looking down the time axis there is none: the
+            // floor's near edge
+            ImPlot3DPoint ea, eb;
+            double y_edge = y_lo, z_edge = z_lo;
+            bool names = false;     // Not where time runs (nearly) at the viewer: they would be on top of each other
+            if (ImPlot3D::GetAxisEdge(ImAxis3D_X, &ea, &eb)) {
+                y_edge = ea.y < 0.5 ? y_lo : y_hi;
+                z_edge = ea.z < 0.5 * (z_lo + z_hi) ? z_lo : z_hi;
+                names = ImLengthSqr(ImPlot3D::PlotToPixels(ea) - ImPlot3D::PlotToPixels(eb)) > 120.0f * 120.0f;
+            }
+            // Of the two sides of the box along that edge (across the triangle's plane, z = z_edge, or upright, y = y_edge),
+            // one behind what is in the box (its outside facing away, as ImPlot3D's grids are), and of two such the one seen
+            // more of: the floor from above, the far wall from the side
+            const ImVec2 centre = ImPlot3D::GetPlotRectPos() + ImPlot3D::GetPlotRectSize() * 0.5f;
+            const ImPlot3DPoint view = ImPlot3D::PixelsToPlotRay(centre).Direction;    // Into the box
+            const double floor_out = z_edge < 0.5 * (z_lo + z_hi) ? -view.z : view.z;  // Its outside's way, along the view
+            const double wall_out = y_edge < 0.5 ? -view.y : view.y;
+            auto face_area = [&](bool floor) {
+                const ImVec2 a = ImPlot3D::PlotToPixels(t0, floor ? y_lo : y_edge, floor ? z_edge : z_lo);
+                const ImVec2 b = ImPlot3D::PlotToPixels(t1, floor ? y_lo : y_edge, floor ? z_edge : z_lo);
+                const ImVec2 c = ImPlot3D::PlotToPixels(t0, floor ? y_hi : y_edge, floor ? z_edge : z_hi);
+                const ImVec2 u = b - a, v = c - a;
+                return fabsf(u.x * v.y - u.y * v.x);
+            };
+            const bool floor_behind = floor_out >= -1e-6, wall_behind = wall_out >= -1e-6;
+            const bool on_floor = floor_behind != wall_behind ? floor_behind : face_area(true) >= face_area(false);
+            // A point of the side at time x, a fraction f across it from the far edge to the axis' edge
+            auto side_point = [&](double f, double* y, double* z) {
+                if (on_floor) {
+                    *y = y_edge < 0.5 ? y_hi + (y_lo - y_hi) * f : y_lo + (y_hi - y_lo) * f;
+                    *z = z_edge;
+                } else {
+                    *y = y_edge;
+                    *z = z_edge < 0.5 * (z_lo + z_hi) ? z_hi + (z_lo - z_hi) * f : z_lo + (z_hi - z_lo) * f;
+                }
+            };
+            double sy0, sz0, sy1, sz1, ny, nz;
+            side_point(0.0, &sy0, &sz0);
+            side_point(1.0, &sy1, &sz1);
+            side_point(0.94, &ny, &nz);     // The names a little within the side from the axis' edge, clear of the ticks
             const TimelinePeriods& rs = app->timeline.periods;
             for (int i = 0; i < rs.count; ++i) {
                 const TimelinePeriod& p = rs.items[i];
@@ -2575,21 +2617,21 @@ struct Shapespace : viamd::EventHandler {
                 snprintf(id, sizeof(id), "##period%u", p.id);
                 ImPlot3DSpec spec;
                 spec.Flags = item_flags;
+                const double xa = MD_MAX(xb, t0), xz = MD_MIN(xe, t1);
                 if (b == e) {
-                    const double xs[2] = { xb, xb }, ys[2] = { tri_lin.x, tri_pla.x }, zs[2] = { 0.0, 0.0 };
+                    const double xs[2] = { xb, xb }, ys[2] = { sy0, sy1 }, zs[2] = { sz0, sz1 };
                     spec.LineColor = col;
                     spec.LineWeight = hot ? 2.5f : 1.5f;
                     ImPlot3D::PlotLine(id, xs, ys, zs, 2, spec);
                 } else {
-                    const double xa = MD_MAX(xb, t0), xz = MD_MIN(xe, t1);
-                    const double xs[4] = { xa, xz, xz, xa }, ys[4] = { tri_lin.x, tri_lin.x, tri_pla.x, tri_pla.x }, zs[4] = { 0, 0, 0, 0 };
+                    const double xs[4] = { xa, xz, xz, xa }, ys[4] = { sy0, sy0, sy1, sy1 }, zs[4] = { sz0, sz0, sz1, sz1 };
                     spec.FillColor = ImVec4(p.color.x, p.color.y, p.color.z, hot ? 0.35f : 0.16f);
                     spec.FillAlpha = 1.0f;
                     spec.LineColor = col;
                     spec.LineWeight = 1.0f;
                     ImPlot3D::PlotQuad(id, xs, ys, zs, 4, spec);
                 }
-                ImPlot3D::PlotText(p.name, MD_MAX(xb, t0), 0.5 * (tri_lin.x + tri_pla.x), 0.0, 0.0, ImVec2(0, 10));
+                if (names) ImPlot3D::PlotText(p.name, 0.5 * (xa + xz), ny, nz, 0.0, ImVec2(0, 0));
             }
         }
         if (const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, hot_period)) {
