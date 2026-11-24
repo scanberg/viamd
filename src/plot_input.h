@@ -11,9 +11,11 @@
 //   middle-drag             3D only: dolly, zoom (the viewport). Unused in 2D.
 //   shift + left-drag       select: a region, or what is under a click. Shift + right-drag deselects; a shift + right
 //                           click on nothing clears.
-//   click                   pick, or go to (a frame)
+//   ctrl + left-click/drag  go to a frame: where the pointer is in time (the timeline, and the time axis and its walls
+//                           in the Shapespace's 3D view)
+//   click                   pick
 //   right-click             without a drag: the context menu
-//   double-click            fit, or back to all of it
+//   double-click            zoom out fully: all of it. In time, the whole run, not where a plot's values are.
 //
 // Nothing is hovered while a view is navigated (turned, panned, dollied: plot_input_navigating), in any view: what
 // passes under the pointer then is not what it points at. The viewport has it from interaction_surface.

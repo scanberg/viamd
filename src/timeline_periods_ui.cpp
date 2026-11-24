@@ -417,8 +417,15 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
                 ui.drag.view_end = *axis.view_end;
             }
         }
-        if (hit && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            request_rename(*hit);
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            if (hit) {
+                request_rename(*hit);
+            } else if (io.KeyMods == ImGuiMod_None && axis.num_frames > 0) {
+                // Off the periods, as in the plots below: zoom out fully, to the whole run
+                ui.drag = {};
+                *axis.view_beg = axis.frame_times[0];
+                *axis.view_end = axis.frame_times[axis.num_frames - 1];
+            }
         }
         if (hit && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             ui.edit_id = hit->id;

@@ -4435,6 +4435,16 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
                     ImPlot::SetupFinish();
 
+                    // A double click (plot_input.h) zooms out fully: to the whole run, not to where its series have values.
+                    // The y axis is fitted as before.
+                    {
+                        ImPlotAxis& x_axis = ImPlot::GetCurrentPlot()->Axes[ImAxis_X1];
+                        if (x_axis.FitThisFrame) {
+                            x_axis.FitThisFrame = false;
+                            x_axis.SetRange(min_time, max_time);
+                        }
+                    }
+
                     if (axis_view && periodic_axis_popup(ImAxis_Y1, axis_view)) {
                         timeline_cut_least_populated(data, sp, axis_view);
                     }
