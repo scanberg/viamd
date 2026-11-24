@@ -4286,27 +4286,6 @@ static void draw_timeline_window(ApplicationState* data) {
                 timeline_periods_menu(&data->timeline.periods);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Frames")) {
-                // The frames selected: a temporal selection, made where a view selects frames (the Shapespace)
-                const uint64_t num_selected = md_bitmask_count(&data->selection.frame_mask);
-                const uint32_t num_frames = (uint32_t)run_num_frames(data);
-                if (num_selected > 0) ImGui::TextDisabled("%llu of %u frames selected", (unsigned long long)num_selected, num_frames);
-                else                  ImGui::TextDisabled("No frames selected");
-                if (ImGui::MenuItem("Clear selection", nullptr, false, num_selected > 0)) {
-                    frame_selection_clear(data);
-                }
-                if (ImGui::MenuItem("Invert selection", nullptr, false, num_frames > 0)) {
-                    md_bitmask_invert_range(&data->selection.frame_mask, 0, num_frames);
-                    data->selection.frame_generation += 1;
-                }
-                if (ImGui::MenuItem("Select current frame", nullptr, false, num_frames > 0)) {
-                    const uint32_t f = (uint32_t)MD_CLAMP((int)(data->animation.frame + 0.5), 0, (int)num_frames - 1);
-                    frame_selection_modify(data, md_bitset_range(f, f + 1), SelectionOperator::Or);
-                }
-                ImGui::Separator();
-                ImGui::TextDisabled("Select frames in the Shapespace: shift-drag over\nits points selects the frames they are of.");
-                ImGui::EndMenu();
-            }
             if (ImGui::BeginMenu("Subplots")) {
                 ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {

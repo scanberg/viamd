@@ -190,7 +190,6 @@ enum LayerFrames : int {
     LayerFrames_Current = 0,
     LayerFrames_All,
     LayerFrames_Period,
-    LayerFrames_Selection,      // The frames selected (ApplicationState::selection.frame_mask), as they change
     LayerFrames_Count,
 };
 
@@ -1307,29 +1306,13 @@ struct Shapespace : viamd::EventHandler {
             *end = (uint32_t)e + 1;
             return true;
         }
-        case LayerFrames_Selection: {
-            md_bitset_t sel = {};
-            if (!layer_frames(l, &sel)) return false;
-            *beg = md_bitset_first(sel);
-            *end = md_bitset_last_end(sel);
-            return true;
-        }
         default:
             return false;
         }
     }
 
-    // The frames of the layer as a set: a run of them, or of the frames selected those of the run (in the frame
-    // allocator: for this frame). False when it covers none.
+    // The frames of the layer as a set: a run of them. False when it covers none.
     bool layer_frames(const Layer& l, md_bitset_t* out) const {
-        const uint32_t num_frames = (uint32_t)run_num_frames(app);
-        if (num_frames == 0) return false;
-        if (l.frames == LayerFrames_Selection) {
-            const md_bitset_t sel = md_bitmask_view(&app->selection.frame_mask);
-            if (md_bitset_empty(sel)) return false;
-            *out = md_bitset_and(sel, md_bitset_range(0, num_frames), app->allocator.frame);
-            return !md_bitset_empty(*out);
-        }
         uint32_t beg = 0, end = 0;
         if (!layer_frame_range(l, &beg, &end)) return false;
         *out = md_bitset_range(beg, end);
@@ -1338,7 +1321,6 @@ struct Shapespace : viamd::EventHandler {
 
     // What the frames of the layer are, as far as what is found over them goes
     uint64_t layer_frames_hash(const Layer& l, md_bitset_t frames) const {
-        if (l.frames == LayerFrames_Selection) return md_hash64_combine(app->selection.frame_generation, 0x5e1ec7ull);
         const uint32_t span[2] = { md_bitset_first(frames), md_bitset_last_end(frames) };
         return md_hash64(span, sizeof(span), 0);
     }
@@ -1460,7 +1442,7 @@ struct Shapespace : viamd::EventHandler {
             viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
             if (l.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(l.filter.text));
             viamd::write_bool(state, MD_STR_LIT("UseMass"), l.use_mass);
-            static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period"), MD_STR_LIT("selection") };
+            static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
             viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
             if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
             static const md_str_t styles[LayerStyle_Count] = { MD_STR_LIT("points"), MD_STR_LIT("contours"), MD_STR_LIT("heatmap") };
@@ -1596,8 +1578,8 @@ struct Shapespace : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "UseMass")) {
                 viamd::extract_bool(l->use_mass, arg);
             } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
-                l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period :
-                            md_str_eq_cstr(s, "selection") ? LayerFrames_Selection : LayerFrames_All;
+                // (A layer of the frames selected, "selection", as there was: of all of them)
+                l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
             } else if (md_str_eq_cstr(ident, "Period")) {
                 int id = 0;
                 if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
@@ -1699,8 +1681,6 @@ struct Shapespace : viamd::EventHandler {
         char period_name[TIMELINE_PERIOD_NAME_CAP + 8];
         if (l.frames == LayerFrames_All) {
             frames = "All frames";
-        } else if (l.frames == LayerFrames_Selection) {
-            frames = "Selected frames";
         } else if (l.frames == LayerFrames_Period) {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             snprintf(period_name, sizeof(period_name), "%s", p ? p->name : "No period");
@@ -3713,10 +3693,6 @@ struct Shapespace : viamd::EventHandler {
             if (Layer* l = add_like(LayerFrames_Current, LayerStyle_Points, group)) l->point_size = 7.0f;
         }
         if (ImGui::MenuItem("All frames", nullptr, false, room)) add_like(LayerFrames_All, LayerStyle_Contours, group);
-        if (ImGui::MenuItem("Selected frames", nullptr, false, room)) {
-            if (Layer* l = add_like(LayerFrames_Selection, LayerStyle_Points, group)) l->point_coloring = PointColoring_Time;
-        }
-        ImGui::SetItemTooltip("Points over the frames selected, as they change");
         const TimelinePeriods& ps = app->timeline.periods;
         if (ImGui::BeginMenu("Period", ps.count > 0 && room)) {
             for (int i = 0; i < ps.count; ++i) {
@@ -3789,13 +3765,10 @@ struct Shapespace : viamd::EventHandler {
             const TimelinePeriod* cur = timeline_periods_find(&ps, l.period);
             if (l.frames == LayerFrames_Current)  snprintf(preview, sizeof(preview), "Current frame");
             else if (l.frames == LayerFrames_All) snprintf(preview, sizeof(preview), "All frames");
-            else if (l.frames == LayerFrames_Selection) snprintf(preview, sizeof(preview), "Selected frames");
             else snprintf(preview, sizeof(preview), "%s", cur ? cur->name : "Period (missing)");
             if (ImGui::BeginCombo("##frames", preview)) {
                 if (ImGui::Selectable("Current frame", l.frames == LayerFrames_Current)) l.frames = LayerFrames_Current;
                 if (ImGui::Selectable("All frames", l.frames == LayerFrames_All)) l.frames = LayerFrames_All;
-                if (ImGui::Selectable("Selected frames", l.frames == LayerFrames_Selection)) l.frames = LayerFrames_Selection;
-                ImGui::SetItemTooltip("The frames selected, as they change: shift-drag over points over frames, or the timeline's Frames menu");
                 if (ps.count > 0) ImGui::SeparatorText("Periods");
                 for (int i = 0; i < ps.count; ++i) {
                     char label[TIMELINE_PERIOD_NAME_CAP + 16];
@@ -3810,8 +3783,6 @@ struct Shapespace : viamd::EventHandler {
             }
             if (l.frames != LayerFrames_Current && run_num_frames(app) < 2) {
                 prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
-            } else if (l.frames == LayerFrames_Selection && md_bitmask_empty(&app->selection.frame_mask)) {
-                prop::hint("No frames are selected");
             }
         }
 
