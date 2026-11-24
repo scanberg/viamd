@@ -39,7 +39,7 @@
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
-#include <file_list.h>
+#include <drop_files.h>
 #include <event.h>
 #include <viamd_event.h>
 #include <plot_series.h>
@@ -479,6 +479,7 @@ enum {
     FileFlags_ShowDialogue = 1,
     FileFlags_DisableCacheWrite = 4,
     FileFlags_NewSystem = 8,        // Into a system of its own, added for it
+    FileFlags_Dropped = 16,         // Dropped on the window: where it was dropped is told the frame after (FileQueue)
 };
 
 typedef uint32_t FileFlags;
@@ -614,7 +615,7 @@ struct FileQueue {
         int prio;
         uint32_t system;    // The id of the system it is loaded into, SYSTEM_ID_NONE for where it goes (file_queue_process)
     };
-    Entry arr[8] = {};
+    Entry arr[64] = {};     // A power of two: the ring's indices wrap with the unsigned arithmetic
     uint32_t head = 0;
     uint32_t tail = 0;
 
@@ -622,6 +623,12 @@ struct FileQueue {
     // Because its a ring alloc, there is no need to free entries
     md_allocator_i* ring = NULL;
 
+    // Files dropped on the window go where they were dropped: told while the windows of the frame they were dropped in
+    // are drawn (the Scene window: onto a system's rows, into it; below them, a new system), and taken by
+    // file_queue_process the frame after. Dropped anywhere else, they are placed by the rules.
+    int      drop_frame = -1;               // The frame told in (ImGui's frame count)
+    uint32_t drop_system = SYSTEM_ID_NONE;  // Onto this system
+    bool     drop_new = false;              // Into a new system
 };
 
 // What load_data made of a file
@@ -1934,6 +1941,24 @@ struct ApplicationState {
     // Or passed via the commandline. The files need to be processed in a certain order (topology before trajectory)
     // It also provides a way to chain the file load dialogue.
     FileQueue file_queue = {};
+
+    // The files of a drop which are of the atoms of more than one system: the user picks where each group of them goes
+    // (draw_placement_prompt). What else the drop held is loaded; these wait, and what is queued after them, until the
+    // question is answered (file_queue_process).
+    struct {
+        DropFiles*     drop = nullptr;                  // Asked while there is one: the drop, its files as matched
+        PlacementPlan* plan = nullptr;                  // Its systems of PlacementAction_Ask are the questions
+        int            choice[PLACEMENT_MAX_FILES] = {};// Per system of the plan: the candidate picked, num_candidates
+                                                        // for a new system, -1 for none
+        bool           answered = false;
+    } placement_prompt;
+
+    // A file of a system to go into another system, or into a new one (the Scene window): moved by file_queue_process
+    struct {
+        uint32_t from = SYSTEM_ID_NONE;                 // None asked while SYSTEM_ID_NONE
+        size_t   file = 0;
+        uint32_t to = SYSTEM_ID_NONE;                   // SYSTEM_ID_NONE: a new system
+    } file_move;
 
     // --- CAMERA ---
     struct {
@@ -3623,7 +3648,18 @@ LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t
 FileQueue::Entry file_queue_front(const FileQueue* queue);
 FileQueue::Entry file_queue_pop(FileQueue* queue);
 
+// Loads what is queued: a workspace, a file to ask about (the load dialog) on their own, else what is queued together as
+// one drop, placed as a whole (drop_files.h). Waits while the load dialog is open or a placement is asked about, and
+// moves a file between systems when one is asked to be (ApplicationState::file_move).
 void file_queue_process(ApplicationState* state);
+
+// The question of where files go which are of the atoms of more than one system (ApplicationState::placement_prompt)
+void draw_placement_prompt(ApplicationState* state);
+
+// Moves file i of the system from into the system to, or into a new one for SYSTEM_ID_NONE: loaded there if it is of its
+// atoms (file_placement's explicit target), a trajectory with the series along its run, and the system it was in built
+// again without them. False, and nothing changed, when it is not of to's atoms.
+bool system_move_file(ApplicationState* app, uint32_t from, size_t i, uint32_t to);
 
 // view
 // A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and

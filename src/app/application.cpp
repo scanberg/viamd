@@ -235,6 +235,28 @@ static void APIENTRY gl_callback(GLenum source, GLenum type, GLuint id, GLenum s
     }
 }
 
+// Files dropped on a window of the application: the main window, or one a window of ImGui was dragged out into
+static void drop_cb(GLFWwindow* window, int num_files, const char** paths) {
+    Context* ctx = (Context*)glfwGetWindowUserPointer(window);
+    MD_ASSERT(ctx);
+    
+    for (int i = 0; i < num_files; ++i) {
+        MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
+    }
+
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+
+    md_str_t* str_paths = md_temp_alloc_array(temp, md_str_t, num_files);
+    for (int i = 0; i < num_files; ++i) {
+        str_paths[i] = {paths[i], strlen(paths[i])};
+    }
+    
+    if (ctx->file_drop.callback) {
+        ctx->file_drop.callback((size_t)num_files, str_paths, ctx->file_drop.user_data);
+    }
+}
+
 bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
     if (!glfwInit()) {
         // TODO Throw critical error
@@ -393,26 +415,6 @@ bool initialize(Context* ctx, size_t width, size_t height, md_str_t title) {
 
     glfwSetWindowUserPointer(window, &data.internal_ctx);
 
-    GLFWdropfun drop_cb = [](GLFWwindow* window, int num_files, const char** paths) {
-        Context* ctx = (Context*)glfwGetWindowUserPointer(window);
-        MD_ASSERT(ctx);
-        
-        for (int i = 0; i < num_files; ++i) {
-            MD_LOG_DEBUG("User dropped file: '%s'", paths[i]);
-        }
-
-        md_temp_scope_t temp = md_temp_begin();
-        MD_DEFER { md_temp_end(temp); };
-
-        md_str_t* str_paths = md_temp_alloc_array(temp, md_str_t, num_files);
-        for (int i = 0; i < num_files; ++i) {
-            str_paths[i] = {paths[i], strlen(paths[i])};
-        }
-        
-        if (ctx->file_drop.callback) {
-            ctx->file_drop.callback((size_t)num_files, str_paths, ctx->file_drop.user_data);
-        }
-    };
     glfwSetDropCallback(window, drop_cb);
     
 #if MD_PLATFORM_WINDOWS
@@ -511,6 +513,16 @@ void render_imgui(Context* ctx) {
     if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
+        // Files are dropped on those too (the Scene window dragged out of the main one): ImGui keeps nothing of its own
+        // in their user pointer
+        const ImGuiPlatformIO& pio = ImGui::GetPlatformIO();
+        for (int i = 1; i < pio.Viewports.Size; ++i) {
+            GLFWwindow* w = (GLFWwindow*)pio.Viewports[i]->PlatformHandle;
+            if (w && glfwGetWindowUserPointer(w) != &data.internal_ctx) {
+                glfwSetWindowUserPointer(w, &data.internal_ctx);
+                glfwSetDropCallback(w, drop_cb);
+            }
+        }
     }
 
     glfwMakeContextCurrent(window);

@@ -337,3 +337,45 @@ UTEST(viamd_file_list, the_coordinates_of_a_topology_are_a_file_of_its_system) {
 
     for (const char* n : names) remove(n);
 }
+
+UTEST(viamd_file_list, a_file_moved_out_takes_the_files_of_the_run_it_opens) {
+    List l;
+    l.record(file("a.prmtop"), FileRole_System);
+    l.record(file("a.rst7"), FileRole_Supplement);
+    l.record(file("a.nc"), FileRole_Trajectory);
+    l.record(file("a.mdout"), FileRole_Series);
+    List rest, moved;
+
+    // Coordinates joined to a topology go alone, and the topology is what is left
+    EXPECT_EQ(1u, file_list_split(&rest.list, &moved.list, &l.list, 1, l.alloc));
+    { const std::string got_ = rest.str();  EXPECT_STREQ("a.prmtop:System:-1 a.nc:Trajectory:0 a.mdout:Series:0", got_.c_str()); }
+    { const std::string got_ = moved.str(); EXPECT_STREQ("a.rst7:System:-1", got_.c_str()); }
+
+    // A trajectory takes the series along it, and the run goes with them
+    EXPECT_EQ(2u, file_list_split(&rest.list, &moved.list, &l.list, 2, l.alloc));
+    { const std::string got_ = rest.str();  EXPECT_STREQ("a.prmtop:System:-1 a.rst7:Supplement:-1", got_.c_str()); }
+    { const std::string got_ = moved.str(); EXPECT_STREQ("a.nc:Trajectory:0 a.mdout:Series:0", got_.c_str()); }
+    EXPECT_EQ(0u, md_array_size(rest.list.runs));
+    EXPECT_EQ(1u, md_array_size(moved.list.runs));
+
+    // The file that built the system: what is left builds it
+    EXPECT_EQ(1u, file_list_split(&rest.list, &moved.list, &l.list, 0, l.alloc));
+    { const std::string got_ = rest.str();  EXPECT_STREQ("a.rst7:System:-1 a.nc:Trajectory:0 a.mdout:Series:0", got_.c_str()); }
+
+    // A series alone is of no run where it goes
+    EXPECT_EQ(1u, file_list_split(&rest.list, &moved.list, &l.list, 3, l.alloc));
+    { const std::string got_ = rest.str();  EXPECT_STREQ("a.prmtop:System:-1 a.rst7:Supplement:-1 a.nc:Trajectory:0", got_.c_str()); }
+    { const std::string got_ = moved.str(); EXPECT_STREQ("a.mdout:System:-1", got_.c_str()); }
+}
+
+UTEST(viamd_file_list, a_structure_of_several_frames_moved_out_takes_its_run) {
+    List l;
+    l.record(file("a.pdb"), FileRole_System);
+    l.record(file("a.pdb"), FileRole_Trajectory);
+    l.record(file("a.xvg"), FileRole_Series);
+    l.record(file("a.ndx"), FileRole_Supplement);
+    List rest, moved;
+    EXPECT_EQ(3u, file_list_split(&rest.list, &moved.list, &l.list, 0, l.alloc));
+    { const std::string got_ = rest.str();  EXPECT_STREQ("a.ndx:System:-1", got_.c_str()); }
+    { const std::string got_ = moved.str(); EXPECT_STREQ("a.pdb:System:-1 a.pdb:Trajectory:0 a.xvg:Series:0", got_.c_str()); }
+}

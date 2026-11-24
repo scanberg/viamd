@@ -852,8 +852,17 @@ int main(int argc, char** argv) {
         MD_ASSERT(state);
 
         for (size_t i = 0; i < num_files; ++i) {
-            file_queue_push(&state->file_queue, file_paths[i], FileFlags_None);
+            if (file_queue_full(&state->file_queue)) {
+                VIAMD_LOG_ERROR("%zu of the files dropped are not loaded: at most %zu are queued at once", num_files - i, MD_COUNTOF(state->file_queue.arr) - 1);
+                break;
+            }
+            file_queue_push(&state->file_queue, file_paths[i], FileFlags_Dropped);
         }
+        // Where they were dropped is told while the windows of the next frame are drawn: this is called as the events
+        // are polled, before that frame begins (its count is the one after)
+        state->file_queue.drop_frame  = ImGui::GetFrameCount() + 1;
+        state->file_queue.drop_system = SYSTEM_ID_NONE;
+        state->file_queue.drop_new    = false;
     };
 
     VIAMD_LOG_DEBUG("Initializing framebuffer...");
@@ -1002,6 +1011,7 @@ int main(int argc, char** argv) {
         if (state.show_script_window) draw_script_editor_window(&state);
         if (state.show_script_reference_window) draw_script_reference_window(&state);
         if (state.load_dataset.show_window) draw_load_dataset_window(&state);
+        draw_placement_prompt(&state);
         if (state.show_representation_window) draw_representations_window(&state);
         if (state.distributions.show_window) draw_distribution_window(&state);
         if (state.timeline.show_window) draw_timeline_window(&state);

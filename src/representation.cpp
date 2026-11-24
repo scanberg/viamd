@@ -4852,12 +4852,50 @@ static void draw_system_in_window(SystemContext& sys, const WindowTree& tree, Wi
     }
 }
 
+// Where files dropped on the window go, told in the frame they were dropped in (FileQueue): the rows under the mouse
+static bool files_dropped_onto(const FileQueue& queue, ImVec2 min, ImVec2 max) {
+    return queue.drop_frame == ImGui::GetFrameCount() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseHoveringRect(min, max, false);
+}
+
+// The rows of a system, from its header to its last representation, as where files go: a file of another system dragged
+// onto them moves into it, files dropped on them from outside the window load into it
+static void system_rows_drop_target(SystemContext& sys, ImVec2 min, ImVec2 max) {
+    ApplicationState* app = sys.app;
+    if (files_dropped_onto(app->file_queue, min, max)) {
+        app->file_queue.drop_system = sys.id;
+        app->file_queue.drop_new = false;
+    }
+    if (ImGui::BeginDragDropTargetCustom(ImRect(min, max), ImGui::GetID("##files_into"))) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(SYSTEM_FILE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (payload && payload->DataSize == (int)sizeof(SystemFileRef)) {
+            SystemFileRef ref;
+            md_memcpy(&ref, payload->Data, sizeof(ref));
+            if (ref.system != sys.id) {
+                ImGui::GetWindowDrawList()->AddRect(min, max, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 0.0f, 0, 2.0f);
+                if (payload->IsDelivery()) app->file_move = { ref.system, ref.file, sys.id };
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+}
+
 // The space below the rows of the last system listed: dropping there puts it last at its top level, and a right click
-// adds to it
+// adds to it. Files dropped there, or a file of a system dragged there, go into a new system.
 static void draw_below_rows(SystemContext& sys, WindowActions* act) {
     const ImVec2 rest = {MD_MAX(ImGui::GetContentRegionAvail().x, 1.0f), MD_MAX(ImGui::GetContentRegionAvail().y, ImGui::GetFrameHeight())};
     ImGui::InvisibleButton("##below", rest);
+    if (files_dropped_onto(sys.app->file_queue, ImGui::GetItemRectMin(), ImGui::GetItemRectMax())) {
+        sys.app->file_queue.drop_system = SYSTEM_ID_NONE;
+        sys.app->file_queue.drop_new = true;
+    }
     if (ImGui::BeginDragDropTarget()) {
+        const ImGuiPayload* file = ImGui::AcceptDragDropPayload(SYSTEM_FILE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (file && file->DataSize == (int)sizeof(SystemFileRef)) {
+            SystemFileRef ref;
+            md_memcpy(&ref, file->Data, sizeof(ref));
+            ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_DragDropTarget), 0.0f, 0, 2.0f);
+            if (file->IsDelivery()) sys.app->file_move = { ref.system, ref.file, SYSTEM_ID_NONE };
+        }
         const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
         if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
             NodeRef src;
@@ -4929,7 +4967,10 @@ void draw_representations_window(ApplicationState* state) {
         Listed& l = listed[i];
         ImGui::PushID((int)l.sys->id);
         if (system_loaded(*l.sys)) {
+            const ImVec2 min = ImGui::GetCursorScreenPos();
+            const float width = ImGui::GetContentRegionAvail().x;
             draw_system_in_window(*l.sys, l.tree, &l.act, &l.remove);
+            system_rows_drop_target(*l.sys, min, {min.x + width, ImGui::GetCursorScreenPos().y});
         } else {
             ImGui::Spacing();
             draw_representations_section(*l.sys, l.tree, &l.act);

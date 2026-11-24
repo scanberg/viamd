@@ -100,6 +100,12 @@ bool file_list_record(FileList* list, FileEntry entry, FileRole role, struct md_
 // The runs were closed: their files go with them
 void file_list_drop_runs(FileList* list);
 
+// The list split as entry i goes out of it (to another system): what goes into moved, what stays into rest, each in its
+// order and with its runs. What goes along with the file: its other entries (a structure of several frames is the file
+// of its system and of the run it opens), and every file of a run one of them opens (a trajectory takes its series).
+// A file of a run which does not go is no file of a run in moved. Returns how many entries went.
+size_t file_list_split(FileList* rest, FileList* moved, const FileList* list, size_t i, struct md_allocator_i* alloc);
+
 // The file that built the system, NULL when there is none
 const FileEntry* file_list_system_file(const FileList* list);
 

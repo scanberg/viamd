@@ -67,8 +67,16 @@ void system_label(char* buf, size_t cap, const SystemContext& sys);
 bool draw_system_header(SystemContext& sys, bool* remove);
 
 // The files of the system, one line each: what it is, its name and what it holds in short. The System window has them
-// in full (its Files), and this links to it.
+// in full (its Files), and this links to it. A file is dragged (SYSTEM_FILE_DND), or moved from its menu, into another
+// system or a new one (ApplicationState::file_move).
 void draw_system_files(SystemContext& sys);
+
+// The payload of a file of a system dragged in the Scene window
+#define SYSTEM_FILE_DND "VIAMD_SYSTEM_FILE"
+struct SystemFileRef {
+    uint32_t system;
+    uint32_t file;
+};
 
 // The system's operations, in their order, folded under one row that says which are on, then what it is shown as (its
 // copies): under its files

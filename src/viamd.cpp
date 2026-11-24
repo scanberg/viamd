@@ -2126,7 +2126,8 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
     free_trajectory_data(state, sys);
     state->animation.frame = 0;
     // A system without coordinates (a topology alone) shows those of the frames: room for them
-    if (!md_system_state_has_coords(&sys.data.state)) {
+    const bool coordinate_less = !md_system_state_has_coords(&sys.data.state);
+    if (coordinate_less) {
         const md_unitcell_t cell = sys.data.state.unitcell;
         md_system_state_init(&sys.data.state, sys.data.sys.atom.count);
         sys.data.state.unitcell = cell;
@@ -2138,6 +2139,10 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
     const size_t num_frames = run_num_frames(sys);
     if (num_frames == 0) {
         return false;
+    }
+    // Those of its first frame now: what the system is inferred of when it is (system_inference_defer), and framed by
+    if (coordinate_less) {
+        extract_frame(sys, 0, &sys.data.state);
     }
     file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(sys.files.runs)->frame_count = num_frames;
@@ -2339,6 +2344,17 @@ void system_inference_finish(SystemContext& sys) {
     }
 }
 
+// Inferred again once what is being loaded is in: the files of a drop, of a workspace, are each loaded before it is
+// started, the next time the systems are updated (system_inference_update) - once, of all of them. What is under way
+// stops, as it shares the core the files write. A workspace waits for it instead (system_inference_finish).
+static void system_inference_defer(SystemContext& sc) {
+    SystemInference& inf = sc.data.inference;
+    inf.job.cancel_and_wait();
+    inf.pending = sc.data.sys.atom.count > 0;
+    inf.restart = inf.pending;
+    inf.done = false;
+}
+
 static void system_inference_free(SystemContext& sys) {
     SystemInference& inf = sys.data.inference;
     inf.job.cancel_and_wait();
@@ -2348,8 +2364,29 @@ static void system_inference_free(SystemContext& sys) {
     inf.defaults_pending = false;
 }
 
+// The user's edits of the bonds (md_system_t::bond_edit) given to the system again, of the same atoms: a workspace's, or
+// those of the system before it was built again. The removals first: a bond the user made where one was removed is the
+// user's, and stays.
+static void apply_bond_edits(SystemContext& sc, const md_bond_list_t& edits) {
+    const size_t num_atoms = sc.data.sys.atom.count;
+    const size_t num_edits = md_bond_list_count(&edits);
+    if (num_edits == 0) return;
+    system_core_edit_begin(sc);
+    for (int add = 0; add < 2; ++add) {
+        for (size_t i = 0; i < num_edits; ++i) {
+            const md_atom_pair_t pair = edits.pairs[i];
+            const md_bond_flags_t flags = edits.flags[i];
+            if (((flags & MD_BOND_FLAG_INACTIVE) == 0) != (add == 1)) continue;
+            if ((size_t)pair.idx[0] >= num_atoms || (size_t)pair.idx[1] >= num_atoms || pair.idx[0] == pair.idx[1]) continue;
+            if (add) md_system_bond_insert(&sc.data.sys, pair.idx[0], pair.idx[1], flags);
+            else     md_system_bond_remove(&sc.data.sys, pair.idx[0], pair.idx[1], flags);
+        }
+    }
+    system_inference_defer(sc);
+}
+
 // A system of its own joined to the atoms of sys (md_system_merge): its coordinates, its names, its bonds, ... as the
-// kinds go (md_io.h, JOINING). Inferred again after, in the background.
+// kinds go (md_io.h, JOINING). Inferred again after, once what is loaded with it is in (system_inference_defer).
 static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_str_t path, const loader::LoaderState& load_state, const md_system_t* loaded, const md_system_state_t* loaded_state) {
     md_allocator_i* arena = nullptr;
     md_system_t file_sys = {};
@@ -2369,7 +2406,7 @@ static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_st
         loaded_state = &file_state;
     }
 
-    // The core is edited: what reads it stops, and the system is inferred again once it is joined
+    // The core is edited: what reads it stops, and the system is inferred again of it once what is loaded is in
     system_core_edit_begin(sys);
     const bool had_coords = md_system_state_has_coords(&sys.data.state);
     const bool joined = md_system_merge(&sys.data.sys, &sys.data.state, loaded, loaded_state);
@@ -2378,7 +2415,7 @@ static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_st
         md_arena_allocator_destroy(arena);
     }
     md_temp_trim();
-    system_core_changed(sys);
+    system_inference_defer(sys);
     if (!joined) {
         VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not of the atoms of '%s'", MD_STR_ARG(path), sys.name);
         return LoadResult_Failed;
@@ -2434,7 +2471,8 @@ static LoadResult build_system(ApplicationState* state, SystemContext& sys, md_s
     // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
     // other models) itself, and infers no bond between atoms a topology gives all the bonds of
     // (md_atom_data_t::bonds_complete). The colours of the particle types now, which the core is shown with
-    // (they are of the core); the rest in the background, put in place when it is done (system_inference_start)
+    // (they are of the core); the rest in the background once what is loaded with it is in, put in place when it is
+    // done (system_inference_defer)
     md_system_infer_type_colors(&sys.data.sys);
     sys.data.inference.pending = true;
     init_system_data(state, sys);
@@ -2444,8 +2482,7 @@ static LoadResult build_system(ApplicationState* state, SystemContext& sys, md_s
     if (opens_own_run || trajectory) {
         open_run(state, sys, path_to_file, load_state);
     }
-    // After the run is opened, which interrupts what runs on the pool
-    system_inference_start(sys, nullptr);
+    system_inference_defer(sys);
     return LoadResult_System;
 }
 
@@ -2456,11 +2493,12 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
     LoadResult result = LoadResult_Failed;
     md_str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
-        // What the file is to the system: told by what each is, the role only telling a series apart (file_list.h)
+        // What the file is to the system: told by what each is, the role telling a series apart, and the frames of a
+        // structure of several (a multi-model PDB) where it opens the run of its own system (file_list.h)
         const LoaderFlags flags = load_state.flags;
         const bool has_atoms  = sys.data.sys.atom.count > 0;
-        const bool own_system = (flags & LoaderFlag_System) != 0;
-        const bool trajectory = (flags & LoaderFlag_Trajectory) && !own_system;
+        const bool trajectory = role == FileRole_Trajectory || ((flags & LoaderFlag_Trajectory) && !(flags & LoaderFlag_System));
+        const bool own_system = (flags & LoaderFlag_System) && !trajectory;
         const bool series     = role == FileRole_Series || (flags & LoaderFlag_Temporal);
         // Data of the system's atoms: a file which is no system of its own, or one which is that as well (an itp's
         // molecules, the QM data of a region of them) when its check says it is of these atoms
@@ -2485,8 +2523,10 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
             if (state->script.eval) script::eval_interrupt(state->script.eval);
-            // A supplement adds to the system as inferred, as it did before inference went to the background
-            system_inference_finish(sys);
+            // Loaded before the system is inferred again, which is then of it (system_inference_defer): an inference
+            // under way stops, as it shares the core the file may write
+            const bool inferring = system_inference_pending(sys);
+            if (inferring) system_core_edit_begin(sys);
             task_system::wait_all();
 
             const size_t num_atoms = sys.data.sys.atom.count;
@@ -2506,7 +2546,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the core
                 // changed, and the system is inferred again of it in the background (a load never infers)
                 sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                if (sys.data.sys.topology_version != topology_version) system_core_changed(sys);
+                if (inferring || sys.data.sys.topology_version != topology_version) system_inference_defer(sys);
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
                 if (data_role == FileRole_Series) {
@@ -2519,6 +2559,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
                 }
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
+                if (inferring) system_inference_defer(sys);
             }
         } else if (trajectory && has_atoms) {
             if (open_run(state, sys, path_to_file, load_state)) {
@@ -2528,7 +2569,6 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
             }
         } else if (own_system && has_atoms) {
-            system_inference_finish(sys);
             result = join_system(state, sys, path_to_file, load_state, loaded, loaded_state);
         } else if (own_system || trajectory) {
             result = build_system(state, sys, path_to_file, load_state, opens_own_run, loaded, loaded_state);
@@ -3205,25 +3245,11 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         }
 
         // The user's edits of the bonds: of the core, so given before the system is inferred, which they are part of. As
-        // many atoms as when the workspace was saved, or they would join others. The removals first: a bond the user made
-        // where one was removed is the user's, and stays.
+        // many atoms as when the workspace was saved, or they would join others.
         {
             const size_t loaded_atoms = sc.data.sys.atom.count;
-            const bool bonds_fit = loaded_atoms > 0 && (plan.atom_count == 0 || plan.atom_count == loaded_atoms);
-            const md_bond_list_t& edits = ws.bond_edits;
-            const size_t num_edits = bonds_fit ? md_bond_list_count(&edits) : 0;
-            if (num_edits > 0) {
-                system_core_edit_begin(sc);
-                for (int add = 0; add < 2; ++add) {
-                    for (size_t i = 0; i < num_edits; ++i) {
-                        const md_atom_pair_t pair = edits.pairs[i];
-                        const md_bond_flags_t flags = edits.flags[i];
-                        if (((flags & MD_BOND_FLAG_INACTIVE) == 0) != (add == 1)) continue;
-                        if ((size_t)pair.idx[0] >= loaded_atoms || (size_t)pair.idx[1] >= loaded_atoms || pair.idx[0] == pair.idx[1]) continue;
-                        if (add) md_system_bond_insert(&sc.data.sys, pair.idx[0], pair.idx[1], flags);
-                        else     md_system_bond_remove(&sc.data.sys, pair.idx[0], pair.idx[1], flags);
-                    }
-                }
+            if (loaded_atoms > 0 && (plan.atom_count == 0 || plan.atom_count == loaded_atoms)) {
+                apply_bond_edits(sc, ws.bond_edits);
             }
         }
 
@@ -7908,6 +7934,18 @@ static void load_into_done(ApplicationState* app, SystemContext* sys, bool fresh
         if (fresh) system_release(app, sys);
         return;
     }
+    if (fresh) {
+        // A name of its own, which the systems are told apart by (a copy of one is named after the same file)
+        const size_t len = strnlen(sys->name, sizeof(sys->name));
+        for (int n = 2; n < 100; ++n) {
+            bool taken = false;
+            for (size_t i = 0; i < app->num_systems; ++i) {
+                taken |= app->systems[i] != sys && system_loaded(*app->systems[i]) && strcmp(app->systems[i]->name, sys->name) == 0;
+            }
+            if (!taken) break;
+            snprintf(sys->name + MD_MIN(len, sizeof(sys->name) - 8), 8, " (%d)", n);
+        }
+    }
     if (result == LoadResult_System) {
         if (fresh || !app->settings.keep_representations) {
             remove_all_representations(*sys);
@@ -7947,8 +7985,9 @@ LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t
     return result;
 }
 
-// The files of a system but those of its runs, loaded again into another: a copy of it (PlacementAction_Copy)
-static bool load_system_copy(ApplicationState* app, const SystemContext& of, SystemContext& into) {
+// The files of a system but those of its runs, loaded again into another: a copy of it (PlacementAction_Copy). What it
+// made of them: LoadResult_System, or LoadResult_Failed when nothing loaded.
+static LoadResult load_system_copy(ApplicationState* app, const SystemContext& of, SystemContext& into) {
     bool any = false;
     for (size_t i = 0; i < file_list_count(&of.files); ++i) {
         const FileEntry e = *file_list_get(&of.files, i);
@@ -7956,11 +7995,33 @@ static bool load_system_copy(ApplicationState* app, const SystemContext& of, Sys
         const loader::LoaderState ls = file_entry_loader_state(e);
         any |= load_data(app, into, md_str_from_cstr(e.path), ls, file_list_role(&of.files, i)) != LoadResult_Failed;
     }
-    return any;
+    return any ? LoadResult_System : LoadResult_Failed;
 }
 
-// The files of one drop where the placement puts them (drop_files.h, file_placement.h)
-static void drop_files_load(ApplicationState* app, DropFiles* drop, const PlacementPlan& plan) {
+// The files a system of the plan loads, into sys (fresh: added for them, and shown what was loaded into it before them,
+// a copy), in its order
+static void load_placed(ApplicationState* app, DropFiles* drop, const PlacementSystem& ps, SystemContext* sys, bool fresh, LoadResult shown = LoadResult_Failed) {
+    for (size_t i = 0; i < ps.num_entries; ++i) {
+        DropFile& f = drop->files[ps.entries[i].file];
+        const md_str_t path = md_str_from_cstr(f.entry.path);
+        if (file_list_has(&sys->files, path)) {
+            VIAMD_LOG_INFO("'%s' is loaded into '%s' already", f.entry.path, sys->name);
+            continue;
+        }
+        // The system it is, loaded to be matched, is taken rather than read again
+        const DropFile* loaded = f.loaded > 0 ? &f : nullptr;
+        const FileRole role = f.kind == PlacementKind_Series ? FileRole_Series : FileRole_None;
+        const bool own_run = (f.ls.flags & LoaderFlag_System) && (f.ls.flags & LoaderFlag_Trajectory);
+        const LoadResult r = load_data(app, *sys, path, f.ls, role, own_run, loaded ? &loaded->sys : nullptr, loaded ? &loaded->state : nullptr);
+        if (r != LoadResult_Failed) f.into = sys->id;
+        if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
+    }
+    load_into_done(app, sys, fresh, shown);
+}
+
+// The files of one drop where the placement puts them (drop_files.h, file_placement.h). True when some are of the atoms
+// of more than one system: they are left for the user to pick where (the plan's systems of PlacementAction_Ask).
+static bool drop_files_load(ApplicationState* app, DropFiles* drop, const PlacementPlan& plan) {
     for (size_t i = 0; i < plan.num_refused; ++i) {
         const PlacementRefusal& r = plan.refused[i];
         const char* path = drop->files[r.file].entry.path;
@@ -7973,20 +8034,17 @@ static void drop_files_load(ApplicationState* app, DropFiles* drop, const Placem
         }
     }
 
+    bool asks = false;
     for (size_t k = 0; k < plan.num_systems; ++k) {
         const PlacementSystem& ps = plan.systems[k];
         if (ps.action == PlacementAction_Ask) {
-            // Of several systems: the user picks, through the load dialog, a file at a time
-            for (size_t i = 0; i < ps.num_entries; ++i) {
-                const DropFile& f = drop->files[ps.entries[i].file];
-                VIAMD_LOG_INFO("'%s' is of the atoms of %zu systems: pick which", f.entry.path, ps.num_candidates);
-                file_queue_push(&app->file_queue, md_str_from_cstr(f.entry.path), FileFlags_ShowDialogue);
-            }
+            asks = true;
             continue;
         }
 
         SystemContext* sys = nullptr;
         bool fresh = false;
+        LoadResult shown = LoadResult_Failed;
         if (ps.action == PlacementAction_Join) {
             sys = system_find(app, ps.system);
         } else {
@@ -7996,7 +8054,7 @@ static void drop_files_load(ApplicationState* app, DropFiles* drop, const Placem
                 // A copy of the system the files are of, which they would replace something of
                 if (const SystemContext* of = system_find(app, ps.system)) {
                     VIAMD_LOG_INFO("The files dropped are of the atoms of '%s' and would replace some of it: they go into a copy of it", of->name);
-                    load_system_copy(app, *of, *sys);
+                    shown = load_system_copy(app, *of, *sys);
                 }
             }
         }
@@ -8004,30 +8062,311 @@ static void drop_files_load(ApplicationState* app, DropFiles* drop, const Placem
             VIAMD_LOG_ERROR("At most %zu systems are loaded at once: %zu files are not loaded", SYSTEM_MAX, ps.num_entries);
             continue;
         }
-
-        LoadResult shown = LoadResult_Failed;
-        for (size_t i = 0; i < ps.num_entries; ++i) {
-            DropFile& f = drop->files[ps.entries[i].file];
-            const md_str_t path = md_str_from_cstr(f.entry.path);
-            if (file_list_has(&sys->files, path)) {
-                VIAMD_LOG_INFO("'%s' is loaded into '%s' already", f.entry.path, sys->name);
-                continue;
-            }
-            // The system it is, loaded to be matched, is taken rather than read again
-            const DropFile* loaded = f.loaded > 0 ? &f : nullptr;
-            const FileRole role = f.kind == PlacementKind_Series ? FileRole_Series : FileRole_None;
-            const bool own_run = (f.ls.flags & LoaderFlag_System) && (f.ls.flags & LoaderFlag_Trajectory);
-            const LoadResult r = load_data(app, *sys, path, f.ls, role, own_run, loaded ? &loaded->sys : nullptr, loaded ? &loaded->state : nullptr);
-            if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
-        }
-        load_into_done(app, sys, fresh, shown);
+        load_placed(app, drop, ps, sys, fresh, shown);
     }
+    return asks;
+}
+
+// ### WHERE FILES GO WHICH ARE OF MORE THAN ONE SYSTEM ###
+//
+// A question per system of the plan the user is asked about: its files, and where they may go - each of its candidates,
+// and a new system where one is offered. Answered (or not, with Escape), file_queue_process loads them as told, in the
+// order of the plan: a candidate which is a system the drop makes is where its files went.
+
+// The system a candidate is: a loaded one, or the one the files of the drop it names went into. NULL when it is neither.
+static SystemContext* placement_ref_system(ApplicationState* app, const DropFiles* drop, PlacementRef ref) {
+    if (ref.file >= 0) {
+        return (size_t)ref.file < drop->num_files ? system_find(app, drop->files[ref.file].into) : nullptr;
+    }
+    return system_find(app, ref.system);
+}
+
+static void placement_prompt_close(ApplicationState* app) {
+    auto& p = app->placement_prompt;
+    if (p.drop) {
+        drop_files_free(p.drop);
+        delete p.drop;
+    }
+    delete p.plan;
+    p.drop = nullptr;
+    p.plan = nullptr;
+    p.answered = false;
+}
+
+// The drop's files of several systems, asked about: the first candidate of each picked until the user says otherwise
+static void placement_prompt_open(ApplicationState* app, DropFiles* drop, PlacementPlan* plan) {
+    auto& p = app->placement_prompt;
+    MD_ASSERT(!p.drop);
+    p.drop = drop;
+    p.plan = plan;
+    p.answered = false;
+    for (size_t k = 0; k < MD_COUNTOF(p.choice); ++k) {
+        p.choice[k] = -1;
+        if (k >= plan->num_systems) continue;
+        const PlacementSystem& ps = plan->systems[k];
+        for (size_t j = 0; j < ps.num_candidates && p.choice[k] < 0; ++j) {
+            if (placement_ref_system(app, drop, ps.candidates[j])) p.choice[k] = (int)j;
+        }
+        if (p.choice[k] < 0 && ps.new_allowed) p.choice[k] = (int)ps.num_candidates;
+    }
+}
+
+// The answers loaded, in the order of the plan
+static void placement_prompt_load(ApplicationState* app) {
+    auto& p = app->placement_prompt;
+    for (size_t k = 0; k < p.plan->num_systems; ++k) {
+        const PlacementSystem& ps = p.plan->systems[k];
+        if (ps.action != PlacementAction_Ask) continue;
+        const int c = p.choice[k];
+        if (c < 0) {
+            for (size_t i = 0; i < ps.num_entries; ++i) VIAMD_LOG_INFO("'%s' is not loaded", p.drop->files[ps.entries[i].file].entry.path);
+            continue;
+        }
+        SystemContext* sys = nullptr;
+        bool fresh = false;
+        if ((size_t)c >= ps.num_candidates) {
+            sys = system_add(app);
+            fresh = sys != nullptr;
+        } else {
+            sys = placement_ref_system(app, p.drop, ps.candidates[c]);
+        }
+        if (!sys) {
+            VIAMD_LOG_ERROR("The system picked for '%s' is not there any more: %zu files are not loaded", p.drop->files[ps.entries[0].file].entry.path, ps.num_entries);
+            continue;
+        }
+        load_placed(app, p.drop, ps, sys, fresh);
+    }
+    placement_prompt_close(app);
+}
+
+// What a candidate is called: the system, with the run of it a series goes along
+static void placement_ref_label(char* buf, size_t cap, ApplicationState* app, const DropFiles* drop, PlacementRef ref) {
+    const SystemContext* sys = placement_ref_system(app, drop, ref);
+    if (!sys) {
+        const md_str_t name = ref.file >= 0 && (size_t)ref.file < drop->num_files ? md_path_filename(md_str_from_cstr(drop->files[ref.file].entry.path)) : MD_STR_LIT("?");
+        snprintf(buf, cap, MD_STR_FMT " (not loaded)", MD_STR_ARG(name));
+        return;
+    }
+    char label[128];
+    system_label(label, sizeof(label), *sys);
+    const bool of_run = ref.run >= 0 || (ref.file >= 0 && drop->files[ref.file].kind == PlacementKind_Trajectory);
+    const FileEntry* run_file = of_run ? file_list_run_file(&sys->files) : nullptr;
+    if (run_file) {
+        snprintf(buf, cap, "%s, along " MD_STR_FMT, label, MD_STR_ARG(md_path_filename(md_str_from_cstr(run_file->path))));
+    } else {
+        snprintf(buf, cap, "%s", label);
+    }
+}
+
+void draw_placement_prompt(ApplicationState* state) {
+    auto& p = state->placement_prompt;
+    if (!p.drop || p.answered) return;
+
+    const char* title = "Where do these files go?##placement";
+    if (!ImGui::IsPopupOpen(title)) ImGui::OpenPopup(title);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    ImGui::TextDisabled("They are of the atoms of more than one system.");
+    ImGui::Spacing();
+    if (ImGui::BeginTable("##questions", 2, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg | ImGuiTableFlags_PadOuterX)) {
+        for (size_t k = 0; k < p.plan->num_systems; ++k) {
+            const PlacementSystem& ps = p.plan->systems[k];
+            if (ps.action != PlacementAction_Ask) continue;
+            ImGui::PushID((int)k);
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            for (size_t i = 0; i < ps.num_entries; ++i) {
+                const DropFile& f = p.drop->files[ps.entries[i].file];
+                const md_str_t name = md_path_filename(md_str_from_cstr(f.entry.path));
+                if (i > 0) ImGui::SameLine(0, 0);
+                ImGui::Text("%s" MD_STR_FMT, i > 0 ? ", " : "", MD_STR_ARG(name));
+                ImGui::SetItemTooltip("%s", f.entry.path);
+            }
+
+            ImGui::TableNextColumn();
+            char preview[256] = "Not loaded";
+            int& c = p.choice[k];
+            if (c >= 0 && (size_t)c < ps.num_candidates) placement_ref_label(preview, sizeof(preview), state, p.drop, ps.candidates[c]);
+            else if (c >= 0) snprintf(preview, sizeof(preview), "A new system");
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18.0f);
+            if (ImGui::BeginCombo("##into", preview)) {
+                for (size_t j = 0; j < ps.num_candidates; ++j) {
+                    char label[256];
+                    placement_ref_label(label, sizeof(label), state, p.drop, ps.candidates[j]);
+                    ImGui::BeginDisabled(!placement_ref_system(state, p.drop, ps.candidates[j]));
+                    ImGui::PushID((int)j);
+                    if (ImGui::Selectable(label, c == (int)j)) c = (int)j;
+                    ImGui::PopID();
+                    ImGui::EndDisabled();
+                }
+                if (ps.new_allowed && ImGui::Selectable("A new system", c == (int)ps.num_candidates)) c = (int)ps.num_candidates;
+                if (ImGui::Selectable("Not loaded", c < 0)) c = -1;
+                ImGui::EndCombo();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::Spacing();
+    if (ImGui::Button("Load")) {
+        p.answered = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load none") || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        for (size_t k = 0; k < MD_COUNTOF(p.choice); ++k) p.choice[k] = -1;
+        p.answered = true;
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ### A FILE MOVED BETWEEN SYSTEMS ###
+
+// The system built again of the files of list, in their places: what is left of it as a file goes. What is the user's of
+// it stays: its name, and when it is of as many atoms again, its representations and the edits of its bonds.
+static void system_rebuild(ApplicationState* app, SystemContext& sys, const FileList& list) {
+    char name[sizeof(sys.name)];
+    md_memcpy(name, sys.name, sizeof(name));
+    const size_t num_atoms = sys.data.sys.atom.count;
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
+    md_bond_list_t edits = {};
+    for (size_t i = 0; i < md_bond_list_count(&sys.data.sys.bond_edit); ++i) {
+        const md_atom_pair_t pair = sys.data.sys.bond_edit.pairs[i];
+        md_bond_list_push(&edits, pair.idx[0], pair.idx[1], sys.data.sys.bond_edit.flags[i], temp);
+    }
+
+    interrupt_async_tasks(app);
+    free_trajectory_data(app, sys);
+    free_system_data(app, sys);
+
+    LoadResult shown = LoadResult_Failed;
+    for (size_t i = 0; i < file_list_count(&list); ++i) {
+        FileEntry e = *file_list_get(&list, i);
+        const FileRole role = file_list_role(&list, i);
+        LoadResult r = LoadResult_Failed;
+        if (!e.missing) {
+            r = load_data(app, sys, md_str_from_cstr(e.path), file_entry_loader_state(e), role);
+        }
+        if (r == LoadResult_Failed) {
+            // Kept in its place, as a workspace keeps a file it could not load
+            e.missing = true;
+            file_list_record(&sys.files, e, role, app->allocator.persistent);
+        }
+        if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
+    }
+    md_memcpy(sys.name, name, sizeof(name));
+
+    if (num_atoms > 0 && sys.data.sys.atom.count == num_atoms) {
+        apply_bond_edits(sys, edits);
+        recompute_atom_visibility_mask(sys);
+        sys.data.interpolate_system_state = true;
+        sys.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+    } else {
+        load_into_done(app, &sys, false, shown);
+    }
+    md_arena_allocator_destroy(temp);
+}
+
+bool system_move_file(ApplicationState* app, uint32_t from_id, size_t i, uint32_t to_id) {
+    MD_ASSERT(app);
+    SystemContext* from = system_find(app, from_id);
+    SystemContext* to = system_find(app, to_id);
+    if (!from || i >= file_list_count(&from->files) || to == from || (to_id != SYSTEM_ID_NONE && !to)) return false;
+    const FileEntry file = *file_list_get(&from->files, i);
+    if (file.missing) {
+        VIAMD_LOG_ERROR("'%s' is not loaded: there is nothing of it to move", file.path);
+        return false;
+    }
+
+    md_allocator_i* temp = md_arena_allocator_create(md_get_heap_allocator(), MD_KILOBYTES(64));
+    FileList rest = {}, moved = {};
+    file_list_split(&rest, &moved, &from->files, i, temp);
+
+    // The file where it fits, as a file dropped onto the system (or below the systems, for a new one) is
+    DropSystem loaded[SYSTEM_MAX];
+    size_t num_loaded = 0;
+    for (size_t k = 0; k < app->num_systems; ++k) {
+        const SystemContext& sc = *app->systems[k];
+        if (system_loaded(sc)) loaded[num_loaded++] = { sc.id, &sc.data.sys, &sc.data.state, md_str_from_cstr(sc.run.path) };
+    }
+    DropFiles* drop = new DropFiles();
+    drop_files_init(drop, loaded, num_loaded);
+    drop_files_add(drop, md_str_from_cstr(file.path), file_entry_loader_state(file), to ? to->id : PLACEMENT_NEW);
+    PlacementPlan* plan = new PlacementPlan();
+    drop_files_plan(plan, drop, SYSTEM_MAX);
+    drop->loaded = nullptr;
+    drop->num_loaded = 0;
+
+    bool ok = plan->num_refused == 0;
+    if (ok) {
+        // One file onto a system named, or into a new one: nothing to ask about
+        drop_files_load(app, drop, *plan);
+        SystemContext* into = system_find(app, drop->files[0].into);
+        ok = into != nullptr;
+        if (into) {
+            // What goes along with it: the series of a run it opened (the run opened again with it)
+            for (size_t j = 0; j < file_list_count(&moved); ++j) {
+                const FileEntry& e = *file_list_get(&moved, j);
+                if (strcmp(e.path, file.path) == 0 || e.missing) continue;
+                if (load_data(app, *into, md_str_from_cstr(e.path), file_entry_loader_state(e), file_list_role(&moved, j)) == LoadResult_Failed) {
+                    VIAMD_LOG_ERROR("'%s' went with '%s' and was not loaded into '%s'", e.path, file.path, into->name);
+                }
+            }
+            VIAMD_LOG_SUCCESS("Moved '%s' from '%s' to '%s'", file.path, from->name, into->name);
+        }
+    } else {
+        drop_files_load(app, drop, *plan);   // Says why
+    }
+    drop_files_free(drop);
+    delete drop;
+    delete plan;
+
+    if (ok) {
+        // What is left is a system while a file of it stands alone; what only adds to one goes with it
+        bool stands = false;
+        for (size_t j = 0; j < file_list_count(&rest); ++j) {
+            const PlacementKind kind = drop_file_kind(loader::type_flags(file_list_get(&rest, j)->type));
+            stands |= kind == PlacementKind_System || kind == PlacementKind_Topology || kind == PlacementKind_Trajectory;
+        }
+        if (stands) {
+            system_rebuild(app, *from, rest);
+        } else {
+            for (size_t j = 0; j < file_list_count(&rest); ++j) {
+                VIAMD_LOG_INFO("'%s' is unloaded: it adds to the atoms of '%s', of which nothing is left", file_list_get(&rest, j)->path, from->name);
+            }
+            system_remove(*from);
+            system_release(app, from);
+        }
+    }
+    md_arena_allocator_destroy(temp);
+    return ok;
 }
 
 void file_queue_process(ApplicationState* state) {
     MD_ASSERT(state);
     if (state->load_dataset.show_window) return;
+
+    // Files of several systems are asked about: what is queued waits for the answer
+    if (state->placement_prompt.drop) {
+        if (!state->placement_prompt.answered) return;
+        placement_prompt_load(state);
+        return;
+    }
+    if (state->file_move.from != SYSTEM_ID_NONE) {
+        const auto move = state->file_move;
+        state->file_move = {};
+        system_move_file(state, move.from, move.file, move.to);
+        return;
+    }
     if (file_queue_empty(&state->file_queue)) return;
+
+    // Files dropped on the window: where, once the windows of the frame they were dropped in are drawn
+    FileQueue& queue = state->file_queue;
+    if ((file_queue_front(&queue).flags & FileFlags_Dropped) && ImGui::GetFrameCount() <= queue.drop_frame) return;
 
     // A workspace, and a file to ask about (the load dialog), on their own
     {
@@ -8045,9 +8384,10 @@ void file_queue_process(ApplicationState* state) {
             md_str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
             state->load_dataset.path_changed = true;
             state->load_dataset.show_window = true;
-            if (e.system != SYSTEM_ID_NONE) {
-                state->load_dataset.system = e.system;
-            } else if ((e.flags & FileFlags_NewSystem) || system_count(*state) == 0) {
+            const uint32_t system = (e.flags & FileFlags_Dropped) && queue.drop_system != SYSTEM_ID_NONE ? queue.drop_system : e.system;
+            if (system != SYSTEM_ID_NONE) {
+                state->load_dataset.system = system;
+            } else if ((e.flags & FileFlags_NewSystem) || ((e.flags & FileFlags_Dropped) && queue.drop_new) || system_count(*state) == 0) {
                 state->load_dataset.new_system = true;
             } else {
                 state->load_dataset.system = scene_frame_system(*state).id;
@@ -8074,12 +8414,22 @@ void file_queue_process(ApplicationState* state) {
         if ((e.flags & FileFlags_ShowDialogue) || (ls.flags & LoaderFlag_RequiresDialogue)) break;
         file_queue_pop(&state->file_queue);
         ls.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-        const uint32_t target = (e.flags & FileFlags_NewSystem) ? PLACEMENT_NEW : e.system != SYSTEM_ID_NONE ? e.system : PLACEMENT_AUTO;
+        uint32_t target = (e.flags & FileFlags_NewSystem) ? PLACEMENT_NEW : e.system != SYSTEM_ID_NONE ? e.system : PLACEMENT_AUTO;
+        if (e.flags & FileFlags_Dropped) {
+            if (queue.drop_new) target = PLACEMENT_NEW;
+            else if (queue.drop_system != SYSTEM_ID_NONE) target = queue.drop_system;
+        }
         drop_files_add(drop, e.path, ls, target);
     }
     PlacementPlan* plan = new PlacementPlan();
     drop_files_plan(plan, drop, SYSTEM_MAX);
-    drop_files_load(state, drop, *plan);
+    // The systems are loaded into from here: what the drop was matched against is not looked at again
+    drop->loaded = nullptr;
+    drop->num_loaded = 0;
+    if (drop_files_load(state, drop, *plan)) {
+        placement_prompt_open(state, drop, plan);
+        return;
+    }
     delete plan;
     drop_files_free(drop);
     delete drop;

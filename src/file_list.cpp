@@ -123,6 +123,59 @@ void file_list_drop_runs(FileList* list) {
     md_array_shrink(list->runs, 0);
 }
 
+size_t file_list_split(FileList* rest, FileList* moved, const FileList* list, size_t i, md_allocator_i* alloc) {
+    MD_ASSERT(rest && moved && list && alloc);
+    file_list_clear(rest);
+    file_list_clear(moved);
+    const size_t num_entries = md_array_size(list->entries);
+    const size_t num_runs = md_array_size(list->runs);
+    if (i >= num_entries) return 0;
+
+    // The runs which go: those an entry of the file opens
+    md_array(int) run_to_rest = 0;
+    md_array(int) run_to_moved = 0;
+    md_array_resize(run_to_rest, num_runs, alloc);
+    md_array_resize(run_to_moved, num_runs, alloc);
+    for (size_t r = 0; r < num_runs; ++r) {
+        run_to_rest[r] = -1;
+        run_to_moved[r] = -1;
+    }
+    for (size_t j = 0; j < num_entries; ++j) {
+        const FileEntry& e = list->entries[j];
+        if (strcmp(e.path, list->entries[i].path) == 0 && e.run >= 0 && (size_t)e.run < num_runs && file_list_role(list, j) == FileRole_Trajectory) {
+            run_to_moved[e.run] = 0;
+        }
+    }
+    // Each run where it goes, by its place there
+    for (size_t r = 0; r < num_runs; ++r) {
+        if (run_to_moved[r] == 0) {
+            run_to_moved[r] = (int)md_array_size(moved->runs);
+            md_array_push(moved->runs, list->runs[r], alloc);
+        } else {
+            run_to_rest[r] = (int)md_array_size(rest->runs);
+            md_array_push(rest->runs, list->runs[r], alloc);
+        }
+    }
+
+    size_t num_moved = 0;
+    for (size_t j = 0; j < num_entries; ++j) {
+        FileEntry e = list->entries[j];
+        const bool of_run = e.run >= 0 && (size_t)e.run < num_runs;
+        const bool goes = strcmp(e.path, list->entries[i].path) == 0 || (of_run && run_to_moved[e.run] >= 0);
+        if (goes) {
+            e.run = of_run ? run_to_moved[e.run] : -1;
+            md_array_push(moved->entries, e, alloc);
+            num_moved += 1;
+        } else {
+            e.run = of_run ? run_to_rest[e.run] : -1;
+            md_array_push(rest->entries, e, alloc);
+        }
+    }
+    md_array_free(run_to_rest, alloc);
+    md_array_free(run_to_moved, alloc);
+    return num_moved;
+}
+
 const FileEntry* file_list_system_file(const FileList* list) {
     MD_ASSERT(list);
     for (size_t i = 0; i < md_array_size(list->entries); ++i) {

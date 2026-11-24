@@ -39,13 +39,15 @@ struct DropFile {
     md_system_t         sys = {};
     md_system_state_t   state = {};
     bool                run_published = false;  // A trajectory's frames as the run DROP_RUN of sys
+
+    uint32_t            into = PLACEMENT_NONE;  // The id of the system it was loaded into, once it is (by the caller)
 };
 
 struct DropFiles {
     DropFile          files[PLACEMENT_MAX_FILES];
     size_t            num_files = 0;
     size_t            num_skipped = 0;          // Past PLACEMENT_MAX_FILES
-    const DropSystem* loaded = nullptr;
+    const DropSystem* loaded = nullptr;         // While the drop is matched and planned: nothing after
     size_t            num_loaded = 0;
 };
 

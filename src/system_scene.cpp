@@ -782,6 +782,46 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
     }
 }
 
+// Where a file of the system may go: into another system, or one which can stand alone (a structure, a topology, a
+// trajectory) into a new one, while something of the system stays (file_list_split)
+static void draw_file_move_menu(SystemContext& sc, size_t i) {
+    ApplicationState* app = sc.app;
+    MD_ASSERT(app);
+    if (!ImGui::BeginMenu("Move to")) return;
+    bool any = false;
+    for (size_t k = 0; k < app->num_systems; ++k) {
+        const SystemContext& other = *app->systems[k];
+        if (&other == &sc || !system_loaded(other)) continue;
+        char label[128];
+        system_label(label, sizeof(label), other);
+        ImGui::PushID((int)other.id);
+        if (ImGui::MenuItem(label)) app->file_move = { sc.id, i, other.id };
+        ImGui::PopID();
+        any = true;
+    }
+    const FileEntry& e = *file_list_get(&sc.files, i);
+    const PlacementKind kind = drop_file_kind(loader::type_flags(e.type));
+    const bool alone = kind == PlacementKind_System || kind == PlacementKind_Topology || kind == PlacementKind_Trajectory;
+    FileList rest = {}, moved = {};
+    file_list_split(&rest, &moved, &sc.files, i, app->allocator.frame);
+    if (alone) {
+        if (any) ImGui::Separator();
+        ImGui::BeginDisabled(file_list_count(&rest) == 0);
+        if (ImGui::MenuItem("A new system")) app->file_move = { sc.id, i, SYSTEM_ID_NONE };
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("%s", file_list_count(&rest) ? "A system of its own, and this one without it" : "It is all of this system");
+    } else if (!any) {
+        ImGui::TextDisabled("No other system");
+    }
+    size_t num_along = 0;
+    for (size_t j = 0; j < file_list_count(&moved); ++j) num_along += strcmp(file_list_get(&moved, j)->path, e.path) != 0;
+    if (num_along) {
+        ImGui::Separator();
+        ImGui::TextDisabled("With it: the %zu other files of its run", num_along);
+    }
+    ImGui::EndMenu();
+}
+
 void draw_system_files(SystemContext& sc) {
     const SystemContext& sys = sc;
     const FileList* list = &sys.files;
@@ -841,8 +881,16 @@ void draw_system_files(SystemContext& sc) {
                 if (e.missing) ImGui::SetTooltip("%s, not loaded: the workspace names it, but it could not be loaded\n%s", system_file_role_label(e, role), e.path);
                 else           ImGui::SetTooltip("%s\n%s", system_file_role_label(e, role), e.path);
             }
+            if (!e.missing && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                const SystemFileRef ref = { sc.id, (uint32_t)i };
+                ImGui::SetDragDropPayload(SYSTEM_FILE_DND, &ref, sizeof(ref));
+                ImGui::Text("%s " MD_STR_FMT, file_role_icon(e, role), MD_STR_ARG(name));
+                ImGui::TextDisabled("Onto a system: into it. Below the systems: into a new one.");
+                ImGui::EndDragDropSource();
+            }
             if (ImGui::BeginPopupContextItem("##file")) {
                 if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(e.path);
+                if (!e.missing) draw_file_move_menu(sc, i);
                 ImGui::EndPopup();
             }
             char details[128];
