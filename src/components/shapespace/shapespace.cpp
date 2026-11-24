@@ -267,7 +267,7 @@ struct Layer {
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };
     float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
 
-    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    ImPlotColormap colormap = ImPlotColormap_Spectral;     // Bright against the plots' dark background
     ImPlotColormap structure_colormap = ImPlotColormap_Deep;    // Of points coloured by structure: in turn, by default
     bool     log_scale = false;
 
@@ -1114,9 +1114,11 @@ struct Shapespace : viamd::EventHandler {
         e.smoothed_window = smoothing;
     }
 
-    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own
+    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own.
+    // Of the window last smoothed over until this one's are made (update_smoothed): not its own shapes meanwhile, which
+    // would flicker in and out of the smoothed ones as the window is changed.
     const md_float2_t* eval_shapes(const Evaluation& e) const {
-        if (smoothing > 1 && e.smoothed && e.smoothed_window == smoothing) return e.smoothed->data();
+        if (smoothing > 1 && e.smoothed) return e.smoothed->data();
         return e.coords;
     }
 
@@ -1644,7 +1646,7 @@ struct Shapespace : viamd::EventHandler {
         l.trajectory_width = MD_CLAMP(l.trajectory_width, 0.5f, 6.0f);
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
-        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Spectral;
         if (l.structure_colormap < 0 || l.structure_colormap >= ImPlot::GetColormapCount()) l.structure_colormap = ImPlotColormap_Deep;
     }
 
@@ -3441,6 +3443,10 @@ struct Shapespace : viamd::EventHandler {
             ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
             if (ImGui::SliderInt("Smoothing", &smoothing, 1, MAX_SMOOTHING, smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
                 smoothing |= 1;     // Centred: odd
+                // Made now, before the points are drawn this frame: not at the next update
+                for (int i = 0; i < num_layers; ++i) {
+                    if (layers[i].eval) update_smoothed(*layers[i].eval);
+                }
             }
             ImGui::SetItemTooltip("A moving average of the shapes over this many frames, centred, of every layer and view alike:\n"
                                   "the points and densities in 2D, the paths in 3D, the points of the frame shown, what is selected\n"
