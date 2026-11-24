@@ -5556,7 +5556,7 @@ struct QuantumChemistry : viamd::EventHandler {
 #endif
 
         // Compute a hash of the current state
-        size_t frame_idx = (size_t)(state.animation.frame + 0.5);
+        size_t frame_idx = (size_t)(clock_frame(&state) + 0.5);
         uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
 
         if (cp.raw_hash != raw_hash) {

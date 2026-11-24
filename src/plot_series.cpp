@@ -454,17 +454,23 @@ static const float* attribute_floats(ApplicationState* app, const md_attributes_
     return (data && count == md_attribute_element_count(&attr->format)) ? data : nullptr;
 }
 
-// The times of a series' frame axis in the unit of the run's (the timeline's): the run's own in place, another axis in
-// place when it holds them as they are (an energy file's in ps beside a trajectory in ps), converted otherwise. Frames
-// numbered place only against frames numbered: a run without time has nothing to put a picosecond on, and an axis
-// without time nothing to put on a run with it. NULL then, and when the axis cannot be read.
+// The frame axis of the clock's reference (clock.h), whose times are the clock's as they are. NULL without one.
+static const md_attribute_t* clock_axis_attribute(const ApplicationState* app) {
+    const SystemInstance* ref = clock_reference(app);
+    return ref ? run_time_axis(*ref->sys, instance_run(*ref)) : nullptr;
+}
+
+// The times of a series' frame axis on the clock, in its unit (the timeline's): the reference's own in place, another
+// axis in place when it holds them as they are (an energy file's in ps beside a trajectory in ps), converted otherwise.
+// Frames numbered place only against frames numbered: a clock without time has nothing to put a picosecond on, and an
+// axis without time nothing to put on a clock with it. NULL then, and when the axis cannot be read.
 static const double* timeline_times(ApplicationState* app, const md_attributes_t* table, const md_attribute_t* axis, size_t* out_count) {
-    const md_attribute_t* run_axis = run_time_axis(app->system_context);
-    if (run_axis && md_attribute_same_data(axis, run_axis)) {
-        *out_count = run_num_frames(app->system_context);
-        return run_frame_times(app->system_context);
+    const md_attribute_t* ref_axis = clock_axis_attribute(app);
+    if (ref_axis && md_attribute_same_data(axis, ref_axis)) {
+        *out_count = ref_axis->format.shape[0];
+        return (const double*)md_attribute_view(ref_axis, MD_ATTRIBUTE_TYPE_F64, 1, 1);
     }
-    const md_unit_t run_unit = run_time_unit(app->system_context);
+    const md_unit_t run_unit = clock_unit(app);
     if (md_unit_is_none(run_unit) != md_unit_is_none(axis->unit)) return nullptr;
     if (md_unit_equal(run_unit, axis->unit)) {
         if (const double* t = (const double*)md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1)) {
@@ -624,10 +630,10 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
-            const md_attribute_t* run_axis = run_time_axis(app->system_context);
+            const md_attribute_t* ref_axis = clock_axis_attribute(app);
             if (axis && axis->format.shape[0] == n) {
-                if ((run_axis && md_attribute_same_data(axis, run_axis)) ||
-                    md_unit_is_none(run_time_unit(app->system_context)) == md_unit_is_none(axis->unit)) {
+                if ((ref_axis && md_attribute_same_data(axis, ref_axis)) ||
+                    md_unit_is_none(clock_unit(app)) == md_unit_is_none(axis->unit)) {
                     views |= SeriesView_Timeline;
                 }
             }
@@ -704,9 +710,12 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     // ### x
     const double* x = nullptr;
     if (is_script(key.source)) {
-        // Evaluated over the run's frames, so its axis is the timeline's
-        if (n != run_num_frames(app->system_context)) return false;
-        x = run_frame_times(app->system_context);
+        // Evaluated over the frames of the first system's run, on whose axis it is, on the clock
+        const md_attribute_t* axis = run_time_axis(app->system_context);
+        if (!axis || n != run_num_frames(app->system_context)) return false;
+        size_t count = 0;
+        x = timeline_times(app, &app->system_context.data.sys.attributes, axis, &count);
+        if (!x || count != n) return false;
     } else {
         const md_attribute_t* axis = md_attributes_axis(table, src);
         if (!axis || axis->format.shape[0] != n) return false;
@@ -1039,7 +1048,7 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
     }
     const TimelinePeriod* r = timeline_periods_find(&app->timeline.periods, period);
     int b = 0, e = 0;
-    if (!r || !timeline_period_frames(&b, &e, *r, app->animation.frame, (int)num_frames)) return false;
+    if (!r || !timeline_period_frames(&b, &e, *r, clock_frame(app), (int)num_frames)) return false;
     *beg = (uint32_t)b;
     *end = (uint32_t)e + 1;
     return true;

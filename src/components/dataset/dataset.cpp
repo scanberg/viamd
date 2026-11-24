@@ -2113,7 +2113,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextDisabled("Box: none in the frames");
         }
 
-        const double frame = data.animation.frame;
+        const double frame = clock_frame(&data);
         const size_t fi = (size_t)MD_CLAMP(frame + 0.5, 0.0, (double)(traj.num_frames - 1));
         const double* t = run_frame_times(data.system_context);
         if (traj.has_time && t) {

@@ -301,7 +301,7 @@ struct Heatmaps : viamd::EventHandler {
         if (nf <= 0) return false;
         switch (h.over) {
         case Over_Frame: {
-            const int f = MD_CLAMP((int)(app->animation.frame + 0.5), 0, nf - 1);
+            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, nf - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -313,7 +313,7 @@ struct Heatmaps : viamd::EventHandler {
         case Over_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, h.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, app->animation.frame, nf)) return false;
+            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), nf)) return false;
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;

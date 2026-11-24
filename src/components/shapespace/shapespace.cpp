@@ -1026,7 +1026,7 @@ struct Shapespace : viamd::EventHandler {
         // What depends on the coordinates follows the frame shown as points of it, but is taken once for frames that
         // are many (all of them would have to be evaluated again at every frame)
         if (l.filter.text[0] && l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
-            key = md_hash64_combine(key, md_hash64_combine((uint64_t)(app->animation.frame * 4096.0), state_generation));
+            key = md_hash64_combine(key, md_hash64_combine((uint64_t)(clock_frame(app) * 4096.0), state_generation));
         }
         if (key == l.structs_key) return;
         l.structs_key = key;
@@ -1231,7 +1231,7 @@ struct Shapespace : viamd::EventHandler {
             return;
         }
         const size_t nf = run_num_frames(app->system_context);
-        const double fr = MD_CLAMP(app->animation.frame, 0.0, (double)(nf - 1));
+        const double fr = MD_CLAMP(clock_frame(app), 0.0, (double)(nf - 1));
         const size_t f0 = (size_t)fr, f1 = MD_MIN(f0 + 1, nf - 1);
         const size_t half = (size_t)(smoothing / 2);
         const size_t lo = f0 - MD_MIN(half, MD_MIN(f0, nf - 1 - f0));
@@ -1293,7 +1293,7 @@ struct Shapespace : viamd::EventHandler {
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = MD_CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1305,7 +1305,7 @@ struct Shapespace : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, app->animation.frame, num_frames)) return false;
+            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), num_frames)) return false;
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;
@@ -1824,7 +1824,7 @@ struct Shapespace : viamd::EventHandler {
             const Evaluation& e = *l.eval;
             const md_float2_t* c = eval_shapes(e);
             const size_t nf = e.num_frames;
-            const double f = MD_CLAMP(app->animation.frame, 0.0, (double)(nf - 1));
+            const double f = MD_CLAMP(clock_frame(app), 0.0, (double)(nf - 1));
             const size_t f0 = (size_t)f, f1 = MD_MIN(f0 + 1, nf - 1);
             const float a = (float)(f - (double)f0);
             md_float2_t* at = (md_float2_t*)md_alloc(app->allocator.frame, sizeof(md_float2_t) * MD_MAX(e.num_structures, (size_t)1));
@@ -2195,7 +2195,7 @@ struct Shapespace : viamd::EventHandler {
             draw_tooltip(hover, sources[hover.layer]);
             // A click on a point of a frame: that frame
             if (!hover.current && !ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                app->animation.frame = hover.frame;
+                clock_set_frame(app, hover.frame);
             }
         }
 
@@ -2424,7 +2424,7 @@ struct Shapespace : viamd::EventHandler {
             *te = MD_CLAMP(app->timeline.view_range.end_x, *tb, r1);
             break;
         case TimeWindow_Follow: {
-            const double tc = run_time_at_frame(app->system_context, app->animation.frame);
+            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
             *tb = tc + time_win.beg;
             *te = tc + time_win.end;
             break;
@@ -2487,7 +2487,7 @@ struct Shapespace : viamd::EventHandler {
             e = c + 0.5 * min_len;
         }
         if (time_win.mode == TimeWindow_Follow) {
-            const double tc = run_time_at_frame(app->system_context, app->animation.frame);
+            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
             time_win.beg = MD_CLAMP(b - tc, -span, span);
             time_win.end = MD_CLAMP(e - tc, time_win.beg, span);
             return;
@@ -2549,7 +2549,7 @@ struct Shapespace : viamd::EventHandler {
         double tb, te;
         time_window(&tb, &te);
         if (follow) {
-            const double tc = run_time_at_frame(app->system_context, app->animation.frame);
+            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
             tb -= tc;
             te -= tc;
         }
@@ -2563,7 +2563,7 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::DragFloatRange2("##time_window", &v[0], &v[1], (float)(span * scl / 500.0), (float)(lo_bound * scl), (float)(hi_bound * scl), fmt, fmt, ImGuiSliderFlags_AlwaysClamp)) {
             double b = v[0] / scl, e = MD_MAX(v[1], v[0]) / scl;
             if (follow) {
-                const double tc = run_time_at_frame(app->system_context, app->animation.frame);
+                const double tc = run_time_at_frame(app->system_context, clock_frame(app));
                 b += tc;
                 e += tc;
             }
@@ -2590,7 +2590,7 @@ struct Shapespace : viamd::EventHandler {
         const double r0 = frame_time(0.0);
         double r1 = nf > 1 ? frame_time((double)(nf - 1)) : r0 + 1.0;
         if (!(r1 > r0)) r1 = r0 + 1.0;
-        const double tc = nf > 0 ? frame_time(app->animation.frame) : r0;
+        const double tc = nf > 0 ? frame_time(clock_frame(app)) : r0;
         uint32_t filter_beg = 0, filter_end = UINT32_MAX;
         double t0 = r0, t1 = r1;
         if (nf > 1) {
@@ -2782,7 +2782,7 @@ struct Shapespace : viamd::EventHandler {
             for (int i = 0; i < rs.count; ++i) {
                 const TimelinePeriod& p = rs.items[i];
                 int b = 0, e = 0;
-                if (!timeline_period_frames(&b, &e, p, app->animation.frame, (int)nf)) continue;
+                if (!timeline_period_frames(&b, &e, p, clock_frame(app), (int)nf)) continue;
                 const double xb = frame_time(b), xe = frame_time(e);
                 if (xe < t0 || xb > t1) continue;
                 const bool hot = p.id == hot_period;
@@ -2810,7 +2810,7 @@ struct Shapespace : viamd::EventHandler {
         }
         if (const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, hot_period)) {
             int b = 0, e = 0;
-            if (timeline_period_frames(&b, &e, *p, app->animation.frame, (int)nf)) {
+            if (timeline_period_frames(&b, &e, *p, clock_frame(app), (int)nf)) {
                 const ImVec4 col(p->color.x, p->color.y, p->color.z, 0.8f);
                 const ImVec4 fill(p->color.x, p->color.y, p->color.z, 0.10f);
                 slice("##period_beg", frame_time(b), col, fill);
@@ -3164,7 +3164,7 @@ struct Shapespace : viamd::EventHandler {
             }
         }
         if (v3.pressed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            if (ImLengthSqr(mouse - v3.press_pos) < 9.0f) app->animation.frame = v3.click_frame;
+            if (ImLengthSqr(mouse - v3.press_pos) < 9.0f) clock_set_frame(app, v3.click_frame);
             v3.pressed = false;
         }
         if (v3.pressed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) v3.pressed = false;

@@ -9,6 +9,7 @@
 #include <md_system.h>
 #include <md_run.h>
 #include <plane.h>
+#include <clock.h>
 #include <transfer_function_widget.h>
 #include <md_gto.h>
 #include <core/md_grid.h>
@@ -2199,8 +2200,12 @@ struct ApplicationState {
 
     // --- ANIMATION ---
     struct {
-        double frame = 0.0;  // double precision for long trajectories
-        float fps = 10.f;
+        // The time shown, on the clock (clock.h): in the unit of the reference's run (clock_reference), time_unit, in
+        // which it is kept when another run becomes the reference. Every instance which follows the time shows its run
+        // at it. What "the current frame" is to whatever reads one run is that run's frame at it (clock_frame).
+        double time = 0.0;
+        md_unit_t time_unit = {};
+        float fps = 10.f;   // Frames of the reference per second
         float tension = 0.0f;
         // While playing, the displayed state is interpolated between every stride:th frame only (0, stride,
         // 2*stride, ... and the last), which smooths the motion out at the cost of fidelity to the frames
@@ -2994,6 +2999,38 @@ md_str_t run_path(const SystemContext& sys);
 
 // The time at a fractional frame along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
 double run_time_at_frame(const SystemContext& sys, double frame);
+
+// THE CLOCK (clock.h): the time shown, ApplicationState::animation.time, which every instance that follows the time shows
+// its run at.
+
+// The instance the clock counts in: the first system's first instance when it shows a run, else the first one of the
+// systems, in their order, which does. The frames of its run are what stepping, the frame slider and the speed count,
+// what the timeline's periods are in, and its unit of time is the clock's. NULL when no instance shows a run.
+const SystemInstance* clock_reference(const ApplicationState* app);
+// The unit of the clock: of the reference's run, none (frames numbered) without one
+md_unit_t clock_unit(const ApplicationState* app);
+// A run's frame axis as it is placed on the clock: its times and the factor into the clock's unit, which is 0 when they
+// cannot be taken into it (it is placed frame by frame as the reference then)
+ClockAxis run_clock_axis(const ApplicationState* app, const SystemContext& sys, const SystemRun* run);
+// The fractional frame of a run at a time on the clock, clamped to its frames; and the time on the clock of a frame of it
+double run_frame_at_clock(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double time);
+double run_clock_time(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double frame);
+// The fractional frame an instance shows now: the one it keeps to, or its run's at the clock's time. -1 without a run.
+double instance_current_frame(const SystemInstance& inst);
+// The reference's fractional frame at the clock's time: "the current frame" of whatever reads the first system's run
+// (the script, the tools, the periods). 0 without a reference.
+double clock_frame(const ApplicationState* app);
+// The clock set to the time of a fractional frame of the reference
+void   clock_set_frame(ApplicationState* app, double frame);
+// The times the clock goes over: from the first frame to the last of every run an instance shows. Both 0 without one.
+void   clock_span(const ApplicationState* app, double* beg, double* end);
+// The clock moved by frames of the reference (clock_step_time): ctrl and the arrow keys
+void   clock_step(ApplicationState* app, double frames);
+// The mean time from frame to frame of the reference, on the clock: what one frame per second plays at
+double clock_frame_duration(const ApplicationState* app);
+// Once a frame: the time kept in the unit of the clock when the reference changes to a run in another (converted, or to
+// the clock's first time where it cannot be), and within the clock's span
+void   clock_update(ApplicationState* app);
 
 // One frame of a run (the one shown, without it) into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of its own

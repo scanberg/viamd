@@ -60,8 +60,8 @@ enum : EventType {
     EventType_ViamdInteractionSurface				= HASH_STR_LIT("VIAMD Interaction Surface"),
     EventType_ViamdViewFit							= HASH_STR_LIT("VIAMD View Fit"),
 
-	// The frame shown, state.animation.frame, has changed since the main loop last looked (payload ApplicationState): at
-	// most once a frame, whatever changed it (playback, a key, the timeline, a component)
+	// The time shown, state.animation.time (clock.h), has changed since the main loop last looked (payload
+	// ApplicationState): at most once a frame, whatever changed it (playback, a key, the timeline, a component)
 	EventType_ViamdAnimationFrameChanged			= HASH_STR_LIT("VIAMD Animation Frame Changed"),
 
 	// The script has been compiled (payload ApplicationState): state.script.ir is the program, NULL when it did not

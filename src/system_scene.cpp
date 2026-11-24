@@ -272,7 +272,7 @@ static void draw_system_menu(SystemContext& sys, bool* remove_request, InstanceA
     ImGui::SetItemTooltip("Join molecules that are split across the periodic box boundary");
     if (ImGui::MenuItem(ICON_FA_ARROWS_ROTATE " Recompute bonds")) {
         // The whole frame nearest the animation time, or the coordinates shown when there is no run
-        recompute_bonds(sys, (int64_t)(app->animation.frame + 0.5));
+        recompute_bonds(sys, (int64_t)(instance_current_frame(system_instance(sys)) + 0.5));
     }
     ImGui::SetItemTooltip("Guess the covalent bonds again from the distances between atoms in this frame, for when\n"
                           "the file's bonds are wrong or a reaction should be the topology from here on.\n"
@@ -675,10 +675,10 @@ static void draw_instance_menu(SystemInstance& inst, InstanceActions* act) {
         const size_t num_frames = run_num_frames(sys, run);
         ImGui::Indent();
         if (ImGui::RadioButton("Follows the time shown", inst.frame < 0)) instance_show(inst, inst.run, -1);
-        ImGui::SetItemTooltip(first ? "The time of the timeline, which is of this run" : "The time of the timeline, as a frame of this run");
+        ImGui::SetItemTooltip(first ? "Its frame of the time shown" : "Its frame of the time shown: of the same time as the others', whatever its frames are numbered");
         ImGui::SameLine();
         if (ImGui::RadioButton("Keeps to a frame", inst.frame >= 0) && inst.frame < 0) {
-            instance_show(inst, inst.run, (int64_t)MD_CLAMP(sys.app->animation.frame + 0.5, 0.0, (double)(num_frames - 1)));
+            instance_show(inst, inst.run, (int64_t)MD_CLAMP(instance_current_frame(inst) + 0.5, 0.0, (double)(num_frames - 1)));
         }
         ImGui::SetItemTooltip("One frame of the run, whatever the time shown: a reference, a ghost of where it was");
         if (inst.frame >= 0 && num_frames > 0) {
@@ -1212,7 +1212,7 @@ void system_remove(SystemContext& sys) {
     md_array_shrink(first.scene.assembly_transforms, 0);
     md_array_shrink(first.scene.assembly_copy_offset, 0);
     sys.representation.atom_visibility_mask_dirty = true;
-    if (system_count(*app) == 0) app->animation.frame = 0.0;
+    if (system_count(*app) == 0) app->animation.time = 0.0;
 }
 
 // ---------------------------------------------------------------------------------------------------------

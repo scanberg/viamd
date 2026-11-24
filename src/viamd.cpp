@@ -1479,6 +1479,134 @@ double run_time_at_frame(const SystemContext& sys, double frame) {
     return time_at_frame(run_frame_times(sys), run_num_frames(sys), frame);
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// The clock
+// ---------------------------------------------------------------------------------------------------------
+
+const SystemInstance* clock_reference(const ApplicationState* app) {
+    for (size_t i = 0; i < app->num_systems; ++i) {
+        const SystemContext& sc = *app->systems[i];
+        for (size_t k = 0; k < sc.num_instances; ++k) {
+            if (run_num_frames(sc, instance_run(*sc.instances[k])) > 0) return sc.instances[k];
+        }
+    }
+    return nullptr;
+}
+
+md_unit_t clock_unit(const ApplicationState* app) {
+    const SystemInstance* ref = clock_reference(app);
+    return ref ? run_time_unit(*ref->sys, instance_run(*ref)) : md_unit_none();
+}
+
+ClockAxis run_clock_axis(const ApplicationState* app, const SystemContext& sys, const SystemRun* run) {
+    ClockAxis a;
+    a.times = run_frame_times(sys, run);
+    a.count = a.times ? run_num_frames(sys, run) : 0;
+    // Frames numbered beside frames numbered as they are, times taken into the clock's unit; the one beside the other
+    // not by its times at all
+    const md_unit_t from = run_time_unit(sys, run);
+    const md_unit_t to   = clock_unit(app);
+    double f = 1.0;
+    if (md_unit_is_none(from) != md_unit_is_none(to)) f = 0.0;
+    else if (!md_unit_is_none(from) && !md_unit_conversion_factor(&f, from, to)) f = 0.0;
+    a.scale = f;
+    return a;
+}
+
+double run_frame_at_clock(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double time) {
+    const ClockAxis a = run_clock_axis(app, sys, run);
+    if (a.count == 0) return 0.0;
+    if (clock_axis_timed(a)) return clock_axis_frame(a, time);
+    // Frame by frame as the reference
+    return MD_CLAMP(clock_frame(app), 0.0, (double)(a.count - 1));
+}
+
+double run_clock_time(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double frame) {
+    const ClockAxis a = run_clock_axis(app, sys, run);
+    if (clock_axis_timed(a)) return clock_axis_time(a, frame);
+    // Frame by frame as the reference: the reference's time at the same frame
+    const SystemInstance* ref = clock_reference(app);
+    if (!ref) return 0.0;
+    return clock_axis_time(run_clock_axis(app, *ref->sys, instance_run(*ref)), frame);
+}
+
+double instance_current_frame(const SystemInstance& inst) {
+    const SystemRun* run = instance_run(inst);
+    const size_t num_frames = run_num_frames(*inst.sys, run);
+    if (num_frames == 0) return -1.0;
+    if (inst.frame >= 0) return (double)MD_MIN((size_t)inst.frame, num_frames - 1);
+    return run_frame_at_clock(inst.sys->app, *inst.sys, run, inst.sys->app->animation.time);
+}
+
+double clock_frame(const ApplicationState* app) {
+    const SystemInstance* ref = clock_reference(app);
+    if (!ref) return 0.0;
+    const ClockAxis a = run_clock_axis(app, *ref->sys, instance_run(*ref));
+    return clock_axis_timed(a) ? clock_axis_frame(a, app->animation.time) : 0.0;
+}
+
+void clock_set_frame(ApplicationState* app, double frame) {
+    const SystemInstance* ref = clock_reference(app);
+    if (!ref) {
+        app->animation.time = 0.0;
+        return;
+    }
+    const ClockAxis a = run_clock_axis(app, *ref->sys, instance_run(*ref));
+    if (clock_axis_timed(a)) app->animation.time = clock_axis_time(a, frame);
+}
+
+void clock_span(const ApplicationState* app, double* beg, double* end) {
+    bool any = false;
+    *beg = *end = 0.0;
+    for (size_t i = 0; i < app->num_systems; ++i) {
+        const SystemContext& sc = *app->systems[i];
+        for (size_t k = 0; k < sc.num_instances; ++k) {
+            const SystemRun* run = instance_run(*sc.instances[k]);
+            const size_t n = run_num_frames(sc, run);
+            if (n == 0) continue;
+            const double b = run_clock_time(app, sc, run, 0.0);
+            const double e = run_clock_time(app, sc, run, (double)(n - 1));
+            *beg = any ? MD_MIN(*beg, b) : b;
+            *end = any ? MD_MAX(*end, e) : e;
+            any = true;
+        }
+    }
+}
+
+double clock_frame_duration(const ApplicationState* app) {
+    const SystemInstance* ref = clock_reference(app);
+    return ref ? clock_axis_frame_duration(run_clock_axis(app, *ref->sys, instance_run(*ref))) : 1.0;
+}
+
+void clock_step(ApplicationState* app, double frames) {
+    const SystemInstance* ref = clock_reference(app);
+    if (!ref) return;
+    double beg, end;
+    clock_span(app, &beg, &end);
+    app->animation.time = clock_step_time(run_clock_axis(app, *ref->sys, instance_run(*ref)), app->animation.time, frames, beg, end);
+}
+
+void clock_update(ApplicationState* app) {
+    double beg, end;
+    clock_span(app, &beg, &end);
+    const md_unit_t unit = clock_unit(app);
+    if (!md_unit_equal(unit, app->animation.time_unit)) {
+        // Another reference, in another unit: the same time in it, else its first
+        double f = 1.0;
+        const bool convert = !md_unit_is_none(unit) && !md_unit_is_none(app->animation.time_unit) && md_unit_conversion_factor(&f, app->animation.time_unit, unit);
+        if (convert) {
+            app->animation.time *= f;
+            app->timeline.view_range.beg_x *= f;
+            app->timeline.view_range.end_x *= f;
+        } else {
+            app->animation.time = beg;
+            app->timeline.view_range = {beg, end > beg ? end : beg + 1.0};
+        }
+        app->animation.time_unit = unit;
+    }
+    app->animation.time = MD_CLAMP(app->animation.time, beg, end);
+}
+
 const SystemInstance& picking_hit_instance(const SystemContext& sc, const PickingHit& hit) {
     const int k = picking_key_instance(hit.key);
     if (k >= 0 && (size_t)k < sc.num_instances) return *sc.instances[k];
@@ -1705,6 +1833,10 @@ void instance_show(SystemInstance& inst, int run, int64_t frame) {
     SystemContext& sys = *inst.sys;
     ApplicationState* app = sys.app;
     if (run < 0 || (size_t)run >= sys.num_runs) run = -1;
+    // The timeline shows all of the clock's span as long as it showed all of it before: a longer run widens it
+    double span_beg, span_end;
+    clock_span(app, &span_beg, &span_end);
+    const bool view_all = app->timeline.view_range.beg_x <= span_beg && app->timeline.view_range.end_x >= span_end;
     const bool first = &inst == &system_instance(sys);
     // What was derived along the run the first instance shows is of another one now
     if (first && run != inst.run) runs_changing(app, sys);
@@ -1715,16 +1847,20 @@ void instance_show(SystemInstance& inst, int run, int64_t frame) {
     clear_frame_cache(&inst.frame_cache);
     inst.interpolate_system_state = true;
     inst.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+    if (view_all) {
+        clock_update(app);
+        clock_span(app, &span_beg, &span_end);
+        app->timeline.view_range = {span_beg, span_end};
+    }
     if (!first) return;
 
-    // The timeline is of the first system's first instance. The run's own time, in its own unit: the display unit only
-    // changes how a time is printed (frame_axis.h)
-    const SystemRun* r = instance_run(inst);
-    const size_t num_frames = run_num_frames(sys, r);
-    const double* times = run_frame_times(sys, r);
-    if (&sys == &app->system_context && num_frames > 0 && times) {
-        app->timeline.view_range = {times[0], times[num_frames - 1]};
-        app->animation.frame = MD_CLAMP(app->animation.frame, 0.0, (double)(num_frames - 1));
+    // The timeline shows the clock (clock.h), whose reference this is likely to be: all of it, in its unit, which the
+    // display unit only changes the printing of (frame_axis.h)
+    if (&sys == &app->system_context && run_num_frames(sys, instance_run(inst)) > 0) {
+        clock_update(app);
+        double beg, end;
+        clock_span(app, &beg, &end);
+        app->timeline.view_range = {beg, end};
     }
     // The script reads along the run shown, and what it measured was of the one before
     app->script.compile_ir = true;
@@ -2883,8 +3019,16 @@ struct WorkspacePending {
     WorkspaceFiles files;
     int version;
 
-    bool   has_frame;
-    double frame;
+    // The time shown, on the clock in its unit ([Animation] Time, TimeUnit); a workspace written before the clock has
+    // the frame of the first system's run (Frame) only
+    bool      has_frame;
+    double    frame;
+    bool      has_time;
+    double    time;
+    md_unit_t time_unit;
+    // Whether the first system's run has the frames it had when the workspace was saved: what is kept by frame (the
+    // frame, a view range in frames) is of other frames otherwise
+    bool      frames_as_saved;
 
     // Kept aside rather than written to the camera: loading the molecule puts the camera at the
     // default view of what was loaded (init_system_data), which would overwrite it
@@ -2967,7 +3111,7 @@ static void workspace_reset(ApplicationState* data) {
     }
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]
-    data->animation.frame = 0.0;
+    data->animation.time = 0.0;
     data->animation.fps = 10.0f;
     data->animation.tension = 0.0f;
     data->animation.stride = 1;
@@ -3099,6 +3243,11 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             while (viamd::next_entry(ident, arg, state)) {
                 if (md_str_eq(ident, MD_STR_LIT("Frame"))) {
                     pending.has_frame = viamd::extract_dbl(pending.frame, arg);
+                } else if (md_str_eq(ident, MD_STR_LIT("Time"))) {
+                    pending.has_time = viamd::extract_dbl(pending.time, arg);
+                } else if (md_str_eq(ident, MD_STR_LIT("TimeUnit"))) {
+                    md_str_t u = {};
+                    if (viamd::extract_str(u, arg)) md_unit_parse(&pending.time_unit, u);
                 } else if (md_str_eq(ident, MD_STR_LIT("Fps"))) {
                     viamd::extract_flt(data->animation.fps, arg);
                 } else if (md_str_eq(ident, MD_STR_LIT("Tension"))) {
@@ -3509,12 +3658,10 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             VIAMD_LOG_ERROR("Workspace: the trajectory has %zu frames, but had %zu when the workspace was saved; its frame and timeline ranges are left out", num_frames, saved_frames);
         }
 
-        // The time and the timeline are in the frames of the first system's run, until there is one time for all
-        if (first && pending.has_frame && num_frames > 0 && frames_as_saved) {
-            data->animation.frame = MD_CLAMP(pending.frame, 0.0, (double)(num_frames - 1));
-        }
+        if (first) pending.frames_as_saved = num_frames > 0 && frames_as_saved;
 
-        // Loading a trajectory sets the filter and the view to all of it; the workspace's come after
+        // Loading a trajectory sets the filter to all of it; the workspace's comes after. The time and the view of the
+        // timeline are of the clock, once every system is loaded (below).
         if (first && num_frames > 0 && frames_as_saved) {
             const double last = (double)(num_frames - 1);
             // A workspace from before the periods: its filter becomes a period, over which what was shown over the
@@ -3531,21 +3678,6 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     r = timeline_periods_add(&data->timeline.periods, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
                 }
                 if (r) data->timeline.periods.legacy_filter_id = r->id;
-            }
-            if (pending.has_view_range) {
-                double beg = pending.view_range[0];
-                double end = pending.view_range[1];
-                if (pending.view_range_in_frames) {
-                    beg = run_time_at_frame(sc, beg);
-                    end = run_time_at_frame(sc, end);
-                }
-                const double t0 = run_time_at_frame(sc, 0.0);
-                const double t1 = run_time_at_frame(sc, last);
-                beg = MD_CLAMP(beg, t0, t1);
-                end = MD_CLAMP(end, t0, t1);
-                if (end > beg) {
-                    data->timeline.view_range = {beg, end};
-                }
             }
         }
 
@@ -3586,6 +3718,38 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         if (!system_loaded(*sc)) {
             remove_all_representations(*sc);
             system_release(data, sc);
+        }
+    }
+
+    // The time shown, and the view of the timeline, on the clock of every run loaded: a time as it was saved (in the
+    // clock's unit, converted when the reference is in another), a frame of the first system's run as it was before
+    // the clock, while that run has its frames as saved
+    clock_update(data);
+    if (clock_reference(data)) {
+        double beg, end;
+        clock_span(data, &beg, &end);
+        const md_unit_t unit = clock_unit(data);
+        double f = 1.0;
+        const bool time_fits = pending.has_time && (md_unit_is_none(pending.time_unit) ? md_unit_is_none(unit) : (!md_unit_is_none(unit) && md_unit_conversion_factor(&f, pending.time_unit, unit)));
+        if (time_fits) {
+            data->animation.time = MD_CLAMP(pending.time * f, beg, end);
+        } else if (pending.has_frame && pending.frames_as_saved) {
+            clock_set_frame(data, pending.frame);
+        }
+        if (pending.has_view_range && (time_fits || pending.frames_as_saved)) {
+            double b = pending.view_range[0];
+            double e = pending.view_range[1];
+            if (pending.view_range_in_frames) {
+                const SystemInstance* ref = clock_reference(data);
+                b = run_clock_time(data, *ref->sys, instance_run(*ref), b);
+                e = run_clock_time(data, *ref->sys, instance_run(*ref), e);
+            } else {
+                b *= f;
+                e *= f;
+            }
+            b = MD_CLAMP(b, beg, end);
+            e = MD_CLAMP(e, beg, end);
+            if (e > b) data->timeline.view_range = {b, e};
         }
     }
 
@@ -3652,7 +3816,15 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     }
 
     viamd::write_section_header(state, MD_STR_LIT("Animation"));
-    viamd::write_dbl(state, MD_STR_LIT("Frame"), app_state->animation.frame);
+    // The time on the clock, in its unit, and the frame of the reference's run at it, which is all a workspace written
+    // before the clock knows
+    viamd::write_dbl(state, MD_STR_LIT("Time"), app_state->animation.time);
+    {
+        char unit[64] = "";
+        md_unit_print(unit, sizeof(unit), clock_unit(app_state));
+        if (unit[0]) viamd::write_str(state, MD_STR_LIT("TimeUnit"), md_str_from_cstr(unit));
+    }
+    viamd::write_dbl(state, MD_STR_LIT("Frame"), clock_frame(app_state));
     viamd::write_flt(state, MD_STR_LIT("Fps"), app_state->animation.fps);
     viamd::write_flt(state, MD_STR_LIT("Tension"), app_state->animation.tension);
     viamd::write_int(state, MD_STR_LIT("Stride"), app_state->animation.stride);
@@ -5454,7 +5626,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     // The values are of the field at this frame; the surfaces are what the density volume holds
     // (vol_hash names it) cut at the isovalues
     uint64_t source_hash = md_hash64(&g.field_kind, sizeof(g.field_kind), 0);
-    source_hash = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source_hash);
+    source_hash = md_hash64(&state->animation.time, sizeof(state->animation.time), source_hash);
     uint64_t band_hash = md_hash64(iso.values, sizeof(float) * iso.count, (uint64_t)iso.count + 1);
     band_hash = md_hash64_combine(band_hash, es.vol_hash);
     if (source_hash == es.field_vol.source_hash && band_hash == es.field_vol.band_hash) {
@@ -6233,7 +6405,7 @@ static void es_volume_map_update(ElectronicStructureRepresentation& es) {
 
 // What the representation's source is, of the frame: what an evaluation of it, on any grid, depends on
 static uint64_t es_source_hash(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
-    uint64_t h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
+    uint64_t h = md_hash64(&state->animation.time, sizeof(state->animation.time), 0);
     h = md_hash64(&es.shown.source,                       sizeof(es.shown.source), h);
     h = md_hash64(&es.shown.use_magnitude,                sizeof(es.shown.use_magnitude), h);
     h = md_hash64(&es.shown.spin,                         sizeof(es.shown.spin), h);
@@ -6646,8 +6818,8 @@ void interpolate_system_state(SystemInstance& inst) {
     if (num_atoms == 0 || num_frames == 0) return;
 
     const int64_t last_frame = MD_MAX(0LL, (int64_t)num_frames - 1);
-    // This is not actually time, but the fractional frame representation
-    const double time = MD_CLAMP(fixed ? (double)inst.frame : app->animation.frame, 0.0, double(last_frame));
+    // Not a time: the fractional frame of the run, its own or the one of the clock's time (clock.h)
+    const double time = MD_CLAMP(instance_current_frame(inst), 0.0, double(last_frame));
 
     // The frames interpolated between, the keys: every stride:th frame counted from the first, and the last, which
     // closes a shorter final interval when the stride does not divide the trajectory. With a stride of 1 every frame
@@ -7529,7 +7701,7 @@ void bond_tracking_update(SystemContext& sc) {
 
     // What the delta is of. The frame and nothing finer: the bonds of a state between two frames are those of the
     // nearest one, as the script has them.
-    const int64_t frame = run_num_frames(sc) > 0 ? (int64_t)(app->animation.frame + 0.5) : -1;
+    const int64_t frame = run_num_frames(sc) > 0 ? (int64_t)(instance_current_frame(system_instance(sc)) + 0.5) : -1;
     uint64_t key = md_hash64(&frame, sizeof(frame), sys.topology_version);
     key = md_hash64(&bt.tolerance, sizeof(bt.tolerance), key);
     key = md_hash64(&bt.breakable, sizeof(bt.breakable), key);
@@ -8220,7 +8392,8 @@ static void load_into_done(ApplicationState* app, SystemContext* sys, bool fresh
         system_instances_update(*sys, MolBit_ClearVelocity);
     }
     if (result == LoadResult_System || result == LoadResult_Trajectory) {
-        app->animation.frame = 0.0;
+        clock_update(app);
+        clock_set_frame(app, 0.0);
         app->animation.mode = PlaybackMode::Stopped;
         reset_view_scene(&app->view.target, *app, app->view.camera.fov_y, app->view.region);
     }

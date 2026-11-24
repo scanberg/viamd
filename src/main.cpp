@@ -972,12 +972,6 @@ int main(int argc, char** argv) {
         ImGui::CreateDockspace();
 #endif
 
-        // The longest run's: each system shows its own frame at the time, the last of a shorter run past its end
-        size_t num_frames = 0;
-        for (size_t i = 0; i < state.num_systems; ++i) num_frames = MD_MAX(num_frames, run_num_frames(*state.systems[i]));
-        const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
-        const double   max_frame = (double)last_frame;
-
         file_queue_process(&state);
         for (size_t i = 0; i < state.num_systems; ++i) system_inference_update(*state.systems[i]);
 
@@ -1189,14 +1183,17 @@ int main(int argc, char** argv) {
                     state.animation.mode = PlaybackMode::Stopped;
                     for (size_t i = 0; i < state.num_systems; ++i) system_instances_flag(*state.systems[i], MolBit_ClearVelocity);
                     break;
-                case PlaybackMode::Stopped:
+                case PlaybackMode::Stopped: {
+                    // From the beginning again when it stopped at the end (at the end when it plays backwards)
                     state.animation.mode = PlaybackMode::Playing;
-                    if (state.animation.frame == max_frame && state.animation.fps > 0) {
-                        state.animation.frame = 0;
-                    } else if (state.animation.frame == 0 && state.animation.fps < 0) {
-                        state.animation.frame = max_frame;
+                    double beg, end;
+                    clock_span(&state, &beg, &end);
+                    if (state.animation.time >= end && state.animation.fps > 0) {
+                        state.animation.time = beg;
+                    } else if (state.animation.time <= beg && state.animation.fps < 0) {
+                        state.animation.time = end;
                     }
-                    break;
+                } break;
                 default:
                     MD_ASSERT(false);
             }
@@ -1220,31 +1217,37 @@ int main(int argc, char** argv) {
                 render_invalidate(&state);
             }
 
+            // By frames of the reference (clock.h)
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
                 double step = ImGui::IsKeyDown(ImGuiMod_Ctrl) ? 10.0 : 1.0;
                 if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME)) step = -step;
-                state.animation.frame = MD_CLAMP(state.animation.frame + step, 0.0, max_frame);
+                clock_step(&state, step);
             }
         }
 
-        // Not while a screenshot is pending: it is of the frame shown, made until it has settled
+        // The clock in the unit of its reference, within the runs shown
+        clock_update(&state);
+
+        // Not while a screenshot is pending: it is of the frame shown, made until it has settled. At fps frames of the
+        // reference a second: past its frames, at its mean time per frame.
         if (state.animation.mode == PlaybackMode::Playing && !screenshot_pending(&state)) {
-            state.animation.frame += state.app.timing.delta_s * state.animation.fps;
-            state.animation.frame = MD_CLAMP(state.animation.frame, 0.0, max_frame);
-            if (state.animation.frame >= max_frame) {
+            double beg, end;
+            clock_span(&state, &beg, &end);
+            state.animation.time += state.app.timing.delta_s * state.animation.fps * clock_frame_duration(&state);
+            if (state.animation.time >= end) {
                 state.animation.mode = PlaybackMode::Stopped;
-                state.animation.frame = max_frame;
-            } else if (state.animation.frame <= 0) {
+                state.animation.time = end;
+            } else if (state.animation.time <= beg) {
                 state.animation.mode = PlaybackMode::Stopped;
-                state.animation.frame = 0;
+                state.animation.time = beg;
             }
         }
 
         {
-            static auto prev_frame = state.animation.frame;
-            if (state.animation.frame != prev_frame) {
+            static auto prev_time = state.animation.time;
+            if (state.animation.time != prev_time) {
                 time_changed = true;
-                prev_frame = state.animation.frame;
+                prev_time = state.animation.time;
             }
             else {
                 time_changed = false;
@@ -1446,6 +1449,8 @@ int main(int argc, char** argv) {
         // otherwise keep a task running every frame
         script_ir_collect(&state);
 
+        // Over the frames of the first system's run, which the script reads
+        const size_t num_frames = run_num_frames(state.system_context);
         if (num_frames > 0) {
             if (state.script.eval_init) {
                 if (state.tasks.evaluate.running()) {
@@ -3463,7 +3468,7 @@ static void draw_selection_query_window(ApplicationState* data) {
         ImGui::PopItemWidth();
 
         // What depends on the coordinates is picked again in another frame
-        if (query.filter.result.is_dynamic && data->animation.frame != query_frame) {
+        if (query.filter.result.is_dynamic && data->animation.time != query_frame) {
             query.query_invalid = true;
         }
         bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
@@ -3482,7 +3487,7 @@ static void draw_selection_query_window(ApplicationState* data) {
             query.query_invalid = false;
             md_bitset_t result = md_bitset_empty_set();
             filter_evaluate(&query.filter, &result, data->script.language, filter_context(data->system_context), frame_alloc);
-            query_frame = data->animation.frame;
+            query_frame = data->animation.time;
 
             md_bitmask_assign(&query.mask, query.filter.result.success ? result : md_bitset_empty_set());
             grow_mask_by_selection_granularity(&query.mask, data->selection.granularity, data->mold.sys);
@@ -3502,22 +3507,24 @@ static void draw_selection_query_window(ApplicationState* data) {
 
 static void draw_animation_window(ApplicationState* data) {
     MD_ASSERT(data);
-    size_t num_frames = run_num_frames(data->system_context);
-    if (num_frames == 0) return;
+    // The controls of the clock (clock.h): of its reference's frames
+    const SystemInstance* ref = clock_reference(data);
+    if (!ref) return;
+    const size_t num_frames = run_num_frames(*ref->sys, instance_run(*ref));
 
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %zu", num_frames);
-        // The slider picks a frame, whole when dragged, and shows its time in the display unit beside it. A run
-        // without time of its own prints no unit, and its frames' numbers are all there is to show.
+        // The slider picks a time on the clock, of every run shown, and shows the reference's frame at it with the time
+        // in the display unit beside it. A clock without time of its own prints no unit, and its frames' numbers are
+        // all there is to show.
         char unit_buf[32];
-        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(data->system_context));
-        char frame_fmt[64] = "%.0f";
-        if (unit_buf[0] != '\0') {
-            snprintf(frame_fmt, sizeof(frame_fmt), "%%.0f  (%.4g %s)", run_time_at_frame(data->system_context, data->animation.frame) * scl, unit_buf);
-        }
-        const double min_frame = 0.0;
-        const double max_frame = (double)(num_frames - 1);
+        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), clock_unit(data));
+        char time_fmt[64];
+        if (unit_buf[0] != '\0') snprintf(time_fmt, sizeof(time_fmt), "%.0f  (%.6g %s)", clock_frame(data), data->animation.time * scl, unit_buf);
+        else                      snprintf(time_fmt, sizeof(time_fmt), "%.0f", clock_frame(data));
+        double beg, end;
+        clock_span(data, &beg, &end);
         const float w = ImGui::CalcTextSize("Time (ps)").x;
         const float item_width = MD_MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
@@ -3542,10 +3549,13 @@ static void draw_animation_window(ApplicationState* data) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
-        ImGui::SliderScalar("Frame", ImGuiDataType_Double, &data->animation.frame, &min_frame, &max_frame, frame_fmt);
+        ImGui::SliderScalar("Frame", ImGuiDataType_Double, &data->animation.time, &beg, &end, time_fmt, ImGuiSliderFlags_NoInput);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("The time shown, and the frame of the first run at it: every run shown is at its frame of the same time");
+        }
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Animation Speed in Frames Per Second");
+            ImGui::SetTooltip("Animation Speed in Frames Per Second, of the first run");
         }
         {
             // animation.stride: while playing, only every Nth frame is kept and the motion between them is interpolated.
@@ -3586,7 +3596,7 @@ static void draw_animation_window(ApplicationState* data) {
         ImGui::SameLine();
         if (ImGui::Button((const char*)ICON_FA_STOP)) {
             data->animation.mode = PlaybackMode::Stopped;
-            data->animation.frame = 0.0;
+            data->animation.time = beg;
         }
         ImGui::PopItemWidth();
     }
@@ -4080,12 +4090,14 @@ static void draw_timeline_window(ApplicationState* data) {
         int& num_subplots = data->timeline.num_subplots;
         num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
-        // The plots are in the run's time, in its own unit: the display unit is applied to the tick labels and
-        // the tooltips only, so changing it moves nothing
-        const double* frame_times = run_frame_times(data->system_context);
-        const int     num_frames  = (int)run_num_frames(data->system_context);
-        const double  min_time    = num_frames > 0 ? frame_times[0] : 0.0;
-        const double  max_time    = num_frames > 0 ? frame_times[num_frames - 1] : 1.0;
+        // The plots are on the clock (clock.h), in its unit, the unit of its reference's run: the display unit is
+        // applied to the tick labels and the tooltips only, so changing it moves nothing. Over every run shown; the
+        // periods and the frames are of the reference's run, whose times are the clock's as they are.
+        const SystemInstance* ref = clock_reference(data);
+        const double* frame_times = ref ? run_frame_times(*ref->sys, instance_run(*ref)) : nullptr;
+        const int     num_frames  = ref ? (int)run_num_frames(*ref->sys, instance_run(*ref)) : 0;
+        double min_time = 0.0, max_time = 1.0;
+        if (num_frames > 0) clock_span(data, &min_time, &max_time);
 
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         MD_DEFER { ImPlot::PopStyleVar(); };
@@ -4113,7 +4125,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     data->selection.frame_generation += 1;
                 }
                 if (ImGui::MenuItem("Select current frame", nullptr, false, num_frames > 0)) {
-                    const uint32_t f = (uint32_t)MD_CLAMP((int)(data->animation.frame + 0.5), 0, (int)num_frames - 1);
+                    const uint32_t f = (uint32_t)MD_CLAMP((int)(clock_frame(data) + 0.5), 0, (int)num_frames - 1);
                     frame_selection_modify(data, md_bitset_range(f, f + 1), SelectionOperator::Or);
                 }
                 ImGui::Separator();
@@ -4158,7 +4170,7 @@ static void draw_timeline_window(ApplicationState* data) {
             // A run without time of its own has its frames numbered: its unit prints as nothing, and the factor is one
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
-            const double x_scale = display_units::factor_print(x_unit_str, sizeof(x_unit_str), run_time_unit(data->system_context));
+            const double x_scale = display_units::factor_print(x_unit_str, sizeof(x_unit_str), clock_unit(data));
             if (x_unit_str[0] != '\0') {
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
@@ -4171,11 +4183,15 @@ static void draw_timeline_window(ApplicationState* data) {
             range_axis.view_end      = &data->timeline.view_range.end_x;
             range_axis.time_unit     = x_unit_str;
             range_axis.display_scale = x_scale;
-            timeline_periods_lane(&data->timeline.periods, range_axis, &data->animation.frame);
+            // The lane moves the reference's frame (ctrl-drag in it): the clock to its time when it does
+            {
+                const double frame = clock_frame(data);
+                double moved = frame;
+                timeline_periods_lane(&data->timeline.periods, range_axis, &moved);
+                if (moved != frame) clock_set_frame(data, moved);
+            }
 
-            // After the lane, which ctrl-drag in it may have moved. The current frame is set from the time only when
-            // something below moves the time: a frame taken to its time and back may not be the same frame.
-            double time = run_time_at_frame(data->system_context, data->animation.frame);
+            double time = data->animation.time;
             bool   time_moved = false;
 
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
@@ -4253,7 +4269,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     // The periods shaded below the series, and shift-press marking a new one
-                    timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.frame);
+                    timeline_periods_plot(&data->timeline.periods, range_axis, clock_frame(data));
                     // The frames selected (a temporal selection, as the Shapespace makes) and highlighted
                     timeline_frames_plot(&data->selection.frame_mask, &data->selection.frame_highlight_mask, range_axis,
                         ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.selection.outline)),
@@ -4587,7 +4603,7 @@ static void draw_timeline_window(ApplicationState* data) {
             ImPlot::EndSubplots();
 
             if (time_moved) {
-                data->animation.frame = frame_at_time(frame_times, num_frames, time);
+                data->animation.time = MD_CLAMP(time, min_time, max_time);
             }
 
             ImPlot::GetInputMap() = old_map;
@@ -4798,7 +4814,7 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
     const int num_frames = (int)run_num_frames(data->system_context);
     auto frames_of = [&](char* buf, size_t cap, const TimelinePeriod& r) {
         int beg, end;
-        if (timeline_period_frames(&beg, &end, r, data->animation.frame, num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
+        if (timeline_period_frames(&beg, &end, r, clock_frame(data), num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
     };
     {
         char frames[48] = "";
@@ -6864,12 +6880,12 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                 } break;
                 case 1: { // Current Frame
-                    int32_t current_frame = (int)(data->animation.frame + 0.5); // Round to nearest
+                    int32_t current_frame = (int)(clock_frame(data) + 0.5); // Round to nearest
                     md_array_push(frame_indices, current_frame, frame_alloc);
                 } break;
                 case 2: { // A timeline period
                     int beg = 0, end = -1;
-                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, data->animation.frame, (int)run_num_frames(data->system_context))) {
+                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, clock_frame(data), (int)run_num_frames(data->system_context))) {
                         beg = 0;
                         end = -1;
                     }
@@ -8052,7 +8068,7 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
     const ApplicationState* state = sys.app;
     uint64_t h = md_hash64(&sys.representation.gl_version, sizeof(sys.representation.gl_version), 0);
     h = md_hash64(&sys.representation.visibility_mask_hash, sizeof(sys.representation.visibility_mask_hash), h);
-    h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
+    h = md_hash64(&state->animation.time, sizeof(state->animation.time), h);
     // Each instance: what is on the GPU of it, and where and as what it is drawn
     for (size_t k = 0; k < sys.num_instances; ++k) {
         const SystemInstance& inst = *sys.instances[k];
@@ -8133,7 +8149,7 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
 
 // Of every system, and of the time shown, which moves them all
 static uint64_t opaque_scene_hash(const ApplicationState* state) {
-    uint64_t h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), 0);
+    uint64_t h = md_hash64(&state->animation.time, sizeof(state->animation.time), 0);
     for (size_t i = 0; i < state->num_systems; ++i) {
         const SystemContext& sys = *state->systems[i];
         h = md_hash64(&sys.id, sizeof(sys.id), h);

@@ -1079,7 +1079,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, state->mold.sys)) {
         // What the values are of: the field (its kind, the frame) and the vertices
         uint64_t source = md_hash64(&es.field_kind, sizeof(es.field_kind), 0x5f1e1d);
-        source = md_hash64(&state->animation.frame, sizeof(state->animation.frame), source);
+        source = md_hash64(&state->animation.time, sizeof(state->animation.time), source);
         const md_system_state_t& st = system_instance(state->system_context).state;
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
         const uint64_t values_key = md_hash64_combine(source, em.meshes.key);

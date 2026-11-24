@@ -26,7 +26,7 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
         key = md_hash64_combine(key, md_hash64(g->filter.text, strlen(g->filter.text), app->script.ir_fingerprint));
         key = md_hash64_combine(key, app->mold.sys.topology_version);
         if (follow_frame && g->filter.result.is_dynamic) {
-            key = md_hash64_combine(key, (uint64_t)(app->animation.frame * 4096.0));
+            key = md_hash64_combine(key, (uint64_t)(clock_frame(app) * 4096.0));
         }
     }
     if (key == g->key) return;

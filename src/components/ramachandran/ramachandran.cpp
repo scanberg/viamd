@@ -1008,7 +1008,7 @@ struct Ramachandran : viamd::EventHandler {
             // What depends on the coordinates follows the frame as points of it, but is taken once for frames that
             // are many: the density over them would be found again at every frame
             if (l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
-                key = md_hash64_combine(key, (uint64_t)(app->animation.frame * 4096.0));
+                key = md_hash64_combine(key, (uint64_t)(clock_frame(app) * 4096.0));
             }
         }
         if (key == l.segs_key) return;
@@ -1062,7 +1062,7 @@ struct Ramachandran : viamd::EventHandler {
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = MD_CLAMP((int)(app->animation.frame + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1074,7 +1074,7 @@ struct Ramachandran : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, app->animation.frame, num_frames)) return false;
+            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), num_frames)) return false;
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;
