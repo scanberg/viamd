@@ -425,6 +425,7 @@ struct Shapespace : viamd::EventHandler {
         float  view_scale = 1.0f;       // Of the box on the screen (ImPlot3D's ViewScaleFactor): to fill the plot
         bool   panning = false;         // Right-drag, along time
         bool   dollying = false;        // Middle-drag: zooming in time, about the time where it began (dolly_u of the axis)
+        bool   scrubbing = false;       // Ctrl + left-drag: the frame shown is the one at the pointer's time
         float  dolly_u = 0.5f;
         int    preset = -1;             // A view to turn to: 0 along the time axis, 1 from the side, 2 the default
         bool   drawn = false;           // This frame
@@ -2604,10 +2605,11 @@ struct Shapespace : viamd::EventHandler {
 
         const ImGuiIO& io = ImGui::GetIO();
         const bool shift = io.KeyShift;
+        const bool ctrl = io.KeyCtrl && !shift;
         // ImPlot3D only turns the box, with the left button as the viewport does; zooming and panning (in time, of the time
         // filter's window) are ours. Shift is for selecting: the box does not turn meanwhile.
         ImPlot3DFlags flags = ImPlot3DFlags_CanvasOnly | ImPlot3DFlags_NoMenus | ImPlot3DFlags_NoPan | ImPlot3DFlags_NoZoom;
-        if (shift || v3.active || v3.panning || v3.dollying) flags |= ImPlot3DFlags_NoRotate;
+        if (shift || ctrl || v3.active || v3.panning || v3.dollying || v3.scrubbing) flags |= ImPlot3DFlags_NoRotate;
         // Turning is ImPlot3D's, as every 3D view's (plot_input.h); panning, fitting and zooming in time are ours, of the
         // window, and there is no menu
         ImPlot3DInputMap& input_map = ImPlot3D::GetInputMap();
@@ -2895,7 +2897,7 @@ struct Shapespace : viamd::EventHandler {
         // Where the points are on the screen, for what the pointer is on and what a box covers
         Hover hover;
         // Nothing hovered while it is turned, panned or zoomed by a drag (plot_input.h); the box still covers what it covers
-        const bool hover_points = hovered && !plot_input_navigating();
+        const bool hover_points = hovered && !plot_input_navigating() && !v3.scrubbing;
         if (hover_points || v3.active) {
             float best = 0.0f;
             for (int i = 0; i < num_layers; ++i) {
@@ -3056,6 +3058,59 @@ struct Shapespace : viamd::EventHandler {
             const ImVec2 c = ImPlot3D::PlotToPixels(k & 1 ? t1 : t0, k & 2 ? 1.04 : -0.04, k & 4 ? tri_iso.y + 0.04 : -0.04);
             box_px.Add(c);
         }
+
+        // Ctrl + left-click or drag: to the frame at the pointer's time, as in the timeline (plot_input.h). The time is
+        // where the pointer is on a wall of the box along time, behind what is in it (where the ray through the pointer
+        // leaves the box: the walls ImPlot3D grids), or else on the time axis, by its ticks. None through an end of the
+        // box (looking along time), or off the box and its axis.
+        auto pointer_time = [&]() -> double {
+            const ImPlot3DRay ray = ImPlot3D::PixelsToPlotRay(mouse);
+            const double lo[3] = { t0, -0.04, -0.04 }, hi[3] = { t1, 1.04, tri_iso.y + 0.04 };
+            const double o[3] = { ray.Origin.x, ray.Origin.y, ray.Origin.z };
+            const double d[3] = { ray.Direction.x, ray.Direction.y, ray.Direction.z };
+            double t_in = -DBL_MAX, t_out = DBL_MAX;
+            int out = -1;
+            for (int k = 0; k < 3; ++k) {
+                if (fabs(d[k]) < 1e-12) {
+                    if (o[k] < lo[k] || o[k] > hi[k]) t_in = DBL_MAX;    // Beside the box, along it: a miss
+                    continue;
+                }
+                double a = (lo[k] - o[k]) / d[k], b = (hi[k] - o[k]) / d[k];
+                if (a > b) { const double tmp = a; a = b; b = tmp; }
+                t_in = MD_MAX(t_in, a);
+                if (b < t_out) { t_out = b; out = k; }
+            }
+            if (t_in <= t_out && out > 0) return o[0] + d[0] * t_out;
+            ImPlot3DPoint ea, eb;
+            if (!ImPlot3D::GetAxisEdge(ImAxis3D_X, &ea, &eb)) return NAN;
+            const ImVec2 a = ImPlot3D::PlotToPixels(ea), b = ImPlot3D::PlotToPixels(eb);
+            const ImVec2 m = ImPlot3D::PlotToPixels((ea + eb) * 0.5);
+            const ImVec2 ab = b - a;
+            const float len2 = ImLengthSqr(ab);
+            if (len2 < 400.0f) return NAN;
+            const float l = ImDot(mouse - a, ab) / len2;
+            const float reach = 3.0f * ImGui::GetFontSize();    // Over the ticks and their labels
+            if (l < 0.0f || l > 1.0f || ImLengthSqr(mouse - (a + ab * l)) > reach * reach) return NAN;
+            // Foreshortened in perspective, as the time axis is for zooming
+            const float lm = ImDot(m - a, ab) / len2;
+            const float r = lm > 0.01f && lm < 0.99f ? 1.0f / lm - 1.0f : 1.0f;
+            const double u = l * r / (1.0f - l + l * r);
+            return ea.x + (eb.x - ea.x) * u;
+        };
+        if (nf > 1 && ctrl && hovered && !v3.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && isfinite(pointer_time())) {
+            v3.scrubbing = true;
+            v3.pressed = false;
+        }
+        if (v3.scrubbing && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || !io.KeyCtrl)) v3.scrubbing = false;
+        if (v3.scrubbing) {
+            const double t = pointer_time();
+            if (isfinite(t)) {
+                const double* times = run_frame_times(app);
+                const double rt = MD_CLAMP(t, r0, r1) / time_scale;
+                const double f = times ? frame_at_time(times, nf, rt) : rt;
+                app->animation.frame = MD_CLAMP(f, 0.0, (double)(nf - 1));
+            }
+        }
         ImPlot3D::EndPlot();
 
         // The box fills the plot, with room for the time axis' labels. Not while it is turned by hand: it settles after.
@@ -3152,7 +3207,7 @@ struct Shapespace : viamd::EventHandler {
         if (hover.layer >= 0 && !v3.active) {
             draw_tooltip(hover, sources[hover.layer]);
             // Pressed on a point of a frame and let go there: that frame (a drag pans)
-            if (!hover.current && !shift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (!hover.current && !shift && !ctrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 v3.pressed = true;
                 v3.press_pos = mouse;
                 v3.click_frame = hover.frame;
@@ -3322,7 +3377,8 @@ struct Shapespace : viamd::EventHandler {
             ImGui::TextDisabled("Click a point of a frame to go there.");
             ImGui::TextDisabled("Shift-drag to select the structures and frames of the points, with the right button to deselect them.");
             ImGui::TextDisabled("Drop a period from the timeline on the plot to add its density.");
-            ImGui::TextDisabled("In 3D: right-drag turns, drag pans, the wheel zooms, double-click fits.");
+            ImGui::TextDisabled("In 3D: drag turns; in time, right-drag pans, the wheel zooms, double-click shows the whole run;\n"
+                               "ctrl-click or drag on the walls or the time axis goes to the frame there.");
             ImGui::TextDisabled("The time shown in 3D is the timeline's (" ICON_FA_LINK "), its own (" ICON_FA_THUMBTACK ") or a tail following the frame shown (" ICON_FA_PERSON_RUNNING ").");
             ImGui::Checkbox("Periods along time in 3D", &time_win.show_periods);
             ImGui::EndPopup();
