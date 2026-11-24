@@ -1441,6 +1441,13 @@ struct PickingReadbackRequest {
 // series_resolve_volume)
 #define SCRIPT_SLOT_PERIOD(id) (((uint64_t)1 << 32) | (uint64_t)(id))
 
+// An evaluation of the script over a run of the first system other than the one script.eval is of
+struct ScriptRunEval {
+    char          run[128] = "";    // "run/<name>"
+    script::Eval* eval = nullptr;
+    bool          queued = false;   // to be evaluated, once what runs now has ended
+};
+
 // What the script visualization is to show this frame (script_visualize_ref, script_visualize_str)
 struct ScriptVisTarget {
     enum Kind : uint8_t { None = 0, Ref, Str };
@@ -2383,10 +2390,17 @@ struct ApplicationState {
         // Every IR made (script_ir_create), freed by script_ir_collect once nothing uses it (no field, no task)
         md_array(script::Program*) all_irs = nullptr;
 
-        // One evaluation: every property over every frame, and the distributions and volumes shown over timeline
-        // periods in slots over their frames (SCRIPT_SLOT_PERIOD)
+        // The evaluation of the run the first instance of the first system showed when it was made (eval_run): every
+        // property over every frame, and the distributions and volumes shown over timeline periods in slots over their
+        // frames (SCRIPT_SLOT_PERIOD). What the tools, the hover and a series without a run read.
         script::Eval*     eval = nullptr;
+        char              eval_run[128] = "";
+        // One more of eval_ir per other run of the first system an instance shows (script_run_evals_sync): what a
+        // series of that run shows (SeriesKey::run). Evaluated with eval, after it.
+        md_array(ScriptRunEval) run_evals = nullptr;
         md_array(uint32_t) eval_frames = nullptr;   // what the running evaluation task works through
+        const script::Eval* evaluating = nullptr;   // the evaluation the task runs over, NULL when none runs
+        bool eval_queued = false;                   // eval is to be evaluated, once what runs now has ended
         // The visualization: the target is set anew every frame, the job computes it off the main thread, and
         // what is shown is the last result while it is still for the target (see script_vis_update)
         ScriptVisTarget vis_target = {};
@@ -3895,8 +3909,18 @@ void script_set_language(ApplicationState* state, script::Language lang);
 void script_switch_language(ApplicationState* state, script::Language lang);
 void script_ir_collect(ApplicationState* state);
 
-// Frees state->script.eval, once what reads it has been told (EventType_ViamdScriptEvalFree), and leaves it NULL
+// Frees state->script.eval, once what reads it has been told (EventType_ViamdScriptEvalFree), and leaves it NULL; and
+// the evaluations of the other runs. Not while the evaluation task runs.
 void script_eval_free(ApplicationState* state);
+// Stops every evaluation of the script between frames
+void script_evals_interrupt(ApplicationState* state);
+// The evaluation of a run of the first system: script.eval for an empty run or its own, else the one of run_evals.
+// NULL when there is none.
+script::Eval* script_eval_of_run(const ApplicationState* state, md_str_t run);
+// Keeps run_evals to the runs of the first system its instances show (other than eval_run): an evaluation of eval_ir
+// made for a run shown anew, to be evaluated at the next Evaluate, and the one of a run no longer shown freed. Nothing
+// while script.eval is not of eval_ir, nor while the evaluation task runs on one to be freed. Main thread, every frame.
+void script_run_evals_sync(ApplicationState* state);
 
 // Script visualization
 // The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being

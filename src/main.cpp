@@ -269,17 +269,57 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
     plan.same = state.script.eval && ir == state.script.eval_ir;
     plan.num_props = script::num_outputs(ir);
     plan.names = script::output_names(ir);
+
+    // The runs Evaluate evaluates: the first, that of the evaluation which goes on (script.eval's) or of the one made
+    // anew (the first instance's), then every other the first system's instances show. Each against the evaluation of
+    // it there is, which a new one takes over from.
+    const SystemContext& sc = state.system_context;
+    md_str_t first = plan.same ? md_str_from_cstr(state.script.eval_run) : run_path(sc);
+    const script::Eval* first_eval = script_eval_of_run(&state, first);
+    md_array(md_str_t) runs = nullptr;
+    md_array_push(runs, first, alloc);
+    for (size_t k = 0; k < sc.num_instances; ++k) {
+        const SystemRun* r = instance_run(*sc.instances[k]);
+        if (!r || r->path[0] == '\0') continue;
+        const md_str_t run = md_str_from_cstr(r->path);
+        bool seen = false;
+        for (size_t j = 0; j < md_array_size(runs) && !seen; ++j) seen = md_str_eq(runs[j], run);
+        if (!seen) md_array_push(runs, run, alloc);
+    }
+
     script::Plan* props = (script::Plan*)md_alloc(alloc, MD_MAX(plan.num_props, 1) * sizeof(script::Plan));
-    md_bitset_t pending = md_bitset_empty_set();
-    if (!script::plan(props, plan.num_props, &pending, state.script.eval, ir, plan.num_frames, alloc)) {
-        plan.valid = false;
-        return plan;
+    script::Plan* other = (script::Plan*)md_alloc(alloc, MD_MAX(plan.num_props, 1) * sizeof(script::Plan));
+    for (size_t j = 0; j < md_array_size(runs); ++j) {
+        // The first gives each property's status; the others add their frames to it
+        const script::Eval* eval = j == 0 ? first_eval : script_eval_of_run(&state, runs[j]);
+        uint32_t n = 0;
+        if (eval) {
+            n = (uint32_t)script::eval_num_frames(eval);
+        } else {
+            for (size_t r = 0; r < sc.num_runs; ++r) {
+                if (md_str_eq_cstr(runs[j], sc.runs[r]->path)) n = (uint32_t)run_num_frames(sc, sc.runs[r]);
+            }
+        }
+        md_bitset_t pending = md_bitset_empty_set();
+        script::Plan* dst = j == 0 ? props : other;
+        if (!script::plan(dst, plan.num_props, &pending, eval, ir, n, alloc)) {
+            if (j == 0) {
+                plan.valid = false;
+                return plan;
+            }
+            continue;
+        }
+        plan.num_pending += (uint32_t)md_bitset_count(pending);
+        if (j == 0) continue;
+        for (size_t i = 0; i < plan.num_props; ++i) {
+            props[i].num_frames  += other[i].num_frames;
+            props[i].num_pending += other[i].num_pending;
+        }
     }
     plan.props = props;
-    plan.num_pending = (uint32_t)md_bitset_count(pending);
 
     // A property gone, or renamed, changes what is shown without anything to evaluate
-    const size_t num_evaluated = state.script.eval ? script::eval_num_outputs(state.script.eval) : 0;
+    const size_t num_evaluated = first_eval ? script::eval_num_outputs(first_eval) : 0;
     plan.changes = num_evaluated != plan.num_props;
     for (size_t i = 0; i < plan.num_props; ++i) {
         plan.changes |= props[i].status != script::Status::Held || !md_str_eq(props[i].from, plan.names[i]);
@@ -1346,7 +1386,7 @@ int main(int argc, char** argv) {
             if (state.script.time_since_last_change > COMPILATION_TIME_DELAY_IN_SECONDS) {
                 // The evaluations are of what is about to be replaced, so they are stopped. Their IR is not
                 // affected: the compilation goes into a new one, and the old is freed once nothing holds it.
-                if (state.script.eval) script::eval_interrupt(state.script.eval);
+                script_evals_interrupt(&state);
 
                 // Try aquire all semaphores
                 {
@@ -1449,43 +1489,82 @@ int main(int argc, char** argv) {
         // otherwise keep a task running every frame
         script_ir_collect(&state);
 
-        // Over the frames of the first system's run, which the script reads
+        // Over the frames of the runs of the first system its instances show, which the script reads: an evaluation of
+        // each, script.eval of the first instance's
         const size_t num_frames = run_num_frames(state.system_context);
         if (num_frames > 0) {
             if (state.script.eval_init) {
                 if (state.tasks.evaluate.running()) {
-                    script::eval_interrupt(state.script.eval);
+                    script_evals_interrupt(&state);
                 } else {
                     state.script.eval_init = false;
+                    state.script.evaluating = nullptr;
 
-                    // The new evaluation takes over from the previous one: every property computed from the
-                    // same thing keeps its values and is not evaluated again (script::eval_create).
+                    // A new evaluation of each run takes over from the previous one of the same run: every property
+                    // computed from the same thing keeps its values and is not evaluated again (script::eval_create).
                     // Not remade if the last compilation failed (in the same frame as the request).
                     script::Eval* prev = state.script.eval;
                     if (prev) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, &state);
+                    char prev_run[sizeof(state.script.eval_run)];
+                    memcpy(prev_run, state.script.eval_run, sizeof(prev_run));
+                    md_array(ScriptRunEval) prev_runs = state.script.run_evals;
                     state.script.eval = nullptr;
+                    state.script.eval_run[0] = '\0';
+                    state.script.run_evals = nullptr;
+                    auto prev_of = [&](md_str_t run) -> const script::Eval* {
+                        if (md_str_eq_cstr(run, prev_run)) return prev;
+                        for (size_t i = 0; i < md_array_size(prev_runs); ++i) {
+                            if (md_str_eq_cstr(run, prev_runs[i].run)) return prev_runs[i].eval;
+                        }
+                        return nullptr;
+                    };
+                    // The versions of an evaluation made from another carry on from that one's, so nothing derived from
+                    // those can be taken for these. One made anew starts over, in a table possibly allocated where an
+                    // earlier one was: the caches go.
+                    bool anew = false;
 
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = run_path(state.system_context),
+                        const md_str_t run = run_path(state.system_context);
+                        const script::Eval* from = prev_of(run);
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = run,
                                                         .executor = task_system::executor() };
-                        state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
-                        if (state.script.eval) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalInit, viamd::EventPayloadType_ApplicationState, &state);
+                        state.script.eval = script::eval_create(from, state.script.eval_ir, desc, state.allocator.persistent);
+                        anew |= !from;
+                        if (state.script.eval) {
+                            md_str_copy_to_char_buf(state.script.eval_run, sizeof(state.script.eval_run), run);
+                            viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalInit, viamd::EventPayloadType_ApplicationState, &state);
+                            // The other runs shown
+                            const SystemContext& sc = state.system_context;
+                            for (size_t k = 0; k < sc.num_instances; ++k) {
+                                const SystemRun* r = instance_run(*sc.instances[k]);
+                                const md_str_t other = r ? md_str_from_cstr(r->path) : md_str_t{};
+                                if (md_str_empty(other) || script_eval_of_run(&state, other)) continue;
+                                const script::EvalDesc d = { .num_frames = run_num_frames(sc, r), .sys = &state.mold.sys, .run = other,
+                                                             .executor = task_system::executor() };
+                                if (d.num_frames == 0) continue;
+                                const script::Eval* other_from = prev_of(other);
+                                ScriptRunEval e;
+                                md_str_copy_to_char_buf(e.run, sizeof(e.run), other);
+                                e.eval = script::eval_create(other_from, state.script.eval_ir, d, state.allocator.persistent);
+                                anew |= !other_from;
+                                if (e.eval) md_array_push(state.script.run_evals, e, state.allocator.persistent);
+                            }
+                        }
                     }
 
-                    if (prev) {
-                        // The versions of the new evaluation carry on from the previous one's, so nothing derived
-                        // from those can be taken for these: the caches stay
-                        script::eval_free(prev);
-                    } else {
-                        // Its versions start over, in tables possibly allocated where earlier ones were
-                        series_cache_free(&state);
-                    }
+                    if (prev) script::eval_free(prev);
+                    for (size_t i = 0; i < md_array_size(prev_runs); ++i) script::eval_free(prev_runs[i].eval);
+                    md_array_free(prev_runs, state.allocator.persistent);
+                    if (anew) series_cache_free(&state);
 
                     state.script.evaluate = true;
                 }
             }
+
+            // The runs shown anew since, and those no longer shown
+            script_run_evals_sync(&state);
 
             if (state.script.eval && script::valid(state.script.eval_ir) &&
                 script::eval_fingerprint(state.script.eval) == script::fingerprint(state.script.eval_ir))
@@ -1497,54 +1576,81 @@ int main(int argc, char** argv) {
                     if (state.tasks.evaluate.running()) {
                         // Started again once it has stopped, over the frames which remain then. Nothing it has
                         // done is lost.
-                        script::eval_interrupt(state.script.eval);
+                        script_evals_interrupt(&state);
                     } else {
+                        // Every evaluation, the first instance's run first, one after the other
                         state.script.evaluate = false;
-                        script::eval_reset_interrupt(state.script.eval);
+                        state.script.eval_queued = true;
+                        for (size_t i = 0; i < md_array_size(state.script.run_evals); ++i) state.script.run_evals[i].queued = true;
+                    }
+                }
 
-                        // What is left to do, for the properties and the slots
-                        const md_bitset_t pending = script::eval_pending_frames(state.script.eval, frame_alloc);
-                        const size_t count = md_bitset_count(pending);
-                        if (count > 0) {
-                            md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
-                            size_t n = 0;
-                            md_bitset_iter_t it = md_bitset_iter(pending);
-                            while (md_bitset_iter_next(&it) && n < count) {
-                                state.script.eval_frames[n++] = (uint32_t)it.idx;
-                            }
-
-                            // The IR is taken now and held until the task has finished: eval_ir may be replaced while
-                            // it runs. Nor are the frames touched.
-                            const script::Program* ir = state.script.eval_ir;
-                            script::program_retain(ir);
-                            script::Eval* eval = state.script.eval;
-                            const uint32_t* frames = state.script.eval_frames;
-                            // Once it has ended, run or cancelled: the IR it held goes
-#if MEASURE_EVALUATION_TIME
-                            const uint64_t t0 = (uint64_t)md_tick_now();
-                            auto on_main = [&state, ir, t0, n](task_system::Status) {
-                                VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
-                                script::program_release(ir);
-                                viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
-                            };
-#else
-                            auto on_main = [&state, ir](task_system::Status) {
-                                script::program_release(ir);
-                                viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
-                            };
-#endif
-                            viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalBegin, viamd::EventPayloadType_ApplicationState, &state);
-                            if (script::eval_whole(eval)) {
-                                // v2: one call evaluates every pending frame, spreading them over the pool itself
-                                state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval]() {
-                                    script::eval_frames(eval, ir, &state.mold.sys, run_path(state.system_context), nullptr, 0);
-                                }, on_main);
-                            } else {
-                                state.tasks.evaluate.start_for(MD_STR_LIT("Evaluate script"), (uint32_t)n, 1, [&state, ir, eval, frames](uint32_t beg, uint32_t end) {
-                                    script::eval_frames(eval, ir, &state.mold.sys, run_path(state.system_context), frames + beg, end - beg);
-                                }, on_main);
-                            }
+                // The next evaluation to be evaluated, of those with frames to evaluate
+                script::Eval* eval = nullptr;
+                md_str_t run = {};
+                size_t n = 0;
+                while (!state.tasks.evaluate.running()) {
+                    if (state.script.eval_queued) {
+                        state.script.eval_queued = false;
+                        eval = state.script.eval;
+                        run = md_str_from_cstr(state.script.eval_run);
+                    } else {
+                        eval = nullptr;
+                        for (size_t i = 0; i < md_array_size(state.script.run_evals) && !eval; ++i) {
+                            ScriptRunEval& e = state.script.run_evals[i];
+                            if (!e.queued) continue;
+                            e.queued = false;
+                            eval = e.eval;
+                            run = md_str_from_cstr(e.run);
                         }
+                        if (!eval) break;
+                    }
+                    script::eval_reset_interrupt(eval);
+                    // What is left to do, for the properties and the slots
+                    const md_bitset_t pending = script::eval_pending_frames(eval, frame_alloc);
+                    const size_t count = md_bitset_count(pending);
+                    if (count == 0) continue;
+                    md_array_resize(state.script.eval_frames, count, state.allocator.persistent);
+                    n = 0;
+                    md_bitset_iter_t it = md_bitset_iter(pending);
+                    while (md_bitset_iter_next(&it) && n < count) {
+                        state.script.eval_frames[n++] = (uint32_t)it.idx;
+                    }
+                    break;
+                }
+
+                if (n > 0) {
+                    // The IR is taken now and held until the task has finished: eval_ir may be replaced while it runs.
+                    // Nor are the frames touched, nor the evaluation freed (script.evaluating).
+                    const script::Program* ir = state.script.eval_ir;
+                    script::program_retain(ir);
+                    const uint32_t* frames = state.script.eval_frames;
+                    const std::string run_str(run.ptr, run.len);
+                    const bool first = eval == state.script.eval;
+                    state.script.evaluating = eval;
+                    // Once it has ended, run or cancelled: the IR it held goes. The tools are told of the first
+                    // instance's run's evaluation, which is the one they read (EventType_ViamdScriptEvalBegin).
+#if MEASURE_EVALUATION_TIME
+                    const uint64_t t0 = (uint64_t)md_tick_now();
+                    auto on_main = [&state, ir, first, t0, n](task_system::Status) {
+                        VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
+#else
+                    auto on_main = [&state, ir, first](task_system::Status) {
+#endif
+                        script::program_release(ir);
+                        state.script.evaluating = nullptr;
+                        if (first) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
+                    };
+                    if (first) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalBegin, viamd::EventPayloadType_ApplicationState, &state);
+                    if (script::eval_whole(eval)) {
+                        // v2: one call evaluates every pending frame, spreading them over the pool itself
+                        state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval, run_str]() {
+                            script::eval_frames(eval, ir, &state.mold.sys, md_str_t{run_str.data(), run_str.size()}, nullptr, 0);
+                        }, on_main);
+                    } else {
+                        state.tasks.evaluate.start_for(MD_STR_LIT("Evaluate script"), (uint32_t)n, 1, [&state, ir, eval, frames, run_str](uint32_t beg, uint32_t end) {
+                            script::eval_frames(eval, ir, &state.mold.sys, md_str_t{run_str.data(), run_str.size()}, frames + beg, end - beg);
+                        }, on_main);
                     }
                 }
             }
@@ -3668,7 +3774,7 @@ static void draw_async_task_window(ApplicationState* data) {
             const bool is_evaluate = a.id == data->tasks.evaluate.activity_id();
             float fract = a.progress;
             // One task over every frame (v2): the evaluation says how far it is
-            if (is_evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
+            if (is_evaluate && data->script.evaluating && script::eval_whole(data->script.evaluating)) fract = script::eval_progress(data->script.evaluating);
 
             const float width = ImGui::GetContentRegionAvail().x - (a.cancellable ? size + pad : 0.0f);
             if (fract < 0.0f) {
@@ -3684,7 +3790,7 @@ static void draw_async_task_window(ApplicationState* data) {
                 if (ImGui::DeleteButton((const char*)ICON_FA_XMARK, ImVec2(size, size))) {
                     task_system::activity_cancel(a.id);
                     if (is_evaluate) {
-                        script::eval_interrupt(data->script.eval);
+                        script_evals_interrupt(data);
                     }
                 }
                 ImGui::PopID();
@@ -3851,6 +3957,7 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     const int idx = plot_find_series(first, key);
 
     ImGui::PushID(key.path);
+    ImGui::PushID(key.run);
     ImGui::PushID((int)key.variant * SeriesSource_Count + (int)key.source);
     ImPlot::ItemIcon(color);
     ImGui::SameLine();
@@ -3876,6 +3983,20 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     }
     ImGui::PopID();
     ImGui::PopID();
+    ImGui::PopID();
+}
+
+// The same script series of every run the script is evaluated over (series_script_runs): of script.eval's first, by
+// no run, as a series of one run is
+template <typename Fn>
+static void for_each_script_run(const ApplicationState* data, const SeriesKey& key, Fn fn) {
+    md_str_t runs[16];
+    const size_t num_runs = MD_MIN(series_script_runs(runs, MD_COUNTOF(runs), data), MD_COUNTOF(runs));
+    for (size_t r = 0; r < MD_MAX(num_runs, (size_t)1); ++r) {
+        SeriesKey k = key;
+        if (r > 0) md_str_copy_to_char_buf(k.run, sizeof(k.run), runs[r]);
+        fn(k);
+    }
 }
 
 // The series loaded along the run, one submenu per file
@@ -3908,7 +4029,7 @@ static void plot_system_series_menu(ApplicationState* data, const char* dnd_type
 
 // The members of a script property's population, if it has one: the extent of its value axis
 static size_t script_property_population(const ApplicationState* data, const SeriesKey& key) {
-    const md_attributes_t* table = series_table(data, key.source, md_str_from_cstr(key.path));
+    const md_attributes_t* table = series_table(data, key, md_str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, md_str_from_cstr(key.path)) : nullptr;
     if (!attr || attr->format.rank < 1 || attr->format.shape[0] == 0) return 0;
     return md_attribute_element_count(&attr->format) / attr->format.shape[0];
@@ -4050,24 +4171,28 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
 
     ImGui::SeparatorText("Script");
     int num_listed = 0;
-    series_for_each_script_property(data, SeriesSource_Script, script::OUTPUT_TEMPORAL, [&](const SeriesKey& key) {
-        plot_series_list_item(data, TIMELINE_SERIES_DND, first, key);
-        num_listed += 1;
+    series_for_each_script_property(data, SeriesSource_Script, script::OUTPUT_TEMPORAL, [&](const SeriesKey& property) {
+        // Of each run it is evaluated over, side by side
+        for_each_script_run(data, property, [&](const SeriesKey& key) {
+            plot_series_list_item(data, TIMELINE_SERIES_DND, first, key);
+            num_listed += 1;
 
-        // A property with a population also has its summary over it
-        char mean_path[SERIES_PATH_CAP + 8];
-        const int len = snprintf(mean_path, sizeof(mean_path), "%s/mean", key.path);
-        const md_attributes_t* table = series_table(data, key.source);
-        if (table && len > 0 && md_attributes_find(table, md_str_t{mean_path, (size_t)len})) {
-            ImGui::Indent();
-            const SeriesVariant variants[] = { SeriesVariant_Mean, SeriesVariant_Sigma, SeriesVariant_Extent };
-            for (SeriesVariant v : variants) {
-                SeriesKey summary = key;
-                summary.variant = v;
-                plot_series_list_item(data, TIMELINE_SERIES_DND, first, summary);
+            // A property with a population also has its summary over it
+            char mean_path[SERIES_PATH_CAP + 8];
+            const int len = snprintf(mean_path, sizeof(mean_path), "%s/mean", key.path);
+            const md_str_t mean = {mean_path, (size_t)MD_MAX(len, 0)};
+            const md_attributes_t* table = series_table(data, key, mean);
+            if (table && len > 0 && md_attributes_find(table, mean)) {
+                ImGui::Indent();
+                const SeriesVariant variants[] = { SeriesVariant_Mean, SeriesVariant_Sigma, SeriesVariant_Extent };
+                for (SeriesVariant v : variants) {
+                    SeriesKey summary = key;
+                    summary.variant = v;
+                    plot_series_list_item(data, TIMELINE_SERIES_DND, first, summary);
+                }
+                ImGui::Unindent();
             }
-            ImGui::Unindent();
-        }
+        });
     });
     if (num_listed == 0) {
         ImGui::TextDisabled("No temporal properties, define and evaluate them in the script editor");
@@ -5035,18 +5160,23 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
     auto script_section = [&](uint32_t period) -> int {
         int num_listed = 0;
         series_for_each_script_property(data, SeriesSource_Script, kinds, [&](const SeriesKey& over_all) {
-            SeriesKey key = over_all;
-            key.period = period;
-            plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, key);
-            num_listed += 1;
-            const bool temporal = script::output_flags(data->script.eval_ir, series_script_ident(key)) & script::OUTPUT_TEMPORAL;
-            if (temporal && script_property_population(data, key) > 1) {
-                SeriesKey agg = key;
-                agg.variant = SeriesVariant_Aggregate;
-                ImGui::Indent();
-                plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, agg);
-                ImGui::Unindent();
-            }
+            SeriesKey property = over_all;
+            property.period = period;
+            // Over every frame of each run it is evaluated over; a period is over the first instance's run's
+            auto list = [&](const SeriesKey& key) {
+                plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, key);
+                num_listed += 1;
+                const bool temporal = script::output_flags(data->script.eval_ir, series_script_ident(key)) & script::OUTPUT_TEMPORAL;
+                if (temporal && script_property_population(data, key) > 1) {
+                    SeriesKey agg = key;
+                    agg.variant = SeriesVariant_Aggregate;
+                    ImGui::Indent();
+                    plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, agg);
+                    ImGui::Unindent();
+                }
+            };
+            if (period == 0) for_each_script_run(data, property, list);
+            else             list(property);
         });
         return num_listed;
     };
@@ -5900,7 +6030,7 @@ static bool script_drop_text(char* buf, size_t cap, const ApplicationState* stat
         const SeriesKey& key = ((const SeriesDragPayload*)payload->Data)->key;
         if (key.source != SeriesSource_System || key.variant != SeriesVariant_Values) return false;
         const md_str_t path = md_str_from_cstr(key.path);
-        const md_attributes_t* table = series_table(state, SeriesSource_System, path);
+        const md_attributes_t* table = series_table(state, SeriesSource_System);
         const md_attribute_t* attr = table ? md_attributes_find(table, path) : nullptr;
         return attr && script_editor::attr_expression(buf, cap, state->script.language, table, attr);
     }

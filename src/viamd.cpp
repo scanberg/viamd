@@ -1205,7 +1205,7 @@ void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& 
 void interrupt_async_tasks(ApplicationState* state) {
     task_system::cancel_all();
 
-    if (state->script.eval) script::eval_interrupt(state->script.eval);
+    script_evals_interrupt(state);
 
     task_system::wait_all();
 }
@@ -2622,7 +2622,7 @@ static void system_inference_on_main(SystemContext& sys, task_system::Status sta
     SystemInference& inf = sys.data.inference;
     if (!inf.pending) return;
     if (status == task_system::Status::Completed && inf.done && sys.data.sys.topology_version == inf.work.base_version) {
-        if (app->script.eval) script::eval_interrupt(app->script.eval);
+        script_evals_interrupt(app);
         task_system::wait_all();
         inference_publish(sys);
     } else {
@@ -2643,7 +2643,7 @@ void system_inference_finish(SystemContext& sys) {
     SystemInference& inf = sys.data.inference;
     if (!inf.pending) return;
     inf.job.wait();
-    if (app->script.eval) script::eval_interrupt(app->script.eval);
+    script_evals_interrupt(app);
     task_system::wait_all();
     if (!(inf.done && inference_publish(sys))) {
         // Inferred on the system itself, here and now, from the coordinates the work was to be inferred from (copied by
@@ -2838,7 +2838,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
             // below and they would start over anyway; the rest are left to FINISH rather than
             // interrupted - an interrupted backbone task leaves a just loaded trajectory without its
             // backbone data.
-            if (state->script.eval) script::eval_interrupt(state->script.eval);
+            script_evals_interrupt(state);
             // Loaded before the system is inferred again, which is then of it (system_inference_defer): an inference
             // under way stops, as it shares the core the file may write
             const bool inferring = system_inference_pending(sys);
@@ -7614,7 +7614,7 @@ void system_core_edit_begin(SystemContext& sys) {
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
     SystemInference& inf = sys.data.inference;
-    if (app->script.eval) script::eval_interrupt(app->script.eval);
+    script_evals_interrupt(app);
     // The work of an inference under way shares the core: stopped, and kept for the coordinates it was to be inferred
     // from (system_core_changed starts it again)
     inf.job.cancel_and_wait();
@@ -9467,10 +9467,87 @@ void script_switch_language(ApplicationState* state, script::Language lang) {
 }
 
 void script_eval_free(ApplicationState* state) {
+    // Nothing runs on them now: the caller stopped the evaluation task
+    state->script.evaluating = nullptr;
+    for (size_t i = 0; i < md_array_size(state->script.run_evals); ++i) {
+        script::eval_free(state->script.run_evals[i].eval);
+    }
+    md_array_shrink(state->script.run_evals, 0);
     if (!state->script.eval) return;
     viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, state);
     script::eval_free(state->script.eval);
     state->script.eval = nullptr;
+    state->script.eval_run[0] = '\0';
+    state->script.eval_queued = false;
+}
+
+void script_evals_interrupt(ApplicationState* state) {
+    // What was still to be evaluated after the one running is not either: whatever stops them starts them again
+    state->script.eval_queued = false;
+    if (state->script.eval) script::eval_interrupt(state->script.eval);
+    for (size_t i = 0; i < md_array_size(state->script.run_evals); ++i) {
+        state->script.run_evals[i].queued = false;
+        script::eval_interrupt(state->script.run_evals[i].eval);
+    }
+}
+
+script::Eval* script_eval_of_run(const ApplicationState* state, md_str_t run) {
+    if (md_str_empty(run) || md_str_eq_cstr(run, state->script.eval_run)) return state->script.eval;
+    for (size_t i = 0; i < md_array_size(state->script.run_evals); ++i) {
+        if (md_str_eq_cstr(run, state->script.run_evals[i].run)) return state->script.run_evals[i].eval;
+    }
+    return nullptr;
+}
+
+// Whether an instance of the system shows the run
+static bool run_shown(const SystemContext& sys, md_str_t run) {
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        const SystemRun* r = instance_run(*sys.instances[k]);
+        if (r && md_str_eq_cstr(run, r->path)) return true;
+    }
+    return false;
+}
+
+void script_run_evals_sync(ApplicationState* state) {
+    auto& sc = state->script;
+    const SystemContext& sys = state->system_context;
+    // Of the script evaluated, as it was made: an evaluation of a script being made anew is made with it (main.cpp)
+    if (!sc.eval || !script::valid(sc.eval_ir) || script::eval_fingerprint(sc.eval) != script::fingerprint(sc.eval_ir)) return;
+
+    for (size_t i = 0; i < md_array_size(sc.run_evals);) {
+        ScriptRunEval& e = sc.run_evals[i];
+        const md_str_t run = md_str_from_cstr(e.run);
+        if (run_shown(sys, run) && !md_str_eq_cstr(run, sc.eval_run)) {
+            ++i;
+            continue;
+        }
+        if (sc.evaluating == e.eval) {
+            // Freed once it has stopped
+            script::eval_interrupt(e.eval);
+            ++i;
+            continue;
+        }
+        script::eval_free(e.eval);
+        md_array_swap_back_and_pop(sc.run_evals, i);
+        // The caches are keyed on versions within its table, and the next may be allocated where it was
+        series_cache_free(state);
+    }
+
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        const SystemRun* r = instance_run(*sys.instances[k]);
+        if (!r || r->path[0] == '\0') continue;
+        const md_str_t run = md_str_from_cstr(r->path);
+        if (script_eval_of_run(state, run)) continue;
+        const script::EvalDesc desc = { .num_frames = run_num_frames(sys, r), .sys = &state->mold.sys, .run = run,
+                                        .executor = task_system::executor() };
+        if (desc.num_frames == 0) continue;
+        ScriptRunEval e;
+        md_str_copy_to_char_buf(e.run, sizeof(e.run), run);
+        e.eval = script::eval_create(nullptr, sc.eval_ir, desc, state->allocator.persistent);
+        if (!e.eval) continue;
+        md_array_push(sc.run_evals, e, state->allocator.persistent);
+        series_cache_free(state);
+    }
 }
 
 void script_ir_collect(ApplicationState* state) {

@@ -87,6 +87,10 @@ struct SeriesKey {
     // The timeline period a script property is taken over, by id, 0 for every frame. A temporal property is binned over
     // the period's frames, a distribution or a volume read from the evaluation's slot of it (SCRIPT_SLOT_PERIOD).
     uint32_t period = 0;
+    // The run of the first system ("run/<name>") whose evaluation a script property is read from (script_eval_of_run),
+    // empty for script.eval's, the first instance's. A period is over the first instance's run's frames: over one, a
+    // property of another run is not shown. Empty for anything else, whose path holds its run.
+    char run[128] = "";
 };
 
 bool      series_key_equal(const SeriesKey& a, const SeriesKey& b);
@@ -95,18 +99,22 @@ bool      series_key_equal(const SeriesKey& a, const SeriesKey& b);
 // were periods, is the script over SERIES_PERIOD_LEGACY_FILTER, which is written to period when it is given.
 const char* series_source_name(SeriesSource source);
 bool        series_source_from_name(SeriesSource* out, md_str_t name, uint32_t* period = nullptr);
-SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant = SeriesVariant_Values, uint32_t period = 0);
+SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant = SeriesVariant_Values, uint32_t period = 0, md_str_t run = {});
+// The evaluation a script series is read from (SeriesKey::run), NULL for any other or when there is none
+const script::Eval* series_eval(const ApplicationState* app, const SeriesKey& key);
+// The runs of the first system the script is evaluated over, script.eval's first: how many, at most cap written to out
+size_t series_script_runs(md_str_t* out, size_t cap, const ApplicationState* app);
 
 // The period a workspace's SERIES_PERIOD_LEGACY_FILTER stands for, once its periods are read: the period the filter
 // followed, or every frame. Any other period as it is.
 uint32_t series_legacy_period(const ApplicationState* app, uint32_t period);
 
-// The table a source reads from, NULL when it has none right now. The script's is the evaluation's: over a period, a
-// temporal property is taken over the period's frames (series_frame_mask), and a distribution or a volume read from the
-// evaluation's slot of it over them, not from the table.
+// The table a source reads from, NULL when it has none right now. The script's is the evaluation's, script.eval's: over a
+// period, a temporal property is taken over the period's frames (series_frame_mask), and a distribution or a volume read
+// from the evaluation's slot of it over them, not from the table.
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source);
-// The table which holds path for source
-const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, md_str_t path);
+// The table which holds path for the key's source: for a script property, of the key's run
+const md_attributes_t* series_table(const ApplicationState* app, const SeriesKey& key, md_str_t path);
 // The frames the temporal script property of key is taken over: those it has evaluated, of its period's, written to
 // out, allocated with alloc. Its own: a property taken over from a previous evaluation holds its frames while one added
 // since is still being evaluated. A copy taken under the evaluation's lock, so it can be read while the evaluation
@@ -116,7 +124,7 @@ bool series_frame_mask(struct md_bitset_t* out, const ApplicationState* app, con
 // The name of a period, "missing period" when it is gone
 const char* series_period_name(const ApplicationState* app, uint32_t period);
 
-// "d1", "d1 (mean)", "r (Production)", "Potential"
+// "d1", "d1 (mean)", "r (Production)", "Potential"; "d1 · nb2" of a run, when the script is evaluated over several
 void   series_label(char* buf, size_t cap, const ApplicationState* app, const SeriesKey& key);
 ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key);
 
@@ -298,7 +306,7 @@ struct SeriesTemporalView {
                                     // are about their centre: the upper side may lie past periodic.end
 
     char  label[96] = "";                       // with the state appended (series_state_suffix)
-    char  plot_id[SERIES_PATH_CAP + 104] = "";  // label###identity, what ImPlot is handed: the label may change
+    char  plot_id[SERIES_PATH_CAP + 288] = "";  // label###identity, what ImPlot is handed: the label may change
     char  unit_str[32] = "";                    // the display unit of the values
     char  script_ident[64] = "";                // a script property's identifier, empty otherwise
     script::Ref vis_ref = {};
@@ -345,7 +353,7 @@ struct SeriesHistogramView {
     double bandwidth_max = 0;       // unit, over the members (the same over periods); 0 when not smoothed
 
     char  label[96] = "";                       // with the state appended (series_state_suffix)
-    char  plot_id[SERIES_PATH_CAP + 104] = "";
+    char  plot_id[SERIES_PATH_CAP + 288] = "";
     char  x_unit_str[32] = "";
     char  y_unit_str[32] = "";
     char  script_ident[64] = "";

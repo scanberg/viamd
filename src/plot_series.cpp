@@ -23,10 +23,11 @@
 // ## Keys and names
 
 bool series_key_equal(const SeriesKey& a, const SeriesKey& b) {
-    return a.source == b.source && a.variant == b.variant && a.period == b.period && strcmp(a.path, b.path) == 0;
+    return a.source == b.source && a.variant == b.variant && a.period == b.period && strcmp(a.path, b.path) == 0 &&
+           strcmp(a.run, b.run) == 0;
 }
 
-SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant, uint32_t period) {
+SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant, uint32_t period, md_str_t run) {
     SeriesKey key;
     key.source  = source;
     key.variant = variant;
@@ -34,6 +35,9 @@ SeriesKey series_key(SeriesSource source, md_str_t path, SeriesVariant variant, 
     // A path that does not fit is left empty rather than cut: a truncated path names something else
     if (path.len < sizeof(key.path)) {
         md_str_copy_to_char_buf(key.path, sizeof(key.path), path);
+    }
+    if (source == SeriesSource_Script && run.len < sizeof(key.run)) {
+        md_str_copy_to_char_buf(key.run, sizeof(key.run), run);
     }
     return key;
 }
@@ -117,9 +121,43 @@ const md_attributes_t* series_table(const ApplicationState* app, SeriesSource so
     return eval ? script::attributes(eval) : nullptr;
 }
 
-const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source, md_str_t path) {
+const md_attributes_t* series_table(const ApplicationState* app, const SeriesKey& key, md_str_t path) {
     (void)path;
-    return series_table(app, source);
+    if (!is_script(key.source)) return series_table(app, key.source);
+    const script::Eval* eval = series_eval(app, key);
+    return eval ? script::attributes(eval) : nullptr;
+}
+
+const script::Eval* series_eval(const ApplicationState* app, const SeriesKey& key) {
+    return is_script(key.source) ? script_eval_of_run(app, md_str_from_cstr(key.run)) : nullptr;
+}
+
+size_t series_script_runs(md_str_t* out, size_t cap, const ApplicationState* app) {
+    if (!app->script.eval) return 0;
+    size_t n = 0;
+    if (n < cap) out[n] = md_str_from_cstr(app->script.eval_run);
+    n += 1;
+    for (size_t i = 0; i < md_array_size(app->script.run_evals); ++i, ++n) {
+        if (n < cap) out[n] = md_str_from_cstr(app->script.run_evals[i].run);
+    }
+    return n;
+}
+
+// The evaluation of the key is of another run than script.eval's: one over the frames of that run, which the periods
+// are not over
+static bool of_other_run(const ApplicationState* app, const SeriesKey& key) {
+    const script::Eval* eval = series_eval(app, key);
+    return eval && eval != app->script.eval;
+}
+
+// The run the evaluation of a script series is over, NULL when there is none
+static const SystemRun* series_run(const ApplicationState* app, const SeriesKey& key) {
+    const md_str_t run = key.run[0] ? md_str_from_cstr(key.run) : md_str_from_cstr(app->script.eval_run);
+    const SystemContext& sc = app->system_context;
+    for (size_t i = 0; i < sc.num_runs; ++i) {
+        if (md_str_eq_cstr(run, sc.runs[i]->path)) return sc.runs[i];
+    }
+    return nullptr;
 }
 
 // The frames of the key's period, [beg, end[: every frame without one. False when it covers no frames.
@@ -129,7 +167,7 @@ static bool key_period_frames(uint32_t* beg, uint32_t* end, const ApplicationSta
 
 bool series_frame_mask(md_bitset_t* out, const ApplicationState* app, const SeriesKey& key, md_allocator_i* alloc) {
     MD_ASSERT(out);
-    const script::Eval* eval = is_script(key.source) ? app->script.eval : nullptr;
+    const script::Eval* eval = series_eval(app, key);
     if (!eval) return false;
     md_bitset_t held = script::eval_output_frames(eval, series_script_ident(key), alloc);
     if (key.period != 0) {
@@ -155,7 +193,7 @@ md_str_t series_script_ident(const SeriesKey& key) {
 
 SeriesState series_state(const ApplicationState* app, const SeriesKey& key) {
     SeriesState st;
-    const script::Eval* eval = is_script(key.source) ? app->script.eval : nullptr;
+    const script::Eval* eval = series_eval(app, key);
     if (!eval) return st;
     const md_str_t ident = series_script_ident(key);
 
@@ -249,10 +287,17 @@ void series_label(char* buf, size_t cap, const ApplicationState* app, const Seri
         base = (attr && !md_str_empty(attr->label)) ? attr->label : path_leaf(md_str_from_cstr(key.path));
     }
     const int v = key.variant < SeriesVariant_Count ? key.variant : 0;
+    // Of a run, when there are several: script.eval's too, which a series without one is of
+    char run[136] = "";
+    if (is_script(key.source) && (key.run[0] || md_array_size(app->script.run_evals) > 0)) {
+        const char* name = key.run[0] ? key.run : app->script.eval_run;
+        if (strncmp(name, "run/", 4) == 0) name += 4;
+        if (name[0]) snprintf(run, sizeof(run), " \xC2\xB7 %s", name);
+    }
     if (key.period != 0) {
-        snprintf(buf, cap, MD_STR_FMT "%s (%s)", MD_STR_ARG(base), variant_label[v], series_period_name(app, key.period));
+        snprintf(buf, cap, MD_STR_FMT "%s%s (%s)", MD_STR_ARG(base), variant_label[v], run, series_period_name(app, key.period));
     } else {
-        snprintf(buf, cap, MD_STR_FMT "%s", MD_STR_ARG(base), variant_label[v]);
+        snprintf(buf, cap, MD_STR_FMT "%s%s", MD_STR_ARG(base), variant_label[v], run);
     }
 }
 
@@ -271,6 +316,20 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
         idx = (size_t)md_hash64_str(md_str_from_cstr(key.path), 0);
     }
     ImVec4 color = ImGui::ColorConvertU32ToFloat4(PROPERTY_COLORS[idx % MD_COUNTOF(PROPERTY_COLORS)]);
+    if (is_script(key.source)) {
+        // The same property of another run a step around the hue circle per run, far enough to tell the two apart where
+        // they overlap: by the run's place in the system, which is its own whichever instance shows it first
+        const SystemRun* run = series_run(app, key);
+        const SystemContext& sc = app->system_context;
+        size_t r = 0;
+        while (run && r < sc.num_runs && sc.runs[r] != run) ++r;
+        if (run && r > 0 && r < sc.num_runs) {
+            float h, sat, val;
+            ImGui::ColorConvertRGBtoHSV(color.x, color.y, color.z, h, sat, val);
+            h = fmodf(h + 0.13f * (float)r, 1.0f);
+            ImGui::ColorConvertHSVtoRGB(h, sat, val, color.x, color.y, color.z);
+        }
+    }
     if (key.variant == SeriesVariant_Sigma)  color.w *= 0.4f;
     if (key.variant == SeriesVariant_Extent) color.w *= 0.2f;
     return color;
@@ -282,7 +341,7 @@ md_str_t series_member_label(const ApplicationState* app, const SeriesKey& key, 
     const int len = snprintf(buf, sizeof(buf), "%s/labels", key.path);
     if (len <= 0 || (size_t)len >= sizeof(buf)) return {};
     const md_str_t path = {buf, (size_t)len};
-    const md_attributes_t* table = series_table(app, key.source, path);
+    const md_attributes_t* table = series_table(app, key, path);
     const md_attribute_t* attr = table ? md_attributes_find(table, path) : nullptr;
     if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR || attr->format.rank != 1 || (uint32_t)k >= attr->format.shape[0]) return {};
     return md_attribute_str(table, attr, (size_t)k);
@@ -326,7 +385,7 @@ static void fill_names(View* out, const ApplicationState* app, const SeriesKey& 
     out->state = series_state(app, key);
     series_state_suffix(suffix, sizeof(suffix), out->state);
     snprintf(out->label, sizeof(out->label), "%s%s", base, suffix);
-    snprintf(out->plot_id, sizeof(out->plot_id), "%s###%d:%d:%u:%s", out->label, (int)key.source, (int)key.variant, key.period, key.path);
+    snprintf(out->plot_id, sizeof(out->plot_id), "%s###%d:%d:%u:%s:%s", out->label, (int)key.source, (int)key.variant, key.period, key.path, key.run);
     if (is_script(key.source)) {
         const md_str_t ident = series_script_ident(key);
         md_str_copy_to_char_buf(out->script_ident, sizeof(out->script_ident), ident);
@@ -621,7 +680,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
     const char** reason = out_reason ? out_reason : &reason_buf;
     *reason = nullptr;
 
-    const md_attributes_t* table = series_table(app, key.source, md_str_from_cstr(key.path));
+    const md_attributes_t* table = series_table(app, key, md_str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, md_str_from_cstr(key.path)) : nullptr;
     if (!attr) {
         *reason = "Nothing is published at this path";
@@ -647,7 +706,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         const size_t n = attr->format.shape[0];
         if (is_script(key.source)) {
             // Over a period it is the same over time, so only the one over every frame is offered for that
-            if (key.period == 0 && n == run_num_frames(app->system_context)) views |= SeriesView_Timeline;
+            if (key.period == 0 && n == run_num_frames(app->system_context, series_run(app, key))) views |= SeriesView_Timeline;
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
@@ -689,7 +748,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     if (key.period != 0) return false;
 
     const md_str_t path = md_str_from_cstr(key.path);
-    const md_attributes_t* table = series_table(app, key.source, path);
+    const md_attributes_t* table = series_table(app, key, path);
     if (!table) return false;
 
     const md_attribute_t* attr = md_attributes_find(table, path);
@@ -731,13 +790,14 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     // ### x
     const double* x = nullptr;
     if (is_script(key.source)) {
-        // Evaluated over the frames of the first system's run, on whose axis it is, on the clock
-        const md_attribute_t* axis = run_time_axis(app->system_context);
-        if (!axis || n != run_num_frames(app->system_context)) return false;
+        // Evaluated over the frames of a run of the first system, on whose axis it is, on the clock
+        const SystemRun* run = series_run(app, key);
+        const md_attribute_t* axis = run_time_axis(app->system_context, run);
+        if (!axis || axis->format.shape[0] != n) return false;
         size_t count = 0;
         x = timeline_times(app, &app->system_context.data.sys.attributes, axis, &count);
         if (!x || count != n) return false;
-        x = shifted_by_run(app, x, count, system_run(app->system_context));
+        x = shifted_by_run(app, x, count, run);
     } else {
         const md_attribute_t* axis = md_attributes_axis(table, src);
         if (!axis || axis->format.shape[0] != n) return false;
@@ -1049,7 +1109,7 @@ static bool read_periodic(SeriesPeriodic* out, const md_attributes_t* table, md_
 bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const SeriesKey& key, double scale) {
     MD_ASSERT(out);
     const md_str_t path = md_str_from_cstr(key.path);
-    if (!(scale > 0.0) || !read_periodic(out, series_table(app, key.source, path), path)) {
+    if (!(scale > 0.0) || !read_periodic(out, series_table(app, key, path), path)) {
         *out = SeriesPeriodic{};
         return false;
     }
@@ -1060,7 +1120,8 @@ bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const Ser
 }
 
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
-    const uint32_t num_frames = app->script.eval ? (uint32_t)script::eval_num_frames(app->script.eval) : (uint32_t)run_num_frames(app->system_context);
+    const script::Eval* eval = is_script(key.source) ? series_eval(app, key) : app->script.eval;
+    const uint32_t num_frames = eval ? (uint32_t)script::eval_num_frames(eval) : (uint32_t)run_num_frames(app->system_context);
     if (num_frames == 0) return false;
     // The key's own: every frame, or its period's
     if (period == 0) period = key.period;
@@ -1069,6 +1130,8 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
         *end = num_frames;
         return true;
     }
+    // The periods are over the frames of the first instance's run
+    if (of_other_run(app, key)) return false;
     const TimelinePeriod* r = timeline_periods_find(&app->timeline.periods, period);
     int b = 0, e = 0;
     if (!r || !timeline_period_frames(&b, &e, *r, clock_frame(app), (int)num_frames)) return false;
@@ -1091,7 +1154,7 @@ bool series_resolve_histogram(SeriesHistogramView* out, ApplicationState* app, c
     if (period != 0 && !series_period_frames(&period_beg, &period_end, app, key, period)) return false;
 
     const md_str_t path = md_str_from_cstr(key.path);
-    const md_attributes_t* table = series_table(app, key.source, path);
+    const md_attributes_t* table = series_table(app, key, path);
     if (!table) return false;
 
     const md_attribute_t* attr = md_attributes_find(table, path);
@@ -1329,7 +1392,7 @@ bool series_resolve_histogram_periods(SeriesHistogramView* out, ApplicationState
     const SeriesHistogramView& ref = views[first >= 0 ? first : 0];
     float* bins = any ? (float*)md_alloc(app->allocator.frame, (size_t)ref.num_bins * num_periods * sizeof(float)) : nullptr;
     double y_min = DBL_MAX, y_max = -DBL_MAX;
-    const script::Eval* eval = app->script.eval;
+    const script::Eval* eval = series_eval(app, key);
     const md_str_t ident = series_script_ident(key);
     const bool distribution = script_property_kind(app, key) & script::OUTPUT_DISTRIBUTION;
     for (int p = 0; p < num_periods; ++p) {
@@ -1400,7 +1463,7 @@ static uint32_t volume_shape(uint32_t dim[3], const md_attribute_t* attr) {
 
 uint32_t series_volume_count(const ApplicationState* app, const SeriesKey& key) {
     if (!is_script(key.source)) return 0;
-    const md_attributes_t* table = series_table(app, key.source, md_str_from_cstr(key.path));
+    const md_attributes_t* table = series_table(app, key, md_str_from_cstr(key.path));
     return volume_shape(nullptr, table ? md_attributes_find(table, md_str_from_cstr(key.path)) : nullptr);
 }
 
@@ -1414,7 +1477,7 @@ bool series_resolve_volume(SeriesVolumeView* out, ApplicationState* app, const S
     out->vis_ref = script::output_ref(app->script.eval_ir, ident);
     out->state = series_state(app, key);
 
-    const md_attributes_t* table = series_table(app, key.source, md_str_from_cstr(key.path));
+    const md_attributes_t* table = series_table(app, key, md_str_from_cstr(key.path));
     const md_attribute_t* attr = table ? md_attributes_find(table, md_str_from_cstr(key.path)) : nullptr;
     if (!attr || !attr->data) return false;
     out->count = volume_shape(out->dim, attr);
@@ -1480,7 +1543,7 @@ bool series_script_property(SeriesKey* out, const ApplicationState* app, SeriesS
     const int len = snprintf(path, sizeof(path), MD_STR_FMT MD_STR_FMT, MD_STR_ARG(script_prefix), MD_STR_ARG(name));
     if (len <= 0 || (size_t)len >= sizeof(path)) return false;
 
-    const md_attributes_t* table = series_table(app, source, md_str_t{path, (size_t)len});
+    const md_attributes_t* table = series_table(app, source);
     if (!table) return false;
     if (!md_attributes_find(table, md_str_t{path, (size_t)len})) return false;
 
@@ -1669,6 +1732,9 @@ void plot_layout_serialize(viamd::serialization_state_t& state, md_str_t section
             viamd::write_str (state, MD_STR_LIT("Source"),  md_str_from_cstr(source_name[s.key.source < SeriesSource_Count ? s.key.source : 0]));
             viamd::write_str (state, MD_STR_LIT("Variant"), md_str_from_cstr(variant_name[s.key.variant < SeriesVariant_Count ? s.key.variant : 0]));
             viamd::write_str (state, MD_STR_LIT("Path"),    md_str_from_cstr(s.key.path));
+            if (s.key.run[0]) {
+                viamd::write_str(state, MD_STR_LIT("Run"), md_str_from_cstr(s.key.run));
+            }
             if (s.key.period != 0) {
                 viamd::write_int(state, MD_STR_LIT("Period"), (int)s.key.period);
             }
@@ -1729,6 +1795,8 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, md_str_t sec
                 }
             } else if (md_str_eq_cstr(ident, "Path")) {
                 viamd::extract_to_char_buf(s.key.path, sizeof(s.key.path), arg);
+            } else if (md_str_eq_cstr(ident, "Run")) {
+                viamd::extract_to_char_buf(s.key.run, sizeof(s.key.run), arg);
             } else if (md_str_eq_cstr(ident, "Color")) {
                 md_float4_t c = {};
                 viamd::extract_vec4(c, arg);
