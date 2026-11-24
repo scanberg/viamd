@@ -113,9 +113,9 @@ public:
     // two calls at once, and returns within budget_ms (< 0: it runs the work to its end). It takes its first step
     // here, so that work which is done at once ends at once. Inside it cancelled() and set_progress() work as in a
     // body. A step touches its own job's state only: the thread it runs on is poll()'s. end releases what the work
-    // holds, however it ended (done, failed, cancelled), and never waits. The main thread only, for now: the steps
-    // run there (poll), and the work they drive shares its GPU stream.
-    void start_steps(md_str_t label, Step step, End end = {}, OnMain on_main = {});
+    // holds, however it ended (done, failed, cancelled), and never waits. cancellable: from the overlay. The main
+    // thread only, for now: the steps run there (poll), and the work they drive shares its GPU stream.
+    void start_steps(md_str_t label, Step step, End end = {}, OnMain on_main = {}, bool cancellable = true);
 
     Status status() const;
     bool   running() const { return status() == Status::Running; }

@@ -1010,7 +1010,7 @@ int main(int argc, char** argv) {
 #endif
         // The work over frames (task_system step jobs, the GPU's): every job advanced, a few ms in all
         task_system::poll(STEP_JOBS_BUDGET_MS);
-        // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
+        // The volumes evaluated on the GPU whose results the step jobs above have brought back: into their GL textures
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
@@ -3735,7 +3735,7 @@ static void draw_async_task_window(ApplicationState* data) {
 
     // Everything under way over time, in one list (task_system activities): the pool's labelled jobs (what the GPU
     // evaluations wait for: density matrices, fields, orbitals read on demand), the step jobs (the surface fields and
-    // the isosurface meshes on the GPU) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
+    // the isosurface meshes and the volumes evaluated on the GPU)
     task_system::ActivityInfo all[32];
     const size_t num_all = task_system::activity_list(all, MD_COUNTOF(all));
     task_system::ActivityInfo activities[32];

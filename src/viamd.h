@@ -1474,27 +1474,27 @@ struct ApplicationState {
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
-    // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
-    // queued it, so these live here rather than in the frame arena - and here specifically because
-    // every one of them references gpu_volume and gpu_stream above. Whoever destroys
-    // those drains these first.
+    // A volume (or a plane's image) evaluated on the GPU, on its way to its GL texture: a step job (task_system.h)
+    // which issues the evaluation's pieces when it is a job of them (a density, ELF or LOL), copies the scratch to the
+    // host behind it, and is done once the copy has landed there; gpu_volume_jobs_poll then puts it in the texture.
+    // A slot must outlive the call that started it, so these live here rather than in the frame arena - and here
+    // specifically because every one of them reads gpu_volume and gpu_stream above. Whoever destroys those drains
+    // these first.
     struct GpuVolumeJob {
-        bool              in_flight = false;
+        task_system::Job  task;
         ApplicationState* owner     = nullptr;
         uint32_t          tex_id    = 0;        // GL texture to receive the data
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
-        md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
-        size_t            size      = 0;
-        uint32_t          normal_tex = 0;       // GL texture to receive the normals (gpu_eval_normals), 0: none
-        md_gpu_mem_t      rb_normals = {};      // their HOST_READ block
-        // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
-        // readback is queued when it is (gpu_volume_jobs_poll), of this grid
-        void*             density_job = nullptr;
         md_grid_t         grid      = {};
-        // The same once it is all issued, kept for its progress until the readback lands (its activity)
-        void*             issued_job = nullptr;
+        uint32_t          normal_tex = 0;       // GL texture to receive the normals (gpu_eval_normals), 0: none
+        void*             density_job = nullptr; // md_gto_gpu_job_t: the evaluation as a job of pieces, until it ends
+        md_gpu_mem_t      rb        = {};       // HOST_READ staging, once the copy is on the stream; read through rb.cpu
+        md_gpu_mem_t      rb_normals = {};      // the normals' staging
+        size_t            size      = 0;
+        md_gpu_sync_t     copied    = {};       // the copy's point on the stream
+        bool              ready     = false;    // the copy has landed: to the texture (gpu_volume_jobs_poll, a drain)
         int64_t           t0 = 0;               // md_tick_t: when the evaluation began
-        const char*       label = nullptr;      // what it evaluates, for the overlay (a static string)
+        const char*       label = nullptr;      // what it evaluates, for the overlay (a static string); NULL: not listed
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -2915,9 +2915,9 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
 // backend, where evaluation writes the texture directly.
 void gpu_volume_jobs_drain(ApplicationState* state);
 
-// Issues what the density jobs have room for (their pieces, a few in flight), and queues the readbacks of those
-// all issued: once a frame. Each evaluation of a volume on the GPU (a density, ELF or LOL) is listed in the overlay
-// while it runs, as a task_system activity, from its first piece until its readback lands.
+// The volumes evaluated on the GPU whose results have come back to the host, put in their GL textures: once a frame,
+// right after task_system::poll has advanced their jobs (step jobs: each evaluation of a density, ELF or LOL is
+// listed in the overlay while it runs, from its first piece until its copy lands).
 void gpu_volume_jobs_poll(ApplicationState* state);
 
 // Drops the density evaluation into vol_tex that is not yet all issued, if there is one: what it has in flight
@@ -3145,8 +3145,8 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
 // num_ao of them, which must match the system's basis. Copied before the call returns.
 bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, const double* ao_coeffs, size_t num_ao,
                                    md_gto_eval_mode_t mode, md_gto_op_t op, double cutoff);
-// async (the representations): on the GPU, the density is issued as a job (md_gto_gpu_job_t) the frame loop
-// completes (gpu_volume_jobs_poll), where the launch would wait for its counting pass
+// async (the representations): on the GPU, the density is issued as a job (md_gto_gpu_job_t), a step job advances
+// it over the frames (task_system::poll), where the launch would wait for its counting pass
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op, bool async = false);
 

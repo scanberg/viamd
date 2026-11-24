@@ -4013,7 +4013,7 @@ static inline md_gpu_texture_t gpu_eval_target(const ApplicationState* state) {
     return state->gpu_eval_target ? state->gpu_eval_target : state->gpu_volume;
 }
 
-// Which normals a density volume's texels came with: set when both are uploaded (gpu_volume_job_complete), at the
+// Which normals a density volume's texels came with: set when both are uploaded (gpu_volume_job_land), at the
 // volume's data version then. Any later upload into the volume (notify_data_changed) leaves the link behind.
 struct NormalLink {
     uint32_t vol_tex = 0, normal_tex = 0;
@@ -4076,54 +4076,80 @@ static uint32_t gpu_normals_take(ApplicationState* state) {
     return tex;
 }
 
+// A slot is taken from its start until its result is in the texture, or it ended without one
+static bool gpu_volume_job_busy(const ApplicationState::GpuVolumeJob& j) {
+    return j.ready || j.task.running();
+}
+
 static ApplicationState::GpuVolumeJob* gpu_volume_job_acquire(ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        if (!state->gpu_volume_jobs[i].in_flight) {
-            state->gpu_volume_jobs[i] = ApplicationState::GpuVolumeJob{};
-            state->gpu_volume_jobs[i].in_flight = true;
-            state->gpu_volume_jobs[i].owner = state;
-            return &state->gpu_volume_jobs[i];
-        }
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (gpu_volume_job_busy(j)) continue;
+        j.owner       = state;
+        j.tex_id      = 0;
+        j.src         = nullptr;
+        j.grid        = {};
+        j.normal_tex  = 0;
+        j.density_job = nullptr;
+        j.rb          = {};
+        j.rb_normals  = {};
+        j.size        = 0;
+        j.copied      = {};
+        j.ready       = false;
+        j.t0          = 0;
+        j.label       = nullptr;
+        return &j;
     }
     return nullptr;
 }
 
 static bool gpu_volume_job_any_in_flight(const ApplicationState* state) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        if (state->gpu_volume_jobs[i].in_flight) return true;
+        if (gpu_volume_job_busy(state->gpu_volume_jobs[i])) return true;
     }
     return false;
 }
 
 static bool gpu_volume_job_in_flight_for(const ApplicationState* state, uint32_t tex_id) {
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        if (state->gpu_volume_jobs[i].in_flight && state->gpu_volume_jobs[i].tex_id == tex_id) return true;
+        const ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (j.tex_id == tex_id && gpu_volume_job_busy(j)) return true;
     }
     return false;
 }
 
-// Runs on the GL thread, from md_gpu_device_poll() in the frame loop.
-static void gpu_volume_job_complete(void* user) {
-    ApplicationState::GpuVolumeJob* job = (ApplicationState::GpuVolumeJob*)user;
-    ApplicationState* self = job->owner;
-    if (self && job->tex_id) {
-        gpu_volume_upload_to_gl(job->tex_id, job->rb.cpu, job->size);
-        if (job->normal_tex && job->rb_normals.cpu) {
-            gl::set_texture_3D_data(job->normal_tex, 0, job->rb_normals.cpu, GL_RGB10_A2);
-            normal_link_set(job->tex_id, job->normal_tex);
-        }
-    }
-    if (self && job->rb.gpu) md_gpu_free(self->gpu_stream, job->rb.gpu);
-    if (self && job->rb_normals.gpu) md_gpu_free(self->gpu_stream, job->rb_normals.gpu);
+static void gpu_volume_job_free_staging(ApplicationState::GpuVolumeJob* job) {
+    ApplicationState* state = job->owner;
+    if (job->rb.gpu) md_gpu_free(state->gpu_stream, job->rb.gpu);
+    if (job->rb_normals.gpu) md_gpu_free(state->gpu_stream, job->rb_normals.gpu);
+    job->rb = {};
     job->rb_normals = {};
-    if (job->issued_job) {
-        MD_LOG_DEBUG("Density volume %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (" MD_GTO_GPU_GEMM_PIECES_REVISION ")",
-                     (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0));
-        md_gto_gpu_job_end((md_gto_gpu_job_t*)job->issued_job);
-        job->issued_job = nullptr;
+}
+
+// The result in its GL texture and the staging freed, once the copy has landed (ready). On the GL thread.
+static void gpu_volume_job_land(ApplicationState::GpuVolumeJob* job) {
+    if (!job->ready) return;
+    gpu_volume_upload_to_gl(job->tex_id, job->rb.cpu, job->size);
+    if (job->normal_tex && job->rb_normals.cpu) {
+        gl::set_texture_3D_data(job->normal_tex, 0, job->rb_normals.cpu, GL_RGB10_A2);
+        normal_link_set(job->tex_id, job->normal_tex);
     }
-    job->rb        = {};
-    job->in_flight = false;
+    if (job->label) {
+        MD_LOG_DEBUG("%s %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (" MD_GTO_GPU_GEMM_PIECES_REVISION ")",
+                     job->label, (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0));
+    }
+    gpu_volume_job_free_staging(job);
+    job->ready = false;
+}
+
+// No longer wanted: ended where it is (what it has on the stream completes, its staging is freed after it), and a
+// result waiting to land dropped. Nothing of it reaches the texture.
+static void gpu_volume_job_drop(ApplicationState::GpuVolumeJob* job) {
+    job->task.cancel();
+    if (job->ready) {
+        gpu_volume_job_free_staging(job);
+        job->ready = false;
+    }
 }
 
 // Used when no job slot is free, and when a caller genuinely needs the data before it returns.
@@ -4154,110 +4180,18 @@ static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_t
     return ok;
 }
 
-static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid);
-
-// The density jobs not yet all issued: each, once its counts are there (wait: waited for), issued and its
-// readback queued. True when none is left.
-static bool gpu_density_jobs_issue(ApplicationState* state, bool wait) {
-    bool none = true;
-    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
-        if (!j.in_flight || !j.density_job) continue;
-        md_gto_gpu_job_t* dj = (md_gto_gpu_job_t*)j.density_job;
-        if (!md_gto_gpu_job_poll(dj, wait)) {
-            none = false;
-            continue;
-        }
-        j.density_job = nullptr;
-        j.issued_job = dj;      // kept for its progress until the readback lands (gpu_volume_job_complete)
-        gpu_volume_readback_issue(state, &j, j.tex_id, j.grid);
-        if (!j.in_flight && j.issued_job) {     // failed, or read back on the spot
-            md_gto_gpu_job_end(dj);
-            j.issued_job = nullptr;
-        }
-    }
-    return none;
-}
-
-static bool gpu_density_job_pending(const ApplicationState* state) {
-    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        if (state->gpu_volume_jobs[i].in_flight && state->gpu_volume_jobs[i].density_job) return true;
-    }
-    return false;
-}
-
-// What the GPU evaluations share - the atom positions, the coefficients, the dmat, the scratch volume - is
-// only changed once every density job is issued: one not yet issued reads them when it is. Waits for those.
-static void gpu_density_jobs_settle(ApplicationState* state) {
-    if (gpu_density_job_pending(state)) gpu_density_jobs_issue(state, true);
-}
-
-// The density jobs not yet all issued, of vol_tex (0: every one), dropped: what they have in flight completes,
-// nothing more is issued, and no readback is queued (the texture keeps what it held). True when any was.
-static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex) {
-    bool any = false;
-    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
-        if (!j.in_flight || !j.density_job || (vol_tex && j.tex_id != vol_tex)) continue;
-        md_gto_gpu_job_t* dj = (md_gto_gpu_job_t*)j.density_job;
-        MD_LOG_DEBUG("Density volume: the evaluation under way no longer wanted, dropped at %.0f%% after %.1f ms", md_gto_gpu_job_progress(dj) * 100.0f,
-                     md_tick_to_milliseconds(md_tick_now() - (md_tick_t)j.t0));
-        md_gto_gpu_job_end(dj);
-        j = ApplicationState::GpuVolumeJob{};
-        any = true;
-    }
-    return any;
-}
-
-// Queues a readback of the evaluated region of gpu_volume. Returns once the copy is recorded; the
-// GL texture is filled later, from gpu_volume_job_complete(), which md_gpu_device_poll() calls on
-// the GL thread.
-//
-// Returns true when the work was QUEUED -- not that the texture holds data.
-static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
-    if (!state->gpu_stream || !gpu_eval_target(state)) {
-        return false;
-    }
-    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
-    const uint32_t normal_tex = gpu_normals_take(state);
-
-    // Never allow two outstanding readbacks for the same texture. Two reasons, both of which
-    // produce a wrong image rather than a slow one:
-    //
-    //  - a staging block can be most of a gigabyte, so N in flight is N times that;
-    //  - md_gpu_stream_sync does not fire user callbacks, only md_gpu_device_poll does. So a
-    //    blocking fallback taken while an older job is still pending would upload new data now and
-    //    let the older callback overwrite it with stale data next frame.
-    //
-    // Draining costs the stall we are trying to avoid, but only when the user outruns the GPU, and
-    // it keeps uploads strictly ordered.
-    if (gpu_volume_job_in_flight_for(state, vol_tex)) {
-        gpu_volume_jobs_drain(state);
-    }
-
-    ApplicationState::GpuVolumeJob* job = gpu_volume_job_acquire(state);
-    if (!job) {
-        gpu_volume_jobs_drain(state);
-        job = gpu_volume_job_acquire(state);
-    }
-    if (!job) {
-        return gpu_volume_readback_blocking(state, vol_tex, grid, size, normal_tex);
-    }
-    job->src = gpu_eval_target(state);
-    job->normal_tex = normal_tex;
-    return gpu_volume_readback_issue(state, job, vol_tex, grid);
-}
-
-// The copy of gpu_volume into job's staging and its completion, queued; job is acquired
-static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid) {
+// The copy of the evaluated region of the scratch into staging, with the normals of its gradient packed beside it when
+// they are asked for, behind the evaluation on the stream, and its point there. False when it could not be recorded
+// (logged; nothing of it is left).
+static bool gpu_volume_job_copy(ApplicationState::GpuVolumeJob* job) {
+    ApplicationState* state = job->owner;
+    const md_grid_t& grid = job->grid;
     const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
     md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
     if (!rb.cpu) {
         MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
-        job->in_flight = false;
         return false;
     }
-
     const md_gpu_tex_region_t region = {
         .offset = {0, 0, 0},
         .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
@@ -4265,7 +4199,6 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
     if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, job->src ? job->src : state->gpu_volume, &region)) {
         MD_LOG_ERROR("Failed to record the volume readback");
         md_gpu_free(state->gpu_stream, rb.gpu);
-        job->in_flight = false;
         return false;
     }
     // the normals of its gradient beside it, packed on the device: 4 bytes a voxel
@@ -4278,57 +4211,150 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
             job->normal_tex = 0;
         }
     }
-
-    job->tex_id = vol_tex;
     job->rb     = rb;
     job->size   = size;
-
-    if (!md_gpu_sync_on_complete(state->gpu_device, md_gpu_stream_record(state->gpu_stream), gpu_volume_job_complete, job)) {
-        // No callback means nothing would ever free rb or fill the texture, so finish this one
-        // synchronously instead of leaking it.
-        MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
-        md_gpu_stream_sync(state->gpu_stream);
-        gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
-        if (job->normal_tex && job->rb_normals.cpu) {
-            gl::set_texture_3D_data(job->normal_tex, 0, job->rb_normals.cpu, GL_RGB10_A2);
-            normal_link_set(vol_tex, job->normal_tex);
-        }
-        md_gpu_free(state->gpu_stream, rb.gpu);
-        if (job->rb_normals.gpu) md_gpu_free(state->gpu_stream, job->rb_normals.gpu);
-        job->rb_normals = {};
-        job->in_flight = false;
-        return true;
-    }
+    job->copied = md_gpu_stream_record(state->gpu_stream);
     return true;
 }
 
-// The readback of a density job's evaluation (a density, ELF or LOL: md_gto_gpu_job_t): its slot now, the copy once the
-// job is all issued (gpu_volume_jobs_poll). Takes the job. label: what it is, for the overlay (a static string).
-static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj, const char* label) {
-    if (md_gto_gpu_job_poll(dj, false)) {
-        md_gto_gpu_job_end(dj);
-        return gpu_volume_readback(state, vol_tex, grid);
+// The evaluation's pieces issued as far as there is room (wait: all of them, its counts waited for), and the copy
+// behind them once they are all on the stream: 1 then, 0 before, -1 when the copy could not be recorded
+static int gpu_volume_job_issue(ApplicationState::GpuVolumeJob* job, bool wait) {
+    if (job->rb.gpu) return 1;
+    if (job->density_job && !md_gto_gpu_job_poll((md_gto_gpu_job_t*)job->density_job, wait)) return 0;
+    return gpu_volume_job_copy(job) ? 1 : -1;
+}
+
+// A step of the job (task_system::poll): its pieces, its copy, and done once the copy has landed on the host
+static task_system::Status gpu_volume_job_step(ApplicationState::GpuVolumeJob* job, double budget_ms) {
+    const int issued = gpu_volume_job_issue(job, budget_ms < 0.0);
+    if (job->density_job) task_system::set_progress(md_gto_gpu_job_progress((md_gto_gpu_job_t*)job->density_job));
+    if (issued < 0) return task_system::Status::Failed;
+    if (issued == 0) return task_system::Status::Running;
+    if (budget_ms < 0.0) md_gpu_sync_wait(job->copied);
+    if (!md_gpu_sync_is_complete(job->copied)) return task_system::Status::Running;
+    job->ready = true;
+    return task_system::Status::Completed;
+}
+
+// However it ended: the evaluation's job released, and the staging unless its contents wait to land
+static void gpu_volume_job_end(ApplicationState::GpuVolumeJob* job) {
+    if (job->density_job) md_gto_gpu_job_end((md_gto_gpu_job_t*)job->density_job);
+    job->density_job = nullptr;
+    if (!job->ready) gpu_volume_job_free_staging(job);
+}
+
+// label: listed in the overlay while it runs (a static string), NULL: not
+static void gpu_volume_job_start(ApplicationState::GpuVolumeJob* job, const char* label) {
+    job->t0 = (int64_t)md_tick_now();
+    job->label = label;
+    job->task.start_steps(label ? md_str_from_cstr(label) : md_str_t{},
+        [job](double budget_ms) { return gpu_volume_job_step(job, budget_ms); },
+        [job]() { gpu_volume_job_end(job); },
+        {},
+        false);     // not cancellable there: a representation's volume would keep the hash of what it never got
+}
+
+// One evaluation in flight per texture: one under way of vol_tex is no longer wanted once another is. Dropped, it
+// cannot land after the new one with older data. (Its staging goes once the GPU has passed it: until then two staging
+// blocks of the texture's size are alive, where a drain kept one and stalled the frame instead.)
+static void gpu_volume_jobs_drop_for(ApplicationState* state, uint32_t vol_tex) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (j.tex_id == vol_tex && gpu_volume_job_busy(j)) gpu_volume_job_drop(&j);
     }
-    if (gpu_volume_job_in_flight_for(state, vol_tex)) {
-        // not to be: the representations wait for the last one (gpu_volume_job_in_flight_for). Ordered as the
-        // plain readback is
-        md_gto_gpu_job_poll(dj, true);
-        md_gto_gpu_job_end(dj);
-        return gpu_volume_readback(state, vol_tex, grid);
-    }
+}
+
+// A slot for vol_tex: those of the texture dropped first, the others drained when none is free. NULL: none (the caller
+// reads back blocking)
+static ApplicationState::GpuVolumeJob* gpu_volume_job_take(ApplicationState* state, uint32_t vol_tex) {
+    gpu_volume_jobs_drop_for(state, vol_tex);
     ApplicationState::GpuVolumeJob* job = gpu_volume_job_acquire(state);
     if (!job) {
-        md_gto_gpu_job_poll(dj, true);
-        md_gto_gpu_job_end(dj);
-        return gpu_volume_readback(state, vol_tex, grid);
+        gpu_volume_jobs_drain(state);
+        job = gpu_volume_job_acquire(state);
+    }
+    return job;
+}
+
+// The density jobs not yet all issued, each issued now, its counts waited for, and its copy queued behind it
+static void gpu_density_jobs_issue_all(ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (j.density_job && !j.rb.gpu && j.task.running() && gpu_volume_job_issue(&j, true) < 0) j.task.cancel();
+    }
+}
+
+static bool gpu_density_job_pending(const ApplicationState* state) {
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        const ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (j.density_job && !j.rb.gpu && j.task.running()) return true;
+    }
+    return false;
+}
+
+// What the GPU evaluations share - the atom positions, the coefficients, the dmat, the scratch volume - is
+// only changed once every density job is issued: one not yet issued reads them when it is. Issues those (outside of
+// their steps: the main thread's, as the steps are for now).
+static void gpu_density_jobs_settle(ApplicationState* state) {
+    if (gpu_density_job_pending(state)) gpu_density_jobs_issue_all(state);
+}
+
+// The density jobs not yet all issued, of vol_tex (0: every one), dropped: what they have in flight completes,
+// nothing more is issued, and no copy is queued (the texture keeps what it held). True when any was.
+static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex) {
+    bool any = false;
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
+        ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
+        if (!j.density_job || j.rb.gpu || !j.task.running() || (vol_tex && j.tex_id != vol_tex)) continue;
+        MD_LOG_DEBUG("Density volume: the evaluation under way no longer wanted, dropped at %.0f%% after %.1f ms", md_gto_gpu_job_progress((md_gto_gpu_job_t*)j.density_job) * 100.0f,
+                     md_tick_to_milliseconds(md_tick_now() - (md_tick_t)j.t0));
+        j.task.cancel();
+        any = true;
+    }
+    return any;
+}
+
+// Reads back the evaluated region of the scratch (gpu_eval_target), launched into the stream before the call. Returns
+// once the copy is queued; the GL texture is filled later (gpu_volume_jobs_poll, once a frame on the GL thread).
+//
+// Returns true when the work was QUEUED -- not that the texture holds data.
+static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
+    if (!state->gpu_stream || !gpu_eval_target(state)) {
+        return false;
+    }
+    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+    const uint32_t normal_tex = gpu_normals_take(state);
+    ApplicationState::GpuVolumeJob* job = gpu_volume_job_take(state, vol_tex);
+    if (!job) {
+        return gpu_volume_readback_blocking(state, vol_tex, grid, size, normal_tex);
     }
     job->tex_id = vol_tex;
     job->src = gpu_eval_target(state);
-    job->normal_tex = gpu_normals_take(state);
     job->grid = grid;
+    job->normal_tex = normal_tex;
+    if (!gpu_volume_job_copy(job)) return false;
+    gpu_volume_job_start(job, nullptr);
+    return true;
+}
+
+// The readback of a density job's evaluation (a density, ELF or LOL: md_gto_gpu_job_t): its slot now, its pieces over the
+// frames and the copy once they are all issued (its step job). Takes the job. label: what it is, for the overlay (a
+// static string).
+static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_gto_gpu_job_t* dj, const char* label) {
+    ApplicationState::GpuVolumeJob* job = gpu_volume_job_take(state, vol_tex);
+    if (!job) {
+        md_gto_gpu_job_poll(dj, true);
+        md_gto_gpu_job_end(dj);
+        const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+        return gpu_volume_readback_blocking(state, vol_tex, grid, size, gpu_normals_take(state));
+    }
+    job->tex_id = vol_tex;
+    job->src = gpu_eval_target(state);
+    job->grid = grid;
+    job->normal_tex = gpu_normals_take(state);
     job->density_job = dj;
-    job->t0 = md_tick_now();
-    job->label = label;
+    gpu_volume_job_start(job, label);
     return true;
 }
 
@@ -4382,31 +4408,6 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
     return true;
 }
 
-// The volumes' evaluations in the overlay: a slot's activity while its job runs (issued or not) and until its readback
-// lands, under the label it was given; not cancellable there (a representation's volume would keep the hash of what it
-// never got)
-static task_system::Activity g_volume_activity[ApplicationState::GPU_VOLUME_JOB_SLOTS];
-static const char*           g_volume_activity_label[ApplicationState::GPU_VOLUME_JOB_SLOTS];
-
-static void gpu_volume_activities_update(const ApplicationState* state) {
-    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
-        const ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
-        void* dj = j.density_job ? j.density_job : j.issued_job;
-        task_system::Activity& a = g_volume_activity[i];
-        const char* label = j.in_flight && dj ? (j.label ? j.label : "Volume") : nullptr;
-        if (label != g_volume_activity_label[i]) {
-            task_system::activity_end(&a);
-            g_volume_activity_label[i] = label;
-            if (label) {
-                a.cancellable = false;
-                a.progress.store(0.0f, std::memory_order_relaxed);
-                task_system::activity_begin(&a, md_str_from_cstr(label));
-            }
-        }
-        if (label) a.progress.store(md_gto_gpu_job_progress((md_gto_gpu_job_t*)dj), std::memory_order_relaxed);
-    }
-}
-
 #endif // MD_ENABLE_GPU
 
 uint32_t es_normals_of(uint32_t vol_tex) {
@@ -4424,8 +4425,7 @@ uint32_t es_normals_of(uint32_t vol_tex) {
 void gpu_volume_jobs_poll(ApplicationState* state) {
     MD_ASSERT(state);
 #if MD_ENABLE_GPU
-    if (state->gpu_stream) gpu_density_jobs_issue(state, false);
-    gpu_volume_activities_update(state);
+    for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) gpu_volume_job_land(&state->gpu_volume_jobs[i]);
 #else
     (void)state;
 #endif
@@ -4445,23 +4445,12 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
     MD_ASSERT(state);
 #if MD_ENABLE_GPU
     if (!state->gpu_stream || !gpu_volume_job_any_in_flight(state)) return;
-    gpu_density_jobs_issue(state, true);
-    md_gpu_stream_sync(state->gpu_stream);
-    md_gpu_device_poll(state->gpu_device);   // this is what actually runs the callbacks
-
-    // Backstop: if a callback somehow did not fire, release the staging block here rather than
-    // leaking it, since the pool may be about to go.
+    // the density jobs not yet issued first, all of them: each reads the scratch the one before it wrote
+    gpu_density_jobs_issue_all(state);
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
-        if (j.in_flight) {
-            if (j.density_job) md_gto_gpu_job_end((md_gto_gpu_job_t*)j.density_job);
-            if (j.issued_job) md_gto_gpu_job_end((md_gto_gpu_job_t*)j.issued_job);
-            j.density_job = nullptr;
-            j.issued_job = nullptr;
-            if (j.rb.gpu) md_gpu_free(state->gpu_stream, j.rb.gpu);
-            j.rb = {};
-            j.in_flight = false;
-        }
+        j.task.wait();      // its copy landed on the host
+        gpu_volume_job_land(&j);
     }
 #else
     (void)state;
@@ -4711,7 +4700,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
 // ELF or LOL into vol_tex by the kernel, as a job read back as the density's is: its counting pass issued and nothing
 // waited for (the launch waited on the GL thread for the counts and whatever the stream held before them, then issued
 // every piece at once: minutes of GPU work ahead of the display for a protein), the pieces issued a few ahead of the
-// GPU over the frames (gpu_volume_jobs_poll). What it reads is there (localization_gpu_prepare).
+// GPU over the frames (a step job: task_system::poll). What it reads is there (localization_gpu_prepare).
 static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool lol) {
     LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
     if (!L || !L->ok || L->task.running()) return false;

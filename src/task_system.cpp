@@ -319,7 +319,7 @@ void Job::start(md_str_t label, Body body, OnMain on_main) {
     job_launch(m_state);
 }
 
-void Job::start_steps(md_str_t label, Step step, End end, OnMain on_main) {
+void Job::start_steps(md_str_t label, Step step, End end, OnMain on_main, bool cancellable) {
     MD_ASSERT(step);
     release();
     JobState* s = new JobState();
@@ -330,7 +330,7 @@ void Job::start_steps(md_str_t label, Step step, End end, OnMain on_main) {
     s->on_main  = std::move(on_main);
     s->t0       = (int64_t)md_tick_now();
     s->labelled = label.len > 0;
-    s->activity.cancellable = true;
+    s->activity.cancellable = cancellable;
     if (s->labelled) activity_begin(&s->activity, label);
     s->step_prev = g_steps_tail;
     if (g_steps_tail) g_steps_tail->step_next = s;
