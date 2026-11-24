@@ -30,6 +30,7 @@
 
 #include <viamd.h>
 #include <representation.h>
+#include <md_render_bridge.h>
 #include <script_editor.h>
 #include <viamd_event.h>
 #include <event.h>
@@ -7888,6 +7889,8 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 const size_t count = representation_weak_bond_count(*state, rep);
                 if (count > 0) picking_range_reserve(NULL, space, PickingDomain_Bond, count, rep.node.id);
             }
+            // What md_render draws, last: the ranges before it stay where they were
+            if (md_render_bridge_active(*state)) picking_range_reserve(NULL, space, PickingDomain_MdRender, 1);
             break;
         }
         case viamd::EventType_ViamdInteractionSurface:

@@ -1070,7 +1070,14 @@ int main(int argc, char** argv) {
                 .pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(state.app.framebuffer.width, 1),
             };
 
+            // md_render asked about the pixel the GL picking reads, and a hit of what it drew resolved to what is there
+            {
+                const ImVec2 px = ImVec2(surface_state.mouse_local.x, surface_state.surface_size.y - surface_state.mouse_local.y) *
+                                  ImGui::GetIO().DisplayFramebufferScale * args.pixel_scale;
+                md_render_bridge_pick(&state, px.x, px.y);
+            }
             interaction_surface_hit_extract(&hit, surface_state, args);
+            md_render_bridge_resolve_hit(&state, &hit);
 
             InteractionSurfaceEvent event = {};
             interaction_surface_event_extract(&event, surface_state, hit);

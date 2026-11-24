@@ -125,6 +125,9 @@ constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domai
 // A point of a point set drawn as glyphs (glyphs.h), keyed by the representation: what its glyph picks as. The index is
 // the point.
 constexpr PickingDomainID PickingDomain_Glyph = HASH_STR_LIT64("picking domain point glyph");
+// What md_render drew (md_render_bridge.h): one index, which its pixels in the G-buffer hold; a hit of it is resolved
+// to what is there (md_render_bridge_resolve_hit), an atom, a bond, a segment, ..., in their domains
+constexpr PickingDomainID PickingDomain_MdRender = HASH_STR_LIT64("picking domain md_render");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection

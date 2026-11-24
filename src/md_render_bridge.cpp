@@ -65,6 +65,7 @@ struct MdRenderBridge {
     uint32_t             pending = 0;          // MolBit_ flags not yet taken up
     bool                 updated = false;      // the per-frame block holds the positions
     int64_t              regroup_frame = -1;   // the trajectory frame of the last regroup
+    double               time = 0.0;           // md_render's: one per update of the positions, the velocities' unit
     md_gpu_addr_t        secondary = 0;        // int32 per protein backbone segment
     uint32_t             secondary_count = 0;
     uint64_t             secondary_hash = 0;
@@ -83,7 +84,12 @@ struct MdRenderBridge {
     // The GL merge
     GLuint program = 0;
     GLuint vao = 0;
-    GLint  loc_depth = -1, loc_color = -1, loc_surface = -1, loc_size = -1, loc_dim = -1, loc_still = -1;
+    GLint  loc_depth = -1, loc_color = -1, loc_surface = -1, loc_size = -1, loc_dim = -1, loc_still = -1, loc_index = -1;
+
+    // md_render's answers to the picks, the newest last, for the GL picking's hits of its index to find
+    static constexpr int PICKS = 8;
+    md_render_pick_t picks[PICKS] = {};
+    uint32_t         num_picks = 0;
 };
 
 static void* gl_loader(const char* name) {
@@ -124,6 +130,7 @@ uniform sampler2D u_surface;
 uniform ivec2 u_size;
 uniform float u_dim;      // the saturation of what is not selected; 1 while nothing is
 uniform float u_still;    // 1: md_render did not rasterise this frame, nothing of it moved
+uniform vec4  u_index;    // the picking index of what md_render drew (PickingDomain_MdRender), as encode_index has it
 
 layout(location = 0) out vec4 out_color;
 layout(location = 1) out vec4 out_normal;
@@ -160,7 +167,7 @@ void main() {
     out_normal     = vec4(encode_normal(oct_decode(s.xy)), 0.0, 0.0);
     // Pixels, y down, to the G-buffer's: of the uv, y up
     out_velocity   = u_still > 0.5 ? vec4(0.0) : vec4(s.z / float(u_size.x), -s.w / float(u_size.y), 0.0, 0.0);
-    out_atom_index = vec4(1.0);     // INVALID_PICKING_IDX
+    out_atom_index = u_index;
 }
 )";
 
@@ -192,6 +199,7 @@ static bool gl_init(MdRenderBridge* b, bool rect) {
     b->loc_size    = glGetUniformLocation(b->program, "u_size");
     b->loc_dim     = glGetUniformLocation(b->program, "u_dim");
     b->loc_still   = glGetUniformLocation(b->program, "u_still");
+    b->loc_index   = glGetUniformLocation(b->program, "u_index");
     glGenVertexArrays(1, &b->vao);
     return true;
 }
@@ -328,7 +336,7 @@ static bool ensure_system(MdRenderBridge* b, ApplicationState* state) {
     }
     b->has_topo  = true;
     b->atom_count = n;
-    b->dynamic   = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, b->topo.dynamic_size).gpu;
+    b->dynamic   = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, b->topo.dynamic_size_velocity).gpu;    // velocities derived
     b->positions = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, (size_t)n * 12).gpu;
     b->selection = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, bitset_words32(n) * 4).gpu;
     b->highlight = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, bitset_words32(n) * 4).gpu;
@@ -352,6 +360,9 @@ static md_render_mol_atoms_t atoms_of(const MdRenderBridge* b, const Application
     a.selection = b->selection;
     a.highlight = b->highlight;
     md_render_mol_frame_cell(a.cell, &state->mold.state.unitcell);
+    // The velocities: the displacement since the last update at the minimum image, per update (time counts them),
+    // so that what moved across the cell moves by what is left of it rather than streaking over the system
+    a.velocity_dt = 1.0f;
     return a;
 }
 
@@ -377,12 +388,15 @@ static bool take_up(MdRenderBridge* b, ApplicationState* state) {
             b->regroup_frame = frame;
         }
         if (dirty & MolBit_ResetBackboneHistory) flags |= MD_RENDER_MOL_UPDATE_RESET_BACKBONE;
+        // A jump (a seek, another trajectory) is not a motion: at rest
+        if (dirty & (MolBit_ClearVelocity | MolBit_ResetBackboneHistory)) flags |= MD_RENDER_MOL_UPDATE_RESET_VELOCITY;
         const md_render_mol_atoms_t atoms = atoms_of(b, state);
         if (!md_render_mol_update(b->mol, b->stream, &b->topo, b->dynamic, &atoms, flags, b->content)) {
             set_status(b, "md_render_mol could not update the positions (see the log)%s");
             return false;
         }
         b->updated = true;
+        b->time += 1.0;
     }
     return true;
 }
@@ -425,6 +439,8 @@ static bool active(const ApplicationState& state) {
     const MdRenderBridge* b = state.md_render_bridge;
     return state.md_render.enabled && b && b->ok && b->has_topo;
 }
+
+bool md_render_bridge_active(const ApplicationState& state) { return active(state); }
 
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
     if (!active(state)) return false;
@@ -649,6 +665,7 @@ void md_render_bridge_render(ApplicationState* state) {
     f.height = height;
     camera_of(&f.camera, f.jitter_offset, *state, width, height);
     f.jitter = MD_RENDER_JITTER_GIVEN;
+    f.time   = b->time;
     f.batches = b->batches;
     f.batch_count = (uint32_t)md_array_size(b->batches);
     for (int i = 0; i < MD_RENDER_CONTENT_COUNT; ++i) f.content[i] = b->content[i];
@@ -705,6 +722,13 @@ void md_render_bridge_merge(ApplicationState* state) {
     glUniform2i(b->loc_size, (GLint)b->width, (GLint)b->height);
     glUniform1f(b->loc_dim, selection ? MD_CLAMP(state->selection.color.saturation, 0.0f, 1.0f) : 1.0f);
     glUniform1f(b->loc_still, b->still ? 1.0f : 0.0f);
+    {
+        // Picked as what md_render found there (md_render_bridge_resolve_hit)
+        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_MdRender, 0) : nullptr;
+        const uint32_t idx = range ? range->beg : INVALID_PICKING_IDX;
+        glUniform4f(b->loc_index, (float)(idx & 0xFF) / 255.0f, (float)((idx >> 8) & 0xFF) / 255.0f, (float)((idx >> 16) & 0xFF) / 255.0f, (float)(idx >> 24) / 255.0f);
+    }
     glBindVertexArray(b->vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -717,6 +741,99 @@ void md_render_bridge_merge(ApplicationState* state) {
     if (b->fresh) {
         for (SharedTex* s : t) md_gpu_gl_end_read(&s->gl);
         b->fresh = false;
+    }
+}
+
+// ---- Picking ------------------------------------------------------------------------------------------------------
+
+static void collect_picks(MdRenderBridge* b) {
+    md_render_pick_t p;
+    while (md_render_view_pick_result(b->view, &p)) {
+        if (b->num_picks == MdRenderBridge::PICKS) {
+            memmove(b->picks, b->picks + 1, sizeof(b->picks[0]) * (MdRenderBridge::PICKS - 1));
+            b->num_picks -= 1;
+        }
+        b->picks[b->num_picks++] = p;
+    }
+}
+
+void md_render_bridge_pick(ApplicationState* state, float x, float y) {
+    MdRenderBridge* b = state->md_render_bridge;
+    if (!active(*state) || !b->exported) return;
+    collect_picks(b);
+    const int px = (int)x, py = (int)y;
+    if (px < 0 || py < 0 || px >= (int)b->width || py >= (int)b->height) return;
+    md_render_view_pick(b->stream, b->view, (uint32_t)px, b->height - 1 - (uint32_t)py);     // rows from the top
+}
+
+// The hit as the domain's: its index in the domain's range of the frame
+static void set_hit(const ApplicationState& state, PickingHit* hit, PickingDomainID domain, uint64_t key, uint32_t local) {
+    const PickingSpace* space = picking_handler_find_space(state.picking_handler, hit->frame_idx);
+    const PickingRange* range = space ? picking_space_find_range(*space, domain, key) : nullptr;
+    hit->domain    = domain;
+    hit->key       = key;
+    hit->local_idx = local;
+    hit->raw_idx   = range && local < range->end - range->beg ? range->beg + local : INVALID_PICKING_IDX;
+}
+
+void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
+    if (!hit || hit->domain != PickingDomain_MdRender) return;
+    MdRenderBridge* b = state->md_render_bridge;
+    const md_render_pick_t* found = nullptr;
+    if (active(*state)) {
+        collect_picks(b);
+        const uint32_t px = (uint32_t)hit->surface_coord.x, py = b->height - 1 - (uint32_t)hit->surface_coord.y;
+        for (uint32_t i = b->num_picks; i-- > 0;) {
+            if (b->picks[i].x == px && b->picks[i].y == py) { found = &b->picks[i]; break; }
+        }
+    }
+    md_render_mol_hit_t mh = {};
+    if (!found || !md_render_mol_decode_pick(found, &mh) || mh.kind == MD_RENDER_MOL_HIT_NONE) {
+        // Not known yet (or no more): nothing, rather than what md_render drew there taken for something else
+        hit->domain = 0;
+        hit->key = 0;
+        hit->local_idx = 0;
+        hit->raw_idx = INVALID_PICKING_IDX;
+        return;
+    }
+    const md_system_t& sys = state->mold.sys;
+    switch (mh.kind) {
+    case MD_RENDER_MOL_HIT_BOND: {
+        // As md_gl's: the middle half of a bond picks as the bond, the quarters at its ends as their atoms
+        const md_atom_pair_t pair = sys.bond.pairs[mh.bond];
+        const md_float3_t* xyz = state->mold.state.xyz;
+        md_float3_t p = {mh.position[0], mh.position[1], mh.position[2]};
+        const size_t copies = md_array_size(state->view.periodic_transforms);
+        if (copies > 1 && mh.instance < copies) {   // a periodic image: back to the positions' place
+            const md_float4x4_t& T = state->view.periodic_transforms[mh.instance];
+            p = p - md_float3_set(T.elem[3][0], T.elem[3][1], T.elem[3][2]);
+        }
+        const md_float3_t a = xyz[pair.idx[0]], ab = xyz[pair.idx[1]] - a;
+        const float len2 = md_float3_dot(ab, ab);
+        const float t = len2 > 0.0f ? md_float3_dot(p - a, ab) / len2 : 0.5f;
+        if (t < 0.25f || t > 0.75f) {
+            set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
+        } else if (mh.bond < sys.bond.count) {
+            set_hit(*state, hit, PickingDomain_Bond, 0, mh.bond);
+        } else {
+            // An interaction over the sticks of a licorice: of the representation's range of them
+            set_hit(*state, hit, PickingDomain_Bond, mh.rep_key - 1, (uint32_t)(mh.bond - sys.bond.count));
+        }
+        break;
+    }
+    case MD_RENDER_MOL_HIT_BACKBONE:
+        set_hit(*state, hit, PickingDomain_BackboneSegment, 0, mh.segment);
+        break;
+    case MD_RENDER_MOL_HIT_RING:
+        set_hit(*state, hit, PickingDomain_Ring, 0, mh.ring);
+        break;
+    case MD_RENDER_MOL_HIT_CHAIN_GAP:
+        set_hit(*state, hit, PickingDomain_ChainGap, 0, mh.residue);
+        break;
+    default:
+        // An atom, or what stands for one: a lipid's sphere or tube, a nucleotide's part, a residue's sphere
+        set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
+        break;
     }
 }
 
@@ -817,7 +934,10 @@ const char* md_render_bridge_status(const ApplicationState& state) {
 bool md_render_bridge_enable(ApplicationState* state, bool enable) { (void)state; return !enable; }
 void md_render_bridge_destroy(ApplicationState*) {}
 const char* md_render_bridge_status(const ApplicationState&) { return "Built without md_gpu (MD_ENABLE_GPU)"; }
+bool md_render_bridge_active(const ApplicationState&) { return false; }
 bool md_render_bridge_draws(const ApplicationState&, const Representation&) { return false; }
+void md_render_bridge_pick(ApplicationState*, float, float) {}
+void md_render_bridge_resolve_hit(ApplicationState*, PickingHit*) {}
 void md_render_bridge_rep_colors(ApplicationState*, const Representation&, const uint32_t*, size_t) {}
 void md_render_bridge_buffers(ApplicationState*, uint32_t) {}
 void md_render_bridge_render(ApplicationState*) {}

@@ -19,6 +19,7 @@
 
 struct ApplicationState;
 struct Representation;
+struct PickingHit;
 struct MdRenderBridge;
 
 // On (made if it is not yet) or off. False when it cannot be had; then md_render_bridge_status says why
@@ -27,8 +28,18 @@ void md_render_bridge_destroy(ApplicationState* state);
 // What it is doing, or why it is not
 const char* md_render_bridge_status(const ApplicationState& state);
 
+// Whether md_render draws (what it can) this frame
+bool md_render_bridge_active(const ApplicationState& state);
 // Whether md_render draws the representation this frame: then md_gl leaves it (draw_representations_opaque)
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep);
+
+// Picking. Where md_render's surface is nearest, the G-buffer's picking target holds the one index of
+// PickingDomain_MdRender. Each frame the GL picking reads a pixel, md_render is asked about the same one (pick, with the
+// pixel as the GL readback has it: of the G-buffer, from the bottom), and a hit of that index read back is resolved to
+// what md_render found there (resolve_hit): an atom, a bond, a segment of the cartoon, a ring, a gap, in their domains,
+// as md_gl's would be. Both arrive a frame or two later; a hit md_render has no answer for yet is none.
+void md_render_bridge_pick(ApplicationState* state, float x, float y);
+void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit);
 
 // The colours of a representation's atoms as md_gl gets them, which also say which it shows (alpha 0: not shown)
 void md_render_bridge_rep_colors(ApplicationState* state, const Representation& rep, const uint32_t* colors, size_t count);
