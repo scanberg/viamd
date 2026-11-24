@@ -44,6 +44,7 @@ enum : EventType {
 
 	EventType_ViamdHighlightMaskChanged		= HASH_STR_LIT("VIAMD Highlight Mask Changed"),
 	EventType_ViamdSelectionMaskChanged		= HASH_STR_LIT("VIAMD Selection Mask Changed"),
+	EventType_ViamdGroupsChanged			= HASH_STR_LIT("VIAMD Groups Changed"),			// The system's groups changed: a file of groups loaded, the user's edited (md_group_data_t::version)
 	EventType_ViamdRepresentationChanged	= HASH_STR_LIT("VIAMD Representation Changed"),		// Called when representations have been modified
 
     // System state corresponds to the transient portion of the system i.e. atom coordinates + unitcell, which can be modified by a script or by a trajectory frame change.
