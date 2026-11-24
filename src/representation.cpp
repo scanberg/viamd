@@ -1,6 +1,7 @@
 ﻿#define IMGUI_DEFINE_MATH_OPERATORS
 
 #include <representation.h>
+#include <md_render_bridge.h>
 #include <field.h>
 
 #include <md_system.h>
@@ -977,6 +978,7 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         filter_colors(colors, num_atoms, rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
         md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
+        md_render_bridge_rep_colors(state, *rep, colors, num_atoms);
         representation_set_weak_bonds(state, rep);
         rep->glyphs_shown = false;
         if (rep->type == RepresentationType::Cartoon) {

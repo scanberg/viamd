@@ -1501,7 +1501,14 @@ struct ApplicationState {
     // Running out falls back to blocking.
     static constexpr int GPU_VOLUME_JOB_SLOTS = 8;
     GpuVolumeJob gpu_volume_jobs[GPU_VOLUME_JOB_SLOTS] = {};
+
+    // The molecular representations of the main view drawn by md_render instead of md_gl (md_render_bridge.h), when
+    // md_render.enabled and the device can share textures with the GL context; null until it is first enabled
+    struct MdRenderBridge* md_render_bridge = nullptr;
 #endif
+    struct {
+        bool enabled = false;       // Debug window: md_render draws what it can of the main view (experimental)
+    } md_render;
 
     struct {
         md_allocator_i* frame = nullptr;

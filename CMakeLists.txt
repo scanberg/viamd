@@ -191,6 +191,8 @@ set(SRC_FILES
     src/implot_widgets.cpp
     src/loader.cpp
     src/main.cpp
+    src/md_render_bridge.cpp
+    src/md_render_bridge.h
     src/plot_series.cpp
     src/plot_periodic.cpp
     src/plot_periodic_core.cpp

@@ -50,6 +50,7 @@
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
 #include <gpu_job.h>
+#include <md_render_bridge.h>
 #include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
@@ -856,6 +857,12 @@ int main(int argc, char** argv) {
         md_gto_int_gpu_initialize(state.gpu_device);
         // Isosurface meshes (the mesh rendering mode): kernels made on the first extraction
         md_gto_iso_gpu_initialize(state.gpu_device);
+
+        // The representations drawn by md_render, when asked for from the start
+        const char* mdr = getenv("VIAMD_MD_RENDER");
+        if (mdr && mdr[0] && mdr[0] != '0' && !md_render_bridge_enable(&state, true)) {
+            VIAMD_LOG_ERROR("md_render: %s", md_render_bridge_status(state));
+        }
     }
 #endif
 
@@ -1787,6 +1794,7 @@ int main(int argc, char** argv) {
         // A queued readback writes into a GL texture and frees its staging memory, so nothing
         // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
+        md_render_bridge_destroy(&state);
         system_gpu_data_free(&state);
         md_gto_int_gpu_shutdown();
         md_gto_iso_gpu_shutdown();
@@ -5821,6 +5829,13 @@ static void draw_debug_window(ApplicationState* data) {
         ImGuiID hover  = ImGui::GetHoveredID();
         ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
 
+        // The representations drawn by md_render (md_render_bridge.h)
+        bool mdr = data->md_render.enabled;
+        if (ImGui::Checkbox("Draw with md_render (experimental)", &mdr)) {
+            md_render_bridge_enable(data, mdr);
+        }
+        ImGui::TextDisabled("md_render: %s", md_render_bridge_status(*data));
+
         ImGui::Text("Mouse Pos: (%.3f, %.3f)", ImGui::GetMousePos().x, ImGui::GetMousePos().y);
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
         ImGui::Text("Camera Orientation: (%g, %g, %g, %g)", data->view.camera.orientation.x, data->view.camera.orientation.y, data->view.camera.orientation.z, data->view.camera.orientation.w);
@@ -7183,6 +7198,7 @@ static void update_md_buffers(ApplicationState* data) {
     if (data->mold.dirty_gpu_buffers & ~MolBit_DirtyFlags) {
         data->mold.gpu_scene_version += 1;
     }
+    md_render_bridge_buffers(data, data->mold.dirty_gpu_buffers);
 
     if (data->mold.dirty_gpu_buffers & (MolBit_DirtyPosition | MolBit_ClearVelocity)) {
         // Derived from the positions and velocities of the atoms below, when a cartoon shows them
@@ -7495,6 +7511,8 @@ static uint64_t scene_key(const ApplicationState* state) {
 // render() presents
 static void render_scene(ApplicationState* state, bool do_screenshot) {
     update_view_param(state);
+    // Issued first, to run beside what GL draws until it is merged
+    md_render_bridge_render(state);
 
     gbuffer_clear(&state->gbuffer);
 
@@ -7570,6 +7588,8 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     PUSH_GPU_SECTION("Draw Opaque")
     glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
     draw_representations_opaque(state);
+    md_render_bridge_merge(state);
+    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
     viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
     POP_GPU_SECTION()
 
@@ -8075,6 +8095,8 @@ static void draw_representations_opaque(ApplicationState* state) {
     md_array(md_gl_draw_op_t) glyph_ops = 0;
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
+        // md_render's (md_render_bridge_merge puts it into the G-buffer)
+        if (md_render_bridge_draws(*state, rep)) continue;
 
         if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
