@@ -4266,7 +4266,7 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
     job->rb     = rb;
     job->size   = size;
 
-    if (!md_gpu_launch_host_fn(state->gpu_stream, gpu_volume_job_complete, job)) {
+    if (!md_gpu_sync_on_complete(state->gpu_device, md_gpu_stream_record(state->gpu_stream), gpu_volume_job_complete, job)) {
         // No callback means nothing would ever free rb or fill the texture, so finish this one
         // synchronously instead of leaking it.
         MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
