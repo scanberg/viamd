@@ -267,7 +267,8 @@ struct Layer {
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };
     float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
 
-    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    ImPlotColormap colormap = ImPlotColormap_Spectral;     // Of time: bright against the plots' dark background
+    ImPlotColormap density_colormap = ImPlotColormap_Viridis;  // Of a heatmap: sequential, as a density is
     ImPlotColormap structure_colormap = ImPlotColormap_Deep;    // Of points coloured by structure: in turn, by default
     bool     log_scale = false;
 
@@ -759,6 +760,7 @@ struct Shapespace : viamd::EventHandler {
         md_memcpy(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
+        l->density_colormap = src.density_colormap;
         l->structure_colormap = src.structure_colormap;
         l->log_scale = src.log_scale;
         l->point_coloring = src.point_coloring;
@@ -1114,9 +1116,11 @@ struct Shapespace : viamd::EventHandler {
         e.smoothed_window = smoothing;
     }
 
-    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own
+    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own.
+    // Of the window last smoothed over until this one's are made (update_smoothed): not its own shapes meanwhile, which
+    // would flicker in and out of the smoothed ones as the window is changed.
     const md_float2_t* eval_shapes(const Evaluation& e) const {
-        if (smoothing > 1 && e.smoothed && e.smoothed_window == smoothing) return e.smoothed->data();
+        if (smoothing > 1 && e.smoothed) return e.smoothed->data();
         return e.coords;
     }
 
@@ -1456,6 +1460,7 @@ struct Shapespace : viamd::EventHandler {
             if (l.bandwidth > 0.0f) viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
             else                    viamd::write_str(state, MD_STR_LIT("Bandwidth"), MD_STR_LIT("auto"));
             viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_str(state, MD_STR_LIT("DensityColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.density_colormap)));
             viamd::write_str(state, MD_STR_LIT("StructureColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.structure_colormap)));
             viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
             static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("structure"), MD_STR_LIT("time") };
@@ -1557,6 +1562,7 @@ struct Shapespace : viamd::EventHandler {
             while (viamd::next_entry(ident, arg, state)) {}
             return;
         }
+        bool has_colormap = false, has_density_colormap = false;
         while (viamd::next_entry(ident, arg, state)) {
             md_str_t s = {};
             if (md_str_eq_cstr(ident, "Name")) {
@@ -1612,6 +1618,13 @@ struct Shapespace : viamd::EventHandler {
                 md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
+                has_colormap = cm >= 0;
+            } else if (md_str_eq_cstr(ident, "DensityColormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                md_str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->density_colormap = cm;
+                has_density_colormap = true;
             } else if (md_str_eq_cstr(ident, "StructureColormap") && viamd::extract_str(s, arg)) {
                 char name[64];
                 md_str_copy_to_char_buf(name, sizeof(name), s);
@@ -1629,6 +1642,8 @@ struct Shapespace : viamd::EventHandler {
                 viamd::extract_flt(l->trajectory_width, arg);
             }
         }
+        // Of a workspace from when a heatmap was in the colours of time: as it was
+        if (has_colormap && !has_density_colormap) l->density_colormap = l->colormap;
         sanitize_layer(*l);
         if (!selected_layer) selected_layer = l->id;
     }
@@ -1644,7 +1659,8 @@ struct Shapespace : viamd::EventHandler {
         l.trajectory_width = MD_CLAMP(l.trajectory_width, 0.5f, 6.0f);
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
-        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Spectral;
+        if (l.density_colormap < 0 || l.density_colormap >= ImPlot::GetColormapCount()) l.density_colormap = ImPlotColormap_Viridis;
         if (l.structure_colormap < 0 || l.structure_colormap >= ImPlot::GetColormapCount()) l.structure_colormap = ImPlotColormap_Deep;
     }
 
@@ -1729,7 +1745,7 @@ struct Shapespace : viamd::EventHandler {
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
-        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.density_colormap, l.log_scale);
         density_map_draw_levels(d, l.result, 0, l.levels, l.num_levels);
         density_map_draw_fills_from(d, l.color);
         d->content = l.shown_hash;
@@ -1771,6 +1787,7 @@ struct Shapespace : viamd::EventHandler {
         md_bitset_t set = {};                    // The layer's frames (for this frame); empty for the frame shown
         uint32_t step = 1;
         bool     current = false;
+        bool     smoothed = false;               // The shapes are smoothed over time (smoothing)
         const md_bitset_t* structures = nullptr; // Of the points, when not the layer's (smoothed, of the frame before)
         // Of a window narrower than the layer's frames: the frames the paths would join next past its ends (the ones
         // drawn were the window wider), UINT32_MAX when none. Their points are not of the source: the paths are cut at
@@ -1803,6 +1820,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             ps->structures = l.window_structs;
             return true;
         }
@@ -1826,6 +1844,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             return true;
         }
         if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
@@ -1872,6 +1891,7 @@ struct Shapespace : viamd::EventHandler {
         }
         *ps = PointSource{};
         ps->coords = eval_shapes(*l.eval);
+        ps->smoothed = ps->coords != l.eval->coords;
         ps->stride = nf;
         ps->num_structures = l.eval->num_structures;
         ps->frames = list;
@@ -2044,6 +2064,7 @@ struct Shapespace : viamd::EventHandler {
             else          ImGui::TextDisabled("frame %u  \xc2\xb7  click to go there", h.frame);
             if (h.next > h.frame + 1) ImGui::TextDisabled("standing for the frames to %u, which are not drawn", h.next - 1);
         }
+        if (ps.smoothed) ImGui::TextDisabled(ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
         char label[128];
         layer_label(label, sizeof(label), l);
         ImGui::TextDisabled("%s", label);
@@ -2346,6 +2367,11 @@ struct Shapespace : viamd::EventHandler {
             density_map_plot_canvas(render_densities());
             // Nothing hovered while it is panned (plot_input.h)
             draw_points(plot_input_hovered());
+            {
+                ImPlot::PushPlotClipRect();
+                draw_smoothing_badge(ImPlot::GetPlotDrawList(), ImPlot::GetPlotPos());
+                ImPlot::PopPlotClipRect();
+            }
 
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
@@ -2582,6 +2608,47 @@ struct Shapespace : viamd::EventHandler {
         time_window_frames(&fb, &fe);
         if (fe > fb) ImGui::SetItemTooltip("Frames %u to %u, %u frames. Drag the ends or ctrl-click to type; right-click for all of it.", fb, fe - 1, fe - fb);
         else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click for all of it.");
+    }
+
+    // In a corner of a plot, while what it shows is smoothed over time: said with the data, so that no view of it (a
+    // screenshot of the plot alone) passes for the shapes of the frames
+    void draw_smoothing_badge(ImDrawList* dl, ImVec2 corner) const {
+        if (smoothing <= 1 || run_num_frames(app) < 2) return;
+        char text[64];
+        snprintf(text, sizeof(text), ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
+        const ImVec2 pad(5.0f, 2.0f);
+        const ImVec2 p0 = corner + ImVec2(6.0f, 6.0f);
+        const ImVec2 p1 = p0 + ImGui::CalcTextSize(text) + pad * 2.0f;
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 3.0f);
+        dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_ButtonActive), 3.0f);
+        dl->AddText(p0 + pad, ImGui::GetColorU32(ImGuiCol_Text), text);
+    }
+
+    // The smoothing over time, in the toolbar: in sight, as it changes what every point is. Marked while it is on.
+    void draw_smoothing_control() {
+        const bool on = smoothing > 1;
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        }
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+        if (ImGui::SliderInt("##smoothing", &smoothing, 1, MAX_SMOOTHING, on ? ICON_FA_WAVE_SQUARE " %d" : ICON_FA_WAVE_SQUARE " off",
+                             ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
+            smoothing |= 1;     // Centred: odd
+            // Made now, before the points are drawn this frame: not at the next update
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].eval) update_smoothed(*layers[i].eval);
+            }
+        }
+        if (on) ImGui::PopStyleColor(2);
+        if (ImGui::BeginPopupContextItem("##smoothing_menu")) {
+            if (ImGui::MenuItem("Off", nullptr, false, on)) smoothing = 1;
+            ImGui::EndPopup();
+        }
+        ImGui::SetItemTooltip("Smoothing over time: a moving average of the shapes over this many frames, centred.\n"
+                              "Of every layer and view alike: the points and densities in 2D, the paths in 3D, the points\n"
+                              "of the frame shown, what is selected and what is exported. As smooth(shape_weights(...), n)\n"
+                              "in a script. Ctrl-click to type; right-click to turn it off.");
     }
 
     void draw_plot3d() {
@@ -3255,6 +3322,7 @@ struct Shapespace : viamd::EventHandler {
         // Over the plot: the point under the pointer, the box
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->PushClipRect(plot_rect.Min, plot_rect.Max, true);
+        draw_smoothing_badge(dl, plot_rect.Min);
         const md_float4_t sel_c = app->selection.color.selection.outline;
         const md_float4_t hl_c = app->selection.color.highlight.outline;
         if (hover.layer >= 0) {
@@ -3349,10 +3417,14 @@ struct Shapespace : viamd::EventHandler {
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
         const md_float2_t* shapes = eval_shapes(*eval);     // As shown: smoothed, when they are
+        // Said in every column's label, so that a file of smoothed shapes cannot be taken for the shapes of the frames
+        char sm[48] = "";
+        if (shapes != eval->coords) snprintf(sm, sizeof(sm), " (smoothed over %d frames)", smoothing);
         for (size_t s = 0; s < ns; ++s) {
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
+            static const char* const kinds[3] = { "linear", "planar", "isotropic" };
+            for (int k = 0; k < 3; ++k) {
+                md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "%s %zu%s", kinds[k], s + 1, sm) : md_alloc_printf(temp, "%s%s", kinds[k], sm), temp);
+            }
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
         const double* time = run_frame_times(app);
@@ -3425,6 +3497,10 @@ struct Shapespace : viamd::EventHandler {
             ImGui::SameLine();
             draw_time_window_controls();
         }
+        if (run_num_frames(app) >= 2) {
+            ImGui::SameLine();
+            draw_smoothing_control();
+        }
 
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
@@ -3438,13 +3514,6 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Grid of equal weights", &show_grid);
-            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-            if (ImGui::SliderInt("Smoothing", &smoothing, 1, MAX_SMOOTHING, smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
-                smoothing |= 1;     // Centred: odd
-            }
-            ImGui::SetItemTooltip("A moving average of the shapes over this many frames, centred, of every layer and view alike:\n"
-                                  "the points and densities in 2D, the paths in 3D, the points of the frame shown, what is selected\n"
-                                  "and what is exported. As smooth(shape_weights(...), n) in a script.");
             ImGui::SeparatorText("A selection selects");
             for (int k = 0; k < SelectTarget_Count; ++k) {
                 if (ImGui::RadioButton(select_target_names[k], select_target == k)) select_target = (SelectTarget)k;
@@ -3569,7 +3638,8 @@ struct Shapespace : viamd::EventHandler {
         const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
         const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
         const bool by_map = l.style == LayerStyle_Points && l.point_coloring != PointColoring_Layer;
-        const ImPlotColormap sw_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
+        const ImPlotColormap sw_map = l.style != LayerStyle_Points ? l.density_colormap
+                                    : l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
         density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, sw_map, l.visible ? 1.0f : 0.35f);
 
         const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
@@ -3812,8 +3882,11 @@ struct Shapespace : viamd::EventHandler {
             prop::row("levels", "The contours enclose these fractions of the samples (highest density regions)");
             density_map_levels_editor(l.levels, &l.num_levels);
         }
-        if (l.style == LayerStyle_Heatmap || (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time)) {
-            prop::row("colormap");
+        if (l.style == LayerStyle_Heatmap) {
+            prop::row("colormap", "Of the density");
+            ImPlot::ColormapSelection("##dcmap", &l.density_colormap);
+        } else if (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time) {
+            prop::row("colormap", "Of time: over all of the layer's frames");
             ImPlot::ColormapSelection("##cmap", &l.colormap);
         }
         if (l.style == LayerStyle_Heatmap) {
