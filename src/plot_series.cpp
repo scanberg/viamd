@@ -481,6 +481,27 @@ static const double* timeline_times(ApplicationState* app, const md_attributes_t
     return (const double*)cache_convert(app, table, axis, run_unit, MD_ATTRIBUTE_TYPE_F64, out_count);
 }
 
+// The run of the first system a path is under ("<run>/..."), NULL for none
+static const SystemRun* run_of_path(const SystemContext& sc, md_str_t path) {
+    for (size_t i = 0; i < sc.num_runs; ++i) {
+        const md_str_t run = md_str_from_cstr(sc.runs[i]->path);
+        if (!md_str_empty(run) && md_str_begins_with(path, run) && path.len > run.len && path.ptr[run.len] == '/') return sc.runs[i];
+    }
+    return nullptr;
+}
+
+// Times on the clock of what is sampled along a run of the first system: moved by the run's offset (clock.h), as the
+// run's frames are. In place without one, a copy for this frame with one.
+static const double* shifted_by_run(ApplicationState* app, const double* x, size_t count, const SystemRun* run) {
+    if (!x || !run) return x;
+    const ClockAxis a = run_clock_axis(app, app->system_context, run);
+    const double shift = clock_axis_timed(a) ? a.offset * a.scale : 0.0;
+    if (shift == 0.0) return x;
+    double* shifted = (double*)md_alloc(app->allocator.frame, sizeof(double) * count);
+    for (size_t i = 0; i < count; ++i) shifted[i] = x[i] + shift;
+    return shifted;
+}
+
 // The slot of the script property under key, as it is now. NULL while there is none: not asked for, or not a
 // distribution or a volume. The values stay put until the slot is next read. A period's slot is asked for by what shows
 // it (series_period_slot), and let go when nothing has read it for a while (series_cache_gc).
@@ -716,12 +737,14 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
         size_t count = 0;
         x = timeline_times(app, &app->system_context.data.sys.attributes, axis, &count);
         if (!x || count != n) return false;
+        x = shifted_by_run(app, x, count, system_run(app->system_context));
     } else {
         const md_attribute_t* axis = md_attributes_axis(table, src);
         if (!axis || axis->format.shape[0] != n) return false;
         size_t count = 0;
         x = timeline_times(app, table, axis, &count);
         if (!x || count != n) return false;
+        x = shifted_by_run(app, x, count, run_of_path(app->system_context, path));
     }
 
     // ### y

@@ -4273,6 +4273,15 @@ static void draw_timeline_window(ApplicationState* data) {
         const SystemInstance* ref = clock_reference(data);
         const double* frame_times = ref ? run_frame_times(*ref->sys, instance_run(*ref)) : nullptr;
         const int     num_frames  = ref ? (int)run_num_frames(*ref->sys, instance_run(*ref)) : 0;
+        if (ref && frame_times && num_frames > 0) {
+            // Where its frames are on the clock: moved by its run's offset
+            const ClockAxis a = run_clock_axis(data, *ref->sys, instance_run(*ref));
+            if (a.offset != 0.0) {
+                double* t = (double*)md_alloc(data->allocator.frame, sizeof(double) * num_frames);
+                for (int i = 0; i < num_frames; ++i) t[i] = clock_axis_time(a, (double)i);
+                frame_times = t;
+            }
+        }
         double min_time = 0.0, max_time = 1.0;
         if (num_frames > 0) clock_span(data, &min_time, &max_time);
 
