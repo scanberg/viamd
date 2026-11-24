@@ -2638,13 +2638,12 @@ void draw_load_dataset_window(ApplicationState* data) {
             // does not tell (Amber's mdout, prmtop and inpcrd have none, a .top may be Amber's)
             loader::LoaderState detected = {};
             if (state.path_is_valid) {
-                const SystemContext* target = state.new_system ? nullptr : system_find(*data, state.system);
-                loader::init(&detected, path, target ? &target->data.sys : nullptr);
+                loader::init(&detected, path);
             }
             state.loader_idx = (int)detected.type;
         }
 
-        // Into which system: one loaded (a structure replaces it, a trajectory becomes its run), or a new one
+        // Into which system: one loaded (a structure of its atoms joins it, a trajectory becomes its run), or a new one
         if (system_count(*data) > 0) {
             char preview[64] = "New system";
             if (!state.new_system) {
@@ -2776,7 +2775,7 @@ void draw_load_dataset_window(ApplicationState* data) {
             }
             // A loader other than the file would get on its own has to be stored with it in a workspace
             loader::LoaderState detected = {};
-            loader::init(&detected, path, target ? &target->data.sys : nullptr);
+            loader::init(&detected, path);
             if (type != detected.type) {
                 load_state.flags |= LoaderFlag_ExplicitType;
             }
@@ -7844,7 +7843,8 @@ static void draw_representations_opaque(SystemContext& sys) {
     ApplicationState* state = sys.app;
     MD_ASSERT(state);
 
-    if (sys.data.sys.atom.count == 0) {
+    // A system without coordinates (a topology alone) has nothing to draw
+    if (!system_drawn(sys)) {
         return;
     }
 
@@ -8276,7 +8276,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
     for (size_t s = 0; s < state->num_systems; ++s)
     for (size_t i = 0; i < md_array_size(state->systems[s]->representation.reps); ++i) {
         SystemContext& sys = *state->systems[s];
-        if (sys.data.sys.atom.count == 0) break;
+        if (!system_drawn(sys)) break;
         Representation& rep = sys.representation.reps[i];
         if (!representation_shown(sys, rep)) continue;
         if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface &&
@@ -8357,6 +8357,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 
 static void draw_representations_marks(SystemContext& sys) {
     ApplicationState* data = sys.app;
+    if (!system_drawn(sys)) return;
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
     // In the copies as the opaque pass draws them (the periodic images, an assembly), so the selected and highlighted

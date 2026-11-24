@@ -22,7 +22,7 @@ UTEST(viamd_loader, every_type_has_a_name_and_an_extension) {
         EXPECT_FALSE(md_str_empty(loader::type_ext(t)));
         /* A type that can load nothing would never be reachable. Coordinates without atoms are loaded for a
          * topology. */
-        EXPECT_NE(0u, loader::type_flags(t) & (LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_Supplemental | LoaderFlag_Coordinates));
+        EXPECT_NE(0u, loader::type_flags(t) & (LoaderFlag_System | LoaderFlag_Trajectory | LoaderFlag_Supplemental));
     }
 }
 
@@ -99,7 +99,7 @@ UTEST(viamd_loader, ase_trajectory_contains_a_system_and_a_run) {
     md_allocator_i* alloc = md_get_heap_allocator();
     md_system_t sys = {.alloc = alloc};
     md_system_state_t state = {.alloc = alloc};
-    ASSERT_TRUE(loader::load(&sys, &state, path, reader));
+    ASSERT_EQ(MD_LOAD_OK, loader::load(&sys, &state, path, reader));
     EXPECT_EQ(3u, sys.atom.count);
     ASSERT_TRUE(loader::publish_run(&sys, path, MD_STR_LIT("run/ase"), 0));
     EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/ase/atom/position")) != nullptr);
@@ -173,9 +173,9 @@ UTEST(viamd_loader, h5md_is_a_system_and_its_own_trajectory) {
     sys.alloc = arena;
     md_system_state_t sys_state = {};
     sys_state.alloc = arena;
-    ASSERT_TRUE(loader::load(&sys, &sys_state, path, state));
+    ASSERT_EQ(MD_LOAD_OK, loader::load(&sys, &sys_state, path, state));
     EXPECT_EQ(1577u, sys.atom.count);
-    EXPECT_LT(0u, sys.bond.count);
+    EXPECT_LT(0u, md_bond_list_count(&sys.given_bond));     // the bonds given: sys.bond is what inference makes of them
     EXPECT_TRUE(loader::publish_run(&sys, path, MD_STR_LIT("run/h5md"), 0));
     const md_attribute_t* time = md_attributes_find(&sys.attributes, MD_STR_LIT("run/h5md/time"));
     ASSERT_TRUE(time != NULL);
@@ -266,82 +266,20 @@ UTEST(viamd_loader, amber_files_are_told_by_their_contents) {
     /* .top is GROMACS' too: the contents say it is Amber's */
     loader::init(&s, MD_STR_LIT("viamd_test_water.top"));
     EXPECT_EQ((LoaderType)LoaderType_AMBER_PRMTOP, s.type);
-    EXPECT_NE(0u, s.flags & LoaderFlag_NeedsCoordinates);
+    EXPECT_NE(0u, s.flags & LoaderFlag_Topology);
     EXPECT_EQ(6u, loader::atom_count(MD_STR_LIT("viamd_test_water.top"), s));
     /* Amber's own names have no extension */
     loader::init(&s, MD_STR_LIT("prmtop"));
     EXPECT_EQ((LoaderType)LoaderType_AMBER_PRMTOP, s.type);
     loader::init(&s, MD_STR_LIT("inpcrd"));
     EXPECT_EQ((LoaderType)LoaderType_AMBER_RESTART, s.type);
-    EXPECT_NE(0u, s.flags & LoaderFlag_Coordinates);
+    EXPECT_NE(0u, s.flags & LoaderFlag_System);   // coordinates alone: a system of its atoms by their count
     EXPECT_EQ(6u, loader::atom_count(MD_STR_LIT("inpcrd"), s));
     /* NAMD writes a PDB file as .coor when binaryoutput is off */
     loader::init(&s, MD_STR_LIT("viamd_test_water.coor"));
     EXPECT_EQ((LoaderType)LoaderType_PDB, s.type);
 
     remove("viamd_test_water.top"); remove("prmtop"); remove("inpcrd"); remove("viamd_test_water.coor");
-}
-
-UTEST(viamd_loader, a_topology_loads_with_coordinates_from_any_of_their_files) {
-    ASSERT_TRUE(write_file("viamd_test_water.prmtop", water_prmtop));
-    ASSERT_TRUE(write_file("viamd_test_water.rst7", water_rst7));
-    ASSERT_TRUE(write_file("viamd_test_water.pdb", water_pdb));
-    ASSERT_TRUE(write_file("viamd_test_water.lammpstrj", water_lammpstrj));
-    md_allocator_i* arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
-
-    loader::LoaderState ls = {};
-    loader::init(&ls, MD_STR_LIT("viamd_test_water.prmtop"));
-    ASSERT_EQ((LoaderType)LoaderType_AMBER_PRMTOP, ls.type);
-
-    struct { const char* file; float x0; } coords[] = {
-        { "viamd_test_water.rst7", 1.0f },          // a restart
-        { "viamd_test_water.pdb", 2.0f },           // a structure file of the same atoms
-        { "viamd_test_water.lammpstrj", 3.0f },     // the first frame of a trajectory
-    };
-    for (size_t i = 0; i < MD_COUNTOF(coords); ++i) {
-        md_system_t sys = {};
-        sys.alloc = arena;
-        md_system_state_t state = {};
-        state.alloc = arena;
-        ls.coordinates = coords[i].file;
-        ASSERT_TRUE(loader::load(&sys, &state, MD_STR_LIT("viamd_test_water.prmtop"), ls));
-        EXPECT_EQ(6u, sys.atom.count);
-        EXPECT_EQ(6u, md_bond_list_count(&sys.given_bond));
-        ASSERT_TRUE(md_system_state_has_coords(&state));
-        EXPECT_NEAR(coords[i].x0, state.xyz[0].x, 1e-4f);
-        /* The run the trajectory was read through is gone again */
-        EXPECT_TRUE(md_attributes_find(&sys.attributes, MD_STR_LIT("run/__coordinates/time")) == nullptr);
-        md_system_free(&sys);
-    }
-
-    /* Without coordinates, or with those of other atoms, there is no system */
-    md_system_t sys = {};
-    sys.alloc = arena;
-    md_system_state_t state = {};
-    state.alloc = arena;
-    ls.coordinates = nullptr;
-    EXPECT_FALSE(loader::load(&sys, &state, MD_STR_LIT("viamd_test_water.prmtop"), ls));
-    ASSERT_TRUE(write_file("viamd_test_water.rst7", "water\n     3\n   1.0000000   1.0000000   1.0000000   1.9572000   1.0000000   1.0000000\n   0.7600000   1.9260000   1.0000000\n"));
-    ls.coordinates = "viamd_test_water.rst7";
-    EXPECT_FALSE(loader::load(&sys, &state, MD_STR_LIT("viamd_test_water.prmtop"), ls));
-    md_system_free(&sys);
-
-    /* Applied to the structure file's system instead: the topology fills it in */
-    md_system_t pdb = {};
-    pdb.alloc = arena;
-    md_system_state_t pdb_state = {};
-    pdb_state.alloc = arena;
-    loader::LoaderState ps = {};
-    loader::init(&ps, MD_STR_LIT("viamd_test_water.pdb"));
-    ASSERT_TRUE(loader::load(&pdb, &pdb_state, MD_STR_LIT("viamd_test_water.pdb"), ps));
-    md_system_infer(&pdb, &pdb_state, NULL);
-    ASSERT_TRUE(loader::load_supplemental(&pdb, MD_STR_LIT("viamd_test_water.prmtop"), ls, MD_STR_LIT("")));
-    EXPECT_EQ(6u, pdb.bond.count);
-    EXPECT_TRUE(md_attributes_find(&pdb.attributes, MD_STR_LIT("atom/charge")) != nullptr);
-    md_system_free(&pdb);
-
-    md_arena_allocator_destroy(arena);
-    remove("viamd_test_water.prmtop"); remove("viamd_test_water.rst7"); remove("viamd_test_water.pdb"); remove("viamd_test_water.lammpstrj");
 }
 
 UTEST(viamd_loader, trajectories_say_how_many_atoms_they_hold) {

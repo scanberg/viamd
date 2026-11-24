@@ -29,6 +29,7 @@
 #include <core/md_vec_math.h>
 
 #include <viamd.h>
+#include <drop_files.h>
 #include <representation.h>
 #include <system_scene.h>
 #include <script_editor.h>
@@ -1880,7 +1881,9 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
 
         md_float3_t aabb_min = {};
         md_float3_t aabb_max = {};
-        md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)sys.data.state.xyz, 0, nullptr, sys.data.state.num_atoms);
+        if (md_system_state_has_coords(&sys.data.state)) {
+            md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)sys.data.state.xyz, 0, nullptr, sys.data.state.num_atoms);
+        }
 
         const md_float3_t cell_ext = md_float3x3_mul_float3(A, md_float3_set1(1.0f));
         const float max_cell_ext = md_float3_reduce_max(cell_ext);
@@ -1892,7 +1895,7 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
 
         // The view goes to the system when it is the only one: one beside others is framed with them where it was
         // loaded from (load_file_into)
-        if (system_count(*data) <= 1) {
+        if (system_count(*data) <= 1 && md_system_state_has_coords(&sys.data.state)) {
             ViewTransform default_view = {};
             reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
             data->view.trackball_param.max_distance = MD_MAX(max_cell_ext, max_aabb_ext) * 10.0f;
@@ -2043,6 +2046,10 @@ void system_context_destroy(SystemContext* sys) {
     sys->data.sys.alloc = sys->data.state.alloc = nullptr;
 }
 
+bool system_drawn(const SystemContext& sys) {
+    return sys.data.sys.atom.count > 0 && md_system_state_has_coords(&sys.data.state);
+}
+
 bool system_loaded(const SystemContext& sys) {
     return sys.data.sys.atom.count > 0 || file_list_count(&sys.files) > 0;
 }
@@ -2118,6 +2125,12 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
     interrupt_async_tasks(state);
     free_trajectory_data(state, sys);
     state->animation.frame = 0;
+    // A system without coordinates (a topology alone) shows those of the frames: room for them
+    if (!md_system_state_has_coords(&sys.data.state)) {
+        const md_unitcell_t cell = sys.data.state.unitcell;
+        md_system_state_init(&sys.data.state, sys.data.sys.atom.count);
+        sys.data.state.unitcell = cell;
+    }
 
     // Publishing the run IS opening the trajectory: the run is named after the file, and its
     // positions are read from it frame by frame from here on.
@@ -2131,32 +2144,6 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
     return true;
 }
 
-// ## A topology and its coordinates, in either order (load_order.h): what loading is, for it
-
-// The application and the system loaded into
-struct LoadTarget {
-    ApplicationState* app;
-    SystemContext*    sys;
-};
-
-static LoadResult ops_load(void* user, md_str_t path, const loader::LoaderState& ls, FileRole role, bool opens_own_run) {
-    const LoadTarget* t = (const LoadTarget*)user;
-    return load_data(t->app, *t->sys, path, ls, role, opens_own_run);
-}
-static size_t ops_system_atoms(void* user) { return ((const LoadTarget*)user)->sys->data.sys.atom.count; }
-static size_t ops_run_frames(void* user) { return run_num_frames(*((const LoadTarget*)user)->sys); }
-static const FileList* ops_files(void* user) { return &((const LoadTarget*)user)->sys->files; }
-
-LoadResult load_data_from_file(ApplicationState* state, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state) {
-    LoadTarget target = {state, &sys};
-    LoadOps ops = {};
-    ops.user = &target;
-    ops.load = ops_load;
-    ops.system_atoms = ops_system_atoms;
-    ops.run_frames = ops_run_frames;
-    ops.files = ops_files;
-    return load_in_order(&state->files.pending, ops, filepath, load_state);
-}
 
 // ### INFERENCE IN THE BACKGROUND ###
 //
@@ -2361,26 +2348,136 @@ static void system_inference_free(SystemContext& sys) {
     inf.defaults_pending = false;
 }
 
-LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run) {
+// A system of its own joined to the atoms of sys (md_system_merge): its coordinates, its names, its bonds, ... as the
+// kinds go (md_io.h, JOINING). Inferred again after, in the background.
+static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_str_t path, const loader::LoaderState& load_state, const md_system_t* loaded, const md_system_state_t* loaded_state) {
+    md_allocator_i* arena = nullptr;
+    md_system_t file_sys = {};
+    md_system_state_t file_state = {};
+    if (!loaded) {
+        arena = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+        file_sys.alloc = arena;
+        file_state.alloc = arena;
+        if (loader::load(&file_sys, &file_state, path, load_state) != MD_LOAD_OK) {
+            VIAMD_LOG_ERROR("Failed to load molecular data from file '" MD_STR_FMT "'", MD_STR_ARG(path));
+            md_system_free(&file_sys);
+            md_arena_allocator_destroy(arena);
+            md_temp_trim();
+            return LoadResult_Failed;
+        }
+        loaded = &file_sys;
+        loaded_state = &file_state;
+    }
+
+    // The core is edited: what reads it stops, and the system is inferred again once it is joined
+    system_core_edit_begin(sys);
+    const bool had_coords = md_system_state_has_coords(&sys.data.state);
+    const bool joined = md_system_merge(&sys.data.sys, &sys.data.state, loaded, loaded_state);
+    if (arena) {
+        md_system_free(&file_sys);
+        md_arena_allocator_destroy(arena);
+    }
+    md_temp_trim();
+    system_core_changed(sys);
+    if (!joined) {
+        VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not of the atoms of '%s'", MD_STR_ARG(path), sys.name);
+        return LoadResult_Failed;
+    }
+
+    file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Supplement, state->allocator.persistent);
+    sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
+    sys.data.interpolate_system_state = true;
+    sys.run.last_interpolated_nearest_frame = -1;
+    state->script.compile_ir = true;
+    if (!had_coords && md_system_state_has_coords(&sys.data.state)) {
+        // Shown now that it has coordinates: framed as a system loaded is
+        reset_view_scene(&state->view.target, *state, state->view.camera.fov_y, state->view.region);
+    }
+    VIAMD_LOG_SUCCESS("Joined '" MD_STR_FMT "' to '%s'", MD_STR_ARG(path), sys.name);
+    return LoadResult_Joined;
+}
+
+// A system of its own built onto sys without atoms: a structure, a topology alone (without coordinates), coordinates
+// alone or a trajectory alone (of points)
+static LoadResult build_system(ApplicationState* state, SystemContext& sys, md_str_t path_to_file, const loader::LoaderState& load_state, bool opens_own_run, const md_system_t* loaded, const md_system_state_t* loaded_state) {
+    interrupt_async_tasks(state);
+    free_trajectory_data(state, sys);
+    free_system_data(state, sys);
+
+    // sys.alloc and state.alloc are already the dataset arena - set at startup and put
+    // back by free_system_data above. The loaded coordinates are the initial current state;
+    // inference copies them into sys.reference, so the two stay independent.
+    MD_ASSERT(sys.data.sys.alloc && sys.data.state.alloc == sys.data.sys.alloc);
+    const bool ok = loaded ? md_system_merge(&sys.data.sys, &sys.data.state, loaded, loaded_state)
+                           : loader::load(&sys.data.sys, &sys.data.state, path_to_file, load_state) == MD_LOAD_OK;
+    // A loader's scratch is in this thread's temp arenas (its read buffer, what it holds per block), which keep
+    // their pages once rewound: given back, as a load is large and is done
+    md_temp_trim();
+    if (!ok || sys.data.sys.atom.count == 0) {
+        VIAMD_LOG_ERROR("Failed to load molecular data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
+        return LoadResult_Failed;
+    }
+    VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
+
+    // Named after its file, until the user names it
+    {
+        const md_str_t stem = md_path_stem(path_to_file);
+        md_str_copy_to_char_buf(sys.name, sizeof(sys.name), stem);
+    }
+
+    // In the list before the system is initialized, so that what handles that sees what it was built from. A trajectory
+    // alone is the system's and its run's in one: it is recorded as the run it opens.
+    const bool trajectory = (load_state.flags & LoaderFlag_Trajectory) && !(load_state.flags & LoaderFlag_System);
+    if (!trajectory) file_list_record(&sys.files, file_entry_from(path_to_file, load_state), FileRole_System, state->allocator.persistent);
+    sys.files.atom_count = sys.data.sys.atom.count;
+
+    // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
+    // other models) itself, and infers no bond between atoms a topology gives all the bonds of
+    // (md_atom_data_t::bonds_complete). The colours of the particle types now, which the core is shown with
+    // (they are of the core); the rest in the background, put in place when it is done (system_inference_start)
+    md_system_infer_type_colors(&sys.data.sys);
+    sys.data.inference.pending = true;
+    init_system_data(state, sys);
+
+    // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run as well, and so is a
+    // trajectory alone. Here rather than by the caller, so that the run is there for what handles ViamdLoadData.
+    if (opens_own_run || trajectory) {
+        open_run(state, sys, path_to_file, load_state);
+    }
+    // After the run is opened, which interrupts what runs on the pool
+    system_inference_start(sys, nullptr);
+    return LoadResult_System;
+}
+
+LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run,
+                     const md_system_t* loaded, const md_system_state_t* loaded_state) {
     MD_ASSERT(state);
 
     LoadResult result = LoadResult_Failed;
     md_str_t path_to_file = md_path_make_canonical(filepath, state->allocator.frame);
     if (path_to_file) {
-        if (role == FileRole_Supplement || role == FileRole_Series) {
-            // Neither the system nor the trajectory is touched - this file only adds to what is
-            // already loaded, and the loader merges it into the system's attribute table. A
-            // component picks it up from there, off the ViamdLoadData event below.
+        // What the file is to the system: told by what each is, the role only telling a series apart (file_list.h)
+        const LoaderFlags flags = load_state.flags;
+        const bool has_atoms  = sys.data.sys.atom.count > 0;
+        const bool own_system = (flags & LoaderFlag_System) != 0;
+        const bool trajectory = (flags & LoaderFlag_Trajectory) && !own_system;
+        const bool series     = role == FileRole_Series || (flags & LoaderFlag_Temporal);
+        // Data of the system's atoms: a file which is no system of its own, or one which is that as well (an itp's
+        // molecules, the QM data of a region of them) when its check says it is of these atoms
+        const bool adds = has_atoms && !series && !trajectory &&
+                          (!own_system || ((flags & LoaderFlag_Supplemental) && loader::check(&sys.data.sys, path_to_file, load_state) == MD_LOAD_OK));
+
+        if (series || adds) {
+            const FileRole data_role = series ? FileRole_Series : FileRole_Supplement;
             const md_str_t run = md_str_from_cstr(sys.run.path);
-            if (role == FileRole_Supplement && sys.data.sys.atom.count == 0) {
+            if (!has_atoms) {
                 VIAMD_LOG_ERROR("'" MD_STR_FMT "' adds to a system; load the system first", MD_STR_ARG(path_to_file));
                 return LoadResult_Failed;
             }
-            if (role == FileRole_Series && md_str_empty(run)) {
+            if (series && md_str_empty(run)) {
                 VIAMD_LOG_ERROR("'" MD_STR_FMT "' holds data along a trajectory; load the trajectory first", MD_STR_ARG(path_to_file));
                 return LoadResult_Failed;
             }
-
             // The table is about to be written to, and worker threads read it: script evaluation
             // (attr() and its frames), the backbone task and playback's frame loads, all through
             // extraction contexts. The evaluations are interrupted, since the script is recompiled
@@ -2394,7 +2491,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
 
             const size_t num_atoms = sys.data.sys.atom.count;
             const uint64_t topology_version = sys.data.sys.topology_version;
-            if (loader::load_supplemental(&sys.data.sys, path_to_file, load_state, run)) {
+            if (loader::load(&sys.data.sys, &sys.data.state, path_to_file, load_state, run) == MD_LOAD_OK) {
                 // The contract of a supplement: it adds to the atoms, and never changes how many there are.
                 // What is kept by atom index (selections, user bonds, particle type edits, and all of it in a
                 // workspace) would silently apply to other atoms. The loaders check their file against the
@@ -2404,16 +2501,15 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
                     VIAMD_LOG_ERROR("'" MD_STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", MD_STR_ARG(path_to_file), num_atoms, sys.data.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&sys.files, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
+                file_list_record(&sys.files, file_entry_from(path_to_file, load_state), data_role, state->allocator.persistent);
 
-                // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the system
-                // is inferred again by it (md_itp_system_supplement, md_topology_system_supplement), all of what is
-                // derived in a new arena, so what is built of that is built again
+                // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the core
+                // changed, and the system is inferred again of it in the background (a load never infers)
                 sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
-                if (sys.data.sys.topology_version != topology_version) system_inferred_refresh(sys);
+                if (sys.data.sys.topology_version != topology_version) system_core_changed(sys);
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
-                if (role == FileRole_Series) {
+                if (data_role == FileRole_Series) {
                     const char* hint = (load_state.type == LoaderType_EDR) ? "edr/<term>" :
                                        (load_state.type == LoaderType_AMBER_ENERGY) ? "amber_energy/<term>" :
                                        (load_state.type == LoaderType_XVG) ? "xvg/<file>/<legend>" : "csv/<file>/<column>";
@@ -2424,70 +2520,24 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
             } else {
                 VIAMD_LOG_ERROR("Failed to load supplemental data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
             }
-        } else if (role == FileRole_System && (load_state.flags & LoaderFlag_NeedsCoordinates) && !(load_state.coordinates && load_state.coordinates[0])) {
-            state->files.pending.topology = file_entry_from(path_to_file, load_state);
-            VIAMD_LOG_INFO("'" MD_STR_FMT "' is a topology without coordinates; it waits for a restart, a structure file or a trajectory of its atoms", MD_STR_ARG(path_to_file));
-            return LoadResult_Pending;
-        } else if (role == FileRole_System) {
-            interrupt_async_tasks(state);
-            free_trajectory_data(state, sys);
-            free_system_data(state, sys);
-
-            // sys.alloc and state.alloc are already the dataset arena - set at startup and put
-            // back by free_system_data above. The loaded coordinates are the initial current state;
-            // inference copies them into sys.reference, so the two stay independent.
-            MD_ASSERT(sys.data.sys.alloc && sys.data.state.alloc == sys.data.sys.alloc);
-            if (!loader::load(&sys.data.sys, &sys.data.state, path_to_file, load_state)) {
-                VIAMD_LOG_ERROR("Failed to load molecular data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
-                md_temp_trim();
-                return LoadResult_Failed;
-            }
-            // A loader's scratch is in this thread's temp arenas (its read buffer, what it holds per block), which keep
-            // their pages once rewound: given back, as a load is large and is done
-            md_temp_trim();
-            result = LoadResult_System;
-            VIAMD_LOG_SUCCESS("Successfully loaded molecular data from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
-
-            // Named after its file, until the user names it
-            {
-                const md_str_t stem = md_path_stem(path_to_file);
-                md_str_copy_to_char_buf(sys.name, sizeof(sys.name), stem);
-            }
-
-            // In the list before the system is initialized, so that what handles that sees what it was built from
-            file_list_record(&sys.files, file_entry_from(path_to_file, load_state), role, state->allocator.persistent);
-            sys.files.atom_count = sys.data.sys.atom.count;
-
-            // Inferred whatever the data is, coarse grained or not: mdlib tells beads from atoms (and Martini from
-            // other models) itself, and infers no bond between atoms a topology gives all the bonds of
-            // (md_atom_data_t::bonds_complete). The colours of the particle types now, which the core is shown with
-            // (they are of the core); the rest in the background, put in place when it is done (system_inference_start)
-            md_system_infer_type_colors(&sys.data.sys);
-            sys.data.inference.pending = true;
-            init_system_data(state, sys);
-
-            // A structure file of several frames (a multi model PDB, an XYZ trajectory) is its own run as well. Here
-            // rather than by the caller, so that the run is there for what handles ViamdLoadData below.
-            if (opens_own_run) {
-                open_run(state, sys, path_to_file, load_state);
-            }
-            // After the run is opened, which interrupts what runs on the pool
-            system_inference_start(sys, nullptr);
-        } else if (role == FileRole_Trajectory) {
-            if (!sys.data.sys.atom.count) {
-                VIAMD_LOG_ERROR("Before loading a trajectory, molecular data needs to be present");
-                return LoadResult_Failed;
-            }
+        } else if (trajectory && has_atoms) {
             if (open_run(state, sys, path_to_file, load_state)) {
                 result = LoadResult_Trajectory;
                 VIAMD_LOG_SUCCESS("Successfully opened trajectory from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
             } else {
                 VIAMD_LOG_ERROR("Failed to open trajectory from file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
             }
+        } else if (own_system && has_atoms) {
+            system_inference_finish(sys);
+            result = join_system(state, sys, path_to_file, load_state, loaded, loaded_state);
+        } else if (own_system || trajectory) {
+            result = build_system(state, sys, path_to_file, load_state, opens_own_run, loaded, loaded_state);
         } else {
-            VIAMD_LOG_ERROR("No loader for the file '" MD_STR_FMT "'", MD_STR_ARG(path_to_file));
+            VIAMD_LOG_ERROR("'" MD_STR_FMT "' adds to a system; load the system first", MD_STR_ARG(path_to_file));
             return LoadResult_Failed;
         }
+        if (result == LoadResult_Failed) return result;
+
 #if MD_ENABLE_GPU
         // The dataset's uploaded GTO basis, built here rather than by whichever component happens to
         // want it first: it is derived from the system's own basis/ attributes, every consumer of
@@ -3132,25 +3182,11 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             const md_str_t path = md_str_from_cstr(in.entry.path);
 
             // The role is the file's place; the loader is the one stored, or the one the file tells
-            loader::LoaderState loader_state = {};
-            if (in.entry.explicit_type) {
-                loader_state.type  = in.entry.type;
-                loader_state.flags = loader::type_flags(in.entry.type) | LoaderFlag_ExplicitType;
-            } else {
-                loader::init(&loader_state, path, &sc.data.sys);
-            }
-            if (in.entry.arg[0] != '\0') {
-                loader_state.arg = in.entry.arg;
-            }
-            if (in.entry.coordinates[0] != '\0') {
-                loader_state.coordinates = in.entry.coordinates;
-            }
+            const loader::LoaderState loader_state = file_entry_loader_state(in.entry);
 
             LoadResult result = LoadResult_Failed;
             if (!md_path_is_valid(path)) {
                 VIAMD_LOG_ERROR("Workspace: the file '%s' is not there", in.entry.path);
-            } else if (in.entry.coordinates[0] != '\0' && !md_path_is_valid(md_str_from_cstr(in.entry.coordinates))) {
-                VIAMD_LOG_ERROR("Workspace: the coordinates '%s' of '%s' are not there", in.entry.coordinates, in.entry.path);
             } else if ((loader_state.flags & LoaderFlag_RequiresDialogue) && !loader_state.arg) {
                 // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
                 VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
@@ -4517,7 +4553,7 @@ static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState:
     job->rb     = rb;
     job->size   = size;
 
-    if (!md_gpu_launch_host_fn(state->gpu_stream, gpu_volume_job_complete, job)) {
+    if (!md_gpu_sync_on_complete(state->gpu_device, md_gpu_stream_record(state->gpu_stream), gpu_volume_job_complete, job)) {
         // No callback means nothing would ever free rb or fill the texture, so finish this one
         // synchronously instead of leaking it.
         MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
@@ -7816,7 +7852,7 @@ void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags, uint32_t 
     loader::LoaderState detected = {};
     if (!md_str_eq(ext, WORKSPACE_FILE_EXTENSION)) {
         // By the contents where the extension does not tell (Amber's mdout, prmtop and inpcrd have none)
-        loader::init(&detected, path, nullptr);
+        loader::init(&detected, path);
     }
     if (md_str_eq(ext, WORKSPACE_FILE_EXTENSION) || detected.type != LoaderType_Undefined) {
         LoaderFlags loader_flags = detected.flags;
@@ -7827,9 +7863,8 @@ void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags, uint32_t 
         } else if (loader_flags & LoaderFlag_Temporal) {
             // Joins the trajectory's run, so it goes after the trajectory when both are dropped
             prio = 4;
-        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental | LoaderFlag_Coordinates)) {
-            // A supplemental file (a topology) needs the system in place, same as a trajectory; coordinates are
-            // for a topology, which is a system file
+        } else if (loader_flags & (LoaderFlag_Trajectory | LoaderFlag_Supplemental)) {
+            // A supplemental file needs the system in place, same as a trajectory
             prio = 3;
         } else {
             flags |= FileFlags_ShowDialogue;
@@ -7865,25 +7900,15 @@ FileQueue::Entry file_queue_pop(FileQueue* queue) {
     return front;
 }
 
-LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t path, const loader::LoaderState& load_state) {
-    MD_ASSERT(app);
-    SystemContext* sys = target ? target : system_add(app);
-    if (!sys) {
-        VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not loaded: at most %zu systems are loaded at once", MD_STR_ARG(path), SYSTEM_MAX);
-        return LoadResult_Failed;
-    }
-    const bool fresh = !system_loaded(*sys);
-    const LoadResult result = load_data_from_file(app, *sys, path, load_state);
-    if (!system_loaded(*sys) && result != LoadResult_Pending) {
-        // Nothing went into it (a trajectory with no system to open on, a file that did not load): not listed
+// What follows a file loaded into sys: a system built shown with the default representations (a system loaded again
+// keeps its own if asked to), and every system framed when a system or a run is new. A system new for it which nothing
+// went into is taken out again.
+static void load_into_done(ApplicationState* app, SystemContext* sys, bool fresh, LoadResult result) {
+    if (!system_loaded(*sys)) {
         if (fresh) system_release(app, sys);
-        return result;
+        return;
     }
-    app->file_queue.last_system = sys->id;
-    app->file_queue.last_pending = result == LoadResult_Pending;
-
     if (result == LoadResult_System) {
-        // A system new there is shown as a new one is; a system loaded again keeps its representations if asked to
         if (fresh || !app->settings.keep_representations) {
             remove_all_representations(*sys);
             if (system_inference_pending(*sys)) {
@@ -7906,79 +7931,158 @@ LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t
         app->animation.mode = PlaybackMode::Stopped;
         reset_view_scene(&app->view.target, *app, app->view.camera.fov_y, app->view.region);
     }
+}
+
+LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t path, const loader::LoaderState& load_state) {
+    MD_ASSERT(app);
+    SystemContext* sys = target ? target : system_add(app);
+    if (!sys) {
+        VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not loaded: at most %zu systems are loaded at once", MD_STR_ARG(path), SYSTEM_MAX);
+        return LoadResult_Failed;
+    }
+    const bool fresh = !system_loaded(*sys);
+    const bool own_run = (load_state.flags & LoaderFlag_System) && (load_state.flags & LoaderFlag_Trajectory);
+    const LoadResult result = load_data(app, *sys, path, load_state, FileRole_None, own_run);
+    load_into_done(app, sys, fresh, result);
     return result;
+}
+
+// The files of a system but those of its runs, loaded again into another: a copy of it (PlacementAction_Copy)
+static bool load_system_copy(ApplicationState* app, const SystemContext& of, SystemContext& into) {
+    bool any = false;
+    for (size_t i = 0; i < file_list_count(&of.files); ++i) {
+        const FileEntry e = *file_list_get(&of.files, i);
+        if (e.run >= 0 || e.missing) continue;
+        const loader::LoaderState ls = file_entry_loader_state(e);
+        any |= load_data(app, into, md_str_from_cstr(e.path), ls, file_list_role(&of.files, i)) != LoadResult_Failed;
+    }
+    return any;
+}
+
+// The files of one drop where the placement puts them (drop_files.h, file_placement.h)
+static void drop_files_load(ApplicationState* app, DropFiles* drop, const PlacementPlan& plan) {
+    for (size_t i = 0; i < plan.num_refused; ++i) {
+        const PlacementRefusal& r = plan.refused[i];
+        const char* path = drop->files[r.file].entry.path;
+        switch (r.reason) {
+        case PlacementReason_NeedsSystem: VIAMD_LOG_ERROR("'%s' adds to a system's atoms, and is of none of those loaded", path); break;
+        case PlacementReason_NeedsRun:    VIAMD_LOG_ERROR("'%s' is along a trajectory, and along none of those loaded", path); break;
+        case PlacementReason_NotOfTarget: VIAMD_LOG_ERROR("'%s' is not of the atoms of the system it was put on", path); break;
+        case PlacementReason_Cap:         VIAMD_LOG_ERROR("'%s' is not loaded: at most %zu systems are loaded at once", path, SYSTEM_MAX); break;
+        case PlacementReason_TooMany:     VIAMD_LOG_ERROR("'%s' is not loaded: at most %zu files at once", path, PLACEMENT_MAX_FILES); break;
+        }
+    }
+
+    for (size_t k = 0; k < plan.num_systems; ++k) {
+        const PlacementSystem& ps = plan.systems[k];
+        if (ps.action == PlacementAction_Ask) {
+            // Of several systems: the user picks, through the load dialog, a file at a time
+            for (size_t i = 0; i < ps.num_entries; ++i) {
+                const DropFile& f = drop->files[ps.entries[i].file];
+                VIAMD_LOG_INFO("'%s' is of the atoms of %zu systems: pick which", f.entry.path, ps.num_candidates);
+                file_queue_push(&app->file_queue, md_str_from_cstr(f.entry.path), FileFlags_ShowDialogue);
+            }
+            continue;
+        }
+
+        SystemContext* sys = nullptr;
+        bool fresh = false;
+        if (ps.action == PlacementAction_Join) {
+            sys = system_find(app, ps.system);
+        } else {
+            sys = system_add(app);
+            fresh = sys != nullptr;
+            if (sys && ps.action == PlacementAction_Copy) {
+                // A copy of the system the files are of, which they would replace something of
+                if (const SystemContext* of = system_find(app, ps.system)) {
+                    VIAMD_LOG_INFO("The files dropped are of the atoms of '%s' and would replace some of it: they go into a copy of it", of->name);
+                    load_system_copy(app, *of, *sys);
+                }
+            }
+        }
+        if (!sys) {
+            VIAMD_LOG_ERROR("At most %zu systems are loaded at once: %zu files are not loaded", SYSTEM_MAX, ps.num_entries);
+            continue;
+        }
+
+        LoadResult shown = LoadResult_Failed;
+        for (size_t i = 0; i < ps.num_entries; ++i) {
+            DropFile& f = drop->files[ps.entries[i].file];
+            const md_str_t path = md_str_from_cstr(f.entry.path);
+            if (file_list_has(&sys->files, path)) {
+                VIAMD_LOG_INFO("'%s' is loaded into '%s' already", f.entry.path, sys->name);
+                continue;
+            }
+            // The system it is, loaded to be matched, is taken rather than read again
+            const DropFile* loaded = f.loaded > 0 ? &f : nullptr;
+            const FileRole role = f.kind == PlacementKind_Series ? FileRole_Series : FileRole_None;
+            const bool own_run = (f.ls.flags & LoaderFlag_System) && (f.ls.flags & LoaderFlag_Trajectory);
+            const LoadResult r = load_data(app, *sys, path, f.ls, role, own_run, loaded ? &loaded->sys : nullptr, loaded ? &loaded->state : nullptr);
+            if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
+        }
+        load_into_done(app, sys, fresh, shown);
+    }
 }
 
 void file_queue_process(ApplicationState* state) {
     MD_ASSERT(state);
     if (state->load_dataset.show_window) return;
-    if (file_queue_empty(&state->file_queue)) {
-        // What is queued next is loaded on its own
-        state->file_queue.last_system = SYSTEM_ID_NONE;
-        state->file_queue.last_pending = false;
-        return;
-    }
-    FileQueue::Entry e = file_queue_pop(&state->file_queue);
+    if (file_queue_empty(&state->file_queue)) return;
 
-    md_str_t ext = md_path_ext(e.path);
-
-    if (md_str_eq_ignore_case(ext, WORKSPACE_FILE_EXTENSION)) {
-        load_workspace(state, e.path);
-        return;
-    }
-
-    // Where it goes: the system it was opened into, a new one, the one the file before it went into, the one loaded;
-    // with several and none of these, it is asked (the load dialog)
-    SystemContext* target = nullptr;
-    bool resolved = true;
-    if (e.flags & FileFlags_NewSystem) {
-        target = nullptr;
-    } else if (e.system != SYSTEM_ID_NONE) {
-        target = system_find(state, e.system);
-        if (!target) {
-            VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not loaded: the system it was opened into is gone", MD_STR_ARG(e.path));
+    // A workspace, and a file to ask about (the load dialog), on their own
+    {
+        const FileQueue::Entry e = file_queue_front(&state->file_queue);
+        if (md_str_eq_ignore_case(md_path_ext(e.path), WORKSPACE_FILE_EXTENSION)) {
+            file_queue_pop(&state->file_queue);
+            load_workspace(state, e.path);
             return;
         }
-    } else if (SystemContext* last = system_find(state, state->file_queue.last_system)) {
-        // With the file before it: into its system, but for a structure of its own (two dropped together are two
-        // systems), unless the one before was half of a system that this one completes
-        loader::LoaderState with_last = {};
-        loader::init(&with_last, e.path, &last->data.sys);
-        const bool structure = (with_last.flags & LoaderFlag_System) && !state->file_queue.last_pending;
-        target = structure ? nullptr : last;
-    } else {
-        const size_t n = system_count(*state);
-        if (n == 1) {
-            for (size_t i = 0; i < state->num_systems && !target; ++i) {
-                if (system_loaded(*state->systems[i])) target = state->systems[i];
+        loader::LoaderState ls = {};
+        loader::init(&ls, e.path);
+        if ((e.flags & FileFlags_ShowDialogue) || (ls.flags & LoaderFlag_RequiresDialogue)) {
+            file_queue_pop(&state->file_queue);
+            state->load_dataset = LoadDatasetWindowState();
+            md_str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
+            state->load_dataset.path_changed = true;
+            state->load_dataset.show_window = true;
+            if (e.system != SYSTEM_ID_NONE) {
+                state->load_dataset.system = e.system;
+            } else if ((e.flags & FileFlags_NewSystem) || system_count(*state) == 0) {
+                state->load_dataset.new_system = true;
+            } else {
+                state->load_dataset.system = scene_frame_system(*state).id;
             }
-        } else if (n > 1) {
-            resolved = false;
+            return;
         }
     }
 
-    // What the file is can depend on the system it goes into (a VeloxChem file of its atoms supplements them)
-    loader::LoaderState loader_state = {};
-    loader::init(&loader_state, e.path, target ? &target->data.sys : nullptr);
-
-    if (!resolved || (e.flags & FileFlags_ShowDialogue) || (loader_state.flags & LoaderFlag_RequiresDialogue)) {
-        state->load_dataset = LoadDatasetWindowState();
-        md_str_copy_to_char_buf(state->load_dataset.path_buf, sizeof(state->load_dataset.path_buf), e.path);
-        state->load_dataset.path_changed = true;
-        state->load_dataset.show_window = true;
-        if (target) {
-            state->load_dataset.system = target->id;
-        } else if (!resolved && !(loader_state.flags & LoaderFlag_System)) {
-            // What adds to a system: to the first, unless another is picked
-            state->load_dataset.system = scene_frame_system(*state).id;
-        } else {
-            state->load_dataset.new_system = true;
-        }
-        return;
+    // What is queued together up to the next of those: one drop, placed as a whole (drop_files.h)
+    DropSystem loaded[SYSTEM_MAX];
+    size_t num_loaded = 0;
+    for (size_t i = 0; i < state->num_systems; ++i) {
+        const SystemContext& sc = *state->systems[i];
+        if (!system_loaded(sc)) continue;
+        loaded[num_loaded++] = { sc.id, &sc.data.sys, &sc.data.state, md_str_from_cstr(sc.run.path) };
     }
-
-    loader_state.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
-    load_file_into(state, target, e.path, loader_state);
+    DropFiles* drop = new DropFiles();
+    drop_files_init(drop, loaded, num_loaded);
+    while (!file_queue_empty(&state->file_queue)) {
+        const FileQueue::Entry e = file_queue_front(&state->file_queue);
+        if (md_str_eq_ignore_case(md_path_ext(e.path), WORKSPACE_FILE_EXTENSION)) break;
+        loader::LoaderState ls = {};
+        loader::init(&ls, e.path);
+        if ((e.flags & FileFlags_ShowDialogue) || (ls.flags & LoaderFlag_RequiresDialogue)) break;
+        file_queue_pop(&state->file_queue);
+        ls.flags |= (e.flags & FileFlags_DisableCacheWrite) ? LoaderFlag_DisableCacheWrite : 0;
+        const uint32_t target = (e.flags & FileFlags_NewSystem) ? PLACEMENT_NEW : e.system != SYSTEM_ID_NONE ? e.system : PLACEMENT_AUTO;
+        drop_files_add(drop, e.path, ls, target);
+    }
+    PlacementPlan* plan = new PlacementPlan();
+    drop_files_plan(plan, drop, SYSTEM_MAX);
+    drop_files_load(state, drop, *plan);
+    delete plan;
+    drop_files_free(drop);
+    delete drop;
 }
 
 const SystemContext& scene_frame_system(const ApplicationState& app) {

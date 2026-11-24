@@ -183,7 +183,7 @@ bool align(Alignment* out, const md_system_t* sys, const int32_t* atoms, size_t 
     }
     md_system_t osys = {.alloc = temp};
     md_system_state_t ostate = {.alloc = temp};
-    bool ok = md_xyz_system_init_from_str(&osys, &ostate, {text, md_array_size(text)}, NULL) &&
+    bool ok = (md_xyz_system_load_from_str(&osys, &ostate, {text, md_array_size(text)}, NULL) == MD_LOAD_OK) &&
               md_system_infer(&osys, &ostate, NULL);
     if (!ok) {
         md_arena_allocator_destroy(temp);

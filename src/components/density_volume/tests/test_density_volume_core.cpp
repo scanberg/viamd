@@ -73,7 +73,7 @@ const Peptide* peptide() {
         p.alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(8));
         p.sys = {.alloc = p.alloc};
         p.state = {.alloc = p.alloc};
-        ok = md_pdb_system_init_from_file(&p.sys, &p.state, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) &&
+        ok = (md_pdb_system_load_from_file(&p.sys, &p.state, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb"), NULL) == MD_LOAD_OK) &&
              md_system_infer(&p.sys, &p.state, NULL);
     }
     return ok ? &p : nullptr;

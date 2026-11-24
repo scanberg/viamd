@@ -40,7 +40,7 @@ const Peptide* peptide() {
         p.sys = { .alloc = p.alloc };
         p.state = { .alloc = p.alloc };
         const md_str_t path = MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
-        if (md_pdb_system_init_from_file(&p.sys, &p.state, path, NULL) &&
+        if ((md_pdb_system_load_from_file(&p.sys, &p.state, path, NULL) == MD_LOAD_OK) &&
             md_system_infer(&p.sys, &p.state, NULL) &&
             md_pdb_system_publish_run(&p.sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
             const md_attribute_t* t = md_attributes_find(&p.sys.attributes, MD_STR_LIT("run/time"));

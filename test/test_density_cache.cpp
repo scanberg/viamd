@@ -81,7 +81,7 @@ UTEST(density_cache, molden_density_is_the_square_ones_triangle) {
     md_allocator_i* heap = md_get_heap_allocator();
     md_system_t sys = {.alloc = heap};
     md_system_state_t state = {.alloc = heap};
-    ASSERT_TRUE(loader::load(&sys, &state, file, reader));
+    ASSERT_EQ(MD_LOAD_OK, loader::load(&sys, &state, file, reader));
 
     md_str_t path = MD_STR_LIT("orbital/total/density");
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);

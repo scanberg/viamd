@@ -26,6 +26,7 @@ if it links without an application: no ImGui, no OpenGL, no `ApplicationState`. 
 | `src/loader.cpp` | `test_loader.cpp` — the format dispatch tables and what `init` makes of a path |
 | `src/file_list.cpp` | `test_file_list.cpp` — the files of a system and its runs: the role a file takes from its place, and the workspace's `[System]`, `[Run]` and `[Input]` |
 | `src/file_placement.cpp` | `test_file_placement.cpp` — where the files of a drop go: the systems the drop makes among its own files, joined to the one loaded system they are of, a copy where they would replace something, a choice among several, refused when they cannot stand alone, and the cap |
+| `src/drop_files.cpp` | `test_drop_files.cpp` — what matches what among the files of a drop and the systems loaded, on real files: a topology and its coordinates (a restart, a structure, a trajectory) in any order are one system, coordinates of other atoms another; dropped onto a loaded topology they join it, onto a structure they go into a copy; a trajectory alone is a system of points |
 | `src/gfx/camera_utils.cpp` | `test_camera_utils.cpp` — the view and projection transforms, as inverse pairs |
 | `src/cartoon_glyphs.cpp` | `test_cartoon_glyphs.cpp` — the spheres and tubes of the lipid cartoon, built without the GL molecule they are derived from on the GPU |
 | `src/plot_periodic_core.cpp` | `test_plot_periodic.cpp` — periodic values laid out flat: the polyline cut where it crosses the cut of the circle, the gaps, the bands unwrapped around it, and where the values are least populated |

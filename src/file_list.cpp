@@ -1,4 +1,4 @@
-﻿#include <file_list.h>
+#include <file_list.h>
 #include <serialization_utils.h>
 
 #include <core/md_allocator.h>
@@ -18,8 +18,27 @@ FileEntry file_entry_from(md_str_t path, const loader::LoaderState& load_state) 
     e.type = load_state.type;
     e.explicit_type = (load_state.flags & LoaderFlag_ExplicitType) != 0;
     md_str_copy_to_char_buf(e.arg, sizeof(e.arg), md_str_from_cstr(load_state.arg));
-    md_str_copy_to_char_buf(e.coordinates, sizeof(e.coordinates), md_str_from_cstr(load_state.coordinates));
     return e;
+}
+
+loader::LoaderState file_entry_loader_state(const FileEntry& e) {
+    loader::LoaderState ls = {};
+    if (e.explicit_type) {
+        ls.type  = e.type;
+        ls.flags = loader::type_flags(e.type) | LoaderFlag_ExplicitType;
+    } else {
+        loader::init(&ls, md_str_from_cstr(e.path));
+    }
+    if (e.arg[0] != '\0') ls.arg = e.arg;
+    return ls;
+}
+
+bool file_list_has(const FileList* list, md_str_t path) {
+    MD_ASSERT(list);
+    for (size_t i = 0; i < md_array_size(list->entries); ++i) {
+        if (md_str_eq(md_str_from_cstr(list->entries[i].path), path)) return true;
+    }
+    return false;
 }
 
 void file_list_free(FileList* list, md_allocator_i* alloc) {
@@ -50,7 +69,7 @@ FileRole file_list_role(const FileList* list, size_t i) {
 }
 
 static bool same_file(const FileEntry& a, const FileEntry& b) {
-    return a.type == b.type && strcmp(a.path, b.path) == 0 && strcmp(a.arg, b.arg) == 0 && strcmp(a.coordinates, b.coordinates) == 0;
+    return a.type == b.type && strcmp(a.path, b.path) == 0 && strcmp(a.arg, b.arg) == 0;
 }
 
 bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocator_i* alloc) {
@@ -138,11 +157,6 @@ static void write_input(viamd::serialization_state_t& state, const FileEntry& e,
     }
     if (e.arg[0] != '\0') {
         viamd::write_str(state, MD_STR_LIT("Argument"), md_str_from_cstr(e.arg));
-    }
-    if (e.coordinates[0] != '\0') {
-        const md_str_t coords = md_str_from_cstr(e.coordinates);
-        md_str_t rel_coords = md_path_make_relative(state.filename, coords, alloc);
-        viamd::write_str(state, MD_STR_LIT("Coordinates"), md_str_empty(rel_coords) ? coords : rel_coords);
     }
 }
 
@@ -302,6 +316,7 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
         in.system = NO_ID;
         in.run = NO_ID;
         bool has_path = false;
+        char coordinates[1024] = "";
         while (viamd::next_entry(ident, arg, state)) {
             if (md_str_eq_cstr(ident, "Path")) {
                 has_path = resolve_path(in.entry.path, sizeof(in.entry.path), folder, arg);
@@ -322,11 +337,24 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
             } else if (md_str_eq_cstr(ident, "Argument")) {
                 viamd::extract_to_char_buf(in.entry.arg, sizeof(in.entry.arg), arg);
             } else if (md_str_eq_cstr(ident, "Coordinates")) {
-                resolve_path(in.entry.coordinates, sizeof(in.entry.coordinates), folder, arg);
+                // DEPRECATED: the coordinates of a topology, named with it before a topology was a system of its own
+                resolve_path(coordinates, sizeof(coordinates), folder, arg);
             }
         }
         if (has_path) {
             md_array_push(files->inputs, in, alloc);
+            // They join the system after it. The trajectory a run opened gave its first frame, and is in its run.
+            if (coordinates[0] != '\0') {
+                loader::LoaderState cs = {};
+                loader::init(&cs, md_str_from_cstr(coordinates));
+                if (!((cs.flags & LoaderFlag_Trajectory) && !(cs.flags & LoaderFlag_System))) {
+                    WorkspaceFiles::Input c = in;
+                    c.entry = {};
+                    md_str_copy_to_char_buf(c.entry.path, sizeof(c.entry.path), md_str_from_cstr(coordinates));
+                    c.role = FileRole_None;
+                    md_array_push(files->inputs, c, alloc);
+                }
+            }
         }
         return true;
     }

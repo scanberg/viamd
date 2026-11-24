@@ -707,12 +707,20 @@ static void draw_bond_tracking_details(SystemContext& sys) {
 // Files
 // ---------------------------------------------------------------------------------------------------------
 
+// What a file of the system is: a topology, coordinates (a restart), a structure, or the data of its atoms
+static const char* system_file_kind(const FileEntry& e) {
+    const LoaderFlags flags = loader::type_flags(e.type);
+    if (flags & LoaderFlag_Topology) return "Topology";
+    if (e.type == LoaderType_AMBER_RESTART || e.type == LoaderType_NAMD_COOR) return "Coordinates";
+    if (flags & LoaderFlag_System) return "Structure";
+    return e.type == LoaderType_NDX ? "Groups" : "Supplement";
+}
+
 const char* system_file_role_label(const FileEntry& e, FileRole role) {
     switch (role) {
-    case FileRole_System:     return e.coordinates[0] ? "Topology" : "Structure";
+    case FileRole_System:     return system_file_kind(e);
     case FileRole_Trajectory: return "Trajectory";
-    case FileRole_Supplement: return (e.type == LoaderType_ITP || e.type == LoaderType_AMBER_PRMTOP || e.type == LoaderType_PSF) ? "Topology" :
-                                     e.type == LoaderType_NDX ? "Groups" : "Supplement";
+    case FileRole_Supplement: return system_file_kind(e);
     case FileRole_Series:     return (e.type == LoaderType_EDR || e.type == LoaderType_AMBER_ENERGY) ? "Energies" : "Series";
     default:                  return "";
     }
@@ -736,14 +744,9 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
     if (!e || e->missing) return;
     switch (file_list_role(list, i)) {
     case FileRole_System: {
-        // A topology names the file its coordinates came from
-        md_str_t coords = {};
-        if (e->coordinates[0]) {
-            coords = md_str_from_cstr(e->coordinates);
-            coords = md_path_filename(coords);
-        }
-        snprintf(buf, cap, "%zu atoms%s%s" MD_STR_FMT, sys.data.sys.atom.count, md_system_is_coarse_grained(&sys.data.sys) ? ", coarse grained" : "",
-                 coords.len ? ", coordinates of " : "", MD_STR_ARG(coords));
+        // A topology alone has no coordinates, until a file of them (or a run) joins it
+        snprintf(buf, cap, "%zu atoms%s%s", sys.data.sys.atom.count, md_system_is_coarse_grained(&sys.data.sys) ? ", coarse grained" : "",
+                 md_system_state_has_coords(&sys.data.state) ? "" : ", no coordinates");
         break;
     }
     case FileRole_Trajectory: {

@@ -39,7 +39,7 @@
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
-#include <load_order.h>
+#include <file_list.h>
 #include <event.h>
 #include <viamd_event.h>
 #include <plot_series.h>
@@ -622,11 +622,15 @@ struct FileQueue {
     // Because its a ring alloc, there is no need to free entries
     md_allocator_i* ring = NULL;
 
-    // The system the last file went into, which those queued with it go into too (a topology and its trajectory,
-    // dropped together), but for another structure, which goes into a system of its own: until the queue is empty.
-    // last_pending: it was half of a system (LoadResult_Pending), which the next completes.
-    uint32_t last_system = SYSTEM_ID_NONE;
-    bool     last_pending = false;
+};
+
+// What load_data made of a file
+enum LoadResult {
+    LoadResult_Failed = 0,
+    LoadResult_System,      // A new system (built onto one without atoms), with its run when the file holds several frames
+    LoadResult_Joined,      // Of the system's atoms, joined to it (md_system_merge): its coordinates, names, bonds, ...
+    LoadResult_Trajectory,  // A new run for the system
+    LoadResult_Supplement,  // Data of the system's atoms, or along its run: the system and the run are as they were
 };
 
 struct SingleSelectionSequence {
@@ -1825,6 +1829,12 @@ constexpr size_t SYSTEM_MAX = 8;
 //   timeline.x_values     the times of a run, in the unit the timeline shows: moved with the global time axis
 //   script                one script for all systems, evaluated per system: decided with the script rewrite
 struct ApplicationState;
+struct SystemContext;
+
+// Whether the system is drawn: it has atoms and coordinates. A topology alone has none until a file of them, or a run,
+// joins it; it is a system all the same, listed, inspected and saved.
+bool system_drawn(const SystemContext& sys);
+
 struct SystemContext {
     // Its id, by which a workspace and what refers to it name it ([System] Id, System=), never reused while viamd
     // runs; and its name, which the script and the windows show it by: the stem of the file that built it, until the
@@ -1918,11 +1928,6 @@ struct ApplicationState {
     struct {
         // The files of the system are the system's (SystemContext::files, file_list)
         char workspace[1024] = {0};
-
-        // Halves of a system waiting for the other half (load_data_from_file): a topology without coordinates
-        // (prmtop, psf) waits for its coordinates, and coordinates (a restart, a trajectory) wait for a topology or
-        // a structure file of their atoms. Whichever comes second builds the system. Empty paths when none waits.
-        PendingFiles pending;
     } files;
 
     // The idea for the file load queue is to fill it with files that are dropped onto the application
@@ -2787,15 +2792,17 @@ void interrupt_async_tasks(ApplicationState* state);
 // Dataset loading
 
 
-// Loads a file into the system sys in the given role (see file_list.h): FileRole_System replaces the system,
-// FileRole_Trajectory the run, a supplement adds to the system and a series to the run. opens_own_run: a system file
-// of several frames opens them as the run too. A file that loads is recorded in the system's files.
-LoadResult load_data(ApplicationState* app, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false);
-
-// Loads a file on its own, as one dropped on the window or opened from the menu: in the role its loader flags
-// give it (file_role), and a system file opens its own frames as the run. A topology without coordinates and its
-// coordinates come in either order (load_order.h).
-LoadResult load_data_from_file(ApplicationState* app, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state);
+// Loads a file into the system sys (see file_list.h), what it is to the system told by what it and the system are:
+//   a system of its own (a structure, a topology, a restart)   builds sys when it has no atoms, else joins its atoms
+//                                                              (md_system_merge), and fails when they are not its
+//   a trajectory                                               opens the run (sys alone: a system of points first)
+//   data of a system's atoms (an index file, QM data of them)  adds to sys
+//   a series (role FileRole_Series)                            joins the run of sys
+// opens_own_run: a system file of several frames opens them as the run too. A file that loads is recorded in the
+// system's files. loaded: the system the file is, loaded already (to match it: DropFiles), which is taken rather than
+// read again; NULL to read it.
+LoadResult load_data(ApplicationState* app, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false,
+                     const md_system_t* loaded = nullptr, const md_system_state_t* loaded_state = nullptr);
 
 // What follows a system just loaded into sys (load_data), and what goes with it before another replaces it. The
 // application's part of it that is not yet per system (the script's evaluation) is of the first system.
@@ -3609,10 +3616,8 @@ bool file_queue_full(const FileQueue* queue);
 // Queues a file to be loaded: into the system with the id 'system', or where file_queue_process puts it
 void file_queue_push(FileQueue* queue, md_str_t path, FileFlags flags = FileFlags_None, uint32_t system = SYSTEM_ID_NONE);
 
-// Loads a file the user opened (from the menu, the load dialog, dropped on the window) into the system target, or into a
-// new one when target is NULL, in the role its loader gives it (load_data_from_file); and what follows: a system new
-// there shown with the default representations, every system framed. A new system that nothing was loaded into is
-// taken out again.
+// Loads a file the user opened (the load dialog) into the system target, or into a new one when target is NULL
+// (load_data); and what follows (load_into_done). A new system that nothing was loaded into is taken out again.
 LoadResult load_file_into(ApplicationState* app, SystemContext* target, md_str_t path, const loader::LoaderState& load_state);
 
 FileQueue::Entry file_queue_front(const FileQueue* queue);

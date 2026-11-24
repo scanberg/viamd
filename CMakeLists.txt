@@ -183,10 +183,10 @@ set(SRC_FILES
     src/qm_placement.cpp
     src/event.cpp
     src/file_list.cpp
-    src/load_order.h
-    src/load_order.cpp
     src/file_placement.h
     src/file_placement.cpp
+    src/drop_files.h
+    src/drop_files.cpp
     src/filter_input.cpp
     src/image.cpp
     src/imgui_widgets.cpp

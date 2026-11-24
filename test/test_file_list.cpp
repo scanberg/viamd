@@ -311,10 +311,11 @@ UTEST(viamd_file_list, an_unknown_loader_falls_back_to_the_extension) {
     EXPECT_EQ(LoaderType_Undefined, r.plan.inputs[0].entry.type);
 }
 
-UTEST(viamd_file_list, a_topology_keeps_the_file_of_its_coordinates) {
-    md_allocator_i* alloc = md_get_heap_allocator();
-    // Files that are there, so that their paths resolve: a workspace folder with the topology and its trajectory
-    const char* names[] = { "viamd_test_sys.prmtop", "viamd_test_md.nc", "viamd_test_eq.rst7", "viamd_test.via" };
+// A workspace from before a topology was a system of its own names the coordinates with it: they are a file of the
+// system after it, but for a trajectory, which gave its first frame and is the run already
+UTEST(viamd_file_list, the_coordinates_of_a_topology_are_a_file_of_its_system) {
+    // Files that are there, so that their paths resolve: a workspace folder with the topology and its coordinates
+    const char* names[] = { "viamd_test_sys.prmtop", "viamd_test_md.nc", "viamd_test_eq.rst7" };
     for (const char* n : names) {
         md_file_t f = {};
         ASSERT_TRUE(md_file_open(&f, md_str_from_cstr(n), MD_FILE_WRITE | MD_FILE_CREATE | MD_FILE_TRUNCATE));
@@ -326,36 +327,13 @@ UTEST(viamd_file_list, a_topology_keeps_the_file_of_its_coordinates) {
     std::string folder_s(folder_buf, folder_len);
     if (folder_s.back() != '/') folder_s += '/';
     const md_str_t folder = {folder_s.c_str(), folder_s.size()};
-    auto at = [&](const char* name) { return folder_s + name; };
 
-    // A topology built with the coordinates of a trajectory, which is also its run
-    List l;
-    FileEntry top = file(at("viamd_test_sys.prmtop").c_str(), LoaderType_AMBER_PRMTOP);
-    snprintf(top.coordinates, sizeof(top.coordinates), "%s", at("viamd_test_md.nc").c_str());
-    l.record(top, FileRole_System);
-    l.record(file(at("viamd_test_md.nc").c_str(), LoaderType_AMBER_NETCDF), FileRole_Trajectory);
+    Read restart(MD_STR_LIT("[System]\nId=0\n[Input]\nSystem=0\nPath=./viamd_test_sys.prmtop\nCoordinates=./viamd_test_eq.rst7\n"), folder);
+    { const std::string got_ = restart.str(); EXPECT_STREQ("viamd_test_sys.prmtop:System:-1 viamd_test_eq.rst7:Supplement:-1", got_.c_str()); }
 
-    // The same topology with other coordinates is another entry
-    FileEntry other = top;
-    snprintf(other.coordinates, sizeof(other.coordinates), "%s", at("viamd_test_eq.rst7").c_str());
-    l.record(other, FileRole_Supplement);
-    EXPECT_EQ(3u, file_list_count(&l.list));
-
-    List one;
-    one.record(top, FileRole_System);
-    one.record(file(at("viamd_test_md.nc").c_str(), LoaderType_AMBER_NETCDF), FileRole_Trajectory);
-    const std::string workspace = at("viamd_test.via");    // Written keeps the pointer: the string has to outlive it
-    Written w(workspace.c_str(), alloc);
-    file_list_serialize(w.s, &one.list, 0, 0);
-    const md_str_t text = w.text();
-    EXPECT_TRUE(contains(text, "[Input]\nSystem=0\nPath=./viamd_test_sys.prmtop\nCoordinates=./viamd_test_md.nc\n"));
-
-    Read r(text, folder);
-    { const std::string got_ = r.str(); EXPECT_STREQ("viamd_test_sys.prmtop:System:-1 viamd_test_md.nc:Trajectory:0", got_.c_str()); }
-    ASSERT_EQ(2u, md_array_size(r.plan.inputs));
-    const std::string coords = resolved(at("viamd_test_md.nc").c_str());
-    EXPECT_STREQ(coords.c_str(), r.plan.inputs[0].entry.coordinates);
-    EXPECT_STREQ("", r.plan.inputs[1].entry.coordinates);
+    Read trajectory(MD_STR_LIT("[System]\nId=0\n[Run]\nId=0\nSystem=0\n[Input]\nSystem=0\nPath=./viamd_test_sys.prmtop\nCoordinates=./viamd_test_md.nc\n"
+                               "[Input]\nRun=0\nPath=./viamd_test_md.nc\n"), folder);
+    { const std::string got_ = trajectory.str(); EXPECT_STREQ("viamd_test_sys.prmtop:System:-1 viamd_test_md.nc:Trajectory:0", got_.c_str()); }
 
     for (const char* n : names) remove(n);
 }
