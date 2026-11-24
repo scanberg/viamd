@@ -44,6 +44,11 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit);
 // The colours of a representation's atoms as md_gl gets them, which also say which it shows (alpha 0: not shown)
 void md_render_bridge_rep_colors(ApplicationState* state, const Representation& rep, const uint32_t* colors, size_t count);
 
+// The pairs of a Bonds representation as md_gl gets them (representation_set_weak_bonds): their atoms and their bonds'
+// flags (md_bond_flags_t, for the kind; null: covalent)
+void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& rep, const uint32_t* atom_a, const uint32_t* atom_b,
+                                const uint32_t* flags, size_t count);
+
 // From update_md_buffers: what changed (MolBit_ flags), taken up when the scene is next made
 void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty);
 

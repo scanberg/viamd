@@ -1058,6 +1058,8 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         flags = found;
     }
     md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr, flags);
+    static_assert(sizeof(md_bond_flags_t) == sizeof(uint32_t), "the flags as words");
+    md_render_bridge_rep_pairs(state, *rep, atom_a, atom_b, (const uint32_t*)flags, count);
 }
 
 size_t representation_weak_bond_count(const ApplicationState& state, const Representation& rep) {
