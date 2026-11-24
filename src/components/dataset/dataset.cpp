@@ -1201,6 +1201,9 @@ struct Dataset : viamd::EventHandler {
         md_array(GroupEntry) entries = 0;
     } group_comp;
     int expanded_group = -1;
+    // The user's group being renamed, and its name as typed
+    int  rename_group = -1;
+    char rename_buf[64] = "";
 
     // What a part is: its kind, and for a small molecule what its residues are
     static const char* part_kind_label(const md_system_t& sys, size_t part_idx) {
@@ -1688,12 +1691,18 @@ struct Dataset : viamd::EventHandler {
         ImGui::Spacing();
     }
 
+    // What the composition of the groups is of: the molecules (the topology) and the groups, which change without it
+    static uint64_t group_comp_key(const md_system_t& sys) {
+        const uint64_t v[2] = {sys.topology_version, sys.group.version};
+        return md_hash64(v, sizeof(v), 0);
+    }
+
     void compute_group_composition(ApplicationState& data) {
         const md_system_t& sys = data.mold.sys;
         md_allocator_i* alloc = data.allocator.persistent;
         md_array_shrink(group_comp.entry_offset, 0);
         md_array_shrink(group_comp.entries, 0);
-        group_comp.key = sys.topology_version;
+        group_comp.key = group_comp_key(sys);
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
@@ -1770,41 +1779,59 @@ struct Dataset : viamd::EventHandler {
     }
 
     void draw_groups(ApplicationState& data) {
-        const md_system_t& sys = data.mold.sys;
+        md_system_t& sys = data.mold.sys;
         const md_group_data_t& groups = sys.group;
-        if (groups.count == 0) return;
-        if (!ImGui::CollapsingHeader("Groups", ImGuiTreeNodeFlags_DefaultOpen)) return;
-        if (group_comp.key != sys.topology_version || md_array_size(group_comp.entry_offset) != groups.count + 1) {
+        if (group_comp.key != group_comp_key(sys) || md_array_size(group_comp.entry_offset) != groups.count + 1) {
             compute_group_composition(data);
             expanded_group = -1;
         }
 
-        ImGui::TextDisabled("Named sets of atoms of the run (index groups): hover to highlight, shift click to select, click to list what it holds.");
-
         const bool vial = data.script.language == script::Language::V2;
+        ImGui::TextDisabled("Named sets of atoms: those of the run (index groups, from a tpr or an index file) and your own.\n"
+                            "Hover to highlight, shift click to select, click to list what it holds.");
+        const bool has_selection = !md_bitmask_empty(&data.selection.selection_mask);
+        if (!has_selection) ImGui::PushDisabled();
+        if (ImGui::Button("Store Selection as Group")) store_selection_as_group(&data);
+        if (!has_selection) ImGui::PopDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (has_selection) md_bitmask_assign(&data.selection.highlight_mask, md_bitmask_view(&data.selection.selection_mask));
+            ImGui::SetTooltip(has_selection ? "Keep the selection as a group of your own, named sel1, sel2, ...; the workspace keeps it.\n%s"
+                                            : "Select atoms to keep them as a group of your own.\n%s",
+                              vial ? "The script selects it as group('sel1')." : "The script names it sel1.");
+        }
+        if (groups.count == 0) {
+            ImGui::TextDisabled("No groups.");
+            return;
+        }
+
+        // What a row asks for, done once the table is drawn
+        int store_into = -1, remove = -1;
+
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
-        if (ImGui::BeginTable("##groups", 4, flags)) {
+        if (ImGui::BeginTable("##groups", 5, flags)) {
             ImGui::TableSetupColumn("Group",    ImGuiTableColumnFlags_WidthStretch, 1.4f);
             ImGui::TableSetupColumn("Used for", ImGuiTableColumnFlags_WidthStretch, 1.4f);
             ImGui::TableSetupColumn("Atoms",    ImGuiTableColumnFlags_WidthStretch, 0.8f);
             ImGui::TableSetupColumn("Holds",    ImGuiTableColumnFlags_WidthStretch, 3.0f);
+            ImGui::TableSetupColumn("",         ImGuiTableColumnFlags_WidthFixed);
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            const char* header_tips[4] = { "The group's name, as the index file or the tpr gives it",
-                                           "What the simulation used it for, by the mdp option which named it: from the tpr, or for the groups of an index file, from\nthe terms of the energy file",
-                                           nullptr, "The molecules it holds, of each type, whole or a part of them" };
-            for (int col = 0; col < 4; ++col) {
+            const char* header_tips[5] = { "The group's name, as the index file or the tpr gives it, or as you named it",
+                                           "What the simulation used it for, by the mdp option which named it: from the tpr, or for the groups of an index file, from\nthe terms of the energy file. Yours: a group you stored",
+                                           nullptr, "The molecules it holds, of each type, whole or a part of them", nullptr };
+            for (int col = 0; col < 5; ++col) {
                 if (!ImGui::TableSetColumnIndex(col)) continue;
                 ImGui::TableHeader(ImGui::TableGetColumnName(col));
                 if (header_tips[col] && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", header_tips[col]);
             }
 
             for (size_t g = 0; g < groups.count; ++g) {
+                const bool user = groups.origin[g] == MD_GROUP_ORIGIN_USER;
                 ImGui::TableNextRow();
                 ImGui::PushID((int)g);
                 ImGui::TableSetColumnIndex(0);
                 char name[128];
                 snprintf(name, sizeof(name), MD_STR_FMT, MD_STR_ARG(groups.name[g]));
-                if (ImGui::Selectable(name, expanded_group == (int)g, ImGuiSelectableFlags_SpanAllColumns)) {
+                if (ImGui::Selectable(name, expanded_group == (int)g, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap)) {
                     if (!ImGui::IsKeyDown(ImGuiMod_Shift)) expanded_group = expanded_group == (int)g ? -1 : (int)g;
                 }
                 if (ImGui::IsItemHovered()) {
@@ -1817,6 +1844,7 @@ struct Dataset : viamd::EventHandler {
                     char roles[160];
                     group_roles_text(roles, sizeof(roles), groups.roles[g], true);
                     if (roles[0]) ImGui::TextDisabled("Named by %s", roles);
+                    if (user)     ImGui::TextDisabled("Yours: the workspace keeps it");
                     if (vial) {
                         // How a script selects it: by its name, and its role where another group has the name
                         bool shared = false;
@@ -1825,22 +1853,63 @@ struct Dataset : viamd::EventHandler {
                         for (int r = 0; r < MD_GROUP_ROLE_COUNT && r0 < 0; ++r) if (groups.roles[g] & (1u << r)) r0 = r;
                         if (shared && r0 >= 0) ImGui::TextDisabled("In the script: group('%s', role='%s')", name, md_group_role_name((md_group_role_t)r0));
                         else                   ImGui::TextDisabled("In the script: group('%s')", name);
+                    } else if (user) {
+                        // v1 names the user's groups, as it named the stored selections
+                        if (script::name_valid(script::Language::V1, groups.name[g])) ImGui::TextDisabled("In the script: %s", name);
+                        else ImGui::TextDisabled("The script cannot name it: '%s' is no identifier", name);
                     }
                     ImGui::EndTooltip();
                 }
                 ImGui::TableSetColumnIndex(1);
                 char roles[160];
                 group_roles_text(roles, sizeof(roles), groups.roles[g], false);
-                if (roles[0]) ImGui::TextUnformatted(roles); else ImGui::TextDisabled("-");
+                if (roles[0]) ImGui::TextUnformatted(roles); else if (user) ImGui::TextDisabled("yours"); else ImGui::TextDisabled("-");
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("%llu", (unsigned long long)md_bitset_count(groups.atoms[g]));
                 ImGui::TableSetColumnIndex(3);
                 char holds[256];
                 group_composition_text(holds, sizeof(holds), sys, g, 3);
                 ImGui::TextUnformatted(holds);
+                ImGui::TableSetColumnIndex(4);
+                if (user) {
+                    // Yours to change: the selection into it, its name, or gone
+                    if (!has_selection) ImGui::PushDisabled();
+                    if (ImGui::SmallButton("Store")) store_into = (int)g;
+                    if (!has_selection) ImGui::PopDisabled();
+                    ImGui::SetItemTooltip("Its atoms become those selected");
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Rename")) {
+                        md_str_copy_to_char_buf(rename_buf, sizeof(rename_buf), groups.name[g]);
+                        rename_group = (int)g;
+                        ImGui::OpenPopup("##rename_group");
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove")) remove = (int)g;
+                    if (ImGui::BeginPopup("##rename_group")) {
+                        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                        const md_str_t new_name = md_str_from_cstr(rename_buf);
+                        const bool free = user_group_name_free(sys, new_name, g);
+                        const bool enter = ImGui::InputText("##name", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue);
+                        if (!free) ImGui::TextDisabled(md_str_empty(new_name) ? "A group needs a name" : "Another group has that name");
+                        if (enter && free && rename_group == (int)g) {
+                            md_system_group_rename(&sys, g, new_name);
+                            ImGui::CloseCurrentPopup();
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
                 ImGui::PopID();
             }
             ImGui::EndTable();
+        }
+        if (store_into >= 0) {
+            md_system_group_set_atoms(&sys, (size_t)store_into, md_bitmask_view(&data.selection.selection_mask));
+        }
+        if (remove >= 0) {
+            md_system_group_remove(&sys, (size_t)remove);
+            if (expanded_group == remove) expanded_group = -1;
+            else if (expanded_group > remove) expanded_group -= 1;
+            return;     // The composition is of the groups as they were
         }
 
         // What the expanded group holds, every type
@@ -3807,9 +3876,12 @@ struct Dataset : viamd::EventHandler {
                 if (ImGui::BeginTabItem("Overview")) {
                     draw_files(data);
                     draw_composition(data);
-                    draw_groups(data);
                     draw_trajectory(data);
                     draw_series(data);
+                    ImGui::EndTabItem();
+                }
+                if (ImGui::BeginTabItem("Groups")) {
+                    draw_groups(data);
                     ImGui::EndTabItem();
                 }
                 if (ImGui::BeginTabItem("Atom Types")) {

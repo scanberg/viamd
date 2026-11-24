@@ -1256,6 +1256,15 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The groups changed (a file of groups loaded, the user's edited): told once, here, whatever changed them. The script
+        // selects groups by name, VIAL as group('name') and v1 the user's as identifiers: compiled again in this frame.
+        if (state.mold.sys.group.version != state.mold.group_version) {
+            state.mold.group_version = state.mold.sys.group.version;
+            state.script.compile_ir = true;
+            state.script.time_since_last_change = 1.0e9;
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdGroupsChanged, viamd::EventPayloadType_ApplicationState, &state);
+        }
+
         {
             // The script is compiled again whatever changed its text. Typing is reported by the editor (its Render,
             // above in the frame, which asks for a compilation once typing pauses), but an edit through the editor's
@@ -1326,16 +1335,21 @@ int main(int argc, char** argv) {
                         md_path_set_cwd(cwd);
                     }
 
-                    const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
-                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(num_stored_selections, 1) * sizeof(script::NamedSet));
-                    for (size_t i = 0; i < num_stored_selections; ++i) {
-                        sets[i].name  = md_str_from_cstr(state.selection.stored_selections[i].name);
-                        sets[i].atoms = state.selection.stored_selections[i].atom_mask;
+                    // The user's groups, which v1 names as identifiers, as it named the stored selections they were. VIAL
+                    // selects them as every group, group('name'), and is given none.
+                    const md_group_data_t& groups = state.mold.sys.group;
+                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(groups.count, 1) * sizeof(script::NamedSet));
+                    size_t num_sets = 0;
+                    if (state.script.language == script::Language::V1) {
+                        for (size_t i = 0; i < groups.count; ++i) {
+                            if (groups.origin[i] != MD_GROUP_ORIGIN_USER || !script::name_valid(script::Language::V1, groups.name[i])) continue;
+                            sets[num_sets++] = script::NamedSet{groups.name[i], groups.atoms[i]};
+                        }
                     }
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
-                    // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, md_str_from_cstr(state.mold.run)});
+                    // the IR holds the named sets only.
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_sets, md_str_from_cstr(state.mold.run)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -2350,6 +2364,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
+            // Highlighted while the menu is open: what an item hovered shows, else nothing
+            md_bitmask_clear(&data->selection.highlight_mask);
             if (ImGui::BeginCombo("Select by", selection_granularity_str[(int)data->selection.granularity])) {
                 for (SelectionGranularity g : selection_granularity_order) {
                     const bool current = g == data->selection.granularity;
@@ -2378,64 +2394,14 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Spacing();
             ImGui::Separator();
 
-            // STORED SELECTIONS
-            {
-                md_bitmask_clear(&data->selection.highlight_mask);
-                // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
-                // Leave it here as a comment if we feel that it is needed in the future
-                //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
-
-                ImGui::Text("Stored Selections");
-                for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
-                    auto& sel = data->selection.stored_selections[i];
-                    const md_str_t name_str = md_str_from_cstr(sel.name);
-                    bool is_valid = script::name_valid(data->script.language, name_str);
-                    char error[64] = "";
-                    if (!is_valid) {
-                        snprintf(error, sizeof(error), "'%s' is not a valid identifier.", sel.name);
-                    }
-
-                    for (int j = 0; j < i; ++j) {
-                        if (md_str_eq_cstr(name_str, data->selection.stored_selections[j].name)) {
-                            is_valid = false;
-                            snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name);
-                            break;
-                        }
-                    }
-
-                    ImGui::PushID(i);
-                    ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
-                    ImGui::SameLine();
-                    if (ImGui::Button("Load")) {
-                        md_bitmask_assign(&data->selection.selection_mask, sel.atom_mask);
-                        flag_all_representations_as_dirty(data);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Load the stored selection as the active selection");
-                        md_bitmask_assign(&data->selection.highlight_mask, sel.atom_mask);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Store")) {
-                        ImGui::SetTooltip("Store the active selection into this selection");
-                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->selection.selection_mask), persistent_alloc);
-                        data->script.compile_ir = true;
-                        flag_all_representations_as_dirty(data);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::DeleteButton("Remove")) {
-                        ImGui::SetTooltip("Remove this selection");
-                        remove_selection(data, i);
-                    }
-                    ImGui::PopID();
-                }
-
-                if (ImGui::Button("Create New")) {
-                    char name_buf[64];
-                    snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, md_str_from_cstr(name_buf), md_bitmask_view(&data->selection.selection_mask));
-                }
-
-                //ImGui::PopItemFlag();
+            // The selection kept, as a group of the user's: System > Groups lists, renames and removes them
+            if (num_selected_atoms == 0) ImGui::PushDisabled();
+            if (ImGui::MenuItem("Store as Group")) store_selection_as_group(data);
+            if (num_selected_atoms == 0) ImGui::PopDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (num_selected_atoms) md_bitmask_assign(&data->selection.highlight_mask, md_bitmask_view(&data->selection.selection_mask));
+                ImGui::SetTooltip("Keep the selection as a group of the system, named sel1, sel2, ...: System > Groups lists,\n"
+                                  "renames and removes them, and VIAL selects one as group('sel1')");
             }
             ImGui::EndMenu();
         }
@@ -3535,6 +3501,14 @@ void draw_context_popup(ApplicationState* state, const PickingHit& hit) {
                 if (ImGui::MenuItem("Clear")) {
                     md_bitmask_clear(&state->selection.selection_mask);
                     single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                }
+                if (ImGui::MenuItem("Store as Group")) {
+                    store_selection_as_group(state);
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered()) {
+                    md_bitmask_assign(&state->selection.highlight_mask, md_bitmask_view(&state->selection.selection_mask));
+                    ImGui::SetTooltip("Keep the selection as a group of the system (System > Groups), group('sel1') in VIAL");
                 }
             }
             ImGui::EndMenu();
