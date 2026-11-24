@@ -267,7 +267,8 @@ struct Layer {
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };
     float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
 
-    ImPlotColormap colormap = ImPlotColormap_Spectral;     // Bright against the plots' dark background
+    ImPlotColormap colormap = ImPlotColormap_Spectral;     // Of time: bright against the plots' dark background
+    ImPlotColormap density_colormap = ImPlotColormap_Viridis;  // Of a heatmap: sequential, as a density is
     ImPlotColormap structure_colormap = ImPlotColormap_Deep;    // Of points coloured by structure: in turn, by default
     bool     log_scale = false;
 
@@ -759,6 +760,7 @@ struct Shapespace : viamd::EventHandler {
         md_memcpy(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
+        l->density_colormap = src.density_colormap;
         l->structure_colormap = src.structure_colormap;
         l->log_scale = src.log_scale;
         l->point_coloring = src.point_coloring;
@@ -1458,6 +1460,7 @@ struct Shapespace : viamd::EventHandler {
             if (l.bandwidth > 0.0f) viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
             else                    viamd::write_str(state, MD_STR_LIT("Bandwidth"), MD_STR_LIT("auto"));
             viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_str(state, MD_STR_LIT("DensityColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.density_colormap)));
             viamd::write_str(state, MD_STR_LIT("StructureColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.structure_colormap)));
             viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
             static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("structure"), MD_STR_LIT("time") };
@@ -1559,6 +1562,7 @@ struct Shapespace : viamd::EventHandler {
             while (viamd::next_entry(ident, arg, state)) {}
             return;
         }
+        bool has_colormap = false, has_density_colormap = false;
         while (viamd::next_entry(ident, arg, state)) {
             md_str_t s = {};
             if (md_str_eq_cstr(ident, "Name")) {
@@ -1614,6 +1618,13 @@ struct Shapespace : viamd::EventHandler {
                 md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
+                has_colormap = cm >= 0;
+            } else if (md_str_eq_cstr(ident, "DensityColormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                md_str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->density_colormap = cm;
+                has_density_colormap = true;
             } else if (md_str_eq_cstr(ident, "StructureColormap") && viamd::extract_str(s, arg)) {
                 char name[64];
                 md_str_copy_to_char_buf(name, sizeof(name), s);
@@ -1631,6 +1642,8 @@ struct Shapespace : viamd::EventHandler {
                 viamd::extract_flt(l->trajectory_width, arg);
             }
         }
+        // Of a workspace from when a heatmap was in the colours of time: as it was
+        if (has_colormap && !has_density_colormap) l->density_colormap = l->colormap;
         sanitize_layer(*l);
         if (!selected_layer) selected_layer = l->id;
     }
@@ -1647,6 +1660,7 @@ struct Shapespace : viamd::EventHandler {
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
         if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Spectral;
+        if (l.density_colormap < 0 || l.density_colormap >= ImPlot::GetColormapCount()) l.density_colormap = ImPlotColormap_Viridis;
         if (l.structure_colormap < 0 || l.structure_colormap >= ImPlot::GetColormapCount()) l.structure_colormap = ImPlotColormap_Deep;
     }
 
@@ -1731,7 +1745,7 @@ struct Shapespace : viamd::EventHandler {
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
-        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.density_colormap, l.log_scale);
         density_map_draw_levels(d, l.result, 0, l.levels, l.num_levels);
         density_map_draw_fills_from(d, l.color);
         d->content = l.shown_hash;
@@ -3575,7 +3589,8 @@ struct Shapespace : viamd::EventHandler {
         const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
         const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
         const bool by_map = l.style == LayerStyle_Points && l.point_coloring != PointColoring_Layer;
-        const ImPlotColormap sw_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
+        const ImPlotColormap sw_map = l.style != LayerStyle_Points ? l.density_colormap
+                                    : l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
         density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, sw_map, l.visible ? 1.0f : 0.35f);
 
         const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
@@ -3818,8 +3833,11 @@ struct Shapespace : viamd::EventHandler {
             prop::row("levels", "The contours enclose these fractions of the samples (highest density regions)");
             density_map_levels_editor(l.levels, &l.num_levels);
         }
-        if (l.style == LayerStyle_Heatmap || (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time)) {
-            prop::row("colormap");
+        if (l.style == LayerStyle_Heatmap) {
+            prop::row("colormap", "Of the density");
+            ImPlot::ColormapSelection("##dcmap", &l.density_colormap);
+        } else if (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time) {
+            prop::row("colormap", "Of time: over all of the layer's frames");
             ImPlot::ColormapSelection("##cmap", &l.colormap);
         }
         if (l.style == LayerStyle_Heatmap) {
