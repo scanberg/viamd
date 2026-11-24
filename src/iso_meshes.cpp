@@ -541,6 +541,23 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     return 0;
 }
 
+// The extraction as a GpuJob (gpu_job.h). Its mesh is the job's own: Done, the GpuJob keeps the job for take(), and
+// job_poll ends it with the mesh out (md_gto_iso_gpu_job_end); failed or cancelled, the GpuJob ends it, no mesh
+static GpuJob::Status extract_job_poll(void* job, double budget_ms) {
+    switch (md_gto_iso_gpu_job_poll((md_gto_iso_gpu_job_t*)job, budget_ms)) {
+    case MD_GTO_ISO_GPU_JOB_RUNNING: return GpuJob::Status::Running;
+    case MD_GTO_ISO_GPU_JOB_DONE:    return GpuJob::Status::Done;
+    default:                         return GpuJob::Status::Failed;
+    }
+}
+
+static const GpuJob::Ops extract_job_ops = {
+    extract_job_poll,
+    [](const void* job) { return md_gto_iso_gpu_job_progress((const md_gto_iso_gpu_job_t*)job); },
+    [](void* job) { md_gto_iso_gpu_job_end((md_gto_iso_gpu_job_t*)job, nullptr); },
+    true,       // the owner takes it
+};
+
 static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key) {
     if (!state->gpu_device || !state->gpu_stream || !m->gpu_set) return false;
     md_gto_iso_gpu_desc_t desc = {};
@@ -555,7 +572,7 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(state->gpu_stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc);
     if (!job) return false;
     m->job = new GpuJob();
-    m->job->start(job, MD_STR_LIT("Isosurface mesh"));
+    m->job->start(extract_job_ops, job, MD_STR_LIT("Isosurface mesh"));
     m->job_key = key;
     m->job_slots = n;
     m->job_start = md_tick_now();

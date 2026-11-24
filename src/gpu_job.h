@@ -17,7 +17,8 @@
 //            nothing has to remember to poll it - and takes its results (its own buffers, read back) once Done.
 //
 // A new kind of GPU work then takes three steps: kernels that evaluate a range of their work, a job over
-// md_gpu_pieces in mdlib, and a GpuJob around it in viamd. Its progress bar comes with the GpuJob.
+// md_gpu_pieces in mdlib, and its Ops in viamd (GpuJob::Ops: poll, progress, end), beside the code that begins it.
+// GpuJob knows no kind of job; its progress bar comes with it.
 //
 // The GL thread only (the GPU stream is its own).
 
@@ -25,10 +26,6 @@
 #include <core/md_str.h>
 
 #include <stdint.h>
-
-struct md_gto_iso_gpu_eval_job_t;
-struct md_gto_iso_gpu_job_t;
-struct md_gto_int_gpu_job_t;
 
 class GpuJob {
 public:
@@ -40,7 +37,8 @@ public:
         Cancelled,      // from the overlay, or by cancel(): its results are not to be read
     };
 
-    // What GpuJob needs of a kind of mdlib job
+    // What GpuJob needs of a kind of mdlib job. Given by the code that begins one (a static const beside it), for
+    // the void* it hands over: GpuJob calls them with that job and nothing else.
     struct Ops {
         Status (*poll)(void* job, double budget_ms);    // advance; Done once every piece has passed
         float  (*progress)(const void* job);            // 0 to 1
@@ -53,13 +51,9 @@ public:
     GpuJob(const GpuJob&) = delete;
     GpuJob& operator=(const GpuJob&) = delete;
 
-    // Takes the mdlib job (NULL: Failed at once), ending one under way first. label: listed in the overlay while it
-    // runs, cancellable there; empty: not listed.
+    // Takes the mdlib job and the Ops of its kind (copied; job NULL: Failed at once), ending one under way first.
+    // label: listed in the overlay while it runs, cancellable there; empty: not listed.
     void start(const Ops& ops, void* job, md_str_t label, bool cancellable = true);
-    void start(md_gto_iso_gpu_eval_job_t* job, md_str_t label);
-    void start(md_gto_int_gpu_job_t* job, md_str_t label);
-    // An isosurface extraction: its mesh is the job's own, taken with take() once Done (md_gto_iso_gpu_job_end)
-    void start(md_gto_iso_gpu_job_t* job, md_str_t label);
 
     Status status() const { return m_status; }
     bool   running() const { return m_status == Status::Running; }

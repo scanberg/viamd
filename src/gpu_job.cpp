@@ -3,11 +3,6 @@
 #include <core/md_common.h>
 #include <core/md_os.h>
 
-#if MD_ENABLE_GPU
-#include <md_gto_int.h>
-#include <md_gto_iso.h>
-#endif
-
 // The jobs under way, oldest first
 static GpuJob* g_head = nullptr;
 static GpuJob* g_tail = nullptr;
@@ -117,62 +112,3 @@ void gpu_jobs_poll(double budget_ms) {
 void gpu_jobs_cancel_all() {
     while (g_head) g_head->cancel();
 }
-
-// ---------------------------------------------------------------------------------------------------------------------
-// The kinds of mdlib job
-
-#if MD_ENABLE_GPU
-static GpuJob::Status iso_eval_poll(void* job, double budget_ms) {
-    switch (md_gto_iso_gpu_evaluate_job_poll((md_gto_iso_gpu_eval_job_t*)job, budget_ms)) {
-    case MD_GTO_ISO_GPU_JOB_RUNNING: return GpuJob::Status::Running;
-    case MD_GTO_ISO_GPU_JOB_DONE:    return GpuJob::Status::Done;
-    default:                         return GpuJob::Status::Failed;
-    }
-}
-
-static GpuJob::Status gto_int_poll(void* job, double budget_ms) {
-    switch (md_gto_int_gpu_job_poll((md_gto_int_gpu_job_t*)job, budget_ms)) {
-    case MD_GTO_INT_GPU_JOB_RUNNING: return GpuJob::Status::Running;
-    case MD_GTO_INT_GPU_JOB_DONE:    return GpuJob::Status::Done;
-    default:                         return GpuJob::Status::Failed;
-    }
-}
-
-static GpuJob::Status iso_extract_poll(void* job, double budget_ms) {
-    switch (md_gto_iso_gpu_job_poll((md_gto_iso_gpu_job_t*)job, budget_ms)) {
-    case MD_GTO_ISO_GPU_JOB_RUNNING: return GpuJob::Status::Running;
-    case MD_GTO_ISO_GPU_JOB_DONE:    return GpuJob::Status::Done;
-    default:                         return GpuJob::Status::Failed;
-    }
-}
-
-void GpuJob::start(md_gto_iso_gpu_eval_job_t* job, md_str_t label) {
-    static const Ops ops = {
-        iso_eval_poll,
-        [](const void* j) { return md_gto_iso_gpu_evaluate_job_progress((const md_gto_iso_gpu_eval_job_t*)j); },
-        [](void* j) { md_gto_iso_gpu_evaluate_job_end((md_gto_iso_gpu_eval_job_t*)j); },
-        false,
-    };
-    start(ops, job, label);
-}
-
-void GpuJob::start(md_gto_int_gpu_job_t* job, md_str_t label) {
-    static const Ops ops = {
-        gto_int_poll,
-        [](const void* j) { return md_gto_int_gpu_job_progress((const md_gto_int_gpu_job_t*)j); },
-        [](void* j) { md_gto_int_gpu_job_end((md_gto_int_gpu_job_t*)j); },
-        false,
-    };
-    start(ops, job, label);
-}
-
-void GpuJob::start(md_gto_iso_gpu_job_t* job, md_str_t label) {
-    static const Ops ops = {
-        iso_extract_poll,
-        [](const void* j) { return md_gto_iso_gpu_job_progress((const md_gto_iso_gpu_job_t*)j); },
-        [](void* j) { md_gto_iso_gpu_job_end((md_gto_iso_gpu_job_t*)j, nullptr); },
-        true,       // the mesh is the job's: the owner ends it (take)
-    };
-    start(ops, job, label);
-}
-#endif

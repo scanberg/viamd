@@ -1215,6 +1215,39 @@ static void ratio_gpu_values(float* out, const void* rb, size_t count, const Orb
     const double floor_value = a ? a->floor_value : 0.0;
     for (size_t i = 0; i < count; ++i) out[i] = ratio_value(v[count + i], v[i], floor_value);
 }
+
+// The device's evaluations as GpuJobs (gpu_job.h): md_gto_int's (the potential, on a grid or at points) and
+// md_gto_iso's (a ratio at points, ratio_gpu_job). Done, either has written the owner's buffers, and the GpuJob
+// ends it.
+static GpuJob::Status gto_int_job_poll(void* job, double budget_ms) {
+    switch (md_gto_int_gpu_job_poll((md_gto_int_gpu_job_t*)job, budget_ms)) {
+    case MD_GTO_INT_GPU_JOB_RUNNING: return GpuJob::Status::Running;
+    case MD_GTO_INT_GPU_JOB_DONE:    return GpuJob::Status::Done;
+    default:                         return GpuJob::Status::Failed;
+    }
+}
+
+static const GpuJob::Ops gto_int_job_ops = {
+    gto_int_job_poll,
+    [](const void* job) { return md_gto_int_gpu_job_progress((const md_gto_int_gpu_job_t*)job); },
+    [](void* job) { md_gto_int_gpu_job_end((md_gto_int_gpu_job_t*)job); },
+    false,
+};
+
+static GpuJob::Status iso_eval_job_poll(void* job, double budget_ms) {
+    switch (md_gto_iso_gpu_evaluate_job_poll((md_gto_iso_gpu_eval_job_t*)job, budget_ms)) {
+    case MD_GTO_ISO_GPU_JOB_RUNNING: return GpuJob::Status::Running;
+    case MD_GTO_ISO_GPU_JOB_DONE:    return GpuJob::Status::Done;
+    default:                         return GpuJob::Status::Failed;
+    }
+}
+
+static const GpuJob::Ops iso_eval_job_ops = {
+    iso_eval_job_poll,
+    [](const void* job) { return md_gto_iso_gpu_evaluate_job_progress((const md_gto_iso_gpu_eval_job_t*)job); },
+    [](void* job) { md_gto_iso_gpu_evaluate_job_end((md_gto_iso_gpu_eval_job_t*)job); },
+    false,
+};
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1629,7 +1662,7 @@ static bool start_gpu_ratio(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         work_cpu_free(w);
         return false;
     }
-    w->job.start(job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
+    w->job.start(iso_eval_job_ops, job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
     w->ratio_points = true;
     w->stage = SurfaceFieldWork::Gpu;
     return true;
@@ -1705,7 +1738,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     pd.voxel_mask       = mask;     // copied by the job
     md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &pd);
     if (!job) return false;
-    w->job.start(job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
+    w->job.start(gto_int_job_ops, job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
     w->stage = SurfaceFieldWork::Gpu;
     return true;
 }
@@ -2123,7 +2156,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
         w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, ratio_gpu_bytes(w->source.data.ratio, w->count));
         md_gto_iso_gpu_eval_job_t* job = w->gpu_out.gpu ? ratio_gpu_job(w->stream, set, xyz, stride, w->count, w->gpu_out.gpu, w->source.data.ratio) : nullptr;
         if (!job) return false;
-        w->job.start(job, label);
+        w->job.start(iso_eval_job_ops, job, label);
         w->ratio = true;
         w->stage = SurfaceFieldPointsWork::Gpu;
         w->on_gpu = true;
@@ -2139,7 +2172,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
     pd.out_potential = w->gpu_out.gpu;
     md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_xyz_job_begin(w->stream, &pd);
     if (!job) return false;
-    w->job.start(job, label);
+    w->job.start(gto_int_job_ops, job, label);
     w->stage = SurfaceFieldPointsWork::Gpu;
     w->on_gpu = true;
     return true;
