@@ -8130,48 +8130,22 @@ static void draw_representations_opaque(ApplicationState* state) {
                 place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
             }
         } else if (rep.type == RepresentationType::DipoleMoment) {
-            if (representation_shown(*state, rep)) {
-                // immediate draw of dipole moment as arrow
-                md_float3_t dipole_vec = { 0, 0, 0 };
-                md_float3_t dipole_org = { 0, 0, 0 };
-                if (dipole_moment_read(&dipole_vec, &dipole_org, state->mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) {
-                    // The representation's own (key, index) IS the picking address: the group's
-                    // range was reserved under that key this frame, and the shader adds the base to
-                    // the per primitive index, so the element index is what goes on the primitive.
-                    // A group that did not fit in the picking space draws with INVALID_PICKING_IDX,
-                    // which the shader passes through untouched - visible, just not pickable.
-                    const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
+            DipoleArrow arrow;
+            if (representation_shown(*state, rep) && representation_dipole_arrow(&arrow, *state, rep)) {
+                // The representation's own (key, index) IS the picking address: the group's range was reserved under
+                // that key this frame, and the shader adds the base to the per primitive index, so the element index
+                // is what goes on the primitive. A group that did not fit in the picking space draws with
+                // INVALID_PICKING_IDX, which the shader passes through untouched - visible, just not pickable.
+                const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+                const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
 
-                    immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                    immediate::set_picking_base_idx(scope, range ? range->beg : 0);
+                immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
+                immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
-                    const md_float3_t beg = rep.dipole.offset + dipole_org;
-                    const md_float3_t vec = dipole_vec * (float)rep.dipole.scale;
-                    const float  len = md_float3_length(vec);
-
-                    // The head is a fixed shape in units of the shaft radius, never a share of the
-                    // length: a longer dipole is a longer shaft under the same head. Below the length
-                    // where the head would take more than its share of the arrow, the arrow is that
-                    // shortest one compressed along its length only: the radii stay, so a small dipole
-                    // flattens toward a disc that is still as easy to see and hover as a large one.
-                    const float HEAD_RADIUS   = 2.0f;   // x shaft radius
-                    const float HEAD_LENGTH   = 5.0f;   // x shaft radius
-                    const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
-
-                    const float shaft_radius = rep.dipole.radius;
-                    const float head_radius  = shaft_radius * HEAD_RADIUS;
-                    float       head_length  = shaft_radius * HEAD_LENGTH;
-                    const float min_len = head_length / HEAD_FRACTION;
-                    if (len < min_len) {
-                        head_length *= len / min_len;   // the shaft, the rest of the length, follows
-                    }
-
-                    const uint32_t color_u32   = convert_color(rep.dipole.color);
-                    const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
-
-                    immediate::arrow(scope, beg, beg + vec, shaft_radius, head_radius, head_length, color_u32, picking_idx);
-                }
+                const uint32_t color_u32   = convert_color(rep.dipole.color);
+                const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
+                const float    head_length = md_float3_length(arrow.tip - arrow.neck);
+                immediate::arrow(scope, arrow.beg, arrow.tip, arrow.shaft_radius, arrow.head_radius, head_length, color_u32, picking_idx);
             }
         } else if (rep.type == RepresentationType::SimulationBox) {
             if (representation_shown(*state, rep) && rep.type_is_valid) {

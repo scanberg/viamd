@@ -103,6 +103,16 @@ struct MdRenderBridge {
     md_array(BridgeRep)         reps = nullptr;
     md_array(md_render_batch_t) batches = nullptr;
 
+    // The shapes (emit_shapes): the points of their capsules, a colour each and a radius scale a capsule, on the GPU
+    // and as they were uploaded; the dipole of each arrow, by the arrows' order
+    md_gpu_addr_t         shape_pos = 0, shape_col = 0, shape_scale = 0;
+    uint32_t              shape_cap = 0;          // points the buffers hold (and scales)
+    md_array(md_float3_t) shape_pos_cpu = nullptr;
+    md_array(uint32_t)    shape_col_cpu = nullptr;
+    md_array(float)       shape_scale_cpu = nullptr;
+    struct Dipole { md_attribute_id_t key; uint32_t index; };
+    md_array(Dipole)      dipoles = nullptr;
+
     // The parts of the assembly shown (place_ops): the atoms of each (0: all) and its copies' transforms
     struct Part { md_gpu_addr_t atoms; uint32_t c0, c1; };
     md_array(Part) parts = nullptr;
@@ -200,7 +210,8 @@ void main() {
     vec4 s = FETCH(u_surface, p);
     uint bits = uint(c.a * 255.0 + 0.5);
     vec3 rgb = c.rgb;
-    if ((bits & 1u) == 0u) {
+    // Not selected, of what can be (128: its batch has marks; the shapes have none)
+    if ((bits & 129u) == 128u) {
         rgb = mix(vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722))), rgb, u_dim);
     }
     // md_render's projection is md_gl's with its depth reversed: d = (1 - ndc z) / 2
@@ -248,7 +259,7 @@ void main() {
     float sel_any  = (bits & 2u) != 0u ? 1.0 : 0.0;
     float hl_any   = (bits & 8u) != 0u ? 1.0 : 0.0;
     out_marks = vec4(sel_view, sel_any, hl_view, hl_any);
-    uint group = 1u + (a >> 4u) + (hl_view > 0.0 ? 8u : 0u);
+    uint group = 1u + ((a >> 4u) & 7u) + (hl_view > 0.0 ? 8u : 0u);
     out_group = vec4(hl_any > 0.0 ? float(group) / 255.0 : 0.0, 0.0, 0.0, 0.0);
 }
 )";
@@ -610,8 +621,16 @@ static bool active(const ApplicationState& state) {
 
 bool md_render_bridge_active(const ApplicationState& state) { return active(state); }
 
+// The shapes md_render draws (emit_shapes): as main.cpp has md_gl draw them
+static bool shape_shown(const ApplicationState& state, const Representation& rep) {
+    if (rep.type == RepresentationType::DipoleMoment) return representation_shown(state, rep);
+    if (rep.type == RepresentationType::SimulationBox) return representation_shown(state, rep) && rep.type_is_valid;
+    return false;
+}
+
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
     if (!active(state)) return false;
+    if (rep.type == RepresentationType::DipoleMoment || rep.type == RepresentationType::SimulationBox) return shape_shown(state, rep);
     if (!type_drawn(rep.type) || !rep.type_is_valid || !representation_shown(state, rep)) return false;
     const BridgeRep* r = find_rep(state.md_render_bridge, rep.node.id);
     return r && r->color && r->visible && r->atom_count == state.md_render_bridge->atom_count;
@@ -859,6 +878,198 @@ static bool copy_transform(const MdRenderBridge* b, const ApplicationState& stat
     return false;
 }
 
+// ---- Shapes ------------------------------------------------------------------------------------------------------
+
+// The dipoles' arrows and the cell's edges: capsules of md_render's over points of their own. Their keys are past the
+// representations' (below 2^56), with a low byte that is none of md_render_mol's parts; a box's carry its
+// representation. Shafts and heads hold the arrows of every dipole representation, in the order of `dipoles`.
+static constexpr uint64_t SHAPE_KEY = 0xFFull << 56;
+static uint64_t shape_key(uint32_t rep_id, uint32_t what) { return SHAPE_KEY | ((uint64_t)(rep_id + 1) << 16) | ((uint64_t)what << 8) | 0xFFu; }
+enum { SHAPE_SHAFTS, SHAPE_HEADS, SHAPE_CELL, SHAPE_IMAGES, SHAPE_AXES, SHAPE_ORIGIN };
+static bool is_shape_key(uint64_t key) { return (key >> 56) == 0xFF && (key & 0xFF) == 0xFF; }
+
+// A batch of capsules over the shapes' points [first, first + 2 count), with their radius scales from `scale` (or
+// none: -1)
+struct ShapeBatch {
+    uint64_t key;
+    uint32_t first, count;
+    int64_t  scale;
+    md_render_capsule_style_t style;
+    const float* transform;
+    uint32_t     transform_count;
+};
+
+// The batches of the shapes this frame, into b->batches. The points are uploaded when they changed (in place, the
+// content's counters bumped, or where there is room for them), so that a frame of the same ones draws nothing.
+static void emit_shapes(MdRenderBridge* b, ApplicationState* state, md_allocator_i* alloc) {
+    md_allocator_i* temp = state->allocator.frame;
+    md_array(md_float3_t) pos = nullptr;
+    md_array(uint32_t)    col = nullptr;
+    md_array(float)       scale = nullptr;
+    md_array(ShapeBatch)  sb = nullptr;
+    md_array_shrink(b->dipoles, 0);
+    const size_t num_reps = md_array_size(state->representation.reps);
+
+    // The arrows: the shafts, then the heads, of the radii their scales hold
+    md_array(DipoleArrow) arrows = nullptr;
+    md_array(uint32_t)    arrow_col = nullptr;
+    for (size_t i = 0; i < num_reps; ++i) {
+        const Representation& rep = state->representation.reps[i];
+        DipoleArrow a;
+        if (rep.type != RepresentationType::DipoleMoment || !shape_shown(*state, rep) || !representation_dipole_arrow(&a, *state, rep)) continue;
+        md_array_push(arrows, a, temp);
+        md_array_push(arrow_col, convert_color(rep.dipole.color), temp);
+        md_array_push(b->dipoles, (MdRenderBridge::Dipole{rep.dipole.dipole_key, rep.dipole.dipole_index}), state->allocator.persistent);
+    }
+    const uint32_t num_arrows = (uint32_t)md_array_size(arrows);
+    if (num_arrows) {
+        for (int head = 0; head < 2; ++head) {
+            ShapeBatch x = {};
+            x.key   = shape_key(0, head ? SHAPE_HEADS : SHAPE_SHAFTS);
+            x.first = (uint32_t)md_array_size(pos);
+            x.count = num_arrows;
+            x.scale = (int64_t)md_array_size(scale);
+            x.style.radius = 1.0f;
+            x.style.flat   = true;
+            x.style.tapered = head != 0;                    // to a point
+            for (uint32_t k = 0; k < num_arrows; ++k) {
+                const DipoleArrow& a = arrows[k];
+                md_array_push(pos, head ? a.neck : a.beg, temp);
+                md_array_push(pos, head ? a.tip : a.neck, temp);
+                md_array_push(col, arrow_col[k], temp);
+                md_array_push(col, arrow_col[k], temp);
+                md_array_push(scale, head ? a.head_radius : a.shaft_radius, temp);
+            }
+            md_array_push(sb, x, temp);
+        }
+    }
+
+    // The cells: of each box its own and those of the periodic images, their edges as wide on screen all along, joined
+    // by their round ends (main.cpp's draw_simulation_box, which md_gl draws). With axes, those of its own cell along
+    // a, b and c from the origin red, green and blue, flat-ended: the ends of the edges they meet, and the origin's
+    // ball of the box's colour, close them. The axes and the ball are a hundredth wider than the edges, so that the
+    // edges of the images they lie on never show through them (md_gl draws its own cell first, and the depth test
+    // keeps the first of equal depths; md_render's raster has no order).
+    const float AXIS_WIDER = 1.01f;
+    const md_unitcell_t& cell = state->mold.state.unitcell;
+    if (md_unitcell_flags(&cell) != 0) {
+        md_float3x3_t A = {0};
+        md_unitcell_A_extract_float(A.elem, &cell);
+        const md_float4x4_t M = state->operations.state_rotation * md_float4x4_from_float3x3(A);
+        md_float3_t corner[8];       // bit k of i: the coordinate along cell vector k
+        for (int i = 0; i < 8; ++i) {
+            corner[i] = md_float3_from_float4(md_float4x4_mul_float4(M, md_float4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
+        }
+        const uint32_t axis_color[3] = { convert_color(md_float4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
+        // The thickness in points, as md_gl's: the view is the whole window, DisplaySize in points; never thinner than
+        // 1.2 pixels shown (0.6 a radius), whatever the render scale; 0: a pixel
+        const float h_render = (float)MD_MAX(state->gbuffer.height, 1U);
+        const float h_px     = (float)MD_MAX(state->gbuffer.out_height, 1U);
+        const float h_pt     = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
+        const size_t num_xf  = md_array_size(state->view.periodic_transforms);
+        for (size_t i = 0; i < num_reps; ++i) {
+            const Representation& rep = state->representation.reps[i];
+            if (rep.type != RepresentationType::SimulationBox || !shape_shown(*state, rep)) continue;
+            const uint32_t color = convert_color(md_float4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
+            const uint32_t base = (uint32_t)md_array_size(pos);
+            auto edge = [&](int i0, int i1, uint32_t c) {
+                md_array_push(pos, corner[i0], temp);
+                md_array_push(pos, corner[i1], temp);
+                md_array_push(col, c, temp);
+                md_array_push(col, c, temp);
+            };
+            for (int k = 0; k < 3; ++k) edge(0, 1 << k, color);                         // base + 0: from the origin
+            for (int c = 1; c < 8; ++c) for (int k = 0; k < 3; ++k) if (!(c & (1 << k))) edge(c, c | (1 << k), color);
+            edge(0, 0, color);                                                          // base + 24: the origin
+            for (int k = 0; k < 3; ++k) edge(0, 1 << k, axis_color[k]);                 // base + 26: the axes
+
+            md_render_capsule_style_t st = {};
+            st.radius_px = rep.box.thickness > 0.0f ? MD_MAX(0.5f * rep.box.thickness * h_render / h_pt, 0.6f * h_render / h_px) : 0.5f * h_render / h_px;
+            ShapeBatch x = {};
+            x.scale = -1;
+            x.style = st;
+            x.key   = shape_key(rep.node.id, SHAPE_CELL);
+            x.first = rep.box.axes ? base + 6 : base;
+            x.count = rep.box.axes ? 9 : 12;
+            md_array_push(sb, x, temp);
+            if (rep.periodic_images && num_xf > 1) {
+                x.key   = shape_key(rep.node.id, SHAPE_IMAGES);
+                x.first = base;
+                x.count = 12;
+                x.transform = &state->view.periodic_transforms[1].elem[0][0];
+                x.transform_count = (uint32_t)(num_xf - 1);
+                md_array_push(sb, x, temp);
+            }
+            if (rep.box.axes) {
+                x.key   = shape_key(rep.node.id, SHAPE_ORIGIN);
+                x.first = base + 24;
+                x.count = 1;
+                x.style.radius_px = st.radius_px * AXIS_WIDER;
+                x.transform = nullptr;
+                x.transform_count = 0;
+                md_array_push(sb, x, temp);
+                x.key   = shape_key(rep.node.id, SHAPE_AXES);
+                x.first = base + 26;
+                x.count = 3;
+                x.style.flat = true;
+                md_array_push(sb, x, temp);
+            }
+        }
+    }
+
+    const uint32_t np = (uint32_t)md_array_size(pos);
+    if (np == 0) return;
+    // Uploaded when changed: in place with the counter of the content bumped, or into larger buffers (new addresses)
+    if (np > b->shape_cap) {
+        b->shape_pos   = realloc_gpu(b, b->shape_pos, (size_t)np * sizeof(md_float3_t));
+        b->shape_col   = realloc_gpu(b, b->shape_col, (size_t)np * sizeof(uint32_t));
+        b->shape_scale = realloc_gpu(b, b->shape_scale, (size_t)np * sizeof(float));
+        b->shape_cap   = b->shape_pos && b->shape_col && b->shape_scale ? np : 0;
+        md_array_shrink(b->shape_pos_cpu, 0);
+        md_array_shrink(b->shape_col_cpu, 0);
+        md_array_shrink(b->shape_scale_cpu, 0);
+        if (!b->shape_cap) return;
+    }
+    md_allocator_i* keep = state->allocator.persistent;
+    const size_t ns = md_array_size(scale);
+    const bool geo = md_array_size(b->shape_pos_cpu) != np || memcmp(b->shape_pos_cpu, pos, np * sizeof(md_float3_t)) ||
+                     md_array_size(b->shape_scale_cpu) != ns || (ns && memcmp(b->shape_scale_cpu, scale, ns * sizeof(float)));
+    const bool app = md_array_size(b->shape_col_cpu) != np || memcmp(b->shape_col_cpu, col, np * sizeof(uint32_t));
+    if (geo) {
+        md_gpu_upload(b->stream, b->shape_pos, pos, np * sizeof(md_float3_t));
+        if (ns) md_gpu_upload(b->stream, b->shape_scale, scale, ns * sizeof(float));
+        md_array_resize(b->shape_pos_cpu, np, keep);
+        memcpy(b->shape_pos_cpu, pos, np * sizeof(md_float3_t));
+        md_array_resize(b->shape_scale_cpu, ns, keep);
+        if (ns) memcpy(b->shape_scale_cpu, scale, ns * sizeof(float));
+        b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
+    }
+    if (app) {
+        md_gpu_upload(b->stream, b->shape_col, col, np * sizeof(uint32_t));
+        md_array_resize(b->shape_col_cpu, np, keep);
+        memcpy(b->shape_col_cpu, col, np * sizeof(uint32_t));
+        b->content[MD_RENDER_CONTENT_APPEARANCE] += 1;
+    }
+
+    for (size_t i = 0; i < md_array_size(sb); ++i) {
+        const ShapeBatch& x = sb[i];
+        md_render_batch_t bt = {};
+        bt.key   = x.key;
+        bt.kind  = MD_RENDER_CAPSULES;
+        bt.count = x.count;
+        bt.points.count    = 2 * x.count;
+        bt.points.position = b->shape_pos + (uint64_t)x.first * sizeof(md_float3_t);
+        bt.points.color    = b->shape_col + (uint64_t)x.first * sizeof(uint32_t);
+        bt.color.mode      = MD_RENDER_COLOR_POINTS;
+        bt.color.sharpness = 1.0f;
+        bt.style.capsules  = x.style;
+        if (x.scale >= 0) bt.style.capsules.radius_scale = b->shape_scale + (uint64_t)x.scale * sizeof(float);
+        bt.transform       = x.transform;
+        bt.transform_count = x.transform_count;
+        md_array_push(b->batches, bt, alloc);
+    }
+}
+
 // ---- The frame ---------------------------------------------------------------------------------------------------
 
 // The view's targets into the shared textures: md_gpu acquires them (after GL's last read, settle_reads), writes and
@@ -971,6 +1182,7 @@ void md_render_bridge_render(ApplicationState* state) {
             ++i;
         }
     }
+    emit_shapes(b, state, alloc);
 
     const uint32_t width = state->gbuffer.width, height = state->gbuffer.height;
     if (width == 0 || height == 0 || md_array_size(b->batches) == 0) {
@@ -1156,6 +1368,16 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
             if (b->picks[i].x == px && b->picks[i].y == py) { found = &b->picks[i]; break; }
         }
     }
+    // A dipole's arrow picks as md_gl's (its group's range, keyed by its vector attribute); the cells' edges as none
+    if (found && is_shape_key(found->key)) {
+        const uint32_t what = (uint32_t)((found->key >> 8) & 0xFF);
+        if ((what == SHAPE_SHAFTS || what == SHAPE_HEADS) && found->element < md_array_size(b->dipoles)) {
+            const MdRenderBridge::Dipole& d = b->dipoles[found->element];
+            set_hit(*state, hit, PickingDomain_Dipole, d.key, d.index);
+            return;
+        }
+        found = nullptr;
+    }
     md_render_mol_hit_t mh = {};
     if (!found || !md_render_mol_decode_pick(found, &mh) || mh.kind == MD_RENDER_MOL_HIT_NONE) {
         // Not known yet (or no more): nothing, rather than what md_render drew there taken for something else
@@ -1296,6 +1518,9 @@ void md_render_bridge_destroy(ApplicationState* state) {
     settle_reads(b);
     if (b->stream) {
         free_system(b);
+        if (b->shape_pos)   md_gpu_free(b->stream, b->shape_pos);
+        if (b->shape_col)   md_gpu_free(b->stream, b->shape_col);
+        if (b->shape_scale) md_gpu_free(b->stream, b->shape_scale);
         shared_free(b, &b->depth);
         shared_free(b, &b->color);
         shared_free(b, &b->surface);
@@ -1309,6 +1534,10 @@ void md_render_bridge_destroy(ApplicationState* state) {
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
     md_array_free(b->parts, state->allocator.persistent);
+    md_array_free(b->shape_pos_cpu, state->allocator.persistent);
+    md_array_free(b->shape_col_cpu, state->allocator.persistent);
+    md_array_free(b->shape_scale_cpu, state->allocator.persistent);
+    md_array_free(b->dipoles, state->allocator.persistent);
     delete b;
     state->md_render_bridge = nullptr;
 }

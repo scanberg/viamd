@@ -137,6 +137,33 @@ static bool groups_enabled(const ApplicationState& app, uint32_t parent) {
     return true;
 }
 
+bool representation_dipole_arrow(DipoleArrow* out, const ApplicationState& app, const Representation& rep) {
+    md_float3_t dipole_vec = {0, 0, 0};
+    md_float3_t dipole_org = {0, 0, 0};
+    if (!dipole_moment_read(&dipole_vec, &dipole_org, app.mold.sys, rep.dipole.dipole_key, rep.dipole.dipole_index)) return false;
+    const md_float3_t beg = rep.dipole.offset + dipole_org;
+    const md_float3_t vec = dipole_vec * (float)rep.dipole.scale;
+    const float len = md_float3_length(vec);
+    if (!(len > 0.0f)) return false;
+
+    const float HEAD_RADIUS   = 2.0f;   // x shaft radius
+    const float HEAD_LENGTH   = 5.0f;   // x shaft radius
+    const float HEAD_FRACTION = 0.4f;   // at most this share of the length is head
+
+    const float shaft_radius = rep.dipole.radius;
+    float head_length = shaft_radius * HEAD_LENGTH;
+    const float min_len = head_length / HEAD_FRACTION;
+    if (len < min_len) {
+        head_length *= len / min_len;   // the shaft, the rest of the length, follows
+    }
+    out->beg  = beg;
+    out->tip  = beg + vec;
+    out->neck = beg + vec * ((len - head_length) / len);
+    out->shaft_radius = shaft_radius;
+    out->head_radius  = MD_MAX(shaft_radius * HEAD_RADIUS, shaft_radius);
+    return true;
+}
+
 bool representation_shown(const ApplicationState& app, const Representation& rep) {
     return rep.enabled && groups_enabled(app, rep.node.parent);
 }

@@ -94,6 +94,19 @@ const RepresentationGroup* find_representation_group(const ApplicationState& app
 bool representation_shown(const ApplicationState& app, const Representation& rep);
 bool representation_group_shown(const ApplicationState& app, const RepresentationGroup& group);
 
+// --- Shapes ---
+
+// The arrow of a DipoleMoment representation: the shaft from beg to neck, the head, a cone, from neck to tip. False
+// when it has none (its dipole is not read). The head is a fixed shape in units of the shaft radius, never a share of
+// the length: a longer dipole is a longer shaft under the same head. Below the length where the head would take more
+// than its share of the arrow, the arrow is that shortest one compressed along its length only: the radii stay, so a
+// small dipole flattens toward a disc that is still as easy to see and hover as a large one.
+struct DipoleArrow {
+    md_float3_t beg, neck, tip;
+    float       shaft_radius, head_radius;
+};
+bool representation_dipole_arrow(DipoleArrow* out, const ApplicationState& app, const Representation& rep);
+
 // The context something within the group 'parent' is evaluated in: the innermost group out from it that has
 // a filter, or none (atoms NULL) for the whole system
 struct RepresentationContext {

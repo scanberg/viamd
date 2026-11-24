@@ -1,7 +1,7 @@
 #pragma once
 
-// The molecular representations of the main view drawn by md_render (mdlib) on md_gpu, while the rest of viamd still
-// draws with OpenGL. A step on the way to md_render drawing everything: what it draws is merged into the G-buffer, so
+// The molecular representations of the main view drawn by md_render (mdlib) on md_gpu, and the shapes of the dipoles
+// and the cell (their arrows, its edges), while the rest of viamd still draws with OpenGL. A step on the way to md_render drawing everything: what it draws is merged into the G-buffer, so
 // post-processing, picking and the marks see one scene.
 //
 // Each frame the scene is made (render_scene), md_render draws the representations it can (md_render_bridge_draws),
