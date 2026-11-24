@@ -3745,11 +3745,6 @@ static void draw_async_task_window(ApplicationState* data) {
         if (all[i].seconds >= MIN_SECONDS || is_evaluate) activities[num_activities++] = all[i];
     }
     bool any_task_label_visible = num_activities > 0;
-    // and what the components have under way that the task system does not show, such as the analytic critical
-    // point search of the QM module: asked for through an event, as a component may not be built
-    TaskProgressRequest component_progress = {};
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTaskProgressRequest, viamd::EventPayloadType_TaskProgressRequest, &component_progress);
-    any_task_label_visible |= component_progress.count > 0;
 
     // The representations shown whose filter, or the context of their groups, is not valid: they show what it picked
     // when it last was, or nothing (representation_filter_invalid). Said once it has stayed so for a moment, so that a
@@ -3808,19 +3803,6 @@ static void draw_async_task_window(ApplicationState* data) {
                     if (is_evaluate) {
                         script::eval_interrupt(data->script.eval);
                     }
-                }
-                ImGui::PopID();
-            }
-        }
-        for (size_t i = 0; i < component_progress.count; i++) {
-            const TaskProgress& p = component_progress.items[i];
-            snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
-            ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            if (p.cancel) {
-                ImGui::SameLine();
-                ImGui::PushID((int)i);
-                if (ImGui::DeleteButton((const char*)ICON_FA_XMARK "##component task", ImVec2(size, size))) {
-                    *p.cancel = 1;
                 }
                 ImGui::PopID();
             }

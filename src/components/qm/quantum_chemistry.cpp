@@ -697,6 +697,16 @@ static md_str_t critical_points_density_path(const md_system_t& sys) {
     return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
 }
 
+#if MD_ENABLE_GPU
+// One run of the volume method (Method_Volume) on the device: the density sampled into the scratch and the topology of
+// the samples (md_topo_gpu_record) recorded behind it on the stream, then a step job (task_system.h) until its results
+// are host readable. The main thread takes them (update_critical_points_volume).
+struct VolumeCriticalPointRun {
+    uint64_t         hash = 0;      // the inputs it was started for
+    task_system::Job task;
+};
+#endif
+
 // One run of the analytic critical point search (md_topo_compute_extremum_graph_gto) on the task pool.
 // Everything the run reads - basis, geometry, density matrix - is copied in here before it starts, so
 // it never touches the attribute table, the component's arena or the system while the main thread
@@ -717,10 +727,9 @@ struct GtoCriticalPointJob {
     uint64_t          hash    = 0;           // the inputs this run was started for
     md_tick_t         start   = 0;
     bool              dropped = false;       // main thread only: superseded, never to be shown
-    volatile int32_t  cancel  = 0;
-    volatile float    progress = 0.0f;       // written by the run: 0 to 1, an estimate (md_topo_gto_desc_t)
     std::atomic<bool> done    = false;
-    task_system::Job  task;
+    task_system::Job  task;                  // listed in the overlay: its progress (an estimate, md_topo_gto_desc_t)
+                                             // and its cancel are the search's
 #if MD_ENABLE_GPU
     md_gpu_stream_t   stream  = nullptr;   // own stream: the sweep runs on the GPU, used by the task only
 #endif
@@ -797,9 +806,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->desc.density_matrix     = job->density;
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
-    job->desc.cancel             = &job->cancel;
     job->desc.executor           = task_system::executor();   // its loops on the pool, stopped with the job
-    job->desc.progress           = &job->progress;
 
     job->graph.alloc = md_get_heap_allocator();
     job->hash  = hash;
@@ -809,10 +816,12 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     if (use_gpu && app.gpu_device) job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
 #endif
 
-    // Hidden as a task: the task overlay's bar for it would show no fraction, and its close button
-    // interrupts a task through a flag this run never sees. The overlay shows the run's own progress
-    // instead (EventType_ViamdTaskProgressRequest), as does the Critical Points window, each with a cancel button.
-    job->task.start({}, [job]() {
+    // Listed in the overlay, with the search's own progress and a cancel button that reaches it (the task's flags,
+    // handed to the search), as the Critical Points window shows it. A run cancelled is collected as usual: what was
+    // found so far is shown, marked.
+    job->task.start(MD_STR_LIT("Critical points"), [job]() {
+        job->desc.cancel   = const_cast<volatile int32_t*>(task_system::cancel_flag());
+        job->desc.progress = task_system::progress_flag();
 #if MD_ENABLE_GPU
         if (job->stream) {
             job->ok = md_topo_compute_extremum_graph_gto_gpu(&job->graph, &job->info, &job->desc, job->stream);
@@ -827,8 +836,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
 
 static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
     if (!job) return;
-    job->cancel = 1;
-    job->task.wait();
+    job->task.cancel_and_wait();
 #if MD_ENABLE_GPU
     if (job->stream) md_gpu_stream_destroy(job->stream);
 #endif
@@ -1477,8 +1485,9 @@ struct QuantumChemistry : viamd::EventHandler {
         float            vol_simp_threshold = 1.0E-4f;
 
 #if MD_ENABLE_GPU
-        md_topo_gpu_context_t* topo_ctx      = nullptr;
-        uint32_t               topo_dims[3]  = {};
+        md_topo_gpu_context_t*  topo_ctx      = nullptr;
+        uint32_t                topo_dims[3]  = {};
+        VolumeCriticalPointRun* vol_run       = nullptr;  // under way, into topo_ctx
 #endif
         md_topo_extremum_graph_t raw_graph  = { 0 };
         md_topo_extremum_graph_t simp_graph = { 0 };
@@ -2111,6 +2120,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 ctv_free();
 #if MD_ENABLE_GPU
+                delete critical_points.vol_run;
+                critical_points.vol_run = nullptr;
                 gl::pbo_upload_shutdown();
                 md_gto_gpu_shutdown();
                 md_topo_gpu_shutdown();
@@ -2437,17 +2448,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 break;
             }
-            case viamd::EventType_ViamdTaskProgressRequest: {
-                // The analytic critical point search, for the task overlay: once it has run for a moment, with the
-                // flag its cancel button raises (collected as usual: what was found so far is shown, marked)
-                MD_ASSERT(e.payload_type == viamd::EventPayloadType_TaskProgressRequest);
-                TaskProgressRequest* req = (TaskProgressRequest*)e.payload;
-                GtoCriticalPointJob* job = critical_points.gto_job;
-                if (job && !job->cancel && !job->dropped && md_tick_to_seconds(md_tick_now() - job->start) >= 0.25) {
-                    task_progress_add(req, "Critical points", job->progress, &job->cancel);
-                }
-                break;
-            }
             case viamd::EventType_ViamdViewFit: {
                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_ViewFitRequest);
                 ViewFitRequest* req = (ViewFitRequest*)e.payload;
@@ -2610,6 +2610,8 @@ struct QuantumChemistry : viamd::EventHandler {
         gto_critical_point_job_destroy(critical_points.gto_job);
         critical_points.gto_job = nullptr;
 #if MD_ENABLE_GPU
+        delete critical_points.vol_run;
+        critical_points.vol_run = nullptr;
         // The topo context is the only GPU object this component owns. The uploaded basis goes with
         // the system it was built from, released by free_system_data.
         md_topo_gpu_context_destroy(critical_points.topo_ctx);
@@ -5463,9 +5465,13 @@ struct QuantumChemistry : viamd::EventHandler {
     void critical_points_reset() {
         CriticalPoints& cp = critical_points;
         if (cp.gto_job) {
-            cp.gto_job->cancel  = 1;
+            cp.gto_job->task.cancel();
             cp.gto_job->dropped = true;
         }
+#if MD_ENABLE_GPU
+        delete cp.vol_run;      // cancels: its work on the device completes unseen
+        cp.vol_run = nullptr;
+#endif
         cp.gto_want  = 0;
         cp.gto_have  = 0;
         cp.raw_hash  = 0;
@@ -5539,9 +5545,6 @@ struct QuantumChemistry : viamd::EventHandler {
     // points of the samples (md_topo), then md_topo_simplify.
     void update_critical_points_volume(ApplicationState& state) {
         CriticalPoints& cp = critical_points;
-        if (cp.vol_per_frame) {
-            cp.raw_hash = 0;
-        }
 
         // Update volume if required
         const double samples_per_unit_length = (float)(volume_resolution_samples_per_angstrom[(int)cp.vol_res] * BOHR_TO_ANGSTROM);
@@ -5556,15 +5559,25 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t frame_idx = (size_t)(state.animation.frame + 0.5);
         uint64_t raw_hash = md_hash64(&grid, sizeof(grid), frame_idx);
 
-        if (cp.raw_hash != raw_hash) {
-            cp.raw_hash = raw_hash;
+#if MD_ENABLE_GPU
+        // The run under way: the graph shown stays until its results are on the host. Cancelled (from the overlay),
+        // nothing is shown for its inputs, and they are not searched again until they change.
+        if (cp.vol_run && !cp.vol_run->task.running()) {
             md_topo_extremum_graph_free(&cp.raw_graph);
+            if (cp.vol_run->task.status() == task_system::Status::Completed) {
+                md_topo_gpu_context_extract(&cp.raw_graph, cp.topo_ctx);
+            }
+            cp.raw_hash = cp.vol_run->hash;
+            delete cp.vol_run;
+            cp.vol_run = nullptr;
+        }
 
+        // A run of what is wanted now, once none is under way: again as soon as the last is in when every frame is
+        if (!cp.vol_run && (cp.raw_hash != raw_hash || cp.vol_per_frame)) {
             // The density comes out of the attribute table, evaluated by the same code
             // path a representation uses. The only thing special here is the tail: the
             // topology pass reads what the density pass wrote, on the same stream, so
             // the volume is never read back to the host at all.
-#if MD_ENABLE_GPU
             // Ensure the topo context exists with the correct volume dimensions
             uint32_t new_dims[3] = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] };
             if (!cp.topo_ctx ||
@@ -5579,20 +5592,37 @@ struct QuantumChemistry : viamd::EventHandler {
                 cp.topo_dims[2] = new_dims[2];
             }
 
+            bool started = false;
             if (!cp.topo_ctx) {
                 MD_LOG_ERROR("Failed to create topo GPU context for electron density");
             } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
                 // Program order on the stream is the only dependency needed.
                 md_topo_gpu_record(state.gpu_stream, cp.topo_ctx, state.gpu_volume, &grid, 0.0f);
-                md_gpu_stream_sync(state.gpu_stream);
-                md_topo_gpu_context_extract(&cp.raw_graph, cp.topo_ctx);
+                const md_gpu_sync_t done = md_gpu_stream_record(state.gpu_stream);
+                cp.vol_run = new VolumeCriticalPointRun();
+                cp.vol_run->hash = raw_hash;
+                cp.vol_run->task.start_steps(MD_STR_LIT("Critical points"), [done](double budget_ms) {
+                    if (budget_ms < 0.0) md_gpu_sync_wait(done);
+                    return md_gpu_sync_is_complete(done) ? task_system::Status::Completed : task_system::Status::Running;
+                });
+                started = true;
             } else {
                 MD_LOG_ERROR("Failed to evaluate the electron density for critical points analysis");
             }
-#else
-            MD_LOG_ERROR("The critical points of the density are found on the GPU (md_gpu), which this build is without");
-#endif
+            if (!started) {
+                // logged: not tried again until the inputs change
+                md_topo_extremum_graph_free(&cp.raw_graph);
+                cp.raw_hash = raw_hash;
+            }
         }
+#else
+        if (cp.raw_hash != raw_hash) {
+            cp.raw_hash = raw_hash;
+            md_topo_extremum_graph_free(&cp.raw_graph);
+            MD_LOG_ERROR("The critical points of the density are found on the GPU (md_gpu), which this build is without");
+        }
+#endif
+        raw_hash = cp.raw_hash;     // what the graph shown is of
 
         uint64_t simp_hash = raw_hash;
         if (cp.vol_simplify) {
@@ -5632,14 +5662,15 @@ struct QuantumChemistry : viamd::EventHandler {
         CriticalPoints& cp = critical_points;
         if (cp.gto_job) {
             const GtoCriticalPointJob* job = cp.gto_job;
+            const float progress = MD_MAX(job->task.progress(), 0.0f);     // unknown until the search says
             char buf[64];
-            snprintf(buf, sizeof(buf), "Searching %.0f%% (%.0f s)", job->progress * 100.0f, md_tick_to_seconds(md_tick_now() - job->start));
+            snprintf(buf, sizeof(buf), "Searching %.0f%% (%.0f s)", progress * 100.0f, md_tick_to_seconds(md_tick_now() - job->start));
             const float cancel_width = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + ImGui::GetStyle().ItemSpacing.x;
-            ImGui::ProgressBar(job->progress, ImVec2(ImGui::GetContentRegionAvail().x - cancel_width, 0), buf);
+            ImGui::ProgressBar(progress, ImVec2(ImGui::GetContentRegionAvail().x - cancel_width, 0), buf);
             ImGui::SetItemTooltip("How far the search is: an estimate, as the work of the search unfolds as it goes");
             ImGui::SameLine();
             if (ImGui::Button("Cancel")) {
-                cp.gto_job->cancel = 1;   // collected as usual: what was found so far is shown, marked
+                cp.gto_job->task.cancel();   // collected as usual: what was found so far is shown, marked
             }
             return;
         }
