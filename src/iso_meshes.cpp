@@ -1,5 +1,4 @@
 #include <iso_meshes.h>
-#include <gpu_job.h>
 
 #include <viamd.h>
 #include <representation.h>
@@ -176,10 +175,23 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, m
 // ---------------------------------------------------------------------------------------------------------------
 
 #if MD_ENABLE_GPU
+// The extraction under way, as a step job (task_system.h). Its mesh is the extraction's own until it is done: the step
+// then takes it out (md_gto_iso_gpu_job_end) into mesh, which job_poll takes over; failed or cancelled, end drops the
+// extraction, no mesh
+struct IsoMeshJob {
+    md_gto_iso_gpu_job_t* gpu = nullptr;
+    md_gto_iso_gpu_mesh_t mesh = {};
+    md_gpu_stream_t       stream = nullptr;
+    task_system::Job      task;
+};
+
 // Drops the job under way, if any: what it made is lost, the mesh shown stays
 static void job_cancel(IsoMeshes* m) {
     if (!m->job) return;
-    delete m->job;      // cancels: what it has in flight completes, its mesh is freed
+    IsoMeshJob* j = m->job;
+    j->task.cancel();       // what it has in flight completes
+    md_gto_iso_gpu_mesh_free(j->stream, &j->mesh);  // done before it was looked at: its mesh
+    delete j;
     m->job = nullptr;
     m->job_key = 0;
     m->job_slots = 0;
@@ -482,10 +494,6 @@ static void set_ranges(IsoMeshes* m, uint32_t num_slots, const uint32_t offset[]
 }
 
 #if MD_ENABLE_GPU
-// How long an update waits for a job's GPU work at most: a job of a few milliseconds is done within the frame
-// that began it or the next, a longer one goes on over frames
-static constexpr double JOB_POLL_MS = 3.0;
-
 // Starts the extraction of the slots as a job on the GPU; false when it cannot be (no device, no set for these
 // fields)
 // The slots' fields on the device (m->gpu_set), made by a pool task on a stream of its own (IsoBuild): 1 when
@@ -541,23 +549,6 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     return 0;
 }
 
-// The extraction as a GpuJob (gpu_job.h). Its mesh is the job's own: Done, the GpuJob keeps the job for take(), and
-// job_poll ends it with the mesh out (md_gto_iso_gpu_job_end); failed or cancelled, the GpuJob ends it, no mesh
-static GpuJob::Status extract_job_poll(void* job, double budget_ms) {
-    switch (md_gto_iso_gpu_job_poll((md_gto_iso_gpu_job_t*)job, budget_ms)) {
-    case MD_GTO_ISO_GPU_JOB_RUNNING: return GpuJob::Status::Running;
-    case MD_GTO_ISO_GPU_JOB_DONE:    return GpuJob::Status::Done;
-    default:                         return GpuJob::Status::Failed;
-    }
-}
-
-static const GpuJob::Ops extract_job_ops = {
-    extract_job_poll,
-    [](const void* job) { return md_gto_iso_gpu_job_progress((const md_gto_iso_gpu_job_t*)job); },
-    [](void* job) { md_gto_iso_gpu_job_end((md_gto_iso_gpu_job_t*)job, nullptr); },
-    true,       // the owner takes it
-};
-
 static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size, uint64_t key) {
     if (!state->gpu_device || !state->gpu_stream || !m->gpu_set) return false;
     md_gto_iso_gpu_desc_t desc = {};
@@ -571,26 +562,39 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     }
     md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(state->gpu_stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc);
     if (!job) return false;
-    m->job = new GpuJob();
-    m->job->start(extract_job_ops, job, MD_STR_LIT("Isosurface mesh"));
+    IsoMeshJob* j = new IsoMeshJob();
+    j->gpu = job;
+    j->stream = state->gpu_stream;
+    m->job = j;
     m->job_key = key;
     m->job_slots = n;
-    m->job_start = md_tick_now();
+    // a job of a few milliseconds is done within its first step, a longer one goes on over frames
+    j->task.start_steps(MD_STR_LIT("Isosurface mesh"),
+        [j](double budget_ms) {
+            const md_gto_iso_gpu_job_status_t st = md_gto_iso_gpu_job_poll(j->gpu, budget_ms);
+            task_system::set_progress(md_gto_iso_gpu_job_progress(j->gpu));
+            if (st == MD_GTO_ISO_GPU_JOB_RUNNING) return task_system::Status::Running;
+            const bool done = md_gto_iso_gpu_job_end(j->gpu, &j->mesh);     // the mesh, when done
+            j->gpu = nullptr;
+            return done ? task_system::Status::Completed : task_system::Status::Failed;
+        },
+        [j]() {
+            if (j->gpu) md_gto_iso_gpu_job_end(j->gpu, nullptr);
+            j->gpu = nullptr;
+        });
     return true;
 }
 
 // Advances the job. Done: its mesh replaces the one shown (m->key becomes the job's). Returns 1 while it runs,
 // 2 when it is done, 0 when it failed (the mesh shown is kept)
 static int job_poll(IsoMeshes* m, ApplicationState* state) {
-    // advanced once a frame with every GPU job (gpu_jobs_poll); here too in its first frames, so that a short job ends
-    // within them
-    const double age_ms = md_tick_to_milliseconds(md_tick_now() - m->job_start);
-    if (age_ms < 4.0 * JOB_POLL_MS) m->job->advance(JOB_POLL_MS);
-    if (m->job->status() == GpuJob::Status::Running) return 1;
-    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job->take();     // NULL unless done: failed or cancelled
-    delete m->job;
-    md_gto_iso_gpu_mesh_t gm = {};
-    const bool done = md_gto_iso_gpu_job_end(job, &gm);
+    // advanced once a frame with every step job (task_system::poll)
+    IsoMeshJob* j = m->job;
+    if (j->task.running()) return 1;
+    const bool done = j->task.status() == task_system::Status::Completed;
+    md_gto_iso_gpu_mesh_t gm = j->mesh;     // ours now
+    delete j;
+    if (!done) md_gto_iso_gpu_mesh_free(state->gpu_stream, &gm);    // cancelled once it had it
     const uint64_t key = m->job_key;
     const uint32_t n = m->job_slots;
     m->job = nullptr;

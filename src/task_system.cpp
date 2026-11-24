@@ -34,6 +34,8 @@ static thread_local Context tl_ctx;
 
 static_assert(sizeof(std::atomic<int32_t>) == sizeof(int32_t) && std::atomic<int32_t>::is_always_lock_free,
               "cancel_flag() hands out the atomic as a plain flag");
+static_assert(sizeof(std::atomic<float>) == sizeof(float) && std::atomic<float>::is_always_lock_free,
+              "progress_flag() hands out the atomic as a plain value");
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Activities
@@ -112,6 +114,15 @@ struct JobState {
     bool                detached = false;  // runs whatever happens: not reached by cancel_all
     JobState*           prev = nullptr;    // every job under way, under g_job_mutex
     JobState*           next = nullptr;
+
+    // A step job: run by poll(), never by enki (the main thread only)
+    bool                is_step = false;
+    bool                stepping = false;  // under way: in the step list
+    Job::Step           step;
+    Job::End            end;
+    int64_t             t0 = 0;            // md_tick_t: when it began
+    JobState*           step_prev = nullptr;
+    JobState*           step_next = nullptr;
 };
 
 static std::mutex             g_job_mutex;
@@ -209,12 +220,82 @@ static void job_wait(JobState* s) {
     }
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Step jobs: the main thread's, so the list takes no lock
+
+// A job in its first frames is given this much of poll's budget, so that one done within it ends at once rather than a
+// frame later for each step it takes; after that, STEP_BUDGET_MS a frame
+static constexpr double STEP_YOUNG_MS        = 50.0;
+static constexpr double STEP_YOUNG_BUDGET_MS = 4.0;
+static constexpr double STEP_BUDGET_MS       = 1.0;
+
+static JobState* g_steps_head = nullptr;     // under way, oldest first
+static JobState* g_steps_tail = nullptr;
+
+static void steps_unlink(JobState* s) {
+    if (s->step_prev) s->step_prev->step_next = s->step_next;
+    else              g_steps_head = s->step_next;
+    if (s->step_next) s->step_next->step_prev = s->step_prev;
+    else              g_steps_tail = s->step_prev;
+    s->step_prev = s->step_next = nullptr;
+}
+
+// No longer under way: what it holds released, out of the overlay, its result there and its on_main queued
+static void step_finish(JobState* s, Status st) {
+    steps_unlink(s);
+    s->stepping = false;
+    if (job_cancelled(s)) st = Status::Cancelled;
+    if (s->end) s->end();
+    // its captures go now, rather than whenever the owner next starts or ends it
+    s->end  = nullptr;
+    s->step = nullptr;
+    if (st == Status::Completed) s->activity.progress.store(1.0f, std::memory_order_relaxed);
+    if (s->labelled) activity_end(&s->activity);
+    s->result.store(st, std::memory_order_release);
+    if (s->on_main) {
+        std::lock_guard<std::mutex> lock(g_main_mutex);
+        s->main_pending = true;
+        g_main_queue.push_back(s);
+    }
+}
+
+static void step_run(JobState* s, double budget_ms) {
+    if (job_cancelled(s)) {
+        step_finish(s, Status::Cancelled);
+        return;
+    }
+    const Context saved = tl_ctx;
+    tl_ctx = {s, PRIORITY_FRAME};
+    const Status st = s->step(budget_ms);
+    tl_ctx = saved;
+    if (st != Status::Running) step_finish(s, st);
+}
+
+static double step_budget(const JobState* s, md_tick_t now) {
+    return md_tick_to_milliseconds(now - (md_tick_t)s->t0) < STEP_YOUNG_MS ? STEP_YOUNG_BUDGET_MS : STEP_BUDGET_MS;
+}
+
+void poll(double budget_ms) {
+    const md_tick_t t0 = md_tick_now();
+    for (JobState* s = g_steps_head; s;) {
+        JobState* next = s->step_next;      // it may finish, and leave the list
+        const md_tick_t now = md_tick_now();
+        const double left = MD_MAX(budget_ms - md_tick_to_milliseconds(now - t0), 0.0);
+        step_run(s, MD_MIN(step_budget(s, now), left));
+        s = next;
+    }
+}
+
+static void steps_end_all() {
+    while (g_steps_head) step_finish(g_steps_head, Status::Cancelled);
+}
+
 Job::~Job() { release(); }
 
 void Job::release() {
     if (!m_state) return;
     cancel();
-    job_wait(m_state);
+    if (!m_state->is_step) job_wait(m_state);
     {
         std::lock_guard<std::mutex> lock(g_main_mutex);
         if (m_state->main_pending) {
@@ -238,6 +319,27 @@ void Job::start(md_str_t label, Body body, OnMain on_main) {
     job_launch(m_state);
 }
 
+void Job::start_steps(md_str_t label, Step step, End end, OnMain on_main) {
+    MD_ASSERT(step);
+    release();
+    JobState* s = new JobState();
+    s->is_step  = true;
+    s->stepping = true;
+    s->step     = std::move(step);
+    s->end      = std::move(end);
+    s->on_main  = std::move(on_main);
+    s->t0       = (int64_t)md_tick_now();
+    s->labelled = label.len > 0;
+    s->activity.cancellable = true;
+    if (s->labelled) activity_begin(&s->activity, label);
+    s->step_prev = g_steps_tail;
+    if (g_steps_tail) g_steps_tail->step_next = s;
+    else              g_steps_head = s;
+    g_steps_tail = s;
+    m_state = s;
+    step_run(s, STEP_YOUNG_BUDGET_MS);
+}
+
 void Job::start_for(md_str_t label, uint32_t count, uint32_t grain, RangeBody body, OnMain on_main) {
     MD_ASSERT(body);
     auto run = [count, grain, body = std::move(body)]() {
@@ -256,7 +358,7 @@ void Job::start_for(md_str_t label, uint32_t count, uint32_t grain, RangeBody bo
 
 Status Job::status() const {
     if (!m_state) return Status::Idle;
-    if (!m_state->task.GetIsComplete()) return Status::Running;
+    if (m_state->is_step ? m_state->stepping : !m_state->task.GetIsComplete()) return Status::Running;
     {
         std::lock_guard<std::mutex> lock(g_main_mutex);
         if (m_state->main_pending) return Status::Running;
@@ -269,11 +371,18 @@ float Job::progress() const {
 }
 
 void Job::cancel() {
-    if (m_state) m_state->activity.cancel.store(1, std::memory_order_relaxed);
+    if (!m_state) return;
+    m_state->activity.cancel.store(1, std::memory_order_relaxed);
+    if (m_state->is_step && m_state->stepping) step_finish(m_state, Status::Cancelled);
 }
 
 void Job::wait() {
-    if (m_state) job_wait(m_state);
+    if (!m_state) return;
+    if (m_state->is_step) {
+        while (m_state->stepping) step_run(m_state, -1.0);
+    } else {
+        job_wait(m_state);
+    }
 }
 
 uint64_t Job::activity_id() const {
@@ -423,6 +532,10 @@ void set_progress(float fraction) {
     if (tl_ctx.job) tl_ctx.job->activity.progress.store(fraction, std::memory_order_relaxed);
 }
 
+volatile float* progress_flag() {
+    return tl_ctx.job ? reinterpret_cast<volatile float*>(&tl_ctx.job->activity.progress) : nullptr;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 
 void initialize(uint32_t num_threads) {
@@ -433,6 +546,7 @@ void initialize(uint32_t num_threads) {
 }
 
 void shutdown() {
+    steps_end_all();
     if (!g_initialized) return;
     wait_all();
     g_ts.WaitforAllAndShutdown();

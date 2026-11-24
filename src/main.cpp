@@ -49,7 +49,6 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
-#include <gpu_job.h>
 #include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
@@ -91,9 +90,9 @@
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
-// What a frame spends issuing the GPU jobs' next pieces, all of them (gpu_job.h): the pieces are the GPU's time, this
-// is the frame's
-#define GPU_JOBS_BUDGET_MS 6.0
+// What a frame spends advancing the step jobs, all of them (task_system::poll): issuing the next pieces of the work on
+// the GPU, whose pieces are the GPU's time, this is the frame's
+#define STEP_JOBS_BUDGET_MS 6.0
 
 // Global data for application
 // Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
@@ -1009,8 +1008,8 @@ int main(int argc, char** argv) {
             md_gpu_device_poll(state.gpu_device);
         }
 #endif
-        // The GPU work over frames (gpu_job.h): every job advanced, a few ms in all
-        gpu_jobs_poll(GPU_JOBS_BUDGET_MS);
+        // The work over frames (task_system step jobs, the GPU's): every job advanced, a few ms in all
+        task_system::poll(STEP_JOBS_BUDGET_MS);
         // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
@@ -1781,14 +1780,13 @@ int main(int argc, char** argv) {
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
         surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
     }
-    gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     isomesh::shutdown();
     // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
     density_cache_destroy(state.mold.density_cache);
     state.mold.density_cache = nullptr;
     VIAMD_LOG_DEBUG("Shutting down task system...");
-    task_system::shutdown();
+    task_system::shutdown();        // the step jobs left end first: their pieces in flight complete, their memory goes after
 
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
@@ -3736,8 +3734,8 @@ static void draw_async_task_window(ApplicationState* data) {
     constexpr double MIN_SECONDS = 0.25;
 
     // Everything under way over time, in one list (task_system activities): the pool's labelled jobs (what the GPU
-    // evaluations wait for: density matrices, fields, orbitals read on demand), the GPU jobs (gpu_job.h: the surface
-    // fields, the isosurface meshes) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
+    // evaluations wait for: density matrices, fields, orbitals read on demand), the step jobs (the surface fields and
+    // the isosurface meshes on the GPU) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
     task_system::ActivityInfo all[32];
     const size_t num_all = task_system::activity_list(all, MD_COUNTOF(all));
     task_system::ActivityInfo activities[32];

@@ -366,3 +366,192 @@ UTEST(viamd_task_system, an_executor_loop_stops_with_its_job) {
     EXPECT_EQ(0, result.load());
     EXPECT_EQ(0u, pieces.load());
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Step jobs: work which mostly waits (on the GPU), a step at a time, advanced by poll()
+
+namespace {
+
+// Work which is done after a number of steps, as a GPU job is once the GPU has passed its pieces
+struct Counter {
+    int  steps_left = 0;
+    int  total = 1;
+    int  steps = 0;
+    int  ends = 0;
+    bool fail = false;
+};
+
+void start_counter(task_system::Job* job, Counter* c, md_str_t label, task_system::Job::OnMain on_main = {}) {
+    job->start_steps(label,
+        [c](double budget_ms) {
+            c->steps += 1;
+            if (c->fail) return task_system::Status::Failed;
+            if (budget_ms < 0.0) c->steps_left = 0;
+            else if (c->steps_left > 0) c->steps_left -= 1;
+            task_system::set_progress(1.0f - (float)c->steps_left / (float)c->total);
+            return c->steps_left == 0 ? task_system::Status::Completed : task_system::Status::Running;
+        },
+        [c]() { c->ends += 1; }, std::move(on_main));
+}
+
+bool listed(uint64_t id, float* progress = nullptr) {
+    task_system::ActivityInfo info[64];
+    const size_t n = task_system::activity_list(info, 64);
+    for (size_t i = 0; i < n; ++i) {
+        if (info[i].id == id) {
+            if (progress) *progress = info[i].progress;
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+UTEST(viamd_task_system, a_step_job_runs_to_its_end_by_poll_and_is_listed_meanwhile) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 4;
+    task_system::Job job;
+    start_counter(&job, &c, MD_STR_LIT("Stepped"));
+    EXPECT_EQ(1, c.steps);              // its first step at once
+    EXPECT_TRUE(job.running());
+    const uint64_t id = job.activity_id();
+    float last = -1.0f;
+    for (int i = 0; i < 2; ++i) {
+        float p = 0.0f;
+        EXPECT_TRUE(listed(id, &p));
+        EXPECT_GT(p, last);
+        last = p;
+        task_system::poll(1.0);
+        EXPECT_TRUE(job.running());
+    }
+    task_system::poll(1.0);
+    EXPECT_TRUE(job.status() == task_system::Status::Completed);
+    EXPECT_NEAR(1.0f, job.progress(), 1.0e-6f);
+    EXPECT_FALSE(listed(id));
+    EXPECT_EQ(1, c.ends);               // ended once, done: its results are the owner's
+    EXPECT_EQ(4, c.steps);
+    task_system::poll(1.0);             // no longer stepped
+    EXPECT_EQ(4, c.steps);
+}
+
+UTEST(viamd_task_system, a_step_job_done_at_once_ends_at_once) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 1;
+    task_system::Job job;
+    start_counter(&job, &c, MD_STR_LIT("At once"));
+    EXPECT_TRUE(job.status() == task_system::Status::Completed);
+    EXPECT_EQ(1, c.ends);
+}
+
+UTEST(viamd_task_system, a_step_job_cancelled_from_the_overlay) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 100;
+    task_system::Job job;
+    start_counter(&job, &c, MD_STR_LIT("Overlay"));
+    const uint64_t id = job.activity_id();
+    ASSERT_TRUE(listed(id));
+    task_system::activity_cancel(id);
+    task_system::poll(1.0);
+    EXPECT_TRUE(job.status() == task_system::Status::Cancelled);
+    EXPECT_FALSE(listed(id));
+    EXPECT_EQ(1, c.ends);
+    EXPECT_EQ(1, c.steps);              // not stepped once cancelled
+}
+
+UTEST(viamd_task_system, a_step_job_dropped_by_its_owner_ends_at_once) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 100;
+    task_system::Job job;
+    start_counter(&job, &c, {});
+    job.cancel();
+    EXPECT_TRUE(job.status() == task_system::Status::Cancelled);
+    EXPECT_EQ(1, c.ends);
+
+    Counter d;
+    d.steps_left = d.total = 100;
+    {
+        task_system::Job scoped;
+        start_counter(&scoped, &d, {});
+    }   // the destructor cancels
+    EXPECT_EQ(1, d.ends);
+    task_system::poll(1.0);             // nothing left that points at it
+    EXPECT_EQ(1, d.steps);
+}
+
+UTEST(viamd_task_system, a_step_job_that_fails) {
+    ensure_task_system();
+
+    Counter c;
+    c.fail = true;
+    task_system::Job job;
+    start_counter(&job, &c, MD_STR_LIT("Fails"));
+    EXPECT_TRUE(job.status() == task_system::Status::Failed);
+    EXPECT_FALSE(listed(job.activity_id()));
+    EXPECT_EQ(1, c.ends);
+}
+
+UTEST(viamd_task_system, wait_runs_a_step_job_to_its_end) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 100;
+    task_system::Job job;
+    start_counter(&job, &c, {});
+    job.wait();
+    EXPECT_TRUE(job.status() == task_system::Status::Completed);
+    EXPECT_EQ(2, c.steps);
+    EXPECT_EQ(1, c.ends);
+}
+
+UTEST(viamd_task_system, a_step_jobs_on_main_runs_in_the_main_queue) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 2;
+    int calls = 0;
+    task_system::Status got = task_system::Status::Idle;
+    task_system::Job job;
+    start_counter(&job, &c, {}, [&](task_system::Status st) { calls += 1; got = st; });
+    task_system::poll(1.0);
+    EXPECT_TRUE(job.running());         // until its follow-up has run
+    EXPECT_EQ(0, calls);
+    task_system::run_main_queue();
+    EXPECT_EQ(1, calls);
+    EXPECT_TRUE(got == task_system::Status::Completed);
+    EXPECT_TRUE(job.status() == task_system::Status::Completed);
+}
+
+UTEST(viamd_task_system, cancel_all_leaves_step_jobs_to_their_owners) {
+    ensure_task_system();
+
+    Counter c;
+    c.steps_left = c.total = 100;
+    task_system::Job job;
+    start_counter(&job, &c, {});
+    task_system::cancel_all();
+    task_system::poll(1.0);
+    EXPECT_TRUE(job.running());
+    EXPECT_EQ(2, c.steps);
+}
+
+UTEST(viamd_task_system, progress_flag_is_the_jobs_progress) {
+    ensure_task_system();
+
+    EXPECT_TRUE(task_system::progress_flag() == nullptr);     // outside of a job
+    task_system::Job job;
+    job.start({}, []() {
+        volatile float* p = task_system::progress_flag();
+        if (p) *p = 0.5f;
+    });
+    job.wait();
+    EXPECT_NEAR(0.5f, job.progress(), 1.0e-6f);
+}
