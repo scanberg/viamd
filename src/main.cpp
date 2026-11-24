@@ -7421,12 +7421,20 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
 
-    int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse;
+    int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus;
     if (!editable) {
         window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
     }
 
     if (ImGui::Begin("Coordinate Widget", nullptr, window_flags)) {
+        // Of the 3D view, under every window over it: directly behind the dockspace's host, whose docked windows are
+        // drawn with it, and before the view's canvas (CreateDockspace, BeginCanvas: both at the back), which would take
+        // the mouse over it. The host lets the mouse through its middle, where the view shows.
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        ImGuiWindow* host = ImGui::FindWindowByName("DockspaceWindow");
+        if (host && host != window && ImGui::FindWindowDisplayIndex(window) > ImGui::FindWindowDisplayIndex(host)) {
+            ImGui::BringWindowToDisplayBehind(window, host);
+        }
         md_quat_t out_orientation = target->orientation;
         if (ImGui::CoordinateSystemWidget(&out_orientation, current.orientation, ImGui::GetContentRegionAvail())) {
             const md_float3_t look_at = camera_get_look_at(*target);
