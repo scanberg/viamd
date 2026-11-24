@@ -74,6 +74,12 @@ struct MdRenderBridge {
     md_array(BridgeRep)         reps = nullptr;
     md_array(md_render_batch_t) batches = nullptr;
 
+    // The parts of the assembly shown (place_ops): the atoms of each (0: all) and its copies' transforms
+    struct Part { md_gpu_addr_t atoms; uint32_t c0, c1; };
+    md_array(Part) parts = nullptr;
+    int            parts_of = -1;           // the assembly, -1: none
+    uint64_t       parts_topology = 0;
+
     // The export, shared with GL
     uint32_t  width = 0, height = 0;
     SharedTex depth, color, surface;
@@ -333,6 +339,8 @@ static md_gpu_addr_t realloc_gpu(MdRenderBridge* b, md_gpu_addr_t old, size_t si
     return size ? md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, size).gpu : 0;
 }
 
+static void free_parts(MdRenderBridge* b);
+
 static void free_system(MdRenderBridge* b) {
     if (b->has_topo) md_gpu_free(b->stream, b->topo.base);
     if (b->dynamic)   md_gpu_free(b->stream, b->dynamic);
@@ -345,6 +353,7 @@ static void free_system(MdRenderBridge* b) {
         if (b->reps[i].profile) md_gpu_free(b->stream, b->reps[i].profile);
     }
     md_array_shrink(b->reps, 0);
+    free_parts(b);
     b->has_topo = false;
     b->topo = {};
     b->dynamic = b->positions = b->marks = b->secondary = 0;
@@ -511,10 +520,9 @@ bool md_render_bridge_active(const ApplicationState& state) { return active(stat
 
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
     if (!active(state)) return false;
-    if (!type_drawn(rep.type) || rep.sphere_fallback || !rep.type_is_valid || !representation_shown(state, rep)) return false;
-    // md_gl's for now: the parts of an assembly shown, and bonds formed and broken over the run
-    if (state.view.assembly >= 0) return false;
-    if ((rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) && bond_tracking_delta(&state)) return false;
+    if (!type_drawn(rep.type) || !rep.type_is_valid || !representation_shown(state, rep)) return false;
+    // md_gl's for now: bonds formed and broken over the run
+    if (!rep.sphere_fallback && (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) && bond_tracking_delta(&state)) return false;
     const BridgeRep* r = find_rep(state.md_render_bridge, rep.node.id);
     return r && r->color && r->visible && r->atom_count == state.md_render_bridge->atom_count;
 }
@@ -624,6 +632,107 @@ static void camera_of(md_render_camera_t* cam, float jitter[2], const Applicatio
     jitter[1] = -dy * 0.5f * (float)height;
 }
 
+// ---- Assemblies --------------------------------------------------------------------------------------------------
+
+static void free_parts(MdRenderBridge* b) {
+    for (size_t i = 0; i < md_array_size(b->parts); ++i) {
+        if (b->parts[i].atoms) md_gpu_free(b->stream, b->parts[i].atoms);
+    }
+    md_array_shrink(b->parts, 0);
+    b->parts_of = -1;
+    b->parts_topology = 0;
+}
+
+// The parts of the assembly shown, as place_ops places md_gl's: each the atoms of its instances (of all of them: every
+// atom, 0) in the copies its operators make. None while the view's copies are not of it (yet): then as without one.
+static void update_parts(MdRenderBridge* b, ApplicationState* state) {
+    const md_system_t& sys = state->mold.sys;
+    const md_assembly_data_t& a = sys.assembly;
+    const int assembly = state->view.assembly;
+    if (assembly < 0 || (size_t)assembly >= a.count) {
+        if (md_array_size(b->parts) || b->parts_of >= 0) free_parts(b);
+        return;
+    }
+    const size_t part_beg = a.group_offset[assembly], part_end = a.group_offset[assembly + 1];
+    const size_t num_offsets = md_array_size(state->view.assembly_copy_offset);
+    const size_t num_parts = num_offsets > 0 ? num_offsets - 1 : 0;
+    if (num_parts == 0 || num_parts != part_end - part_beg || num_parts >= 0xFFFF) {
+        free_parts(b);
+        return;
+    }
+    if (b->parts_of == assembly && b->parts_topology == sys.topology_version && md_array_size(b->parts) == num_parts) return;
+    free_parts(b);
+    const uint32_t n = b->atom_count;
+    const size_t num_words = ((size_t)n + 63) / 64;
+    md_allocator_i* alloc = state->allocator.frame;
+    md_temp_scope_t temp = md_temp_begin_in(alloc);
+    uint64_t* words = (uint64_t*)md_vm_arena_push(alloc, num_words * sizeof(uint64_t));
+    for (size_t p = part_beg; p < part_end; ++p) {
+        const AssemblyGroup g = assembly_group(a, p);
+        MdRenderBridge::Part part = {};
+        part.c0 = state->view.assembly_copy_offset[p - part_beg];
+        part.c1 = state->view.assembly_copy_offset[p - part_beg + 1];
+        if ((size_t)(g.inst_end - g.inst) < sys.instance.count) {
+            memset(words, 0, num_words * sizeof(uint64_t));
+            for (const md_instance_idx_t* k = g.inst; k < g.inst_end; ++k) {
+                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*k);
+                for (uint32_t i = r.beg; i < r.end && i < n; ++i) words[i >> 6] |= 1ull << (i & 63);
+            }
+            part.atoms = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, num_words * sizeof(uint64_t)).gpu;
+            if (part.atoms) md_gpu_upload(b->stream, part.atoms, words, num_words * sizeof(uint64_t));
+        }
+        md_array_push(b->parts, part, state->allocator.persistent);
+    }
+    md_temp_end(temp);
+    b->parts_of = assembly;
+    b->parts_topology = sys.topology_version;
+    b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
+}
+
+// A representation in the copies of the scene: with an assembly shown once per part, of its atoms in its copies (the
+// part in the low bits of the key); else in its periodic images
+static void emit_placed(MdRenderBridge* b, const ApplicationState* state, const md_render_mol_atoms_t& atoms, md_render_mol_rep_t mr,
+                        const Representation& rep, md_allocator_i* alloc) {
+    const size_t num_parts = md_array_size(b->parts);
+    if (num_parts > 0) {
+        for (size_t p = 0; p < num_parts; ++p) {
+            const MdRenderBridge::Part& part = b->parts[p];
+            if (part.c1 <= part.c0 || part.c1 > md_array_size(state->view.assembly_transforms)) continue;
+            md_render_mol_atoms_t pa = atoms;
+            pa.visible = part.atoms;
+            md_render_mol_rep_t pr = mr;
+            pr.key = mr.key | (uint64_t)(p + 1);
+            pr.transform = &state->view.assembly_transforms[part.c0].elem[0][0];
+            pr.transform_count = part.c1 - part.c0;
+            emit(b, pa, pr, alloc);
+        }
+        return;
+    }
+    const size_t copies = md_array_size(state->view.periodic_transforms);
+    if (rep.periodic_images && copies > 1) {
+        mr.transform = &state->view.periodic_transforms[0].elem[0][0];
+        mr.transform_count = (uint32_t)copies;
+    }
+    emit(b, atoms, mr, alloc);
+}
+
+// The transform of the copy a hit is in, of the representation of key (emit_placed), if it is in one
+static bool copy_transform(const MdRenderBridge* b, const ApplicationState& state, uint64_t key, uint32_t instance, md_float4x4_t* out) {
+    const uint32_t part = (uint32_t)(key & 0xFFFF);
+    if (part > 0) {
+        if (part > md_array_size(b->parts)) return false;
+        const size_t c = (size_t)b->parts[part - 1].c0 + instance;
+        if (c >= md_array_size(state.view.assembly_transforms)) return false;
+        *out = state.view.assembly_transforms[c];
+        return true;
+    }
+    if (instance < md_array_size(state.view.periodic_transforms) && md_array_size(state.view.periodic_transforms) > 1) {
+        *out = state.view.periodic_transforms[instance];
+        return true;
+    }
+    return false;
+}
+
 // ---- The frame ---------------------------------------------------------------------------------------------------
 
 // The view's targets into the shared textures: md_gpu acquires them (after GL's last read, settle_reads), writes and
@@ -652,6 +761,7 @@ void md_render_bridge_render(ApplicationState* state) {
     for (size_t i = 0; i < md_array_size(b->reps); ++i) b->reps[i].seen = false;
     const md_render_mol_atoms_t atoms = atoms_of(b, state);
     const uint64_t secondary = update_secondary(b, state);
+    update_parts(b, state);
     md_allocator_i* alloc = state->allocator.persistent;     // the batches' array is kept
 
     md_render_mol_bond_style_t styles[64][MD_RENDER_MOL_BOND_KIND_COUNT];
@@ -663,16 +773,18 @@ void md_render_bridge_render(ApplicationState* state) {
         if (!md_render_bridge_draws(*state, rep) || !r) continue;
 
         md_render_mol_rep_t mr = {};
-        mr.key   = (uint64_t)rep.node.id + 1;
+        mr.key   = ((uint64_t)rep.node.id + 1) << 16;   // and the part of an assembly in the low bits (emit_placed)
         mr.color.mode = MD_RENDER_COLOR_POINTS;
         mr.color.sharpness = rep.bond_color == BondColorMode::SmoothAtom ? 1.0f - MD_CLAMP(rep.bond_sharpness, 0.0f, 1.0f) : 1.0f;
         mr.atom_color = r->color;
         mr.visible = r->visible;
         mr.chain_gaps = rep.chain_gaps;
-        switch (rep.type) {
+        // While the system's bonds are being inferred, every type as spheres (representation_draw_op)
+        const RepresentationType type = rep.sphere_fallback ? RepresentationType::SpaceFill : rep.type;
+        switch (type) {
         case RepresentationType::SpaceFill:
             mr.type = MD_RENDER_MOL_REP_SPACEFILL;
-            mr.params.spacefill.radius_scale = rep.scale.x;
+            mr.params.spacefill.radius_scale = rep.sphere_fallback ? 1.0f : rep.scale.x;
             break;
         case RepresentationType::Licorice:
             mr.type = MD_RENDER_MOL_REP_LICORICE;
@@ -704,18 +816,13 @@ void md_render_bridge_render(ApplicationState* state) {
         default:
             continue;
         }
-        if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
+        if (type == RepresentationType::Licorice || type == RepresentationType::BallAndStick) {
             if (num_styles == MD_COUNTOF(styles)) continue;
             bond_styles(styles[num_styles], rep);
             mr.bond_style = styles[num_styles++];
             mr.bond_kinds = bond_kinds(rep);
         }
-        const size_t copies = md_array_size(state->view.periodic_transforms);
-        if (rep.periodic_images && copies > 1) {
-            mr.transform = &state->view.periodic_transforms[0].elem[0][0];
-            mr.transform_count = (uint32_t)copies;
-        }
-        emit(b, atoms, mr, alloc);
+        emit_placed(b, state, atoms, mr, rep, alloc);
     }
     for (size_t i = 0; i < md_array_size(b->reps);) {
         if (!b->reps[i].seen) {
@@ -911,13 +1018,14 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
         // As md_gl's: the middle half of a bond picks as the bond, the quarters at its ends as their atoms
         const md_atom_pair_t pair = sys.bond.pairs[mh.bond];
         const md_float3_t* xyz = state->mold.state.xyz;
-        md_float3_t p = {mh.position[0], mh.position[1], mh.position[2]};
-        const size_t copies = md_array_size(state->view.periodic_transforms);
-        if (copies > 1 && mh.instance < copies) {   // a periodic image: back to the positions' place
-            const md_float4x4_t& T = state->view.periodic_transforms[mh.instance];
-            p = p - md_float3_set(T.elem[3][0], T.elem[3][1], T.elem[3][2]);
+        const md_float3_t p = {mh.position[0], mh.position[1], mh.position[2]};
+        md_float3_t a = xyz[pair.idx[0]], e = xyz[pair.idx[1]];
+        md_float4x4_t T;
+        if (copy_transform(b, *state, mh.rep_key, mh.instance, &T)) {     // its ends where the copy has them
+            a = md_float3_from_float4(md_float4x4_mul_float4(T, md_float4_from_float3(a, 1.0f)));
+            e = md_float3_from_float4(md_float4x4_mul_float4(T, md_float4_from_float3(e, 1.0f)));
         }
-        const md_float3_t a = xyz[pair.idx[0]], ab = xyz[pair.idx[1]] - a;
+        const md_float3_t ab = e - a;
         const float len2 = md_float3_dot(ab, ab);
         const float t = len2 > 0.0f ? md_float3_dot(p - a, ab) / len2 : 0.5f;
         if (t < 0.25f || t > 0.75f) {
@@ -926,7 +1034,7 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
             set_hit(*state, hit, PickingDomain_Bond, 0, mh.bond);
         } else {
             // An interaction over the sticks of a licorice: of the representation's range of them
-            set_hit(*state, hit, PickingDomain_Bond, mh.rep_key - 1, (uint32_t)(mh.bond - sys.bond.count));
+            set_hit(*state, hit, PickingDomain_Bond, (mh.rep_key >> 16) - 1, (uint32_t)(mh.bond - sys.bond.count));
         }
         break;
     }
@@ -1028,6 +1136,7 @@ void md_render_bridge_destroy(ApplicationState* state) {
     if (b->vao) glDeleteVertexArrays(1, &b->vao);
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
+    md_array_free(b->parts, state->allocator.persistent);
     delete b;
     state->md_render_bridge = nullptr;
 }
