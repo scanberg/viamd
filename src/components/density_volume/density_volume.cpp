@@ -341,7 +341,7 @@ struct DensityVolume : viamd::EventHandler {
         // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
         // id 0 would draw all of the molecule.
         while (md_array_size(r.subsets) < shown) {
-            const md_gl_subset_t subset = md_gl_subset_create(state->mold.gl_mol);
+            const md_gl_subset_t subset = md_gl_subset_create(system_instance(state->system_context).gl_mol);
             if (!subset.id) break;
             md_array_push(r.subsets, subset, heap);
         }
@@ -383,7 +383,7 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         // Of a Cartoon, the glyphs of the lipids and nucleic acids of each subset
-        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+        const CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
         if (rep.type == RepresentationType::Cartoon && cartoon_glyphs_valid(glyphs)) {
             while (md_array_size(r.glyph_subsets) < made) {
                 const md_gl_subset_t subset = md_gl_subset_create(glyphs.gl_mol);
@@ -431,7 +431,7 @@ struct DensityVolume : viamd::EventHandler {
 
         const size_t num_atoms = md_system_atom_count(&state->mold.sys);
         Representation& rep = r.rep;
-        if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(state->mold.gl_mol);
+        if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(system_instance(state->system_context).gl_mol);
 
         // Opaque: what is drawn is what the subsets hold
         uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MD_MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
@@ -442,7 +442,7 @@ struct DensityVolume : viamd::EventHandler {
         md_gl_rep_set_atom_colors(rep.md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
         // Of a Cartoon, its glyphs in the colours of their atoms
-        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+        const CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
         const bool with_glyphs = md_array_size(r.glyph_subsets) > 0;
         rep.glyphs_shown = false;
         if (with_glyphs) {
@@ -452,7 +452,7 @@ struct DensityVolume : viamd::EventHandler {
 
         // The other structures of an ensemble, towards the background
         if (shown > 1 && fade > 0.0f) {
-            if (!r.members.id) r.members = md_gl_rep_create(state->mold.gl_mol);
+            if (!r.members.id) r.members = md_gl_rep_create(system_instance(state->system_context).gl_mol);
             const md_float3_t bg = state->visuals.background.color;
             const float t = MD_CLAMP(fade, 0.0f, 1.0f);
             for (size_t i = 0; i < num_atoms; ++i) {
@@ -475,7 +475,7 @@ struct DensityVolume : viamd::EventHandler {
 
     // Those that need it, of those shown
     void update_reps(ApplicationState* state, bool frame_changed) {
-        if (!state->mold.gl_mol.id || !show_reference_structures) return;
+        if (!system_instance(state->system_context).gl_mol.id || !show_reference_structures) return;
         const size_t shown = shown_structures();
         const float fade = shown > 1 ? ensemble_fade : 0.0f;
         for (size_t i = 0; i < md_array_size(reps); ++i) {
@@ -825,7 +825,7 @@ struct DensityVolume : viamd::EventHandler {
                     script::DrawCtx ctx = {
                         .prog = state->script.eval_ir,
                         .sys = &state->mold.sys,
-                        .state = &state->mold.state,
+                        .state = &system_instance(state->system_context).state,
                         .eval = state->script.eval,
                         .run = run_path(state->system_context),
                     };
@@ -1679,13 +1679,13 @@ struct DensityVolume : viamd::EventHandler {
                 const bool has_backbone = state->mold.sys.protein_backbone.range.count > 0;
                 md_array(md_gl_draw_op_t) draw_ops = nullptr;
                 md_array(md_gl_draw_op_t) glyph_ops = nullptr;
-                CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
+                CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
                 for (size_t i = 0; i < md_array_size(reps); ++i) {
                     const DensityVolumeRep& r = reps[i];
                     if (!r.rep.enabled || !r.rep.type_is_valid || r.dirty || !r.rep.md_rep.id) continue;
                     if (r.rep.glyphs_shown && md_array_size(r.glyph_subsets) > 0) {
                         // Derived from the positions of the atoms when a cartoon of the main view has not
-                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, state->mold.state);
+                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, system_instance(state->system_context).state);
                         md_array(md_gl_draw_op_t) ops = nullptr;
                         representation_glyph_draw_ops(&ops, state->system_context, r.rep, temp_arena);
                         const size_t n = MD_MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
@@ -1725,7 +1725,7 @@ struct DensityVolume : viamd::EventHandler {
                         .view_matrix = &world_to_view.elem[0][0],
                         .proj_matrix = &view_to_clip.elem[0][0],
                     },
-                    .picking_offset = gl_picking_offset(state->system_context),
+                    .picking_offset = gl_picking_offset(system_instance(state->system_context)),
                 };
                 if (md_array_size(draw_ops) > 0) {
                     md_gl_draw(&draw_args);
@@ -1733,7 +1733,7 @@ struct DensityVolume : viamd::EventHandler {
                 // The glyphs, picked as those of the main view are
                 if (md_array_size(glyph_ops) > 0) {
                     draw_args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-                    draw_args.picking_offset = gl_picking_offset_glyphs(state->system_context);
+                    draw_args.picking_offset = gl_picking_offset_glyphs(system_instance(state->system_context));
                     md_gl_draw(&draw_args);
                 }
 

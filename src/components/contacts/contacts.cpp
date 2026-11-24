@@ -220,7 +220,7 @@ struct Contacts : viamd::EventHandler {
     void compute() {
         if (task.running()) return;
         const md_system_t& sys = app_state->mold.sys;
-        const md_system_state_t& cur = app_state->mold.state;
+        const md_system_state_t& cur = system_instance(app_state->system_context).state;
         const size_t N = sys.atom.count;
         if (N == 0) return;
 

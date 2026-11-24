@@ -1550,7 +1550,7 @@ struct Ramachandran : viamd::EventHandler {
 
         // The frame shown, or the only one there is
         if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
-            ps->base = md_system_state_backbone_angles(&app->mold.state, &app->mold.sys);
+            ps->base = md_system_state_backbone_angles(&system_instance(app->system_context).state, &app->mold.sys);
             if (!ps->base || md_array_size(seg_type) != app->mold.sys.protein_backbone.segment.count) return false;
             ps->stride = 0;
             ps->frame_beg = 0;

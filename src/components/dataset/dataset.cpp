@@ -802,7 +802,7 @@ struct Dataset : viamd::EventHandler {
         free_pending_overrides();
 
         if (radius_changed) {
-            data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
+            system_instances_flag(data.system_context, MolBit_DirtyRadius);
         }
         if (color_changed) {
             flag_all_representations_as_dirty(&data);
@@ -1840,7 +1840,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::TextUnformatted(mass_buf);
 
         // Density, with a box: a quick check that the box and the contents belong together
-        const md_unitcell_t& cell = data.mold.state.unitcell;
+        const md_unitcell_t& cell = system_instance(data.system_context).state.unitcell;
         md_float3x3_t A = {0};
         md_unitcell_A_extract_float(A.elem, &cell);
         const double volume = fabs((double)md_float3x3_determinant(A));   // Angstrom^3
@@ -3081,7 +3081,7 @@ struct Dataset : viamd::EventHandler {
         draw_element_defaults(data, radius_changed, color_changed, mass_changed);
 
         if (radius_changed) {
-            data.mold.dirty_gpu_buffers |= MolBit_DirtyRadius;
+            system_instances_flag(data.system_context, MolBit_DirtyRadius);
         }
         if (color_changed) {
             // @NOTE: Only the color within representations needs to be updated, not the filter.

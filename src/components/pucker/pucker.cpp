@@ -245,7 +245,7 @@ struct Pucker : viamd::EventHandler {
 
     void compute() {
         const md_system_t& sys = app_state->mold.sys;
-        const md_system_state_t& state = app_state->mold.state;
+        const md_system_state_t& state = system_instance(app_state->system_context).state;
         num_rings = md_ring_data_count(&sys.ring);
         rows.clear();
         if (!state.xyz) return;

@@ -1251,6 +1251,9 @@ struct BoxRepresentation {
 // The representations, the groups they can be put in and everything done with them is in representation.h.
 struct Representation {
     RepresentationNode node = {};   // where it is in the Representations window, see representation_tree.h
+    // The id of the instance of its system it is of (SystemInstance::id), as what is around it in the tree is: drawn
+    // from its coordinates, in its place. Of the first where it names none there is.
+    uint32_t instance = 0;
 
     char name[64] = "rep";
     // Evaluated within the context of the groups it is in (see RepresentationGroup). Its result says whether what it
@@ -1333,6 +1336,7 @@ struct Representation {
 // it sees whatever context the group itself is in.
 struct RepresentationGroup {
     RepresentationNode node = {0, 0, 0, true};
+    uint32_t instance = 0;          // As a representation's (Representation::instance), and so is all within it
 
     char name[64] = "group";
     // Empty for no context of its own. Its result says whether the context is valid and whether it depends on the
@@ -1488,32 +1492,13 @@ struct SystemData {
     // The cartoon's secondary structure (blend weights between coil, helix and sheet) lives on the GPU only: it is
     // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
     // interpolate_system_state), never read back and kept nowhere else.
-    md_gl_mol_t         gl_mol = {};
-    // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
-    // and derived from its atoms on the GPU (see cartoon_glyphs.h)
-    CartoonGlyphs       cartoon_glyphs = {};
     md_system_t         sys = {};
     SystemInference     inference;
 
-    // The actual interpolated state of the system.
-    // Is only used for rendering and visualization of properties. Its attributes carry the backbone angles and
-    // secondary structure of the displayed frame (md_system_state_backbone_angles, md_system_state_secondary_structure).
+    // The system's own coordinates: what its files gave (a structure, a restart; the first frame of its first run when
+    // they gave none), which it is inferred of and its instances without a run show. What is drawn is each instance's
+    // (SystemInstance::state), made from these or from a run's frames.
     md_system_state_t   state = {};
-
-		md_float4x4_t 			    unitcell_transform = MD_MAT4_IDENT_INIT;
-
-    // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
-    float               bond_length_limit = 0.0f;
-    uint64_t            bond_length_limit_version = 0;
-
-    bool                interpolate_system_state = false;
-    uint32_t            dirty_gpu_buffers = 0;
-    uint64_t            flags_hash = 0;             // what the atom flags uploaded were made of (main): its visibility, selection, highlight
-    uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
-    uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
-                                                    // alone: the image of the scene depends on them only through the
-                                                    // visible and the selected atoms (representation.visibility_mask_hash,
-                                                    // render.selection_hash), not through the highlighted
     // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
     // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
     void*               nto_warm = nullptr;
@@ -1587,12 +1572,89 @@ struct SystemRepresentations {
     } gizmo;
 };
 
-// THE SYSTEM, as the scene shows it: what is done to its coordinates before they are drawn, the copies of it drawn,
-// and whether it is drawn at all. Listed in the Scene window above its representations (system_scene.h).
-// One, as viamd loads one system; the state here is what each system will have of its own once it loads several.
-// The figure's: in the workspace ([SystemScene]).
+// THE OPERATIONS ON THE COORDINATES OF A SYSTEM (SystemOperation), each turned on or off by its own flag, which keeps
+// its settings while it is off. Of the system: every instance of it has its coordinates made the same way
+// (SystemInstance), which is what superposes them.
+struct SystemOperations {
+    bool recenter = false;
+    bool fixate_orientation = false;
+
+    // Extra transform applied to the target in its own centred frame, between fixating the
+    // orientation and placing it at the centre of the cell:
+    //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
+    // Identity by default. This is the hook for aligning the structure to something once it is
+    // centred - principal axes, a chosen bond, a user supplied orientation - without having to
+    // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
+    // it survives a change of recenter target.
+    md_float4x4_t alignment_mat = MD_MAT4_IDENT_INIT;
+
+
+    struct {
+        AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
+        bool enabled = false;
+        uint64_t version = 1;
+        uint64_t evaluated_version = 0;
+        uint64_t ir_fingerprint = 0;
+        md_bitset_t mask = { 0 };
+    } recenter_query;
+
+    // External state which user controls
+    bool apply_pbc = false;
+    bool unwrap_structures = false;
+
+    // The bonds formed and broken in the frame shown, against the bonds of the system (md_bond_delta_compute), when
+    // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
+    // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
+    struct {
+        bool enabled = false;
+        AtomFilter scope = {};                      // Empty for every atom
+        float tolerance = MD_BOND_DELTA_TOLERANCE;
+        uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
+
+        md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
+        bool scope_dirty = true;                    // To be evaluated again
+        uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
+
+        md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
+        // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
+        // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
+        // forms more than any before it has the indices of the ones beyond run into those of the next domain.
+        size_t formed_capacity = 0;
+        // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
+        // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
+        // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
+        // formed_capacity are for the bonds.
+        md_chem_delta_t chem = {};
+        size_t ring_capacity = 0;
+        uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+        // The topology of the system it was found against: the bonds its broken ones are indices of, which are of
+        // the system as inferred then. Another inference (an edit of the bonds, Recompute Bonds) puts other bonds
+        // in their place, and the delta is not of them until it is computed again (bond_tracking_update).
+        uint64_t topology_version = 0;
+        double time_ms = 0.0;                       // How long that took
+    } bond_tracking;
+
+    // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
+    // This is populated by assigning a user defined selection.
+    md_bitset_t selection_mask = {0};
+
+    struct {
+        // The atoms the reference was built from, compared exactly against the active target. A query
+        // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
+        // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
+        md_bitset_t target_mask = {0};    // in the persistent allocator
+        bool valid = false;
+
+		// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
+        md_float4_t* rel_xyzw = nullptr;
+        md_float3_t  com = {};
+    } initial_frame;
+};
+
+// AN INSTANCE OF A SYSTEM, as the scene shows it: where it is placed, the copies of it drawn, and whether it is drawn
+// at all (SystemInstance::scene). The figure's: in the workspace ([Instance]).
 struct SystemScene {
-    bool visible = true;    // Its representations are drawn only while it is
+    bool visible = true;    // Its representations are drawn only while it is (and its system is: SystemContext::visible)
 
     // The periodic images shown: the system again in the neighboring cells, this many each way along a, b and c, of
     // the representations which have periodic_images (all, unless they opt out)
@@ -1605,10 +1667,10 @@ struct SystemScene {
     // (centering, wrapping, making whole) are not applied while one is shown.
     int assembly = -1;
 
-    // Where the system is placed in the world: a rigid transform of its coordinates as they are drawn, identity for as
-    // the files have them (overlaid on the others). Of the view only: the coordinates themselves (SystemData::state),
-    // which the script measures and the operations write, are not moved by it - unlike centering. Side by side, and
-    // superposed on another system by a fit of a selection of each, are placements. Applied wherever the system's
+    // Where the instance is placed in the world: a rigid transform of its coordinates as they are drawn, identity for
+    // as its source has them (overlaid on the others). Of the view only: the coordinates themselves (SystemInstance::
+    // state), which the script measures and the operations write, are not moved by it - unlike centering. Side by side,
+    // and superposed on another by a fit of a selection of each, are placements. Applied wherever the instance's
     // coordinates meet the world: its draws (as a model matrix, under its copies), the box and dipoles drawn of it,
     // region selection, framing; not yet to the isosurfaces of its electronic structure (of the first system alone).
     md_float4x4_t placement = MD_MAT4_IDENT_INIT;
@@ -1639,91 +1701,7 @@ struct SystemScene {
     int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
     uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
 
-    // The operations on its coordinates (SystemOperation), each turned on or off by its own flag, which keeps its
-    // settings while it is off
-    struct {
-        bool recenter = false;
-        bool fixate_orientation = false;
 
-        // Extra transform applied to the target in its own centred frame, between fixating the
-        // orientation and placing it at the centre of the cell:
-        //     T = translate(cell_centre) * alignment_mat * R * translate(-com)
-        // Identity by default. This is the hook for aligning the structure to something once it is
-        // centred - principal axes, a chosen bond, a user supplied orientation - without having to
-        // touch the transform itself. Owned by whoever sets it: recentering never writes to it, and
-        // it survives a change of recenter target.
-        md_float4x4_t alignment_mat = MD_MAT4_IDENT_INIT;
-
-        // The turn (about the cell centre) that the coordinates in mold.state carry relative to the
-        // lattice of mold.state.unitcell. Identity unless keeping the orientation (or alignment_mat)
-        // turned the system. md_unitcell_t is lower triangular and cannot describe a turned lattice, so
-        // this is the only record of it: wrapping and making whole only work in the lattice frame (see
-        // apply_state_operations), and the box is drawn through it to stay in register with the atoms.
-        // Back to identity whenever mold.state is rewritten from its source.
-        md_float4x4_t state_rotation = MD_MAT4_IDENT_INIT;
-
-        struct {
-            AtomFilter filter;    // whether it depends on the frame (and is evaluated again in every one) is its result's
-            bool enabled = false;
-            uint64_t version = 1;
-            uint64_t evaluated_version = 0;
-            uint64_t ir_fingerprint = 0;
-            md_bitset_t mask = { 0 };
-        } recenter_query;
-
-        // External state which user controls
-        bool apply_pbc = false;
-        bool unwrap_structures = false;
-
-        // The bonds formed and broken in the frame shown, against the bonds of the system (md_bond_delta_compute), when
-        // tracking them. The system is not changed by it: the bonds formed are drawn as sticks and picked, those broken
-        // are not drawn, and Recompute Bonds is what changes the topology. Of the atoms the scope picks, all without one.
-        struct {
-            bool enabled = false;
-            AtomFilter scope = {};                      // Empty for every atom
-            float tolerance = MD_BOND_DELTA_TOLERANCE;
-            uint32_t breakable = MD_BOND_DELTA_BREAKABLE;
-
-            md_bitset_t scope_mask = {0};               // What the scope picks, in the persistent allocator
-            bool scope_dirty = true;                    // To be evaluated again
-            uint64_t scope_ir_fingerprint = 0;          // Of the script whose names it may use, when it was evaluated
-
-            md_bond_delta_t delta = {};                 // Of the frame shown, in the persistent allocator
-            // The most bonds formed in a frame since the delta was last empty. The picking indices of the bonds formed
-            // are reserved for this many when a frame begins, before its delta is known (picked_bond): a frame which
-            // forms more than any before it has the indices of the ones beyond run into those of the next domain.
-            size_t formed_capacity = 0;
-            // The chemistry of the frame where its bonds changed (md_chem_perceive_delta): the orders, aromaticity and
-            // rings drawn there, and what the tooltips say of its atoms and bonds. Empty when it is not perceived (a
-            // region too large). Its rings pick after those of the system, for which ring_capacity are reserved as
-            // formed_capacity are for the bonds.
-            md_chem_delta_t chem = {};
-            size_t ring_capacity = 0;
-            uint64_t key = 0;                           // What it was computed from, 0 when it is empty
-            // The topology of the system it was found against: the bonds its broken ones are indices of, which are of
-            // the system as inferred then. Another inference (an edit of the bonds, Recompute Bonds) puts other bonds
-            // in their place, and the delta is not of them until it is computed again (bond_tracking_update).
-            uint64_t topology_version = 0;
-            double time_ms = 0.0;                       // How long that took
-        } bond_tracking;
-
-        // Manual selection mask for recentering / orientating, which atoms to consider for calculating the center of mass and principal axes
-        // This is populated by assigning a user defined selection.
-        md_bitset_t selection_mask = {0};
-
-        struct {
-            // The atoms the reference was built from, compared exactly against the active target. A query
-            // which depends on the frame is evaluated again in every frame but mostly picks the same atoms,
-            // and the reference only has to be rebuilt (from the first frame, read from disk) when they change.
-            md_bitset_t target_mask = {0};    // in the persistent allocator
-            bool valid = false;
-
-			// Need to store the initial relative coordinate vectors and center of mass of reference frame for recentering and orientating the structure.
-            md_float4_t* rel_xyzw = nullptr;
-            md_float3_t  com = {};
-        } initial_frame;
-
-    } operations;
 };
 
 
@@ -1771,24 +1749,8 @@ struct SystemRun {
     // ended with the trajectory (free_trajectory_data), since the files they hold are its.
     md_system_extract_t* frame_extract[64] = {};
 
-    FrameCache          frame_cache;
-
     // Computing the backbone angles and secondary structure over the frames of the run (viamd.cpp)
     task_system::Job    backbone_computations;
-
-    // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
-    // interpolate_system_state skip redundant work when playback ticks without the displayed
-    // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
-    // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
-    // so the next call is never skipped by a stale match.
-    int64_t             last_interpolated_nearest_frame = -1;
-    // The (fractional) frame last interpolated, negative when there is none. A jump away from it
-    // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
-    double              last_interpolated_frame = -1.0;
-    // The stride of the frames the displayed state was last interpolated between (playback_stride).
-    // Starting or stopping playback changes it without changing the time, so it is compared
-    // against to know when the displayed state has to be made again.
-    int                 last_interpolated_stride = 1;
 
     SystemTrajectoryData trajectory_data;
 };
@@ -1817,6 +1779,83 @@ struct SystemPicking {
 // fixed budget.
 constexpr size_t SYSTEM_MAX = 8;
 constexpr size_t RUN_MAX = 8;        // Of one system
+constexpr size_t INSTANCE_MAX = 8;   // Of one system
+
+struct SystemContext;
+
+// AN INSTANCE OF A SYSTEM: the system made concrete in one of the several ways it may be shown at once. Its coordinates
+// come from one place - a run, at the time shown or at a frame of its own, or the system's own coordinates - and are
+// made the same way as every other instance's (the system's operations), so that instances of several runs superpose.
+// It is placed in the world by a transform of its own (scene.placement), drawn as what it is shown as (periodic
+// images, an assembly), with the representations which are of it (Representation::instance).
+//
+// A system has one at least. The first is the one the timeline, the script, the selection and the tools read
+// (system_instance): what a single instance of a system was before there were several.
+struct SystemInstance {
+    SystemContext*      sys = nullptr;          // The system it is an instance of
+    uint32_t            id = 0;                 // Within its system, never reused while it is loaded: what its
+                                                // representations and the workspace name it by
+    char                name[64] = "";          // Empty: called after where its coordinates come from
+
+    // Where its coordinates come from: run (an index into its system's runs) at the time shown, or at frame when that
+    // is not negative; the system's own (SystemData::state) for a run of -1
+    int                 run = -1;
+    int64_t             frame = -1;
+
+    SystemScene         scene;
+
+    // Its coordinates as drawn, made from the source by interpolate_system_state, then the operations. Its attributes
+    // carry the backbone angles and secondary structure of the frame (md_system_state_backbone_angles,
+    // md_system_state_secondary_structure).
+    md_system_state_t   state = {};
+    // The turn (about the cell centre) that the coordinates in state carry relative to the lattice of state.unitcell.
+    // Identity unless keeping the orientation (or alignment_mat) turned the system. md_unitcell_t is lower triangular
+    // and cannot describe a turned lattice, so this is the only record of it: wrapping and making whole only work in
+    // the lattice frame (see apply_state_operations), and the box is drawn through it to stay in register with the
+    // atoms. Back to identity whenever state is made again from its source.
+    md_float4x4_t       state_rotation = MD_MAT4_IDENT_INIT;
+
+    // On the GPU. The cartoon's secondary structure (blend weights between coil, helix and sheet) lives there only: it
+    // is computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
+    // interpolate_system_state), never read back and kept nowhere else.
+    md_gl_mol_t         gl_mol = {};
+    // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from the system beside
+    // gl_mol and derived from its atoms on the GPU (see cartoon_glyphs.h)
+    CartoonGlyphs       cartoon_glyphs = {};
+    md_float4x4_t       unitcell_transform = MD_MAT4_IDENT_INIT;
+
+    // The longest bond drawn without a cell (bond_length_limit in main.cpp), and the topology version it is of
+    float               bond_length_limit = 0.0f;
+    uint64_t            bond_length_limit_version = 0;
+
+    bool                interpolate_system_state = false;   // state is to be made again
+    uint32_t            dirty_gpu_buffers = 0;
+    uint64_t            flags_hash = 0;             // what the atom flags uploaded were made of (main): its visibility, selection, highlight
+    uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
+    uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
+                                                    // alone: the image of the scene depends on them only through the
+                                                    // visible and the selected atoms (representation.visibility_mask_hash,
+                                                    // render.selection_hash), not through the highlighted
+
+    // The frames of its run read around the time shown, and what was last made of them
+    FrameCache          frame_cache;
+    // The nearest frame last pushed to the renderer in Nearest interpolation mode - lets
+    // interpolate_system_state skip redundant work when playback ticks without the displayed
+    // frame changing. Reset to -1 whenever the underlying per-frame data can no longer be
+    // trusted to match what was last pushed (new trajectory, secondary structure recomputed),
+    // so the next call is never skipped by a stale match.
+    int64_t             last_interpolated_nearest_frame = -1;
+    // The (fractional) frame last interpolated, negative when there is none. A jump away from it
+    // resets the temporal coherence of the backbone orientation (MolBit_ResetBackboneHistory).
+    double              last_interpolated_frame = -1.0;
+    // The stride of the frames the displayed state was last interpolated between (playback_stride).
+    // Starting or stopping playback changes it without changing the time, so it is compared
+    // against to know when the displayed state has to be made again.
+    int                 last_interpolated_stride = 1;
+
+    // The picking ranges reserved for it in this frame: the same atoms in another instance are other objects to pick
+    SystemPicking       picking;
+};
 
 // A SYSTEM, as viamd holds it: what is had of each one loaded, apart from what the application has once.
 //
@@ -1863,11 +1902,18 @@ struct SystemContext {
     // (system_run).
     SystemRun*            runs[RUN_MAX] = {};
     size_t                num_runs = 0;
-    size_t                shown_run = 0;
-    SystemScene           scene;
+    SystemOperations      operations;
+    // While what loads its files places the runs it opens in its instances itself (a workspace, a system built again):
+    // open_run adds none for a further run
+    bool                  instances_held = false;
+    // Its instances, the first always there (system_context_init): allocated, so that what captures one can hold its
+    // address
+    SystemInstance*       instances[INSTANCE_MAX] = {};
+    size_t                num_instances = 0;
+    uint32_t              next_instance_id = 1;
+    bool                  visible = true;           // None of its instances is drawn while it is not
     SystemRepresentations representation;
     SystemSelection       selection;
-    SystemPicking         picking;
 };
 
 struct ApplicationState {
@@ -2012,7 +2058,6 @@ struct ApplicationState {
     // SystemContext). It is there whether or not anything is loaded into it.
     SystemContext system_context = {};
     SystemData&            mold            = system_context.data;
-    SystemScene&           system          = system_context.scene;
     SystemRepresentations& representation  = system_context.representation;
     FileList&              file_list       = system_context.files;
 
@@ -2878,15 +2923,58 @@ const SystemContext* picking_hit_system(const ApplicationState& app, const Picki
 // Every run of the system closed: its files, what was read and derived along them, the series loaded along them
 void free_trajectory_data(ApplicationState* app, SystemContext& sys);
 
-// The run shown of the system: what it is drawn at, and the timeline's. NULL without one.
+// The first instance of the system: the one the timeline, the script, the selection and the tools read
+static inline SystemInstance&       system_instance(SystemContext& sys)       { return *sys.instances[0]; }
+static inline const SystemInstance& system_instance(const SystemContext& sys) { return *sys.instances[0]; }
+
+// The run an instance shows, NULL for the system's own coordinates
+SystemRun*       instance_run(SystemInstance& inst);
+const SystemRun* instance_run(const SystemInstance& inst);
+
+// The run the first instance of the system shows: the timeline's, the script's. NULL without one.
 SystemRun*       system_run(SystemContext& sys);
 const SystemRun* system_run(const SystemContext& sys);
 
-// Run i shown, and drawn at from now on
-void system_show_run(SystemContext& sys, size_t i);
+// The instance shows run i (at the time shown, or at frame when it is not negative), or the system's own coordinates for
+// -1, from now on
+void instance_show(SystemInstance& inst, int run, int64_t frame = -1);
+
+// An instance added to the system, showing its own coordinates; NULL when it has as many as it can (INSTANCE_MAX)
+SystemInstance* instance_add(SystemContext& sys);
+// Instance i removed, and the representations of it; the last is not
+void instance_remove(SystemContext& sys, size_t i);
+SystemInstance* instance_find(SystemContext& sys, uint32_t id);
+const SystemInstance* instance_find(const SystemContext& sys, uint32_t id);
+
+// The instance with the id, the first where there is none: what a representation or a group naming it is of (0, which
+// no instance has, names the first)
+static inline SystemInstance& instance_resolve(SystemContext& sys, uint32_t id) {
+    SystemInstance* inst = instance_find(sys, id);
+    return inst ? *inst : system_instance(sys);
+}
+static inline const SystemInstance& instance_resolve(const SystemContext& sys, uint32_t id) {
+    const SystemInstance* inst = instance_find(sys, id);
+    return inst ? *inst : system_instance(sys);
+}
+// The instance a representation is of
+static inline SystemInstance&       representation_instance(SystemContext& sys, const Representation& rep)             { return instance_resolve(sys, rep.instance); }
+static inline const SystemInstance& representation_instance(const SystemContext& sys, const Representation& rep) { return instance_resolve(sys, rep.instance); }
+// Whether the representation is of the instance (as representation_instance has it)
+static inline bool representation_of(const SystemContext& sys, const Representation& rep, const SystemInstance& inst) {
+    return &representation_instance(sys, rep) == &inst;
+}
+
+// Every instance of the system to make its coordinates again (the system's own changed, the operations), and to upload
+// what bits names of them
+void system_instances_update(SystemContext& sys, uint32_t dirty_bits = 0);
+// Every instance of the system to upload what bits names of it (MolBit_*)
+static inline void system_instances_flag(SystemContext& sys, uint32_t dirty_bits) {
+    for (size_t k = 0; k < sys.num_instances; ++k) sys.instances[k]->dirty_gpu_buffers |= dirty_bits;
+}
 
 // Run i closed: its file and the series along it go out of the file list (file_list_remove_run), and what was read
-// and derived along it with them
+// and derived along it with them. The instances which showed it go, and their representations, but for the first, which
+// shows the system's own coordinates.
 void close_run(ApplicationState* app, SystemContext& sys, size_t i);
 
 // A run's frame axis ("<run>/time"): its frame count, its times (resident, F64, never decreasing) and their unit,
@@ -2996,16 +3084,20 @@ static inline md_str_t run_attribute_path(char* buf, size_t cap, const SystemCon
 const md_attribute_t* run_attribute(const SystemContext& sys, const SystemRun* run, md_str_t leaf);
 static inline const md_attribute_t* run_attribute(const SystemContext& sys, md_str_t leaf) { return run_attribute(sys, system_run(sys), leaf); }
 
-// The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
-// of the run at the displayed frame (secondary_structure_render), else the state's own assignment
+// The secondary structure to show for the instance's state, one per segment of sys.protein_backbone: the denoised copy
+// of its run at the frame it shows (secondary_structure_render), else the state's own assignment
 // (md_system_state_secondary_structure). For presentation; NULL when there is neither.
-const md_secondary_structure_t* displayed_secondary_structure(const SystemContext& sys);
+const md_secondary_structure_t* displayed_secondary_structure(const SystemInstance& inst);
+
+// The instance a hit is of: by its key for an instance's own objects (picking_instance_key), by the representation for
+// what is keyed by one (a weak bond, a glyph); the first for anything else
+const SystemInstance& picking_hit_instance(const SystemContext& sc, const PickingHit& hit);
 
 // Frame cache operations
 void clear_system_frame_cache(SystemContext& sys);
 
 // Interpolate state
-void interpolate_system_state(SystemContext& sys);
+void interpolate_system_state(SystemInstance& inst);
 
 // The stride of the frames the displayed state is interpolated between: animation.stride while playing,
 // every frame otherwise.
@@ -3466,7 +3558,7 @@ void recenter_update_target_data(SystemContext& sys);
 //     rotation    = translate(cell_centre) * alignment_mat * R * translate(-cell_centre)
 // rotation is exactly the identity unless the orientation is kept or alignment_mat is set, and the
 // return value says whether it is not.
-bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rotation, const SystemContext& sys);
+bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rotation, const SystemInstance& inst);
 
 // Applies the coordinate operations to mold.state in the one order that keeps them valid together:
 //     take off operations.state_rotation -> translate -> wrap -> make whole -> turn
@@ -3474,7 +3566,7 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
 // periodic images are settled turns the arbitrary image each atom arrived in into a real displacement
 // of R times a lattice vector. So the turn comes last, and a fresh turn is always preceded by a wrap.
 // Returns true if the coordinates were touched.
-bool apply_state_operations(SystemContext& sys, bool recenter, bool pbc, bool unwrap);
+bool apply_state_operations(SystemInstance& inst, bool recenter, bool pbc, bool unwrap);
 
 // Picking
 
@@ -3493,27 +3585,34 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
 // The range a keyed object of the system was given this frame, or NULL when it was not reserved one.
 const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key, uint32_t system = SYSTEM_ID_NONE);
 
+// The key the ranges of an instance's own objects (its atoms, bonds, ...) are reserved under: 0 for the first, as
+// before there were several, and past the ids of the representations for the others, whose weak bonds are keyed by
+// those ids in the same domain
+static inline uint64_t picking_instance_key(size_t i) { return i == 0 ? 0 : ((1ull << 32) | (uint64_t)i); }
+// The place in its system of the instance a hit on its own objects is of, -1 when the key names none
+static inline int picking_key_instance(uint64_t key) { return key == 0 ? 0 : (key >> 32) == 1 ? (int)(key & 0xFFFFFFFF) : -1; }
+
 // The picking offsets for drawing the system with md_gl, one per reserved range. Every md_gl_draw of the system takes
 // them from here: a base left at 0 makes that kind write into the atom range and pick as the wrong atoms.
-static inline md_gl_picking_offset_t gl_picking_offset(const SystemContext& sys) {
+static inline md_gl_picking_offset_t gl_picking_offset(const SystemInstance& inst) {
     return {
-        .atom_base     = sys.picking.atom.beg,
-        .bond_base     = sys.picking.bond.beg,
-        .backbone_base = sys.picking.backbone.beg,
-        .ring_base     = sys.picking.ring.beg,
-        .gap_base      = sys.picking.gap.beg,
+        .atom_base     = inst.picking.atom.beg,
+        .bond_base     = inst.picking.bond.beg,
+        .backbone_base = inst.picking.backbone.beg,
+        .ring_base     = inst.picking.ring.beg,
+        .gap_base      = inst.picking.gap.beg,
     };
 }
 
 // The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
 // their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points,
 // their slabs their index after those (cartoon_glyphs_picked_point)
-static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const SystemContext& sys) {
+static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const SystemInstance& inst) {
     return {
-        .atom_base     = sys.picking.glyph.beg,
-        .bond_base     = sys.picking.glyph.beg,
-        .backbone_base = sys.picking.glyph.beg + sys.data.cartoon_glyphs.num_points,
-        .ring_base     = sys.picking.glyph.beg + sys.data.cartoon_glyphs.num_points + sys.data.cartoon_glyphs.num_tube_points,
+        .atom_base     = inst.picking.glyph.beg,
+        .bond_base     = inst.picking.glyph.beg,
+        .backbone_base = inst.picking.glyph.beg + inst.cartoon_glyphs.num_points,
+        .ring_base     = inst.picking.glyph.beg + inst.cartoon_glyphs.num_points + inst.cartoon_glyphs.num_tube_points,
     };
 }
 
@@ -3730,8 +3829,8 @@ void assembly_transforms(md_array(md_float4x4_t)* transforms, md_array(uint32_t)
 
 // The subsets of the parts of the assembly shown (view.assembly_subsets), made again if it or the molecule changed, and
 // freed: before the molecule goes
-void assembly_subsets_update(SystemContext& sys);
-void assembly_subsets_free(SystemContext& sys);
+void assembly_subsets_update(SystemInstance& inst);
+void assembly_subsets_free(SystemInstance& inst);
 
 // Script IR lifetime
 // Every IR is made by script_ir_create, compiling src in the workspace's language, and nothing frees one directly. A

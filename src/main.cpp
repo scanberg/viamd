@@ -387,7 +387,7 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
 
 static void update_view_param(ApplicationState* state);
 // The transforms of the copies of the scene the periodic images show (view.periodic_transforms)
-static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc);
+static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemInstance& inst, md_allocator_i* alloc);
 
 // The lowest render scale offered: below half, too little of the detail is left to rebuild
 static constexpr float RENDER_SCALE_MIN = 0.5f;
@@ -1085,7 +1085,7 @@ int main(int argc, char** argv) {
                     SystemContext& sc = *state.systems[k];
                     md_bitmask_t& highlight = sc.selection.highlight_mask;
                     md_bitmask_t& selection = sc.selection.selection_mask;
-                    if (!sc.scene.visible || sc.data.state.num_atoms == 0) {
+                    if (!sc.visible || sc.data.state.num_atoms == 0) {
                         md_bitmask_clear(&highlight);
                         continue;
                     }
@@ -1094,10 +1094,18 @@ int main(int argc, char** argv) {
                         // When removing, only consider currently selected atoms as candidates for region selection
                         candidate_mask = md_bitmask_view(&selection);
                     }
-                    // As it is drawn: where it is placed
-                    point_set_region_mask_compute(&highlight,
-                        sc.data.state.xyz, sc.data.state.num_atoms,
-                        &candidate_mask, world_to_clip * sc.scene.placement, event.region_min, event.region_max, event.surface_size);
+                    // As it is drawn: in each instance shown, where it is placed. The atoms in the region in any of them.
+                    md_bitmask_clear(&highlight);
+                    md_bitmask_t in_region = {};
+                    md_bitmask_init(&in_region, 0, MD_BITSET_MAX_INDEX, state.allocator.frame);
+                    for (size_t j = 0; j < sc.num_instances; ++j) {
+                        const SystemInstance& inst = *sc.instances[j];
+                        if (!inst.scene.visible || inst.state.num_atoms != sc.data.sys.atom.count || !inst.state.xyz) continue;
+                        point_set_region_mask_compute(&in_region, inst.state.xyz, inst.state.num_atoms,
+                            &candidate_mask, world_to_clip * inst.scene.placement, event.region_min, event.region_max, event.surface_size);
+                        md_bitmask_or(&highlight, md_bitmask_view(&in_region));
+                    }
+                    md_bitmask_free(&in_region);
 
                     grow_mask_by_selection_granularity(&highlight, state.selection.granularity, sc.data.sys);
                     if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
@@ -1179,7 +1187,7 @@ int main(int argc, char** argv) {
             switch (state.animation.mode) {
                 case PlaybackMode::Playing:
                     state.animation.mode = PlaybackMode::Stopped;
-                    for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                    for (size_t i = 0; i < state.num_systems; ++i) system_instances_flag(*state.systems[i], MolBit_ClearVelocity);
                     break;
                 case PlaybackMode::Stopped:
                     state.animation.mode = PlaybackMode::Playing;
@@ -1244,7 +1252,13 @@ int main(int argc, char** argv) {
         }
 
         if (time_changed) {
-            for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.interpolate_system_state = true;
+            // The instances which follow the time: one at a frame of its own, or of the system's own coordinates, stays
+            for (size_t i = 0; i < state.num_systems; ++i) {
+                SystemContext& sc = *state.systems[i];
+                for (size_t k = 0; k < sc.num_instances; ++k) {
+                    if (instance_run(*sc.instances[k]) && sc.instances[k]->frame < 0) sc.instances[k]->interpolate_system_state = true;
+                }
+            }
             time_stopped = false;
             viamd::event_system_broadcast_event(viamd::EventType_ViamdAnimationFrameChanged, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1254,7 +1268,7 @@ int main(int argc, char** argv) {
         } else {
             if (!time_stopped) {
                 time_stopped = true;
-                for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.dirty_gpu_buffers |= MolBit_DirtyPosition;
+                for (size_t i = 0; i < state.num_systems; ++i) system_instances_flag(*state.systems[i], MolBit_DirtyPosition);
             }
         }
 
@@ -1263,19 +1277,31 @@ int main(int argc, char** argv) {
         // Each system its own state, from its own run at the time shown.
         for (size_t i = 0; i < state.num_systems; ++i) {
             SystemContext& sc = *state.systems[i];
-            const SystemRun* run = system_run(sc);
-            if (run && playback_stride(&state) != run->last_interpolated_stride) {
-                sc.data.interpolate_system_state = true;
-                sc.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+            for (size_t k = 0; k < sc.num_instances; ++k) {
+                SystemInstance& inst = *sc.instances[k];
+                if (instance_run(inst) && inst.frame < 0 && playback_stride(&state) != inst.last_interpolated_stride) {
+                    inst.interpolate_system_state = true;
+                    inst.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                }
             }
 
-            if (sc.data.interpolate_system_state) {
-                sc.data.interpolate_system_state = false;
-                if (run_num_frames(sc) > 0) {
-                    PUSH_CPU_SECTION("Interpolate System State")
-                    interpolate_system_state(sc);
-                    POP_CPU_SECTION()
+            // Each instance its coordinates from its source, then the system's operations on them. The first is the one
+            // the rest of viamd is told of (ViamdSystemStateChanged), whose handler applies the operations to it.
+            for (size_t k = 0; k < sc.num_instances; ++k) {
+                SystemInstance& inst = *sc.instances[k];
+                if (!inst.interpolate_system_state) continue;
+                inst.interpolate_system_state = false;
+                if (sc.data.sys.atom.count == 0) continue;
+                PUSH_CPU_SECTION("Interpolate System State")
+                interpolate_system_state(inst);
+                POP_CPU_SECTION()
+                if (k == 0) {
                     viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &sc);
+                } else {
+                    const auto& op = sc.operations;
+                    if (inst.scene.assembly < 0 && apply_state_operations(inst, op.recenter, op.apply_pbc, op.unwrap_structures)) {
+                        inst.dirty_gpu_buffers |= MolBit_DirtyPosition;
+                    }
                 }
             }
         }
@@ -1659,7 +1685,7 @@ int main(int argc, char** argv) {
                 } else {
                     state.view.target.position = com + state.view.target.orientation * md_float3_set(0, 0, state.view.target.distance);
                 }
-                state.view.target.position = md_float4x4_mul_float3(scene_frame_system(state).data.unitcell_transform, state.view.target.position, 1.0f);
+                state.view.target.position = md_float4x4_mul_float3(system_instance(scene_frame_system(state)).unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
                 reset_view_scene(&state.view.target, state, state.view.camera.fov_y, state.view.region);
@@ -1688,9 +1714,12 @@ int main(int argc, char** argv) {
             uint64_t f = md_hash64_combine(v, md_hash64_combine(h, md_hash64_combine(sel, any_selected)));
             // The groups of the highlight are of the script's, the first system's (update_md_buffers)
             if (&sc == &state.system_context) f = md_hash64_combine(f, state.selection.highlight_groups.key);
-            if (f != sc.data.flags_hash) {
-                sc.data.flags_hash = f;
-                sc.data.dirty_gpu_buffers |= MolBit_DirtyFlags;
+            for (size_t k = 0; k < sc.num_instances; ++k) {
+                SystemInstance& inst = *sc.instances[k];
+                if (f != inst.flags_hash) {
+                    inst.flags_hash = f;
+                    inst.dirty_gpu_buffers |= MolBit_DirtyFlags;
+                }
             }
             h_hash = md_hash64_combine(h_hash, h);
             s_hash = md_hash64_combine(s_hash, sel);
@@ -1744,10 +1773,10 @@ int main(int argc, char** argv) {
 
         // Process the queued events BEFORE uploading to the GPU and rendering.
         // The ViamdSystemStateChanged handler applies the toggled operations (recenter, apply
-        // pbc, unwrap) directly to mold.state coordinates. update_md_buffers uploads those
-        // coordinates and then clears dirty_gpu_buffers, so anything processed after it is not
+        // pbc, unwrap) directly to the coordinates of the first instance of the system. update_md_buffers
+        // uploads those coordinates and then clears dirty_gpu_buffers, so anything processed after it is not
         // merely rendered a frame late - it is discarded outright, because the next frame
-        // re-interpolates mold.state from the trajectory before it is ever uploaded.
+        // re-interpolates the instance's coordinates from the trajectory before they are ever uploaded.
         viamd::event_system_process_event_queue();
 
         POP_GPU_SECTION();
@@ -1846,28 +1875,31 @@ static void update_view_param(ApplicationState* data) {
     param.matrix.prev = param.matrix.curr;
     param.jitter.prev = param.jitter.curr;
 
-    // The copies of each system, and where it is placed
+    // The copies of each instance of each system, and where it is placed
     for (size_t i = 0; i < data->num_systems; ++i) {
         SystemContext& sc = *data->systems[i];
-        sc.scene.placement_prev = sc.scene.placement_curr;
-        sc.scene.placement_curr = sc.scene.placement;
-        // Its periodic images, as of this frame and the last: as many as before, or they did not move
-        md_array(md_float4x4_t)& curr = sc.scene.periodic_transforms;
-        md_array(md_float4x4_t)& prev = sc.scene.periodic_transforms_prev;
-        md_array_shrink(prev, 0);
-        md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
-        compute_periodic_transforms(&curr, sc, persistent_alloc);
-        if (md_array_size(prev) != md_array_size(curr)) {
+        for (size_t k = 0; k < sc.num_instances; ++k) {
+            SystemInstance& inst = *sc.instances[k];
+            inst.scene.placement_prev = inst.scene.placement_curr;
+            inst.scene.placement_curr = inst.scene.placement;
+            // Its periodic images, as of this frame and the last: as many as before, or they did not move
+            md_array(md_float4x4_t)& curr = inst.scene.periodic_transforms;
+            md_array(md_float4x4_t)& prev = inst.scene.periodic_transforms_prev;
             md_array_shrink(prev, 0);
             md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
+            compute_periodic_transforms(&curr, inst, persistent_alloc);
+            if (md_array_size(prev) != md_array_size(curr)) {
+                md_array_shrink(prev, 0);
+                md_array_push_array(prev, curr, md_array_size(curr), persistent_alloc);
+            }
+            // The copies of the assembly shown, which stand still
+            if (inst.scene.assembly >= 0 && (size_t)inst.scene.assembly >= sc.data.sys.assembly.count) {
+                inst.scene.assembly = -1;
+            }
+            assembly_transforms(&inst.scene.assembly_transforms, &inst.scene.assembly_copy_offset, sc.data.sys, inst.scene.assembly, persistent_alloc);
+            // And the subsets of its parts, which its copies draw: made when another is shown
+            assembly_subsets_update(inst);
         }
-        // The copies of the assembly shown, which stand still
-        if (sc.scene.assembly >= 0 && (size_t)sc.scene.assembly >= sc.data.sys.assembly.count) {
-            sc.scene.assembly = -1;
-        }
-        assembly_transforms(&sc.scene.assembly_transforms, &sc.scene.assembly_copy_offset, sc.data.sys, sc.scene.assembly, persistent_alloc);
-        // And the subsets of its parts, which its copies draw: made when another is shown
-        assembly_subsets_update(sc);
     }
 
     param.clip_planes.near = data->view.camera.near_plane;
@@ -1876,7 +1908,7 @@ static void update_view_param(ApplicationState* data) {
     param.resolution = {(float)data->gbuffer.width, (float)data->gbuffer.height};
 
     // The world is in the frame of the first system's cell, which every system is drawn in (scene_frame_system)
-    const md_float4x4_t& frame = scene_frame_system(*data).data.unitcell_transform;
+    const md_float4x4_t& frame = system_instance(scene_frame_system(*data)).unitcell_transform;
     param.matrix.curr.view = camera_world_to_view_matrix(data->view.camera) * frame;
     param.matrix.inv.view  = md_float4x4_inverse(frame) * camera_view_to_world_matrix(data->view.camera);
 
@@ -2076,7 +2108,7 @@ static void draw_main_menu(ApplicationState* data) {
                         data->view.camera.fov_y = MD_DEG_TO_RAD(fov);
                     }
                 }
-                if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&data->mold.state.unitcell) != 0) {
+                if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&system_instance(data->system_context).state.unitcell) != 0) {
                     // What the system is shown as is the system's, listed with it
                     prop::row("shown as", "The periodic images and the assemblies are the system's: 'Shown as', under the\n"
                                           "system in the Scene window");
@@ -3201,14 +3233,14 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                     if (!md_str_begins_with(expr, MD_STR_LIT("x = "))) continue;
                     expr = md_str_trim(md_str_substr(expr, 4));
                     if (md_str_ends_with(expr, MD_STR_LIT(";"))) expr = md_str_trim(md_str_substr(expr, 0, expr.len - 1));
-                    if (!md_str_empty(expr) && expr.len < sizeof(sc.scene.operations.bond_tracking.scope.text)) return expr;
+                    if (!md_str_empty(expr) && expr.len < sizeof(sc.operations.bond_tracking.scope.text)) return expr;
                 }
                 return {};
             };
             if (ImGui::MenuItem("Track Bond Changes Here")) {
                 const md_str_t scope = selection_scope();
                 if (!md_str_empty(scope)) {
-                    auto& tracking = sc.scene.operations.bond_tracking;
+                    auto& tracking = sc.operations.bond_tracking;
                     tracking.enabled = true;
                     md_str_copy_to_char_buf(tracking.scope.text, sizeof(tracking.scope.text), scope);
                     tracking.scope_dirty = true;
@@ -3322,8 +3354,8 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
         
         if (num_atoms_selected > 0) {
             if (ImGui::MenuItem("Set as Centering Target")) {
-                md_bitset_assign(&sc.scene.operations.selection_mask, md_bitmask_view(&sc.selection.selection_mask), persistent_alloc);
-                sc.scene.operations.recenter_query.enabled = false;
+                md_bitset_assign(&sc.operations.selection_mask, md_bitmask_view(&sc.selection.selection_mask), persistent_alloc);
+                sc.operations.recenter_query.enabled = false;
                 recenter_update_target_data(sc);
                 ImGui::CloseCurrentPopup();
             }
@@ -3386,7 +3418,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
                 md_bond_mask_grow(grow, &data->mold.sys.bond, data->mold.sys.atom.count, (size_t)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                mask_grow_by_radius(grow, &data->mold.state, data->selection.grow.extent, &viable);
+                mask_grow_by_radius(grow, &system_instance(data->system_context).state, data->selection.grow.extent, &viable);
                 break;
             }
             default:
@@ -3501,8 +3533,7 @@ static void draw_animation_window(ApplicationState* data) {
             for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
                 if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
                     data->animation.interpolation = (InterpolationMode)i;
-					data->mold.interpolate_system_state = true;
-                    data->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                    for (size_t s = 0; s < data->num_systems; ++s) system_instances_update(*data->systems[s], MolBit_ClearVelocity);
                 }
                 ImGui::SetItemTooltip("%s", mode_tooltip[i]);
             }
@@ -6257,7 +6288,7 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
         script::DrawCtx ctx = {
             .prog = data.script.eval_ir,
             .sys = &data.mold.sys,
-            .state = volume.placed ? &state : &data.mold.state,
+            .state = volume.placed ? &state : &system_instance(data.system_context).state,
             .eval = data.script.eval,
             .run = run_path(data.system_context),
         };
@@ -6708,7 +6739,7 @@ void draw_structure_export_window(ApplicationState* data) {
         MD_DEFER { md_temp_end(temp); };
 
         const md_system_t* sys = &data->mold.sys;
-        const md_system_state_t* state = &data->mold.state;
+        const md_system_state_t* state = &system_instance(data->system_context).state;
         const bool traj = run_num_frames(data->system_context) > 0;
         auto& struct_exp = data->structure_export;
 
@@ -6929,7 +6960,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                     else {
                         // Single frame from system
-                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &data->mold.state);
+                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &system_instance(data->system_context).state);
                         
                         if (struct_exp.selected_file_format == 0) { // XYZ
                             xyz_write_frame(file, atomic_numbers, state, atom_indices, num_atoms);
@@ -6949,57 +6980,61 @@ void draw_structure_export_window(ApplicationState* data) {
     ImGui::End();
 }
 
-static void update_md_buffers(SystemContext& sc) {
+// What of the instance is on the GPU, brought up to what it is now: its coordinates, the radii, the flags of its atoms
+// (the system's selection and highlight, the same in each instance), its bonds
+static void update_md_buffers(SystemInstance& inst) {
+    SystemContext& sc = *inst.sys;
     ApplicationState* data = sc.app;
     MD_ASSERT(data);
     const md_system_t& sys = sc.data.sys;
-	const md_system_state_t& state = sc.data.state;
+    const md_system_state_t& state = inst.state;
+    const bool first = &inst == &system_instance(sc);
 
     if (sys.atom.count == 0) return;
 
-    if (sc.data.dirty_gpu_buffers) {
-        sc.data.gpu_buffers_version += 1;
+    if (inst.dirty_gpu_buffers) {
+        inst.gpu_buffers_version += 1;
     }
-    if (sc.data.dirty_gpu_buffers & ~MolBit_DirtyFlags) {
-        sc.data.gpu_scene_version += 1;
+    if (inst.dirty_gpu_buffers & ~MolBit_DirtyFlags) {
+        inst.gpu_scene_version += 1;
     }
 
-    if (sc.data.dirty_gpu_buffers & (MolBit_DirtyPosition | MolBit_ClearVelocity)) {
+    if (inst.dirty_gpu_buffers & (MolBit_DirtyPosition | MolBit_ClearVelocity)) {
         // Derived from the positions and velocities of the atoms below, when a cartoon shows them
-        sc.data.cartoon_glyphs.positions_valid = false;
+        inst.cartoon_glyphs.positions_valid = false;
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_DirtyPosition) {
+    if ((inst.dirty_gpu_buffers & MolBit_DirtyPosition) && state.xyz && state.num_atoms == sys.atom.count) {
         md_float3_t pbc_ext = { 0 };
         md_unitcell_diag_extract_float(pbc_ext.elem, &state.unitcell);
-        md_gl_mol_set_atom_position(sc.data.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
-        if (!(sc.data.dirty_gpu_buffers & MolBit_ClearVelocity)) {
-            md_gl_mol_compute_velocity(sc.data.gl_mol, pbc_ext.elem);
+        md_gl_mol_set_atom_position(inst.gl_mol, 0, (uint32_t)state.num_atoms, state.xyz);
+        if (!(inst.dirty_gpu_buffers & MolBit_ClearVelocity)) {
+            md_gl_mol_compute_velocity(inst.gl_mol, pbc_ext.elem);
         }
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_ClearVelocity) {
-        md_gl_mol_zero_velocity(sc.data.gl_mol);
+    if (inst.dirty_gpu_buffers & MolBit_ClearVelocity) {
+        md_gl_mol_zero_velocity(inst.gl_mol);
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_ResetBackboneHistory) {
-        md_gl_mol_reset_backbone_history(sc.data.gl_mol);
-        if (cartoon_glyphs_valid(sc.data.cartoon_glyphs)) {
-            md_gl_mol_reset_backbone_history(sc.data.cartoon_glyphs.gl_mol);
+    if (inst.dirty_gpu_buffers & MolBit_ResetBackboneHistory) {
+        md_gl_mol_reset_backbone_history(inst.gl_mol);
+        if (cartoon_glyphs_valid(inst.cartoon_glyphs)) {
+            md_gl_mol_reset_backbone_history(inst.cartoon_glyphs.gl_mol);
         }
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_DirtyRadius) {
+    if (inst.dirty_gpu_buffers & MolBit_DirtyRadius) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         MD_DEFER { md_temp_end(tmp); };
 
         float* radii = (float*)md_vm_arena_push(frame_alloc, sys.atom.count * sizeof(float));
         md_atom_extract_radii(radii, 0, sys.atom.count, &sys.atom);
 
-        md_gl_mol_set_atom_radius(sc.data.gl_mol, 0, (uint32_t)sys.atom.count, radii, 0);
+        md_gl_mol_set_atom_radius(inst.gl_mol, 0, (uint32_t)sys.atom.count, radii, 0);
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_DirtyFlags) {
+    if (inst.dirty_gpu_buffers & MolBit_DirtyFlags) {
         md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
         MD_DEFER { md_temp_end(tmp); };
 
@@ -7048,14 +7083,15 @@ static void update_md_buffers(SystemContext& sc) {
                 flags[idx] |= AtomBit_Visible;
             }
         }
-        md_gl_mol_set_atom_flags(sc.data.gl_mol, 0, (uint32_t)sys.atom.count, flags, 0);
-        cartoon_glyphs_update_flags(sc.data.cartoon_glyphs, flags, sys.atom.count);
+        md_gl_mol_set_atom_flags(inst.gl_mol, 0, (uint32_t)sys.atom.count, flags, 0);
+        cartoon_glyphs_update_flags(inst.cartoon_glyphs, flags, sys.atom.count);
     }
 
-    if (sc.data.dirty_gpu_buffers & MolBit_DirtyBonds) {
+    if (inst.dirty_gpu_buffers & MolBit_DirtyBonds) {
         // The bonds of the graph, then those formed in the frame shown while tracking them. A broken one is set to one
         // atom twice, which is not drawn, so that the bonds keep their indices: the orders and the picking go by them.
-        const md_bond_delta_t* delta = bond_tracking_delta(sc);
+        // Tracked in the first instance only, so far.
+        const md_bond_delta_t* delta = first ? bond_tracking_delta(sc) : nullptr;
         if (delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken))) {
             const size_t count = sys.bond.count + delta->num_formed;
             md_atom_pair_t* pairs = (md_atom_pair_t*)md_vm_arena_push(data->allocator.frame, sizeof(md_atom_pair_t) * count);
@@ -7065,38 +7101,41 @@ static void update_md_buffers(SystemContext& sc) {
                 if (it.idx < sys.bond.count) pairs[it.idx].idx[1] = pairs[it.idx].idx[0];
             }
             if (delta->num_formed) md_memcpy(pairs + sys.bond.count, delta->formed_pair, sizeof(md_atom_pair_t) * delta->num_formed);
-            md_gl_mol_set_bonds(sc.data.gl_mol, 0, (uint32_t)count, pairs, sizeof(md_atom_pair_t));
+            md_gl_mol_set_bonds(inst.gl_mol, 0, (uint32_t)count, pairs, sizeof(md_atom_pair_t));
         } else {
-            md_gl_mol_set_bonds(sc.data.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
+            md_gl_mol_set_bonds(inst.gl_mol, 0, (uint32_t)sys.bond.count, sys.bond.pairs, sizeof(md_atom_pair_t));
         }
         // The orders of the frame shown where the bonds tracked changed them (bond_tracking_chem)
-        md_gl_mol_set_bond_orders(sc.data.gl_mol, &sys, delta, bond_tracking_chem(sc));
+        md_gl_mol_set_bond_orders(inst.gl_mol, &sys, delta, first ? bond_tracking_chem(sc) : nullptr);
 
         // The interactions of the system are drawn dashed by the licorice and ball and stick representations
         for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
-            representation_set_weak_bonds(sc, &sc.representation.reps[i]);
+            if (representation_of(sc, sc.representation.reps[i], inst)) representation_set_weak_bonds(sc, &sc.representation.reps[i]);
         }
     }
 
     // The glyphs of the cartoon of the lipids and nucleic acids are derived on the GPU from the positions and velocities
     // of the atoms, set above: only while a cartoon shows them
-    CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
+    CartoonGlyphs& glyphs = inst.cartoon_glyphs;
     if (cartoon_glyphs_valid(glyphs) && !glyphs.positions_valid) {
         bool shown = false;
         for (size_t i = 0; i < md_array_size(sc.representation.reps) && !shown; ++i) {
             const Representation& rep = sc.representation.reps[i];
-            shown = representation_shown(sc, rep) && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
+            shown = representation_of(sc, rep, inst) && representation_shown(sc, rep) && rep.type == RepresentationType::Cartoon && rep.glyph_rep.id && rep.glyphs_shown;
         }
         if (shown) {
             cartoon_glyphs_update_positions(&glyphs, state);
         }
     }
 
-    sc.data.dirty_gpu_buffers = 0;
+    inst.dirty_gpu_buffers = 0;
 }
 
 static void update_md_buffers(ApplicationState* state) {
-    for (size_t i = 0; i < state->num_systems; ++i) update_md_buffers(*state->systems[i]);
+    for (size_t i = 0; i < state->num_systems; ++i) {
+        SystemContext& sc = *state->systems[i];
+        for (size_t k = 0; k < sc.num_instances; ++k) update_md_buffers(*sc.instances[k]);
+    }
 }
 
 void create_screenshot(md_str_t path) {
@@ -7249,7 +7288,7 @@ static uint64_t scene_key(const ApplicationState* state) {
     h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
     const md_float2_t shift = view_shift(state);
     h = md_hash64(&shift, sizeof(shift), h);
-    h = md_hash64(&scene_frame_system(*state).data.unitcell_transform, sizeof(md_float4x4_t), h);
+    h = md_hash64(&system_instance(scene_frame_system(*state)).unitcell_transform, sizeof(md_float4x4_t), h);
 
     // How it looks
     h = md_hash64(&state->visuals, sizeof(state->visuals), h);
@@ -7638,17 +7677,17 @@ static void render(ApplicationState* state) {
 static constexpr float BOND_LENGTH_MARGIN = 1.5f;
 static constexpr float BOND_LENGTH_MIN    = 5.0f;
 
-static float bond_length_limit(SystemContext& sc) {
-    const md_unitcell_t& cell = sc.data.state.unitcell;
+static float bond_length_limit(SystemInstance& inst) {
+    const md_unitcell_t& cell = inst.state.unitcell;
     if (md_unitcell_flags(&cell) != 0) {
         md_float3_t ext = {0};
         md_unitcell_diag_extract_float(ext.elem, &cell);
         return MD_MAX(3.0f, md_float3_reduce_min(ext) * 0.5f);
     }
 
-    const md_system_t& sys = sc.data.sys;
-    if (sc.data.bond_length_limit_version != sys.topology_version || !(sc.data.bond_length_limit > 0.0f)) {
-        const md_system_state_t& frame = sc.data.state;
+    const md_system_t& sys = inst.sys->data.sys;
+    if (inst.bond_length_limit_version != sys.topology_version || !(inst.bond_length_limit > 0.0f)) {
+        const md_system_state_t& frame = inst.state;
         float max_d2 = 0.0f;
         if (frame.xyz && frame.num_atoms == sys.atom.count) {
             for (size_t i = 0; i < sys.bond.count; ++i) {
@@ -7658,24 +7697,24 @@ static float bond_length_limit(SystemContext& sc) {
                 }
             }
         }
-        sc.data.bond_length_limit = MD_MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
-        sc.data.bond_length_limit_version = sys.topology_version;
+        inst.bond_length_limit = MD_MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
+        inst.bond_length_limit_version = sys.topology_version;
     }
-    return sc.data.bond_length_limit;
+    return inst.bond_length_limit;
 }
 
 // The copies of the scene the periodic images show (system.periodic_images): its own, as it is, then the translations of
 // the scene into the neighboring cells, through the turn the coordinates carry if the orientation is kept (as the box).
 // None without a cell or images.
-static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemContext& sys, md_allocator_i* alloc) {
+static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, const SystemInstance& inst, md_allocator_i* alloc) {
     md_array_shrink(*transforms, 0);
-    const md_unitcell_t& cell = sys.data.state.unitcell;
-    const int* n = sys.scene.periodic_images;
-    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || sys.scene.assembly >= 0) return;
+    const md_unitcell_t& cell = inst.state.unitcell;
+    const int* n = inst.scene.periodic_images;
+    if (md_unitcell_flags(&cell) == 0 || (n[0] | n[1] | n[2]) == 0 || inst.scene.assembly >= 0) return;
 
     md_float3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const md_float4x4_t M = sys.scene.operations.state_rotation * md_float4x4_from_float3x3(A);
+    const md_float4x4_t M = inst.state_rotation * md_float4x4_from_float3x3(A);
     md_array_push(*transforms, md_float4x4_ident(), alloc);
     for (int k = -n[2]; k <= n[2]; ++k) {
         for (int j = -n[1]; j <= n[1]; ++j) {
@@ -7690,12 +7729,12 @@ static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, con
 
 // The copies a representation is drawn in without an assembly: the periodic images if it has them, by instancing.
 // md_gl culls those out of view on the CPU. Read from the view state, which outlives the draw.
-static md_gl_copies_t rep_copies(const SystemContext& sys, const Representation& rep) {
+static md_gl_copies_t rep_copies(const SystemInstance& inst, const Representation& rep) {
     md_gl_copies_t copies = {};
-    const size_t n = md_array_size(sys.scene.periodic_transforms);
+    const size_t n = md_array_size(inst.scene.periodic_transforms);
     if (rep.periodic_images && n > 1) {
-        copies.transforms = &sys.scene.periodic_transforms[0].elem[0][0];
-        copies.prev_transforms = md_array_size(sys.scene.periodic_transforms_prev) == n ? &sys.scene.periodic_transforms_prev[0].elem[0][0] : NULL;
+        copies.transforms = &inst.scene.periodic_transforms[0].elem[0][0];
+        copies.prev_transforms = md_array_size(inst.scene.periodic_transforms_prev) == n ? &inst.scene.periodic_transforms_prev[0].elem[0][0] : NULL;
         copies.count = (uint32_t)n;
     }
     return copies;
@@ -7705,26 +7744,26 @@ static md_gl_copies_t rep_copies(const SystemContext& sys, const Representation&
 // of it: of the instances of the part (its subset, of the molecule or of the glyphs of the cartoon, assembly_subsets_update)
 // in the copies its operators make. Otherwise once, in the periodic images of the representation. Read from the system
 // and the view state, which outlive the draw.
-static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const SystemContext& sys, const Representation& rep, bool glyphs, md_allocator_i* alloc) {
+static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const SystemInstance& inst, const Representation& rep, bool glyphs, md_allocator_i* alloc) {
     const size_t end = md_array_size(*ops);
-    const md_assembly_data_t& a = sys.data.sys.assembly;
-    const bool shown = sys.scene.assembly >= 0 && (size_t)sys.scene.assembly < a.count;
-    const size_t part_beg = shown ? a.group_offset[sys.scene.assembly] : 0;
-    const size_t part_end = shown ? a.group_offset[sys.scene.assembly + 1] : 0;
-    const size_t num_parts = md_array_size(sys.scene.assembly_copy_offset) > 0 ? md_array_size(sys.scene.assembly_copy_offset) - 1 : 0;
-    const md_gl_subset_t* subsets = glyphs ? sys.scene.assembly_glyph_subsets : sys.scene.assembly_subsets;
+    const md_assembly_data_t& a = inst.sys->data.sys.assembly;
+    const bool shown = inst.scene.assembly >= 0 && (size_t)inst.scene.assembly < a.count;
+    const size_t part_beg = shown ? a.group_offset[inst.scene.assembly] : 0;
+    const size_t part_end = shown ? a.group_offset[inst.scene.assembly + 1] : 0;
+    const size_t num_parts = md_array_size(inst.scene.assembly_copy_offset) > 0 ? md_array_size(inst.scene.assembly_copy_offset) - 1 : 0;
+    const md_gl_subset_t* subsets = glyphs ? inst.scene.assembly_glyph_subsets : inst.scene.assembly_subsets;
     // Without an assembly, or its copies or subsets not of it (yet)
-    if (num_parts == 0 || num_parts != part_end - part_beg || sys.scene.assembly_subsets_of != sys.scene.assembly || md_array_size(subsets) != num_parts) {
-        const md_gl_copies_t copies = rep_copies(sys, rep);
+    if (num_parts == 0 || num_parts != part_end - part_beg || inst.scene.assembly_subsets_of != inst.scene.assembly || md_array_size(subsets) != num_parts) {
+        const md_gl_copies_t copies = rep_copies(inst, rep);
         for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
         return;
     }
     for (size_t p = 0; p < num_parts; ++p) {
-        const uint32_t c0 = sys.scene.assembly_copy_offset[p];
-        const uint32_t c1 = sys.scene.assembly_copy_offset[p + 1];
+        const uint32_t c0 = inst.scene.assembly_copy_offset[p];
+        const uint32_t c1 = inst.scene.assembly_copy_offset[p + 1];
         for (size_t i = beg; i < end; ++i) {
             md_gl_draw_op_t op = (*ops)[i];
-            op.copies = {&sys.scene.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
+            op.copies = {&inst.scene.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
             op.subset = subsets[p];
             if (p == 0) {
                 (*ops)[i] = op;
@@ -7739,14 +7778,14 @@ static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const SystemCo
 // carry if the orientation is kept (the cell itself cannot hold one). Tubes of the thickness in points on the screen,
 // shaded as the rest of the scene (the world queue writes the G-buffer), never thinner than a pixel; or lines of a
 // pixel. With axes, the edges along a, b and c from the origin red, green and blue. The cells out of view are left out.
-static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
-    ApplicationState* state = sys.app;
-    const md_unitcell_t& cell = sys.data.state.unitcell;
+static void draw_simulation_box(const SystemInstance& inst, const Representation& rep) {
+    ApplicationState* state = inst.sys->app;
+    const md_unitcell_t& cell = inst.state.unitcell;
     if (md_unitcell_flags(&cell) == 0) return;
 
     md_float3x3_t A = {0};
     md_unitcell_A_extract_float(A.elem, &cell);
-    const md_float4x4_t M = sys.scene.operations.state_rotation * md_float4x4_from_float3x3(A);
+    const md_float4x4_t M = inst.state_rotation * md_float4x4_from_float3x3(A);
     const uint32_t color = convert_color(md_float4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
     const uint32_t axis_color[3] = { convert_color(md_float4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
 
@@ -7796,12 +7835,12 @@ static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
     cell_radius *= 1.01f;
 
     // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const md_array(md_float4x4_t) transforms = sys.scene.periodic_transforms;
+    const md_array(md_float4x4_t) transforms = inst.scene.periodic_transforms;
     const size_t num_cells = rep.periodic_images ? MD_MAX(md_array_size(transforms), (size_t)1) : 1;
     for (size_t c = 0; c < num_cells; ++c) {
         const md_float3_t t = c == 0 ? md_float3_t{0, 0, 0} : md_float3_from_float4(transforms[c].col[3]);
         // Where the system is placed (SystemScene::placement, rigid: the radius of the cell stays)
-        const md_float4x4_t& W = sys.scene.placement_curr;
+        const md_float4x4_t& W = inst.scene.placement_curr;
         md_float3_t wc[8];
         for (int i = 0; i < 8; ++i) wc[i] = md_float4x4_mul_float3(W, corner[i] + t, 1.0f);
         const md_float3_t wcenter = md_float4x4_mul_float3(W, cell_center + t, 1.0f);
@@ -7850,12 +7889,14 @@ static void draw_simulation_box(SystemContext& sys, const Representation& rep) {
     }
 }
 
-static void draw_representations_opaque(SystemContext& sys) {
+// The representations of one instance of a system, from its coordinates and where it is placed
+static void draw_representations_opaque(SystemInstance& inst) {
+    SystemContext& sys = *inst.sys;
     ApplicationState* state = sys.app;
     MD_ASSERT(state);
 
     // A system without coordinates (a topology alone) has nothing to draw
-    if (!system_drawn(sys)) {
+    if (!system_drawn(sys) || !md_system_state_has_coords(&inst.state)) {
         return;
     }
 
@@ -7869,11 +7910,12 @@ static void draw_representations_opaque(SystemContext& sys) {
     md_array(md_gl_draw_op_t) glyph_ops = 0;
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = sys.representation.reps[i];
+        if (!representation_of(sys, rep, inst)) continue;
 
         if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, sys, rep, frame_alloc);
-            place_ops(&glyph_ops, beg, sys, rep, true, frame_alloc);
+            place_ops(&glyph_ops, beg, inst, rep, true, frame_alloc);
             // The cartoon of the proteins needs a protein backbone to draw
             if (sys.data.sys.protein_backbone.range.count == 0) continue;
         }
@@ -7885,13 +7927,13 @@ static void draw_representations_opaque(SystemContext& sys) {
                 md_array_push(draw_ops, op, frame_alloc);
                 // The weak bonds it draws over its sticks (the interactions of the system), in its copies
                 representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
-                place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
+                place_ops(&draw_ops, beg, inst, rep, false, frame_alloc);
             }
         } else if (rep.type == RepresentationType::Bonds) {
             if (representation_shown(sys, rep) && rep.type_is_valid) {
                 const size_t beg = md_array_size(draw_ops);
                 representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
-                place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
+                place_ops(&draw_ops, beg, inst, rep, false, frame_alloc);
             }
         } else if (rep.type == RepresentationType::DipoleMoment) {
             if (representation_shown(sys, rep)) {
@@ -7911,7 +7953,7 @@ static void draw_representations_opaque(SystemContext& sys) {
                     immediate::set_picking_base_idx(scope, range ? range->beg : 0);
 
                     // Where the system is placed
-                    const md_float4x4_t& W = sys.scene.placement_curr;
+                    const md_float4x4_t& W = inst.scene.placement_curr;
                     const md_float3_t org = rep.dipole.offset + dipole_org;
                     const md_float3_t beg = md_float4x4_mul_float3(W, org, 1.0f);
                     const md_float3_t vec = md_float4x4_mul_float3(W, dipole_vec * (float)rep.dipole.scale, 0.0f);
@@ -7942,16 +7984,16 @@ static void draw_representations_opaque(SystemContext& sys) {
             }
         } else if (rep.type == RepresentationType::SimulationBox) {
             if (representation_shown(sys, rep) && rep.type_is_valid) {
-                draw_simulation_box(sys, rep);
+                draw_simulation_box(inst, rep);
             }
         }
     }
 
-    const float max_bond_length = bond_length_limit(sys);
+    const float max_bond_length = bond_length_limit(inst);
 
     // Where the system is placed, as its model matrix (SystemScene::placement)
-    const md_float4x4_t view      = state->view.param.matrix.curr.view * sys.scene.placement_curr;
-    const md_float4x4_t prev_view = state->view.param.matrix.prev.view * sys.scene.placement_prev;
+    const md_float4x4_t view      = state->view.param.matrix.curr.view * inst.scene.placement_curr;
+    const md_float4x4_t prev_view = state->view.param.matrix.prev.view * inst.scene.placement_prev;
     md_gl_draw_args_t args = {
         .shaders = state->gl.shaders,
         .draw_operations = {
@@ -7965,14 +8007,14 @@ static void draw_representations_opaque(SystemContext& sys) {
             .prev_view_matrix = &prev_view.elem[0][0],
             .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
         },
-        .picking_offset = gl_picking_offset(sys),
+        .picking_offset = gl_picking_offset(inst),
         .max_bond_length = max_bond_length,
     };
 
     draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
 
     if (md_array_size(glyph_ops) > 0) {
-        args.picking_offset = gl_picking_offset_glyphs(sys);
+        args.picking_offset = gl_picking_offset_glyphs(inst);
         draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
     }
 
@@ -7981,6 +8023,7 @@ static void draw_representations_opaque(SystemContext& sys) {
         const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
         for (size_t i = 0; i < num_representations; ++i) {
             const Representation& rep = sys.representation.reps[i];
+            if (!representation_of(sys, rep, inst)) continue;
             if (rep.type != RepresentationType::Glyphs || !representation_shown(sys, rep) || !rep.type_is_valid) continue;
             const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Glyph, rep.node.id, sys.id) : nullptr;
             if (!range) continue;
@@ -8007,11 +8050,18 @@ static void draw_glyph_marks(ApplicationState* state) {
 // the depth of what the representations draw (draw_representations_opaque): not what is highlighted or selected
 static uint64_t opaque_scene_hash(const SystemContext& sys) {
     const ApplicationState* state = sys.app;
-    uint64_t h = md_hash64(&sys.data.gpu_scene_version, sizeof(sys.data.gpu_scene_version), sys.representation.gl_version);
+    uint64_t h = md_hash64(&sys.representation.gl_version, sizeof(sys.representation.gl_version), 0);
     h = md_hash64(&sys.representation.visibility_mask_hash, sizeof(sys.representation.visibility_mask_hash), h);
     h = md_hash64(&state->animation.frame, sizeof(state->animation.frame), h);
-    h = md_hash64(sys.scene.periodic_images, sizeof(sys.scene.periodic_images), h);
-    h = md_hash64(&sys.scene.assembly, sizeof(sys.scene.assembly), h);
+    // Each instance: what is on the GPU of it, and where and as what it is drawn
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        const SystemInstance& inst = *sys.instances[k];
+        h = md_hash64(&inst.gpu_scene_version, sizeof(inst.gpu_scene_version), h);
+        h = md_hash64(&inst.scene.visible, sizeof(inst.scene.visible), h);
+        h = md_hash64(&inst.scene.placement, sizeof(inst.scene.placement), h);
+        h = md_hash64(inst.scene.periodic_images, sizeof(inst.scene.periodic_images), h);
+        h = md_hash64(&inst.scene.assembly, sizeof(inst.scene.assembly), h);
+    }
     for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
         const Representation& rep = sys.representation.reps[i];
         const bool shown = representation_shown(sys, rep) && rep.type_is_valid;
@@ -8094,7 +8144,10 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
 
 // Every system, in the order the Scene window lists them: each its own draw, with the picking offsets of its own ranges
 static void draw_representations_opaque(ApplicationState* state) {
-    for (size_t i = 0; i < state->num_systems; ++i) draw_representations_opaque(*state->systems[i]);
+    for (size_t i = 0; i < state->num_systems; ++i) {
+        SystemContext& sys = *state->systems[i];
+        for (size_t k = 0; k < sys.num_instances; ++k) draw_representations_opaque(*sys.instances[k]);
+    }
 }
 
 // Pixels of the render target to a point of the UI, for what is sized in points over the view (the width of an
@@ -8366,21 +8419,23 @@ static bool draw_representations_transparent(ApplicationState* state) {
     return draw_representations_volumes(state, written) || written;
 }
 
-static void draw_representations_marks(SystemContext& sys) {
+static void draw_representations_marks(SystemInstance& inst) {
+    SystemContext& sys = *inst.sys;
     ApplicationState* data = sys.app;
-    if (!system_drawn(sys)) return;
+    if (!system_drawn(sys) || !md_system_state_has_coords(&inst.state)) return;
     md_gl_draw_op_t* draw_ops = 0;
     md_gl_draw_op_t* glyph_ops = 0;
     // In the copies as the opaque pass draws them (the periodic images, an assembly), so the selected and highlighted
     // atoms show in them too
     for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
         const Representation& rep = sys.representation.reps[i];
+        if (!representation_of(sys, rep, inst)) continue;
 
         if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
         if (rep.type == RepresentationType::Cartoon && representation_shown(sys, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, sys, rep, frame_alloc);
-            place_ops(&glyph_ops, beg, sys, rep, true, frame_alloc);
+            place_ops(&glyph_ops, beg, inst, rep, true, frame_alloc);
             if (sys.data.sys.protein_backbone.range.count == 0) continue;
         }
 
@@ -8392,15 +8447,15 @@ static void draw_representations_marks(SystemContext& sys) {
                 md_array_push(draw_ops, representation_draw_op(rep), frame_alloc);
             }
             representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
-            place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
+            place_ops(&draw_ops, beg, inst, rep, false, frame_alloc);
         }
     }
 
-    const float max_bond_length = bond_length_limit(sys);
+    const float max_bond_length = bond_length_limit(inst);
 
     // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still. Where
     // the system is placed, as its model matrix.
-    const md_float4x4_t view = data->view.param.matrix.curr.view * sys.scene.placement_curr;
+    const md_float4x4_t view = data->view.param.matrix.curr.view * inst.scene.placement_curr;
     md_gl_draw_args_t args = {
         .shaders = data->gl.shaders_marks,
         .draw_operations = {
@@ -8411,7 +8466,7 @@ static void draw_representations_marks(SystemContext& sys) {
             .view_matrix = &view.elem[0][0],
             .proj_matrix = &data->view.param.matrix.curr.proj_no_jitter.elem[0][0],
         },
-        .picking_offset = gl_picking_offset(sys),
+        .picking_offset = gl_picking_offset(inst),
         .atom_mask = AtomBit_Marked | AtomBit_Visible,
 		.max_bond_length = max_bond_length,
     };
@@ -8420,11 +8475,14 @@ static void draw_representations_marks(SystemContext& sys) {
 
     if (md_array_size(glyph_ops) > 0) {
         args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-        args.picking_offset = gl_picking_offset_glyphs(sys);
+        args.picking_offset = gl_picking_offset_glyphs(inst);
         md_gl_draw(&args);
     }
 }
 
 static void draw_representations_marks(ApplicationState* state) {
-    for (size_t i = 0; i < state->num_systems; ++i) draw_representations_marks(*state->systems[i]);
+    for (size_t i = 0; i < state->num_systems; ++i) {
+        SystemContext& sys = *state->systems[i];
+        for (size_t k = 0; k < sys.num_instances; ++k) draw_representations_marks(*sys.instances[k]);
+    }
 }

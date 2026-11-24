@@ -595,7 +595,7 @@ static void tooltip_atom(PickingTooltipTextRequest* req, const SystemContext& sc
 
     tooltip_atom_attribute_rows(req, sc, atom_idx);
 
-    const md_float3_t pos = md_state_coord(&sc.data.state, atom_idx);
+    const md_float3_t pos = md_state_coord(&picking_hit_instance(sc, req->hit).state, atom_idx);
     tooltip_row(req, MD_STR_LIT("position"), "%.3f, %.3f, %.3f " TOOLTIP_ANGSTROM, pos.x, pos.y, pos.z);
 
     md_str_writer_t index = md_str_writer_create(req->alloc);
@@ -626,7 +626,7 @@ static md_bond_idx_t tooltip_stored_bond(const md_system_t& sys, md_atom_pair_t 
 // joins (picked_bond)
 static void tooltip_bond(PickingTooltipTextRequest* req, const SystemContext& sc, md_atom_pair_t pair, md_bond_flags_t flags, PickedBondSource source) {
     const md_system_t& sys = sc.data.sys;
-    const md_system_state_t& sys_state = sc.data.state;
+    const md_system_state_t& sys_state = picking_hit_instance(sc, req->hit).state;
     const int order = md_bond_order(flags);
 
     char symbol = '-';
@@ -724,8 +724,9 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
     auto ss_word = [](const md_secondary_structure_t* ss, uint32_t i) -> const char* {
         return ss && (size_t)ss[i] < MD_COUNTOF(ss_words) ? ss_words[ss[i]] : "";
     };
-    const md_secondary_structure_t* drawn = displayed_secondary_structure(sc);
-    const md_secondary_structure_t* frame = md_system_state_secondary_structure(&sc.data.state, &sys);
+    const SystemInstance& inst = picking_hit_instance(sc, req->hit);
+    const md_secondary_structure_t* drawn = displayed_secondary_structure(inst);
+    const md_secondary_structure_t* frame = md_system_state_secondary_structure(&inst.state, &sys);
     const char* ss = frame ? ss_word(frame, seg_idx) : ss_word(drawn, seg_idx);
     const char* ss_drawn = ss_word(drawn, seg_idx);
     if (ss[0] && ss_drawn[0] && strcmp(ss, ss_drawn) != 0) {
@@ -734,7 +735,7 @@ static void tooltip_backbone_segment_geometry(PickingTooltipTextRequest* req, co
         tooltip_row(req, MD_STR_LIT("ss"), "%s", ss);
     }
 
-    const md_system_state_t& sys_state = sc.data.state;
+    const md_system_state_t& sys_state = inst.state;
     float a[3];
     const uint32_t has = sys_state.xyz ? md_backbone_segment_dihedrals(a, seg_idx, sys_state.xyz, &sys_state.unitcell, &bb) : 0;
     if (has) {
@@ -846,7 +847,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const SystemContex
 
     md_atom_idx_t atoms[2];
     if (md_system_chain_break_atoms(atoms, &sys, res_idx)) {
-        const md_system_state_t& sys_state = sc.data.state;
+        const md_system_state_t& sys_state = picking_hit_instance(sc, req->hit).state;
         md_float3_t d = md_float3_sub(md_state_coord(&sys_state, atoms[1]), md_state_coord(&sys_state, atoms[0]));
         md_geom_min_image(d.elem, 0, 1, &sys_state.unitcell);
         md_str_writer_t span = md_str_writer_create(req->alloc);
@@ -874,7 +875,7 @@ static void tooltip_chain_gap(PickingTooltipTextRequest* req, const SystemContex
 // pucker
 static void tooltip_ring(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t ring_idx) {
     const md_system_t& sys = sc.data.sys;
-    const md_system_state_t& sys_state = sc.data.state;
+    const md_system_state_t& sys_state = picking_hit_instance(sc, req->hit).state;
     // A ring of the system, or one of the frame where its bonds changed (picked_ring)
     const int32_t* atoms = nullptr;
     size_t count = 0;
@@ -1004,7 +1005,7 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const SystemContext& sc
 // the point is
 static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const SystemContext& sc, uint32_t point_idx) {
     const md_system_t& sys = sc.data.sys;
-    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
+    const CartoonGlyphs& glyphs = system_instance(sc).cartoon_glyphs;
     // Indexed by CartoonGlyphKind
     static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
     static_assert(MD_COUNTOF(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
@@ -1124,8 +1125,8 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const SystemCon
     } else if (hit.domain == PickingDomain_Ring) {
         tooltip_ring(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const uint32_t point_idx = cartoon_glyphs_picked_point(sc.data.cartoon_glyphs, hit.local_idx);
-        if (point_idx < sc.data.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, sc, point_idx);
+        const uint32_t point_idx = cartoon_glyphs_picked_point(system_instance(sc).cartoon_glyphs, hit.local_idx);
+        if (point_idx < system_instance(sc).cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, sc, point_idx);
     } else if (hit.domain == PickingDomain_ChainGap) {
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, sc, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
@@ -1268,7 +1269,7 @@ static inline void set_mru_cache_slot(FrameCache* cache, int slot_idx) {
 }
 
 void clear_system_frame_cache(SystemContext& sys) {
-    for (size_t i = 0; i < sys.num_runs; ++i) clear_frame_cache(&sys.runs[i]->frame_cache);
+    for (size_t i = 0; i < sys.num_instances; ++i) clear_frame_cache(&sys.instances[i]->frame_cache);
 }
 
 enum class SecondaryStructureRenderClass : uint8_t {
@@ -1328,10 +1329,10 @@ static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_stru
 // The cartoon's secondary structure for the displayed state's own labels, uploaded directly: the weights are renderer
 // input and are kept nowhere but on the GPU. Without a run there is nothing to blend between; interpolate_system_state
 // uploads its own blend of the frames around the displayed one.
-static void upload_secondary_structure_weights(SystemData& data) {
-    const md_system_t& sys = data.sys;
+static void upload_secondary_structure_weights(SystemInstance& inst) {
+    const md_system_t& sys = inst.sys->data.sys;
     const size_t num_segments = sys.protein_backbone.segment.count;
-    const md_secondary_structure_t* ss = md_system_state_secondary_structure(&data.state, &sys);
+    const md_secondary_structure_t* ss = md_system_state_secondary_structure(&inst.state, &sys);
     if (!ss || num_segments == 0) return;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -1341,7 +1342,7 @@ static void upload_secondary_structure_weights(SystemData& data) {
         weights[i] = md_gl_secondary_structure_convert(ss[i]);
     }
     secondary_structure_weights_fill_isolated_coils(weights, &sys.protein_backbone);
-    md_gl_mol_set_backbone_secondary_structure(data.gl_mol, 0, (uint32_t)num_segments, weights, 0);
+    md_gl_mol_set_backbone_secondary_structure(inst.gl_mol, 0, (uint32_t)num_segments, weights, 0);
 }
 
 static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
@@ -1415,12 +1416,20 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
 
 // #trajectorydata
 
+SystemRun* instance_run(SystemInstance& inst) {
+    return (inst.run >= 0 && (size_t)inst.run < inst.sys->num_runs) ? inst.sys->runs[inst.run] : nullptr;
+}
+
+const SystemRun* instance_run(const SystemInstance& inst) {
+    return (inst.run >= 0 && (size_t)inst.run < inst.sys->num_runs) ? inst.sys->runs[inst.run] : nullptr;
+}
+
 SystemRun* system_run(SystemContext& sys) {
-    return sys.shown_run < sys.num_runs ? sys.runs[sys.shown_run] : nullptr;
+    return sys.num_instances ? instance_run(system_instance(sys)) : nullptr;
 }
 
 const SystemRun* system_run(const SystemContext& sys) {
-    return sys.shown_run < sys.num_runs ? sys.runs[sys.shown_run] : nullptr;
+    return sys.num_instances ? instance_run(system_instance(sys)) : nullptr;
 }
 
 md_str_t run_path(const SystemContext& sys) {
@@ -1470,9 +1479,19 @@ double run_time_at_frame(const SystemContext& sys, double frame) {
     return time_at_frame(run_frame_times(sys), run_num_frames(sys), frame);
 }
 
-const md_secondary_structure_t* displayed_secondary_structure(const SystemContext& sys) {
-    const md_system_state_t* state = &sys.data.state;
-    const SystemRun* run = system_run(sys);
+const SystemInstance& picking_hit_instance(const SystemContext& sc, const PickingHit& hit) {
+    const int k = picking_key_instance(hit.key);
+    if (k >= 0 && (size_t)k < sc.num_instances) return *sc.instances[k];
+    for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
+        if (sc.representation.reps[i].node.id == hit.key) return representation_instance(sc, sc.representation.reps[i]);
+    }
+    return system_instance(sc);
+}
+
+const md_secondary_structure_t* displayed_secondary_structure(const SystemInstance& inst) {
+    const SystemContext& sys = *inst.sys;
+    const md_system_state_t* state = &inst.state;
+    const SystemRun* run = instance_run(inst);
     const SystemTrajectoryData::Render empty = {};
     const auto& render = run ? run->trajectory_data.secondary_structure_render : empty;
     if (render.data && render.stride == sys.data.sys.protein_backbone.segment.count && md_state_has_frame(state)) {
@@ -1552,14 +1571,13 @@ static void free_run(ApplicationState* state, SystemContext& sys, SystemRun& run
         md_attributes_remove_prefix(&sys.data.sys.attributes, md_str_from_cstr(run.path));
         run.path[0] = '\0';
     }
-    free_frame_cache(&run.frame_cache, state->allocator.persistent);
 }
 
 // What was derived of the runs of the system, by whoever holds on to it, goes: before the runs it is of change
 static void runs_changing(ApplicationState* state, SystemContext& sys) {
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryFree, viamd::EventPayloadType_System, &sys);
     // The orientation reference was read from the first frame of the run shown
-    sys.scene.operations.initial_frame.valid = false;
+    sys.operations.initial_frame.valid = false;
     // Converted axes and histograms, and the evaluation of the script, of what is about to go or no longer be shown.
     // The attribute versions they are keyed on only mean something within one table, and the next run may be
     // allocated where this was; taking over from an evaluation of another run (script::eval_create) would carry its
@@ -1577,32 +1595,139 @@ void free_trajectory_data(ApplicationState* state, SystemContext& sys) {
         sys.runs[i] = nullptr;
     }
     sys.num_runs = 0;
-    sys.shown_run = 0;
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        sys.instances[k]->run = -1;
+        sys.instances[k]->frame = -1;
+        clear_frame_cache(&sys.instances[k]->frame_cache);
+    }
+    system_instances_update(sys, MolBit_ClearVelocity);
     // The runs, and with them the files they were opened from and the series loaded along them
     file_list_drop_runs(&sys.files);
 }
 
-void system_show_run(SystemContext& sys, size_t i) {
-    ApplicationState* app = sys.app;
-    if (i >= sys.num_runs) return;
-    if (i != sys.shown_run) runs_changing(app, sys);
-    sys.shown_run = i;
-    SystemRun& run = *sys.runs[i];
-    run.last_interpolated_nearest_frame = -1;
-    run.last_interpolated_frame = -1.0;
+// ### INSTANCES ###
 
-    // The timeline is of the first system's run shown. The run's own time, in its own unit: the display unit only
+// What an instance has on the GPU, and its coordinates, made for the system as loaded
+static void instance_init_data(SystemInstance& inst) {
+    SystemContext& sys = *inst.sys;
+    md_allocator_i* alloc = sys.app->allocator.persistent;
+    inst.gl_mol = md_gl_mol_create(&sys.data.sys);
+    // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
+    inst.scene.assembly = -1;
+    md_array_shrink(inst.scene.assembly_transforms, 0);
+    md_array_shrink(inst.scene.assembly_copy_offset, 0);
+    // Before the representations, which each make a representation of the glyphs
+    cartoon_glyphs_init(&inst.cartoon_glyphs, sys.data.sys, inst.gl_mol, alloc);
+    init_frame_cache(&inst.frame_cache, sys.data.sys.atom.count, alloc);
+
+    // The system's own coordinates until they are made from its source (interpolate_system_state), with the backbone
+    // they carry
+    md_system_state_copy(&inst.state, &sys.data.state);
+    if (md_system_state_backbone_compute(&inst.state, &sys.data.sys)) {
+        upload_secondary_structure_weights(inst);
+    }
+    md_float3x3_t A;
+    md_unitcell_A_extract_float(A.elem, &inst.state.unitcell);
+    const md_float3_t c = md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
+    inst.unitcell_transform = md_float4x4_translate(-c.x, -c.y, -c.z);
+    inst.state_rotation = md_float4x4_ident();
+    inst.last_interpolated_nearest_frame = -1;
+    inst.last_interpolated_frame = -1.0;
+    inst.interpolate_system_state = true;
+    inst.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+}
+
+static void instance_free_data(SystemInstance& inst) {
+    md_allocator_i* alloc = inst.sys->app->allocator.persistent;
+    assembly_subsets_free(inst);
+    md_gl_mol_destroy(inst.gl_mol);
+    // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
+    // representations, a frame after a load that failed) sees no molecule rather than a stale one
+    inst.gl_mol = {};
+    cartoon_glyphs_free(&inst.cartoon_glyphs);
+    free_frame_cache(&inst.frame_cache, alloc);
+    md_system_state_free(&inst.state);
+    inst.flags_hash = 0;
+}
+
+SystemInstance* instance_add(SystemContext& sys) {
+    if (sys.num_instances >= INSTANCE_MAX) return nullptr;
+    SystemInstance* inst = new SystemInstance();
+    inst->sys = &sys;
+    inst->id = sys.next_instance_id++;
+    inst->state.alloc = sys.app->allocator.persistent;
+    sys.instances[sys.num_instances++] = inst;
+    if (sys.data.sys.atom.count > 0) instance_init_data(*inst);
+    return inst;
+}
+
+// Everything it holds, and itself
+static void instance_destroy(SystemInstance* inst) {
+    md_allocator_i* alloc = inst->sys->app->allocator.persistent;
+    instance_free_data(*inst);
+    md_array_free(inst->scene.periodic_transforms, alloc);
+    md_array_free(inst->scene.periodic_transforms_prev, alloc);
+    md_array_free(inst->scene.assembly_transforms, alloc);
+    md_array_free(inst->scene.assembly_copy_offset, alloc);
+    delete inst;
+}
+
+void instance_remove(SystemContext& sys, size_t i) {
+    if (i >= sys.num_instances || sys.num_instances == 1) return;
+    interrupt_async_tasks(sys.app);
+    SystemInstance* inst = sys.instances[i];
+    remove_instance_representations(sys, *inst);
+    instance_destroy(inst);
+    for (size_t k = i; k + 1 < sys.num_instances; ++k) sys.instances[k] = sys.instances[k + 1];
+    sys.instances[--sys.num_instances] = nullptr;
+    // The first may be another now: the timeline, the script and the tools follow it
+    if (i == 0) instance_show(system_instance(sys), system_instance(sys).run, system_instance(sys).frame);
+}
+
+SystemInstance* instance_find(SystemContext& sys, uint32_t id) {
+    for (size_t k = 0; k < sys.num_instances; ++k) if (sys.instances[k]->id == id) return sys.instances[k];
+    return nullptr;
+}
+
+const SystemInstance* instance_find(const SystemContext& sys, uint32_t id) {
+    for (size_t k = 0; k < sys.num_instances; ++k) if (sys.instances[k]->id == id) return sys.instances[k];
+    return nullptr;
+}
+
+void system_instances_update(SystemContext& sys, uint32_t dirty_bits) {
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        sys.instances[k]->interpolate_system_state = true;
+        sys.instances[k]->dirty_gpu_buffers |= dirty_bits;
+    }
+}
+
+void instance_show(SystemInstance& inst, int run, int64_t frame) {
+    SystemContext& sys = *inst.sys;
+    ApplicationState* app = sys.app;
+    if (run < 0 || (size_t)run >= sys.num_runs) run = -1;
+    const bool first = &inst == &system_instance(sys);
+    // What was derived along the run the first instance shows is of another one now
+    if (first && run != inst.run) runs_changing(app, sys);
+    inst.run = run;
+    inst.frame = run >= 0 ? frame : -1;
+    inst.last_interpolated_nearest_frame = -1;
+    inst.last_interpolated_frame = -1.0;
+    clear_frame_cache(&inst.frame_cache);
+    inst.interpolate_system_state = true;
+    inst.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+    if (!first) return;
+
+    // The timeline is of the first system's first instance. The run's own time, in its own unit: the display unit only
     // changes how a time is printed (frame_axis.h)
-    const size_t num_frames = run_num_frames(sys, &run);
-    const double* times = run_frame_times(sys, &run);
+    const SystemRun* r = instance_run(inst);
+    const size_t num_frames = run_num_frames(sys, r);
+    const double* times = run_frame_times(sys, r);
     if (&sys == &app->system_context && num_frames > 0 && times) {
         app->timeline.view_range = {times[0], times[num_frames - 1]};
         app->animation.frame = MD_CLAMP(app->animation.frame, 0.0, (double)(num_frames - 1));
     }
     // The script reads along the run shown, and what it measured was of the one before
     app->script.compile_ir = true;
-    sys.data.interpolate_system_state = true;
-    sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryInit, viamd::EventPayloadType_System, &sys);
 }
 
@@ -1617,15 +1742,17 @@ void close_run(ApplicationState* app, SystemContext& sys, size_t i) {
     sys.runs[--sys.num_runs] = nullptr;
     file_list_remove_run(&sys.files, i);
 
-    // The one shown where it stays; the one before it, or the first, in place of one closed
-    if (sys.shown_run > i) {
-        sys.shown_run -= 1;
-    } else if (sys.shown_run == i) {
-        sys.shown_run = SIZE_MAX;
-        if (sys.num_runs > 0) system_show_run(sys, i > 0 ? i - 1 : 0);
-        else sys.shown_run = 0;
+    // An instance of it goes with it, as it came with it, but for the first, which shows the system's own coordinates;
+    // those of the runs after it show the same run in its new place
+    for (size_t k = sys.num_instances; k-- > 0;) {
+        SystemInstance& inst = *sys.instances[k];
+        if (inst.run == (int)i) {
+            if (k > 0) instance_remove(sys, k);
+            else       instance_show(inst, -1);
+        } else if (inst.run > (int)i) {
+            inst.run -= 1;
+        }
     }
-    sys.data.interpolate_system_state = true;
 }
 
 // The backbone angles and secondary structure of every frame of the run, computed on the pool. Started when the run is
@@ -1758,9 +1885,10 @@ static void trajectory_backbone_start(SystemContext& sys, SystemRun& run) {
 				// The data just went from placeholder to real values for every frame - force the
 				// next interpolate_system_state to actually push it, even if playback is paused on
 				// the same nearest frame it was on before this task started.
-				r->last_interpolated_nearest_frame = -1;
-				s->data.interpolate_system_state = true;
-            s->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+				for (size_t k = 0; k < s->num_instances; ++k) {
+                    if (instance_run(*s->instances[k]) == r) s->instances[k]->last_interpolated_nearest_frame = -1;
+                }
+                system_instances_update(*s, MolBit_ClearVelocity);
             flag_all_representations_as_dirty(*s);
         });
     }
@@ -1783,36 +1911,37 @@ void assembly_transforms(md_array(md_float4x4_t)* transforms, md_array(uint32_t)
     }
 }
 
-void assembly_subsets_free(SystemContext& sys) {
-    for (size_t i = 0; i < md_array_size(sys.scene.assembly_subsets); ++i) {
-        if (sys.scene.assembly_subsets[i].id) md_gl_subset_destroy(sys.scene.assembly_subsets[i]);
+void assembly_subsets_free(SystemInstance& inst) {
+    for (size_t i = 0; i < md_array_size(inst.scene.assembly_subsets); ++i) {
+        if (inst.scene.assembly_subsets[i].id) md_gl_subset_destroy(inst.scene.assembly_subsets[i]);
     }
-    for (size_t i = 0; i < md_array_size(sys.scene.assembly_glyph_subsets); ++i) {
-        if (sys.scene.assembly_glyph_subsets[i].id) md_gl_subset_destroy(sys.scene.assembly_glyph_subsets[i]);
+    for (size_t i = 0; i < md_array_size(inst.scene.assembly_glyph_subsets); ++i) {
+        if (inst.scene.assembly_glyph_subsets[i].id) md_gl_subset_destroy(inst.scene.assembly_glyph_subsets[i]);
     }
-    md_array_shrink(sys.scene.assembly_subsets, 0);
-    md_array_shrink(sys.scene.assembly_glyph_subsets, 0);
-    sys.scene.assembly_subsets_of  = -1;
-    sys.scene.assembly_subsets_mol = 0;
+    md_array_shrink(inst.scene.assembly_subsets, 0);
+    md_array_shrink(inst.scene.assembly_glyph_subsets, 0);
+    inst.scene.assembly_subsets_of  = -1;
+    inst.scene.assembly_subsets_mol = 0;
 }
 
-void assembly_subsets_update(SystemContext& sc) {
+void assembly_subsets_update(SystemInstance& inst) {
+    SystemContext& sc = *inst.sys;
     ApplicationState* app = sc.app;
     MD_ASSERT(app);
-    const int assembly = sc.scene.assembly;
-    const uint32_t mol_id = sc.data.gl_mol.id;
-    if (assembly == sc.scene.assembly_subsets_of && mol_id == sc.scene.assembly_subsets_mol) return;
-    assembly_subsets_free(sc);
+    const int assembly = inst.scene.assembly;
+    const uint32_t mol_id = inst.gl_mol.id;
+    if (assembly == inst.scene.assembly_subsets_of && mol_id == inst.scene.assembly_subsets_mol) return;
+    assembly_subsets_free(inst);
     const md_system_t& sys = sc.data.sys;
     if (assembly < 0 || (size_t)assembly >= sys.assembly.count || !mol_id) return;
-    sc.scene.assembly_subsets_of  = assembly;
-    sc.scene.assembly_subsets_mol = mol_id;
+    inst.scene.assembly_subsets_of  = assembly;
+    inst.scene.assembly_subsets_mol = mol_id;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     md_allocator_i* alloc = app->allocator.persistent;
     const md_assembly_data_t& a = sys.assembly;
-    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
+    const CartoonGlyphs& glyphs = inst.cartoon_glyphs;
     const bool has_glyphs = cartoon_glyphs_valid(glyphs);
     uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MD_MAX(sys.atom.count, (size_t)1));
     // The groups and their instances from the offsets as they are (assembly_group), not from a range of them
@@ -1828,31 +1957,30 @@ void assembly_subsets_update(SystemContext& sc) {
                 const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
                 for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
             }
-            subset = md_gl_subset_create(sc.data.gl_mol);
+            subset = md_gl_subset_create(inst.gl_mol);
             md_gl_subset_set_atoms(subset, atoms, count);
             if (has_glyphs) {
                 glyph_subset = md_gl_subset_create(glyphs.gl_mol);
                 md_gl_subset_set_derived(glyph_subset, subset);
             }
         }
-        md_array_push(sc.scene.assembly_subsets, subset, alloc);
-        md_array_push(sc.scene.assembly_glyph_subsets, glyph_subset, alloc);
+        md_array_push(inst.scene.assembly_subsets, subset, alloc);
+        md_array_push(inst.scene.assembly_glyph_subsets, glyph_subset, alloc);
     }
 }
 
 void init_system_data(ApplicationState* data, SystemContext& sys) {
     if (sys.data.sys.atom.count) {
-        md_bitset_free(&sys.scene.operations.recenter_query.mask, data->allocator.persistent);
-        md_bitset_free(&sys.scene.operations.selection_mask, data->allocator.persistent);
-        sys.scene.operations.recenter_query.filter.result = {};
-        sys.scene.operations.recenter_query.evaluated_version = 0;
-        sys.scene.operations.recenter_query.ir_fingerprint = 0;
-        sys.scene.operations.initial_frame.valid = false;
-        sys.scene.operations.state_rotation = md_float4x4_ident();
+        md_bitset_free(&sys.operations.recenter_query.mask, data->allocator.persistent);
+        md_bitset_free(&sys.operations.selection_mask, data->allocator.persistent);
+        sys.operations.recenter_query.filter.result = {};
+        sys.operations.recenter_query.evaluated_version = 0;
+        sys.operations.recenter_query.ir_fingerprint = 0;
+        sys.operations.initial_frame.valid = false;
         recenter_mark_query_dirty(sys);
         {
             // Of the bonds of another system
-            auto& bt = sys.scene.operations.bond_tracking;
+            auto& bt = sys.operations.bond_tracking;
             md_bond_delta_free(&bt.delta, data->allocator.persistent);
             md_chem_delta_free(&bt.chem, data->allocator.persistent);
             bt.delta = {};
@@ -1864,24 +1992,12 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
             bt.scope_dirty = true;
         }
 
-        sys.data.gl_mol = md_gl_mol_create(&sys.data.sys);
-        // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
-        sys.scene.assembly = -1;
-        md_array_shrink(sys.scene.assembly_transforms, 0);
-        md_array_shrink(sys.scene.assembly_copy_offset, 0);
-        // Before the representations, which each make a representation of the glyphs
-        cartoon_glyphs_init(&sys.data.cartoon_glyphs, sys.data.sys, sys.data.gl_mol, data->allocator.persistent);
-
-        // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
-        // frame (interpolate_system_state)
-        if (md_system_state_backbone_compute(&sys.data.state, &sys.data.sys)) {
-            upload_secondary_structure_weights(sys.data);
-        }
+        // Each instance its molecule on the GPU and its coordinates (before the representations, which each make a
+        // representation of the glyphs)
+        for (size_t k = 0; k < sys.num_instances; ++k) instance_init_data(*sys.instances[k]);
 
         md_float3x3_t A;
 		md_unitcell_A_extract_float(A.elem, &sys.data.state.unitcell);
-		md_float3_t c = md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
-        sys.data.unitcell_transform = md_float4x4_translate(-c.x, -c.y, -c.z);
 
         md_float3_t aabb_min = {};
         md_float3_t aabb_max = {};
@@ -1957,17 +2073,12 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     sys.data.sys.alloc   = sys_alloc;
     sys.data.state.alloc = sys_alloc;
 
-    md_array_free(sys.scene.operations.initial_frame.rel_xyzw, data->allocator.persistent);
-    sys.scene.operations.initial_frame.rel_xyzw = nullptr;
-    sys.scene.operations.initial_frame.valid = false;
+    md_array_free(sys.operations.initial_frame.rel_xyzw, data->allocator.persistent);
+    sys.operations.initial_frame.rel_xyzw = nullptr;
+    sys.operations.initial_frame.valid = false;
 
-    // The subsets of the parts of an assembly are of the molecule
-    assembly_subsets_free(sys);
-    md_gl_mol_destroy(sys.data.gl_mol);
-    // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
-    // representations, a frame after a load that failed) sees no molecule rather than a stale one
-    sys.data.gl_mol = {};
-    cartoon_glyphs_free(&sys.data.cartoon_glyphs);
+    // What each instance has on the GPU and its coordinates are of the system
+    for (size_t k = 0; k < sys.num_instances; ++k) instance_free_data(*sys.instances[k]);
 
     // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
     system_gpu_data_free(sys);
@@ -2024,8 +2135,10 @@ void system_context_init(SystemContext* sys, ApplicationState* app) {
     md_bitmask_init(&sys->selection.highlight_mask,       0, MD_BITSET_MAX_INDEX, alloc);
     md_bitmask_init(&sys->representation.visibility_mask, 0, MD_BITSET_MAX_INDEX, alloc);
     // Sets, replaced whole
-    sys->scene.operations.selection_mask = md_bitset_empty_set();
-    sys->scene.operations.recenter_query.mask = md_bitset_empty_set();
+    sys->operations.selection_mask = md_bitset_empty_set();
+    sys->operations.recenter_query.mask = md_bitset_empty_set();
+    // A system has an instance at least: the first, which the timeline, the script and the tools read
+    instance_add(*sys);
 }
 
 void system_context_destroy(SystemContext* sys) {
@@ -2034,16 +2147,17 @@ void system_context_destroy(SystemContext* sys) {
     md_bitmask_free(&sys->selection.selection_mask);
     md_bitmask_free(&sys->selection.highlight_mask);
     md_bitmask_free(&sys->representation.visibility_mask);
-    md_bitset_free(&sys->scene.operations.selection_mask, alloc);
-    md_bitset_free(&sys->scene.operations.recenter_query.mask, alloc);
-    md_bitset_free(&sys->scene.operations.bond_tracking.scope_mask, alloc);
+    md_bitset_free(&sys->operations.selection_mask, alloc);
+    md_bitset_free(&sys->operations.recenter_query.mask, alloc);
+    md_bitset_free(&sys->operations.bond_tracking.scope_mask, alloc);
     file_list_free(&sys->files, alloc);
     md_array_free(sys->representation.reps, alloc);
     md_array_free(sys->representation.groups, alloc);
-    md_array_free(sys->scene.periodic_transforms, alloc);
-    md_array_free(sys->scene.periodic_transforms_prev, alloc);
-    md_array_free(sys->scene.assembly_transforms, alloc);
-    md_array_free(sys->scene.assembly_copy_offset, alloc);
+    for (size_t k = 0; k < sys->num_instances; ++k) {
+        instance_destroy(sys->instances[k]);
+        sys->instances[k] = nullptr;
+    }
+    sys->num_instances = 0;
     if (sys->data.sys.alloc) md_arena_allocator_destroy(sys->data.sys.alloc);
     sys->data.sys.alloc = sys->data.state.alloc = nullptr;
 }
@@ -2129,7 +2243,7 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
         return false;
     }
     interrupt_async_tasks(state);
-    // A system without coordinates (a topology alone) shows those of the frames: room for them
+    // A system without coordinates (a topology alone) takes those of the first frame as its own: room for them
     const bool coordinate_less = !md_system_state_has_coords(&sys.data.state);
     if (coordinate_less) {
         const md_unitcell_t cell = sys.data.state.unitcell;
@@ -2150,18 +2264,31 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
         return false;
     }
     const size_t num_frames = run_num_frames(sys, run);
+    const bool first_run = sys.num_runs == 0;
     sys.runs[sys.num_runs++] = run;
     file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(sys.files.runs)->frame_count = num_frames;
-
-    init_frame_cache(&run->frame_cache, sys.data.sys.atom.count, state->allocator.persistent);
     trajectory_backbone_start(sys, *run);
-    system_show_run(sys, sys.num_runs - 1);
 
-    // Its frame shown now: what the system is inferred of when it has no coordinates of its own (system_inference_defer),
-    // and framed by
-    const int64_t frame = MD_CLAMP((int64_t)(state->animation.frame + 0.5), 0, (int64_t)num_frames - 1);
-    extract_frame(sys, run, coordinate_less ? 0 : frame, &sys.data.state);
+    // Its first frame is the system's own coordinates when it had none: what it is inferred of
+    // (system_inference_defer), and what its instances without a run show
+    if (coordinate_less) {
+        extract_frame(sys, run, 0, &sys.data.state);
+        system_instances_update(sys, MolBit_ClearVelocity);
+    }
+
+    // Shown by the first instance when it is the system's first run, else by an instance of its own beside the others,
+    // drawn as the first is - unless what opens it places the runs in the instances itself (instances_held)
+    if (first_run) {
+        instance_show(system_instance(sys), 0);
+    } else if (!sys.instances_held) {
+        if (SystemInstance* inst = instance_add(sys)) {
+            instance_show(*inst, (int)sys.num_runs - 1);
+            representations_copy_to_instance(sys, system_instance(sys), *inst);
+        } else {
+            VIAMD_LOG_INFO("'" MD_STR_FMT "' is opened as a run of '%s', which has as many instances as it can show (%zu): it is shown in none", MD_STR_ARG(path), sys.name, INSTANCE_MAX);
+        }
+    }
     return true;
 }
 
@@ -2249,24 +2376,25 @@ static void system_inferred_refresh(SystemContext& sys) {
         md_gl_rep_destroy(sys.representation.reps[i].md_rep);
         sys.representation.reps[i].md_rep = {};
     }
-    assembly_subsets_free(sys);
-    cartoon_glyphs_free(&sys.data.cartoon_glyphs);
-    // Made again in place: the handle stays, so what components made of the molecule when the system was loaded (the
-    // representations of the QM windows) stays valid without their knowing it was. Destroyed and created, it had a new
-    // id, and those were left drawing a molecule which no longer existed. The atoms are those it was made of; should
-    // they not be, it is a new molecule after all.
-    if (!md_gl_mol_rebuild(sys.data.gl_mol, &sys.data.sys)) {
-        md_gl_mol_destroy(sys.data.gl_mol);
-        sys.data.gl_mol = md_gl_mol_create(&sys.data.sys);
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        SystemInstance& inst = *sys.instances[k];
+        assembly_subsets_free(inst);
+        cartoon_glyphs_free(&inst.cartoon_glyphs);
+        // Made again in place: the handle stays, so what components made of the molecule when the system was loaded
+        // (the representations of the QM windows) stays valid without their knowing it was. Destroyed and created, it
+        // had a new id, and those were left drawing a molecule which no longer existed. The atoms are those it was made
+        // of; should they not be, it is a new molecule after all.
+        if (!md_gl_mol_rebuild(inst.gl_mol, &sys.data.sys)) {
+            md_gl_mol_destroy(inst.gl_mol);
+            inst.gl_mol = md_gl_mol_create(&sys.data.sys);
+        }
+        cartoon_glyphs_init(&inst.cartoon_glyphs, sys.data.sys, inst.gl_mol, app->allocator.persistent);
+        // Its backbone, of the backbones inferred, when its coordinates are made again
+        inst.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
+        inst.interpolate_system_state = true;
+        inst.last_interpolated_nearest_frame = -1;
+        inst.gpu_buffers_version += 1;
     }
-    cartoon_glyphs_init(&sys.data.cartoon_glyphs, sys.data.sys, sys.data.gl_mol, app->allocator.persistent);
-    if (md_system_state_backbone_compute(&sys.data.state, &sys.data.sys)) {
-        upload_secondary_structure_weights(sys.data);
-    }
-    sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
-    sys.data.interpolate_system_state = true;
-    if (SystemRun* run = system_run(sys)) run->last_interpolated_nearest_frame = -1;
-    sys.data.gpu_buffers_version += 1;
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_System, &sys);
     init_all_representations(sys);
@@ -2438,9 +2566,8 @@ static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_st
     }
 
     file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Supplement, state->allocator.persistent);
-    sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
-    sys.data.interpolate_system_state = true;
-    if (SystemRun* run = system_run(sys)) run->last_interpolated_nearest_frame = -1;
+    system_instances_update(sys, MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity);
+    for (size_t k = 0; k < sys.num_instances; ++k) sys.instances[k]->last_interpolated_nearest_frame = -1;
     state->script.compile_ir = true;
     if (!had_coords && md_system_state_has_coords(&sys.data.state)) {
         // Shown now that it has coordinates: framed as a system loaded is
@@ -2524,7 +2651,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
         if (series || adds) {
             const FileRole data_role = series ? FileRole_Series : FileRole_Supplement;
             // A series is along the run asked for, else along the one shown
-            const size_t run_index = (along >= 0 && (size_t)along < sys.num_runs) ? (size_t)along : sys.shown_run;
+            const size_t run_index = (along >= 0 && (size_t)along < sys.num_runs) ? (size_t)along : (size_t)MD_MAX(system_instance(sys).run, 0);
             const SystemRun* run_along = run_index < sys.num_runs ? sys.runs[run_index] : nullptr;
             const md_str_t run = run_along ? md_str_from_cstr(run_along->path) : md_str_t{};
             if (!has_atoms) {
@@ -2566,7 +2693,7 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the core
                 // changed, and the system is inferred again of it in the background (a load never infers)
-                sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
+                system_instances_flag(sys, MolBit_DirtyBonds);
                 if (inferring || sys.data.sys.topology_version != topology_version) system_inference_defer(sys);
                 // attr() in the script resolves against the table when it is compiled.
                 state->script.compile_ir = true;
@@ -2713,8 +2840,10 @@ bool bond_origins_parse(uint32_t* out, md_str_t str) {
 // [ActiveSelection]): a section that names none is the first's. The operations, the periodic images and the assembly
 // are the system's ([SystemScene]), no longer in [Operations] and [RenderSettings], which are still read. A version
 // newer than the reader's is read for what the reader knows: a version 2 reader keeps a representation's name, filter,
-// type and colours, and leaves what moved into blocks at its defaults.
-static const int WORKSPACE_VERSION = 4;
+// type and colours, and leaves what moved into blocks at its defaults. 5 has several instances of a system ([Instance]:
+// the run each shows, its placement, periodic images and assembly, which were the system's in [SystemScene]), and the
+// representations and groups name theirs (Instance=); one which names none is of the first.
+static const int WORKSPACE_VERSION = 5;
 
 struct WorkspaceWindow {
     char  name[32];
@@ -2779,8 +2908,17 @@ struct WorkspacePending {
         bool has_recenter_target;
         md_bitset_t recenter_target;
 
-        // The id of the assembly shown (system.assembly)
+        // The id of the assembly shown (system.assembly), of a workspace written before the instances: the first's
         char assembly_id[8];
+
+        // Its instances ([Instance]), made as they are read, the first being the system's first: what of them refers to
+        // its files (the run each shows, the assembly) is given once they are loaded
+        struct Instance {
+            int     run;
+            int64_t frame;
+            char    assembly_id[8];
+        } instances[INSTANCE_MAX];
+        size_t num_instances;
     } systems[SYSTEM_MAX];
     size_t num_systems;
     bool   systems_mapped;      // Every system the files named before the first section that refers to one
@@ -3036,7 +3174,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     float n[3];
                     WorkspacePending::System* ws = workspace_system(&pending, -1);
                     if (ws && viamd::extract_flt_vec(n, 3, arg)) {
-                        for (int k = 0; k < 3; ++k) ws->sys->scene.periodic_images[k] = MD_CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+                        for (int k = 0; k < 3; ++k) system_instance(*ws->sys).scene.periodic_images[k] = MD_CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
                     }
                 }
                 else if (md_str_eq(ident, MD_STR_LIT("Assembly"))) {
@@ -3089,6 +3227,50 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     if (viamd::extract_str(id, arg)) md_str_copy_to_char_buf(ws->assembly_id, sizeof(ws->assembly_id), id);
                 } else {
                     system_scene_read_entry(*ws->sys, ident, arg);
+                }
+            }
+        } else if (md_str_eq(section, MD_STR_LIT("Instance"))) {
+            // Of the system it names first (System=), made when it is given its id (Id=), the entries after it are its
+            WorkspacePending::System* ws = workspace_system(&pending, -1);
+            SystemInstance* inst = nullptr;
+            WorkspacePending::System::Instance* pi = nullptr;
+            while (viamd::next_entry(ident, arg, state)) {
+                if (md_str_eq(ident, MD_STR_LIT("System"))) {
+                    int id = -1;
+                    ws = viamd::extract_int(id, arg) ? workspace_system(&pending, id) : nullptr;
+                } else if (md_str_eq(ident, MD_STR_LIT("Id"))) {
+                    int id = 0;
+                    if (!ws || inst || !viamd::extract_int(id, arg) || id <= 0) continue;
+                    SystemContext& sc = *ws->sys;
+                    if (ws->num_instances > 0 && instance_find(sc, (uint32_t)id)) {
+                        VIAMD_LOG_ERROR("Workspace: names the instance %d of a system twice; the second is left out", id);
+                        continue;
+                    }
+                    inst = ws->num_instances == 0 ? &system_instance(sc) : instance_add(sc);
+                    if (!inst) {
+                        VIAMD_LOG_ERROR("Workspace: names more instances of a system than it can show (%zu); the rest are left out", INSTANCE_MAX);
+                        continue;
+                    }
+                    inst->id = (uint32_t)id;
+                    sc.next_instance_id = MD_MAX(sc.next_instance_id, (uint32_t)id + 1);
+                    pi = &ws->instances[ws->num_instances++];
+                    *pi = {};
+                    pi->run = -1;
+                    pi->frame = -1;
+                } else if (!inst) {
+                    continue;
+                } else if (md_str_eq(ident, MD_STR_LIT("Name"))) {
+                    viamd::extract_to_char_buf(inst->name, sizeof(inst->name), arg);
+                } else if (md_str_eq(ident, MD_STR_LIT("Run"))) {
+                    viamd::extract_int(pi->run, arg);
+                } else if (md_str_eq(ident, MD_STR_LIT("Frame"))) {
+                    int frame = -1;
+                    if (viamd::extract_int(frame, arg)) pi->frame = frame;
+                } else if (md_str_eq(ident, MD_STR_LIT("Assembly"))) {
+                    md_str_t id = {};
+                    if (viamd::extract_str(id, arg)) md_str_copy_to_char_buf(pi->assembly_id, sizeof(pi->assembly_id), id);
+                } else {
+                    system_scene_read_instance_entry(inst->scene, ident, arg);
                 }
             }
         } else if (representations_deserialize(section, state, workspace_system_fn, &pending)) {
@@ -3235,6 +3417,8 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
 
         SystemPlan plan;
         workspace_files_plan(&plan, &pending.files, ws.id, RUN_MAX, temp_alloc);
+        // The runs it opens are shown by the instances it names, below; one which names none shows its first run
+        sc.instances_held = ws.num_instances > 0;
         if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of a system; at most %zu are opened at once, the rest are left out", plan.skipped_runs + RUN_MAX, RUN_MAX);
         if (plan.skipped_inputs)  VIAMD_LOG_ERROR("Workspace: %zu files belong to no system or run it names, and are left out", plan.skipped_inputs);
 
@@ -3272,6 +3456,18 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 }
                 file_list_record(&sc.files, missing, in.role, data->allocator.persistent);
             }
+        }
+
+        // What each instance shows: a run not opened (missing, or beyond what this build opens), the system's own
+        // coordinates. Before the time and the timeline, which showing the first instance's run starts over.
+        sc.instances_held = false;
+        for (size_t i = 0; i < ws.num_instances && i < sc.num_instances; ++i) {
+            const WorkspacePending::System::Instance& pi = ws.instances[i];
+            const bool opened = pi.run >= 0 && (size_t)pi.run < sc.num_runs && run_num_frames(sc, sc.runs[pi.run]) > 0;
+            if (pi.run >= 0 && !opened) {
+                VIAMD_LOG_ERROR("Workspace: an instance of '%s' shows a run which is not opened; it shows the system's own coordinates", sc.name);
+            }
+            instance_show(*sc.instances[i], opened ? pi.run : -1, pi.frame);
         }
 
         // The user's edits of the bonds: of the core, so given before the system is inferred, which they are part of. As
@@ -3365,18 +3561,21 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             frame_selection_modify(data, pending.frame_mask, SelectionOperator::Set);
         }
         if (ws.has_recenter_target && mask_fits(&ws.recenter_target)) {
-            md_bitset_assign(&sc.scene.operations.selection_mask, ws.recenter_target, data->allocator.persistent);
+            md_bitset_assign(&sc.operations.selection_mask, ws.recenter_target, data->allocator.persistent);
             recenter_update_target_data(sc);
         }
 
-        // The assembly shown, by its id in the files loaded
-        if (ws.assembly_id[0]) {
+        // The assembly each instance shows, by its id in the files loaded
+        for (size_t i = 0; i < sc.num_instances; ++i) {
+            const char* id = i < ws.num_instances ? ws.instances[i].assembly_id : "";
+            if (!id[0] && i == 0) id = ws.assembly_id;
+            if (!id[0]) continue;
             const md_assembly_data_t& a = sc.data.sys.assembly;
-            for (size_t i = 0; i < a.count; ++i) {
-                if (md_str_eq(md_assembly_id(&a, i), md_str_from_cstr(ws.assembly_id))) sc.scene.assembly = (int)i;
+            for (size_t j = 0; j < a.count; ++j) {
+                if (md_str_eq(md_assembly_id(&a, j), md_str_from_cstr(id))) sc.instances[i]->scene.assembly = (int)j;
             }
-            if (sc.scene.assembly < 0) {
-                VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", ws.assembly_id);
+            if (sc.instances[i]->scene.assembly < 0) {
+                VIAMD_LOG_ERROR("Workspace: the system has no assembly '%s'; it is shown as it is", id);
             }
         }
     }
@@ -3607,7 +3806,8 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
 script::FilterCtx filter_context(const SystemContext& sys) {
     const ApplicationState* app = sys.app;
     const bool names = app && &sys == &app->system_context;
-    return script::FilterCtx{&sys.data.sys, &sys.data.state, names ? app->script.ir : nullptr, nullptr, run_path(sys)};
+    // On the coordinates of the first instance: those the selection, the script and the tools are of
+    return script::FilterCtx{&sys.data.sys, &system_instance(sys).state, names ? app->script.ir : nullptr, nullptr, run_path(sys)};
 }
 
 // --- SELECTION ---
@@ -5001,7 +5201,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
     if (!xyz) return -1;
     if (L && L->key == key) {
         if (L->task.status() != task_system::Status::Completed || !L->ok) {
@@ -5042,7 +5242,7 @@ static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex,
     LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
     if (!L || !L->ok || L->task.running()) return false;
     gpu_density_jobs_settle(state);     // the scratch volume is written below
-    if (!gpu_atoms_ensure_uploaded(state, state->mold.sys, state->mold.state)) return false;
+    if (!gpu_atoms_ensure_uploaded(state, state->mold.sys, system_instance(state->system_context).state)) return false;
     md_gto_gpu_localization_desc_t desc = {
         .basis = L->gpu_basis, .atom_xyz = state->mold.gpu_atoms, .num_spins = L->num_spins,
         .dmat = { L->dmat[0], L->num_spins > 1 ? L->dmat[1] : nullptr },
@@ -5064,7 +5264,7 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
 
     md_grid_t grid = {};
-    if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+    if (!electronic_structure_grid_init(&grid, state->mold.sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
         return false;
     }
     init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
@@ -5145,7 +5345,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     MD_DEFER { md_temp_end(temp); };
 
     const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = state->mold.state;
+    const md_system_state_t& sys_state = system_instance(state->system_context).state;
 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
@@ -5278,7 +5478,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     SurfaceFieldDesc desc = {};
     desc.kind        = g.field_kind;
     desc.sys         = &sys;
-    desc.state       = &state->mold.state;
+    desc.state       = &system_instance(state->system_context).state;
     desc.grid        = &es.grid;
     desc.density     = density;
     desc.iso_values  = iso.values;
@@ -5288,7 +5488,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.density_cache = density_cache_of(state);
     if (surface_field_uses_basis(g.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
-        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(state->system_context).state);
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
@@ -5422,7 +5622,7 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
 #if MD_ENABLE_GPU
     if (gpu_evaluation_ready(state)) {
         const md_system_t&       sys       = state->mold.sys;
-        const md_system_state_t& sys_state = state->mold.state;
+        const md_system_state_t& sys_state = system_instance(state->system_context).state;
 
         const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
         if (num_cgtos != num_ao) {
@@ -5476,7 +5676,7 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
     }
 
     const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = state->mold.state;
+    const md_system_state_t& sys_state = system_instance(state->system_context).state;
 
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
     if (num_cgtos != dim) {
@@ -5692,7 +5892,7 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
     if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
         return true;    // the evaluation fails as it would have
     }
@@ -5800,7 +6000,7 @@ static bool density_dmat_ensure(ApplicationState* state, md_str_t density_path) 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, state->mold.state);
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
     if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
         return false;
     }
@@ -5844,7 +6044,7 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     gpu_density_jobs_settle(state);     // the inputs are changed below
 
     const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = state->mold.state;
+    const md_system_state_t& sys_state = system_instance(state->system_context).state;
     const md_attribute_slice_t s = slice ? *slice : md_attribute_slice_all();
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
     if (!attr) {
@@ -6088,7 +6288,7 @@ static void es_box_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
     md_grid_t grid = {};
-    if (!electronic_structure_grid_init(&grid, state->mold.sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+    if (!electronic_structure_grid_init(&grid, state->mold.sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
         es.has_box = false;
         return;
     }
@@ -6176,21 +6376,21 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
 
     md_grid_t grid = {};
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(g)];
-    if (!electronic_structure_grid_init(&grid, sys, state->mold.state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+    if (!electronic_structure_grid_init(&grid, sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     SurfaceFieldDesc desc = {};
     desc.kind        = kind;
     desc.sys         = &sys;
-    desc.state       = &state->mold.state;
+    desc.state       = &system_instance(state->system_context).state;
     desc.grid        = &grid;               // no density: all of it
     // what the values are of (the field, the frame); the grid is the volume's own concern: a new one keeps what the
     // field is made of (an electrostatic potential's distribution) and evaluates again
     desc.source_hash = es_source_hash(state, g);
     desc.band_hash   = 1;
     if (surface_field_uses_basis(kind)) {
-        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(state->system_context).state);
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
@@ -6407,27 +6607,47 @@ int playback_stride(const ApplicationState* app) {
     return (app->animation.mode == PlaybackMode::Playing) ? MD_MAX(1, app->animation.stride) : 1;
 }
 
-void interpolate_system_state(SystemContext& sc) {
+void interpolate_system_state(SystemInstance& inst) {
+    SystemContext& sc = *inst.sys;
     ApplicationState* app = sc.app;
     MD_ASSERT(app);
-
-    // The run shown is what the system is drawn at
-    SystemRun* run = system_run(sc);
-    if (!run) return;
-
-    // Recorded before anything can return early, so that a change of stride is acted on once (see main)
-    const int64_t stride = playback_stride(app);
-    run->last_interpolated_stride = (int)stride;
-
 	const auto& sys  = sc.data.sys;
 
-	size_t num_atoms = sc.data.state.num_atoms;
+    // Without a run, the system's own coordinates, as they are, with the backbone they carry
+    SystemRun* run = instance_run(inst);
+    if (!run) {
+        if (sys.atom.count == 0 || !md_system_state_has_coords(&sc.data.state)) return;
+        md_system_state_copy(&inst.state, &sc.data.state);
+        if (md_system_state_backbone_compute(&inst.state, &sc.data.sys)) {
+            upload_secondary_structure_weights(inst);
+        }
+        inst.state_rotation = md_float4x4_ident();
+        md_float3x3_t A;
+        md_unitcell_A_extract_float(A.elem, &inst.state.unitcell);
+        const md_float3_t c = md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
+        inst.unitcell_transform = md_float4x4_translate(-c.x, -c.y, -c.z);
+        inst.dirty_gpu_buffers |= MolBit_DirtyPosition;
+        return;
+    }
+
+    // At a frame of its own, or at the time shown. Recorded before anything can return early, so that a change of
+    // stride is acted on once (see main)
+    const bool fixed = inst.frame >= 0;
+    const int64_t stride = fixed ? 1 : playback_stride(app);
+    inst.last_interpolated_stride = (int)stride;
+
+    // Room for the coordinates of every atom: an instance made while the system had none (a topology, before its first
+    // run) has none of its own yet
+    if (inst.state.num_atoms != sys.atom.count || !inst.state.xyz) {
+        md_system_state_init(&inst.state, sys.atom.count);
+    }
+    const size_t num_atoms = inst.state.num_atoms;
     const size_t num_frames = run_num_frames(sc, run);
     if (num_atoms == 0 || num_frames == 0) return;
 
     const int64_t last_frame = MD_MAX(0LL, (int64_t)num_frames - 1);
     // This is not actually time, but the fractional frame representation
-    const double time = MD_CLAMP(app->animation.frame, 0.0, double(last_frame));
+    const double time = MD_CLAMP(fixed ? (double)inst.frame : app->animation.frame, 0.0, double(last_frame));
 
     // The frames interpolated between, the keys: every stride:th frame counted from the first, and the last, which
     // closes a shorter final interval when the stride does not divide the trajectory. With a stride of 1 every frame
@@ -6452,23 +6672,23 @@ void interpolate_system_state(SystemContext& sc) {
     const int64_t nearest_frame = (t < 0.5) ? frames[1] : frames[2];
 
     if (app->animation.interpolation == InterpolationMode::Nearest) {
-        if (run->last_interpolated_nearest_frame == nearest_frame) {
+        if (inst.last_interpolated_nearest_frame == nearest_frame) {
             return;
         }
-        sc.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        inst.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
-    run->last_interpolated_nearest_frame = nearest_frame;
+    inst.last_interpolated_nearest_frame = nearest_frame;
 
     // The backbone keeps the orientation of its cross sections coherent from one displayed state to the next. That
     // continuity only means something while the structure moves continuously, so a jump (seeking, skipping frames,
     // a new run) starts it over. Playback keeps it whatever the speed.
     {
-        const double last = run->last_interpolated_frame;
+        const double last = inst.last_interpolated_frame;
         const bool playing = app->animation.mode == PlaybackMode::Playing;
         if (last < 0.0 || (!playing && fabs(time - last) > 1.5)) {
-            sc.data.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
+            inst.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
         }
-        run->last_interpolated_frame = time;
+        inst.last_interpolated_frame = time;
     }
 
     // The number of atoms to be processed per thread when divided into chunks
@@ -6479,8 +6699,9 @@ void interpolate_system_state(SystemContext& sc) {
     MD_DEFER { md_temp_end(temp); };
 
     struct Payload {
-        SystemContext* sys;
-        SystemRun*     run;
+        SystemContext*  sys;
+        SystemInstance* inst;
+        SystemRun*      run;
         float t;
         float w[4];     // The weights of the four frames, for the cubic modes
         InterpolationMode mode;
@@ -6503,12 +6724,13 @@ void interpolate_system_state(SystemContext& sc) {
 
     Payload payload = {
         .sys = &sc,
+        .inst = &inst,
         .run = run,
         .t = (float)t,
         .mode = mode,
         .nearest_frame = nearest_frame,
         .frames = { frames[0], frames[1], frames[2], frames[3]},
-        .dst_state = &sc.data.state,
+        .dst_state = &inst.state,
     };
 
     // The cubic modes are a weighted sum of the four frames, the same for everything interpolated: coordinates, cell and
@@ -6532,10 +6754,10 @@ void interpolate_system_state(SystemContext& sc) {
     // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
     const size_t num_segments = sc.data.sys.protein_backbone.segment.count;
     if (num_segments > 0 && run->trajectory_data.backbone_angles.data) {
-        payload.dst_angle = md_system_state_backbone_angles_write(&sc.data.state, &sc.data.sys);
+        payload.dst_angle = md_system_state_backbone_angles_write(&inst.state, &sc.data.sys);
     }
     if (num_segments > 0 && run->trajectory_data.secondary_structure.data) {
-        payload.dst_ss = md_system_state_secondary_structure_write(&sc.data.state, &sc.data.sys);
+        payload.dst_ss = md_system_state_secondary_structure_write(&inst.state, &sc.data.sys);
         payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
     }
 
@@ -6543,11 +6765,11 @@ void interpolate_system_state(SystemContext& sc) {
     // written by a run extraction, so nothing else would fill this in, and a
     // stale value is worse than an absent one. Nearest snaps to a whole frame; the other modes land
     // between two, which is exactly what the fractional part is for.
-    sc.data.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
+    inst.state.frame = (mode == InterpolationMode::Nearest) ? (double)nearest_frame : time;
 
     // Fresh coordinates, in the lattice frame of the cell: the turn the previous ones carried goes
     // with them. The System State Changed handler puts one back if the orientation is kept.
-    sc.scene.operations.state_rotation = md_float4x4_ident();
+    inst.state_rotation = md_float4x4_ident();
 
     int requested_frames[4] = { 0 };
     int num_requested_frames = 0;
@@ -6581,18 +6803,18 @@ void interpolate_system_state(SystemContext& sc) {
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = -1;
-        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &run->frame_cache)) {
-            slot_idx = find_lru_cache_slot(&run->frame_cache);
+        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &inst.frame_cache)) {
+            slot_idx = find_lru_cache_slot(&inst.frame_cache);
             frame_cache_load_slot[num_frames_to_load++] = slot_idx;
         }
-        set_mru_cache_slot(&run->frame_cache, slot_idx);
-        run->frame_cache.frame_idx[slot_idx] = requested_frames[i];
+        set_mru_cache_slot(&inst.frame_cache, slot_idx);
+        inst.frame_cache.frame_idx[slot_idx] = requested_frames[i];
         frame_cache_slot_idx[i] = slot_idx;
     }
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = frame_cache_slot_idx[i];
-        payload.src_states[i] = &run->frame_cache.states[slot_idx];
+        payload.src_states[i] = &inst.frame_cache.states[slot_idx];
     }
 
     // The steps in order, each spread over the pool where it is a range; the frame waits for them all (frame priority:
@@ -6604,8 +6826,8 @@ void interpolate_system_state(SystemContext& sc) {
             const uint32_t thread_num = task_system::thread_index();
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
-                int frame_idx = data->run->frame_cache.frame_idx[slot_idx];
-                md_system_state_t* state = &data->run->frame_cache.states[slot_idx];
+                int frame_idx = data->inst->frame_cache.frame_idx[slot_idx];
+                md_system_state_t* state = &data->inst->frame_cache.states[slot_idx];
                 // This thread's own context, kept for as long as the trajectory, so playback opens
                 // the run's files once rather than once per frame.
                 md_system_extract_t** ex = (thread_num < MD_COUNTOF(data->run->frame_extract)) ? &data->run->frame_extract[thread_num] : nullptr;
@@ -6855,14 +7077,14 @@ void interpolate_system_state(SystemContext& sc) {
 
     // The weights are the renderer's input and nothing else's: straight to the GPU, from the temporary memory above
     if (payload.ss_weights) {
-        md_gl_mol_set_backbone_secondary_structure(sc.data.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
+        md_gl_mol_set_backbone_secondary_structure(inst.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
     }
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
     md_float3x3_t A;
-    md_unitcell_A_extract_float(A.elem, &sc.data.state.unitcell);
+    md_unitcell_A_extract_float(A.elem, &inst.state.unitcell);
     md_float3_t c = md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
-    sc.data.unitcell_transform = md_float4x4_translate(-c.x, -c.y, -c.z);
+    inst.unitcell_transform = md_float4x4_translate(-c.x, -c.y, -c.z);
 
 #if 0
     if (sys.unitcell.flags) {
@@ -6871,7 +7093,7 @@ void interpolate_system_state(SystemContext& sc) {
     }
 #endif
 
-    sc.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
+    inst.dirty_gpu_buffers |= MolBit_DirtyPosition;
 }
 
 // Exact, element by element. The identities compared against here are only ever assigned, never computed.
@@ -6886,21 +7108,21 @@ static bool is_identity(const md_float4x4_t& M) {
 }
 
 void recenter_mark_query_dirty(SystemContext& sys) {
-    sys.scene.operations.recenter_query.version += 1;
-    if (sys.scene.operations.recenter_query.version == 0) {
-        sys.scene.operations.recenter_query.version = 1;
+    sys.operations.recenter_query.version += 1;
+    if (sys.operations.recenter_query.version == 0) {
+        sys.operations.recenter_query.version = 1;
     }
 }
 
 const md_bitset_t& recenter_get_active_target_mask(const SystemContext& sys) {
-    return sys.scene.operations.recenter_query.enabled ? sys.scene.operations.recenter_query.mask : sys.scene.operations.selection_mask;
+    return sys.operations.recenter_query.enabled ? sys.operations.recenter_query.mask : sys.operations.selection_mask;
 }
 
 bool recenter_update_query_mask(SystemContext& sys) {
     ApplicationState* state = sys.app;
     MD_ASSERT(state);
 
-    auto& query = sys.scene.operations.recenter_query;
+    auto& query = sys.operations.recenter_query;
     const uint64_t ir_fingerprint = state->script.ir ? state->script.ir_fingerprint : 0;
     if (query.ir_fingerprint != ir_fingerprint) {
         query.ir_fingerprint = ir_fingerprint;
@@ -6936,13 +7158,14 @@ static bool same_atoms(const md_bitset_t* a, const md_bitset_t* b) {
 
 void recenter_update_target_data(SystemContext& sys) {
     ApplicationState* state = sys.app;
-    if (run_num_frames(sys) == 0) return;
+    // The reference is of the system's own coordinates, which every instance of it is fitted to: what superposes them
+    if (!md_system_state_has_coords(&sys.data.state)) return;
 
     // The reference is only for keeping the orientation. Centering alone needs nothing from the first frame,
     // so without this a target picked by a query which depends on the frame read it from disk in every frame.
-    if (!sys.scene.operations.fixate_orientation) return;
+    if (!sys.operations.fixate_orientation) return;
 
-    auto& ref = sys.scene.operations.initial_frame;
+    auto& ref = sys.operations.initial_frame;
     const md_bitset_t& target_mask = recenter_get_active_target_mask(sys);
 
     // Keyed on the atoms themselves. The versions this used to compare change every time a query is
@@ -6952,43 +7175,39 @@ void recenter_update_target_data(SystemContext& sys) {
         ref.valid = true;
         size_t count = md_bitset_count(target_mask);
 
-        md_array_resize(sys.scene.operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
+        md_array_resize(sys.operations.initial_frame.rel_xyzw, count, state->allocator.persistent);
 
-        sys.scene.operations.initial_frame.com = md_float3_zero();
+        sys.operations.initial_frame.com = md_float3_zero();
 
-        if (sys.scene.operations.initial_frame.rel_xyzw && count > 0) {
-            // Fetch initial frame data required for orienting the structure
-            size_t num_atoms = sys.data.sys.atom.count;
-            md_float3_t* temp_xyz = (md_float3_t*)md_vm_arena_push(state->allocator.frame, sizeof(md_float3_t) * MD_ALIGN_TO(num_atoms, 16));
-
-            md_system_state_t temp_state = { 0 };
-            temp_state.num_atoms = num_atoms;
-            temp_state.xyz = temp_xyz;
-            extract_frame(sys, 0, &temp_state);
+        if (sys.operations.initial_frame.rel_xyzw && count > 0) {
+            // The system's own coordinates: those its files gave, or the first frame of its first run
+            const md_system_state_t& temp_state = sys.data.state;
+            const md_float3_t* temp_xyz = temp_state.xyz;
 
             md_bitset_iter_t it = md_bitset_iter(target_mask);
             int dst_idx = 0;
             while (md_bitset_iter_next(&it)) {
                 uint64_t src_idx = it.idx;
                 float mass = md_atom_mass(&sys.data.sys.atom, src_idx);
-                sys.scene.operations.initial_frame.rel_xyzw[dst_idx++] = md_float4_from_float3(temp_xyz[src_idx], mass);
+                sys.operations.initial_frame.rel_xyzw[dst_idx++] = md_float4_from_float3(temp_xyz[src_idx], mass);
             }
 
             // Mutually consistent images and the plain weighted mean of them, then relative to that mean.
             // The circular mean (md_geom_com with a cell) is not the mean of the placed
             // points, and a fit against coordinates which are not centred is biased.
             md_float3_t com = md_float3_zero();
-            md_geom_deperiodize_self(sys.scene.operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
+            md_geom_deperiodize_self(sys.operations.initial_frame.rel_xyzw, count, &temp_state.unitcell, &com);
             const md_float4_t com4 = md_float4_from_float3(com, 0);
             for (size_t i = 0; i < count; ++i) {
-                sys.scene.operations.initial_frame.rel_xyzw[i] = md_float4_sub(sys.scene.operations.initial_frame.rel_xyzw[i], com4);
+                sys.operations.initial_frame.rel_xyzw[i] = md_float4_sub(sys.operations.initial_frame.rel_xyzw[i], com4);
             }
-            sys.scene.operations.initial_frame.com = com;
+            sys.operations.initial_frame.com = com;
         }
     }
 }
 
-bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rotation, const SystemContext& sys) {
+bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rotation, const SystemInstance& inst) {
+    const SystemContext& sys = *inst.sys;
     const ApplicationState* app = sys.app;
     MD_ASSERT(translation);
     MD_ASSERT(rotation);
@@ -7008,13 +7227,13 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
         // Extract xyzw subset of target
         md_float4_t* target_xyzw = md_temp_alloc_array(temp, md_float4_t, count);
 
-		extract_xyzw_from_mask(target_xyzw, &target_mask, &sys.data.sys, &sys.data.state);
+		extract_xyzw_from_mask(target_xyzw, &target_mask, &sys.data.sys, &inst.state);
 
         // Calculate target
         md_float3_t target = {0};
-        if (md_unitcell_flags(&sys.data.state.unitcell) != 0) {
+        if (md_unitcell_flags(&inst.state.unitcell) != 0) {
             md_float3x3_t A = {0};
-            md_unitcell_A_extract_float(A.elem, &sys.data.state.unitcell);
+            md_unitcell_A_extract_float(A.elem, &inst.state.unitcell);
             target = md_float3x3_mul_float3(A, md_float3_set1(0.5f));
         } 
 
@@ -7035,24 +7254,24 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
         // size between recenter_update() and this call, which would silently pair up unrelated
         // atoms and yield a garbage rotation. The atoms themselves are the identity of the target.
         const bool reference_valid =
-            sys.scene.operations.fixate_orientation &&
-            sys.scene.operations.initial_frame.valid &&
-            sys.scene.operations.initial_frame.rel_xyzw &&
-            md_array_size(sys.scene.operations.initial_frame.rel_xyzw) == count &&
-            same_atoms(&sys.scene.operations.initial_frame.target_mask, &target_mask);
+            sys.operations.fixate_orientation &&
+            sys.operations.initial_frame.valid &&
+            sys.operations.initial_frame.rel_xyzw &&
+            md_array_size(sys.operations.initial_frame.rel_xyzw) == count &&
+            same_atoms(&sys.operations.initial_frame.target_mask, &target_mask);
 
         // R maps the CURRENT target onto the reference: R * (q - target_com) ~= p. The relative fit this
         // replaced had its operands the other way around, which yields the rotation carrying the reference
         // onto the current frame - applied to the current frame, it doubled the rotation it was meant to
         // cancel. It also centred on the circular mean, which lands in the reference cell whatever image
         // the target occupies and is not the mean of the placed points.
-        if (sys.scene.operations.fixate_orientation && reference_valid) {
+        if (sys.operations.fixate_orientation && reference_valid) {
             // The reference is stored relative to its own centre, so its centre here is the origin
-            md_geom_optimal_rotation_pbc(&R, &target_com, target_xyzw, sys.scene.operations.initial_frame.rel_xyzw, md_float3_zero(),
-                                                   target_xyzw, count, &sys.data.state.unitcell, 8, 1.0e-6f);
+            md_geom_optimal_rotation_pbc(&R, &target_com, target_xyzw, sys.operations.initial_frame.rel_xyzw, md_float3_zero(),
+                                                   target_xyzw, count, &inst.state.unitcell, 8, 1.0e-6f);
             R = md_float3x3_orthonormalize(R);
         } else {
-            md_geom_deperiodize_self(target_xyzw, count, &sys.data.state.unitcell, &target_com);
+            md_geom_deperiodize_self(target_xyzw, count, &inst.state.unitcell, &target_com);
         }
 
         // Split at the cell centre. The translation preserves the lattice, so it is valid for coordinates
@@ -7060,8 +7279,8 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
         // vector, so it may only be applied once every image is settled relative to the target. The
         // product is the transform this used to return in one piece,
         //     translate(target) * A * R * translate(-target_com)
-        const md_float4x4_t A = sys.scene.operations.alignment_mat;
-        turn = (sys.scene.operations.fixate_orientation && reference_valid) || !is_identity(A);
+        const md_float4x4_t A = sys.operations.alignment_mat;
+        turn = (sys.operations.fixate_orientation && reference_valid) || !is_identity(A);
 
         *translation = md_float4x4_translate_float3(md_float3_sub(target, target_com));
         if (turn) {
@@ -7071,17 +7290,18 @@ bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rot
     return turn;
 }
 
-// Every atom of mold.state through M
-static void state_transform(SystemContext& sys, const md_float4x4_t& M) {
-    md_system_state_t& s = sys.data.state;
+// Every atom of the instance's coordinates through M
+static void state_transform(SystemInstance& inst, const md_float4x4_t& M) {
+    md_system_state_t& s = inst.state;
     task_system::parallel_for((uint32_t)s.num_atoms, 1024, [&s, M](uint32_t range_beg, uint32_t range_end) {
         md_float4x4_batch_transform_inplace(s.xyz + range_beg, 1.0f, range_end - range_beg, M);
     });
 }
 
-bool apply_state_operations(SystemContext& sc, bool recenter, bool pbc, bool unwrap) {
+bool apply_state_operations(SystemInstance& inst, bool recenter, bool pbc, bool unwrap) {
+    SystemContext& sc = *inst.sys;
     md_system_t& sys = sc.data.sys;
-    md_system_state_t& s = sc.data.state;
+    md_system_state_t& s = inst.state;
 
     if (s.num_atoms == 0 || !s.xyz) return false;
     if (!recenter && !pbc && !unwrap) return false;
@@ -7090,9 +7310,9 @@ bool apply_state_operations(SystemContext& sc, bool recenter, bool pbc, bool unw
 
     // Into the lattice frame first. Wrapping or making whole turned coordinates against the unturned
     // cell moves atoms by vectors that are not lattice vectors, to places where they have no image.
-    const md_float4x4_t prev_rotation = sc.scene.operations.state_rotation;
+    const md_float4x4_t prev_rotation = inst.state_rotation;
     if (!is_identity(prev_rotation)) {
-        state_transform(sc, md_float4x4_inverse(prev_rotation));
+        state_transform(inst, md_float4x4_inverse(prev_rotation));
     }
 
     // A wrap or a make whole on its own keeps the turn the coordinates had
@@ -7106,8 +7326,8 @@ bool apply_state_operations(SystemContext& sc, bool recenter, bool pbc, bool unw
         // Measured on the lattice frame coordinates: the fit is against the reference, not against a
         // previous fit's output
         md_float4x4_t translation = md_float4x4_ident();
-        fresh_turn = recenter_calculate_transform(&translation, &rotation, sc);
-        state_transform(sc, translation);
+        fresh_turn = recenter_calculate_transform(&translation, &rotation, inst);
+        state_transform(inst, translation);
     }
     const bool turn = !is_identity(rotation);
 
@@ -7135,9 +7355,9 @@ bool apply_state_operations(SystemContext& sc, bool recenter, bool pbc, bool unw
     }
 
     if (turn) {
-        state_transform(sc, rotation);
+        state_transform(inst, rotation);
     }
-    sc.scene.operations.state_rotation = turn ? rotation : md_float4x4_ident();
+    inst.state_rotation = turn ? rotation : md_float4x4_ident();
 
     return true;
 }
@@ -7157,12 +7377,12 @@ static bool bond_coordinates(md_system_state_t* state, const SystemContext& sys,
         }
         return true;
     }
-    const md_system_state_t& shown = sys.data.state;
+    const md_system_state_t& shown = system_instance(sys).state;
     if (!shown.xyz || shown.num_atoms != num_atoms) return false;
     md_memcpy(state->xyz, shown.xyz, num_atoms * sizeof(md_float3_t));
     state->unitcell = shown.unitcell;
-    if (!is_identity(sys.scene.operations.state_rotation)) {
-        md_float4x4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, md_float4x4_inverse(sys.scene.operations.state_rotation));
+    if (!is_identity(system_instance(sys).state_rotation)) {
+        md_float4x4_batch_transform_inplace(state->xyz, 1.0f, num_atoms, md_float4x4_inverse(system_instance(sys).state_rotation));
     }
     return true;
 }
@@ -7203,16 +7423,16 @@ void system_core_changed(SystemContext& sys) {
 
 // Of the bonds the system has now: not of those of an inference before (BondTracking::topology_version)
 static bool bond_tracking_valid(const SystemContext& sys) {
-    const auto& bt = sys.scene.operations.bond_tracking;
+    const auto& bt = sys.operations.bond_tracking;
     return bt.enabled && bt.key != 0 && bt.topology_version == sys.data.sys.topology_version;
 }
 
 const md_bond_delta_t* bond_tracking_delta(const SystemContext& sys) {
-    return bond_tracking_valid(sys) ? &sys.scene.operations.bond_tracking.delta : nullptr;
+    return bond_tracking_valid(sys) ? &sys.operations.bond_tracking.delta : nullptr;
 }
 
 const md_chem_delta_t* bond_tracking_chem(const SystemContext& sys) {
-    return bond_tracking_valid(sys) ? &sys.scene.operations.bond_tracking.chem : nullptr;
+    return bond_tracking_valid(sys) ? &sys.operations.bond_tracking.chem : nullptr;
 }
 
 md_atom_flags_t frame_atom_flags(const SystemContext& sc, size_t atom_idx, int* formal_charge, int* hydrogen_count) {
@@ -7258,7 +7478,7 @@ bool picked_ring(const SystemContext& sc, size_t idx, const int32_t** atoms, siz
 
 static void bond_tracking_clear(SystemContext& sys) {
     ApplicationState* app = sys.app;
-    auto& bt = sys.scene.operations.bond_tracking;
+    auto& bt = sys.operations.bond_tracking;
     if (bt.key != 0) {
         md_bond_delta_free(&bt.delta, app->allocator.persistent);
         md_chem_delta_free(&bt.chem, app->allocator.persistent);
@@ -7266,14 +7486,14 @@ static void bond_tracking_clear(SystemContext& sys) {
         bt.key = 0;
         bt.formed_capacity = 0;
         bt.ring_capacity = 0;
-        sys.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
+        system_instance(sys).dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 }
 
 void bond_tracking_update(SystemContext& sc) {
     ApplicationState* app = sc.app;
     MD_ASSERT(app);
-    auto& bt = sc.scene.operations.bond_tracking;
+    auto& bt = sc.operations.bond_tracking;
     const md_system_t& sys = sc.data.sys;
     if (!bt.enabled || sys.atom.count == 0) {
         bond_tracking_clear(sc);
@@ -7352,7 +7572,7 @@ void bond_tracking_update(SystemContext& sc) {
         }
         bt.ring_capacity = MD_MAX(bt.ring_capacity, md_ring_data_count(&bt.chem.ring));
         bt.time_ms = md_tick_to_milliseconds(md_tick_now() - t0);
-        sc.data.dirty_gpu_buffers |= MolBit_DirtyBonds;
+        system_instance(sc).dirty_gpu_buffers |= MolBit_DirtyBonds;
     }
 }
 
@@ -7997,8 +8217,7 @@ static void load_into_done(ApplicationState* app, SystemContext* sys, bool fresh
             }
         }
         recompute_atom_visibility_mask(*sys);
-        sys->data.interpolate_system_state = true;
-        sys->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        system_instances_update(*sys, MolBit_ClearVelocity);
     }
     if (result == LoadResult_System || result == LoadResult_Trajectory) {
         app->animation.frame = 0.0;
@@ -8302,10 +8521,20 @@ static void system_rebuild(ApplicationState* app, SystemContext& sys, const File
         md_bond_list_push(&edits, pair.idx[0], pair.idx[1], sys.data.sys.bond_edit.flags[i], temp);
     }
 
+    // The run each instance shows, by its path: what it is called among the runs opened again, which are those of list
+    char inst_runs[INSTANCE_MAX][sizeof(SystemRun::path)] = {};
+    int64_t inst_frames[INSTANCE_MAX] = {};
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        const SystemRun* r = instance_run(*sys.instances[k]);
+        if (r) md_memcpy(inst_runs[k], r->path, sizeof(r->path));
+        inst_frames[k] = sys.instances[k]->frame;
+    }
+
     interrupt_async_tasks(app);
     free_trajectory_data(app, sys);
     free_system_data(app, sys);
 
+    sys.instances_held = true;
     LoadResult shown = LoadResult_Failed;
     for (size_t i = 0; i < file_list_count(&list); ++i) {
         FileEntry e = *file_list_get(&list, i);
@@ -8322,12 +8551,27 @@ static void system_rebuild(ApplicationState* app, SystemContext& sys, const File
         if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
     }
     md_memcpy(sys.name, name, sizeof(name));
+    sys.instances_held = false;
+    for (size_t k = sys.num_instances; k-- > 0;) {
+        int run = -1;
+        for (size_t i = 0; i < sys.num_runs && inst_runs[k][0]; ++i) {
+            if (strcmp(sys.runs[i]->path, inst_runs[k]) == 0) run = (int)i;
+        }
+        // One whose run went goes with it, as when the run is closed (close_run); the first shows the first run left
+        if (run < 0 && inst_runs[k][0]) {
+            if (k > 0) {
+                instance_remove(sys, k);
+                continue;
+            }
+            if (sys.num_runs > 0) run = 0;
+        }
+        instance_show(*sys.instances[k], run, run >= 0 ? inst_frames[k] : -1);
+    }
 
     if (num_atoms > 0 && sys.data.sys.atom.count == num_atoms) {
         apply_bond_edits(sys, edits);
         recompute_atom_visibility_mask(sys);
-        sys.data.interpolate_system_state = true;
-        sys.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+        system_instances_update(sys, MolBit_ClearVelocity);
     } else {
         load_into_done(app, &sys, false, shown);
     }
@@ -8523,57 +8767,63 @@ const SystemContext& scene_frame_system(const ApplicationState& app) {
 
 void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, const ViewRegion& region) {
     MD_ASSERT(transform);
-    const SystemContext* shown[SYSTEM_MAX];
+    // Every instance shown, of every system shown
+    const SystemInstance* shown[SYSTEM_MAX * INSTANCE_MAX];
     size_t num_shown = 0;
     for (size_t i = 0; i < app.num_systems; ++i) {
         const SystemContext& sc = *app.systems[i];
-        if (sc.scene.visible && sc.data.state.num_atoms > 0) shown[num_shown++] = &sc;
+        if (!sc.visible) continue;
+        for (size_t k = 0; k < sc.num_instances; ++k) {
+            const SystemInstance& inst = *sc.instances[k];
+            if (inst.scene.visible && inst.state.num_atoms > 0) shown[num_shown++] = &inst;
+        }
     }
     if (num_shown == 0) return;
     if (num_shown == 1 && md_float4x4_equal(shown[0]->scene.placement, md_float4x4_ident())) {
-        const SystemContext& sc = *shown[0];
+        const SystemInstance& inst = *shown[0];
+        const SystemContext& sc = *inst.sys;
         const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
-        reset_view(transform, sc.data.state, &visible, fov_y, region, &sc.data.sys, sc.scene.assembly);
+        reset_view(transform, inst.state, &visible, fov_y, region, &sc.data.sys, inst.scene.assembly);
         if (&sc != &scene_frame_system(app)) {
             // Its cell is not the frame of the world: reset_view placed it as if it were
-            const md_float3_t own   = md_float4x4_mul_float3(sc.data.unitcell_transform, md_float3_set1(0.0f), 1.0f);
-            const md_float3_t world = md_float4x4_mul_float3(scene_frame_system(app).data.unitcell_transform, md_float3_set1(0.0f), 1.0f);
+            const md_float3_t own   = md_float4x4_mul_float3(inst.unitcell_transform, md_float3_set1(0.0f), 1.0f);
+            const md_float3_t world = md_float4x4_mul_float3(system_instance(scene_frame_system(app)).unitcell_transform, md_float3_set1(0.0f), 1.0f);
             transform->position = transform->position - own + world;
         }
         return;
     }
 
-    // The visible atoms of every system shown, as they are drawn: in their own coordinates, in the frame of the
+    // The visible atoms of every instance shown, as they are drawn: in their own coordinates, in the frame of the
     // world. Of large systems every k-th, at most about a million in all.
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t total = 0;
     for (size_t i = 0; i < num_shown; ++i) {
-        const md_bitset_t visible = md_bitmask_view(&shown[i]->representation.visibility_mask);
+        const md_bitset_t visible = md_bitmask_view(&shown[i]->sys->representation.visibility_mask);
         const size_t n = md_bitset_count(visible);
-        total += n ? n : shown[i]->data.state.num_atoms;
+        total += n ? n : shown[i]->state.num_atoms;
     }
     const size_t max_points = 1000000;
     const size_t stride = MD_MAX((size_t)1, MD_DIV_UP(total, max_points));
     md_array(md_float3_t) xyz = 0;
     md_array_ensure(xyz, MD_MIN(total, max_points) + num_shown, md_temp_allocator(temp));
     for (size_t i = 0; i < num_shown; ++i) {
-        const SystemContext& sc = *shown[i];
-        const md_system_state_t& st = sc.data.state;
-        const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
+        const SystemInstance& inst = *shown[i];
+        const md_system_state_t& st = inst.state;
+        const md_bitset_t visible = md_bitmask_view(&inst.sys->representation.visibility_mask);
         const bool all = md_bitset_count(visible) == 0;
         size_t k = 0;
         for (size_t a = 0; a < st.num_atoms; ++a) {
             if (!all && !md_bitset_test(visible, a)) continue;
             if (k++ % stride) continue;
-            // Where the system is placed
-            md_array_push(xyz, md_float4x4_mul_float3(sc.scene.placement, st.xyz[a], 1.0f), md_temp_allocator(temp));
+            // Where the instance is placed
+            md_array_push(xyz, md_float4x4_mul_float3(inst.scene.placement, st.xyz[a], 1.0f), md_temp_allocator(temp));
         }
     }
     const size_t n = md_array_size(xyz);
     if (n == 0) return;
     *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
-    transform->position = md_float4x4_mul_float3(scene_frame_system(app).data.unitcell_transform, transform->position, 1.0f);
+    transform->position = md_float4x4_mul_float3(system_instance(scene_frame_system(app)).unitcell_transform, transform->position, 1.0f);
 }
 
 void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
@@ -8720,8 +8970,8 @@ void picking_hit_mask_set(md_bitmask_t* mask, const SystemContext& sys, const Pi
         }
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
         // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
-        const uint32_t point_idx = cartoon_glyphs_picked_point(sys.data.cartoon_glyphs, hit.local_idx);
-        const CartoonGlyphs& glyphs = sys.data.cartoon_glyphs;
+        const uint32_t point_idx = cartoon_glyphs_picked_point(system_instance(sys).cartoon_glyphs, hit.local_idx);
+        const CartoonGlyphs& glyphs = system_instance(sys).cartoon_glyphs;
         const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
         if (res_idx >= 0 && (size_t)res_idx < sys.data.sys.residue.count) {
             mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, sys.data.sys);
@@ -8746,28 +8996,35 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // Every system its own ranges, in the order listed: a hit names the system by the range it is in
             for (size_t s = 0; s < state->num_systems; ++s) {
                 SystemContext& sc = *state->systems[s];
-                sc.picking = {};
+                for (size_t k = 0; k < sc.num_instances; ++k) sc.instances[k]->picking = {};
                 if (!system_loaded(sc)) continue;
                 const md_system_t& sys = sc.data.sys;
                 const uint32_t id = sc.id;
-                const auto& bt = sc.scene.operations.bond_tracking;
+                const auto& bt = sc.operations.bond_tracking;
                 // The bonds of the graph, then those formed in the frame shown, as they are drawn (picked_bond). Which
                 // frame that is is not settled yet: as many as have formed in any frame are reserved for.
                 const md_bond_delta_t* delta = bond_tracking_delta(sc);
                 const size_t num_bonds = sys.bond.count + (delta ? MD_MAX(delta->num_formed, bt.formed_capacity) : 0);
-                picking_range_reserve(&sc.picking.atom, space, PickingDomain_Atom, sys.atom.count, 0, id);
-                picking_range_reserve(&sc.picking.bond, space, PickingDomain_Bond, num_bonds, 0, id);
-                // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
-                picking_range_reserve(&sc.picking.backbone, space, PickingDomain_BackboneSegment, sys.protein_backbone.segment.count, 0, id);
-                // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn),
-                // then the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
                 const size_t num_frame_rings = delta ? bt.ring_capacity : 0;
-                picking_range_reserve(&sc.picking.ring, space, PickingDomain_Ring, md_ring_data_count(&sys.ring) + num_frame_rings, 0, id);
-                // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules
-                // write, and one per control point of its tubes after them (cartoon_glyphs_picked_point)
-                picking_range_reserve(&sc.picking.glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(sc.data.cartoon_glyphs), 0, id);
-                // One index per residue, which the gap over a break after it writes: only those are drawn
-                picking_range_reserve(&sc.picking.gap, space, PickingDomain_ChainGap, sys.residue.count, 0, id);
+                // Each instance its own: the same atom in another instance is another object to pick. Keyed by the
+                // instance's place in the system (picking_instance_key), which a hit names it by.
+                for (size_t k = 0; k < sc.num_instances; ++k) {
+                    SystemInstance& inst = *sc.instances[k];
+                    const uint64_t key = picking_instance_key(k);
+                    picking_range_reserve(&inst.picking.atom, space, PickingDomain_Atom, sys.atom.count, key, id);
+                    picking_range_reserve(&inst.picking.bond, space, PickingDomain_Bond, num_bonds, key, id);
+                    // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
+                    picking_range_reserve(&inst.picking.backbone, space, PickingDomain_BackboneSegment, sys.protein_backbone.segment.count, key, id);
+                    // One index per ring of the system, which the circle of an aromatic ring writes (only those are
+                    // drawn), then the rings of the frame's chemistry where its bonds changed, reserved for as the bonds
+                    // formed are
+                    picking_range_reserve(&inst.picking.ring, space, PickingDomain_Ring, md_ring_data_count(&sys.ring) + num_frame_rings, key, id);
+                    // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules
+                    // write, and one per control point of its tubes after them (cartoon_glyphs_picked_point)
+                    picking_range_reserve(&inst.picking.glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(inst.cartoon_glyphs), key, id);
+                    // One index per residue, which the gap over a break after it writes: only those are drawn
+                    picking_range_reserve(&inst.picking.gap, space, PickingDomain_ChainGap, sys.residue.count, key, id);
+                }
 
                 // One range per dipole group, keyed by the group's vector attribute, sized by that attribute's own
                 // shape. An index within a range is then the element index inside the group, so a hit carries the
@@ -8787,7 +9044,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 for (size_t j = 0; j < md_array_size(sc.representation.reps); ++j) {
                     Representation& rep = sc.representation.reps[j];
                     if (!rep.type_is_valid || !representation_shown(sc, rep)) continue;
-                    if (rep.type == RepresentationType::Glyphs && glyphs_update(&rep.glyphs, sc.data.sys, sc.data.state)) {
+                    if (rep.type == RepresentationType::Glyphs && glyphs_update(&rep.glyphs, sc.data.sys, representation_instance(sc, rep).state)) {
                         picking_range_reserve(NULL, space, PickingDomain_Glyph, glyphs_count(rep.glyphs), rep.node.id, id);
                     }
                     const size_t count = representation_weak_bond_count(sc, rep);
@@ -8886,11 +9143,15 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             MD_ASSERT(event.payload_type == viamd::EventPayloadType_PickingTooltipTextRequest);
             PickingTooltipTextRequest* req = (PickingTooltipTextRequest*)event.payload;
             if (const SystemContext* hit_sys = picking_hit_system(*state, req->hit)) {
-                // Which system it is of, when there are several to tell apart
-                if (system_count(*state) > 1) {
-                    char label[64];
-                    system_label(label, sizeof(label), *hit_sys);
-                    tooltip_title(req, "%s", label);
+                // Which system it is of, and which instance, when there are several to tell apart
+                const bool systems = system_count(*state) > 1;
+                const bool instances = hit_sys->num_instances > 1;
+                if (systems || instances) {
+                    char label[64] = "";
+                    char inst_label[96] = "";
+                    if (systems) system_label(label, sizeof(label), *hit_sys);
+                    if (instances) instance_label(inst_label, sizeof(inst_label), picking_hit_instance(*hit_sys, req->hit));
+                    tooltip_title(req, "%s%s%s", label, systems && instances ? TOOLTIP_SEP : "", inst_label);
                 }
                 fill_picking_tooltip(req, *hit_sys, req->hit);
             }
@@ -8903,7 +9164,7 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 // Of every system shown, in its own coordinates: they are drawn in one frame (scene_frame_system)
                 for (size_t k = 0; k < state->num_systems; ++k) {
                     const SystemContext& sc = *state->systems[k];
-                    if (!sc.scene.visible) continue;
+                    if (!sc.visible) continue;
                     const md_bitmask_t* m = nullptr;
                     switch (req->round) {
                     case ViewFitRound_Highlight:
@@ -8918,15 +9179,16 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
 
                     const md_bitset_t bf = m ? md_bitmask_view(m) : md_bitset_empty_set();
                     size_t popcount = md_bitset_count(bf);
-                    if (popcount > 0) {
+                    // In every instance shown, where it is placed
+                    for (size_t j = 0; popcount > 0 && j < sc.num_instances; ++j) {
+                        const SystemInstance& inst = *sc.instances[j];
+                        if (!inst.scene.visible || inst.state.num_atoms != sc.data.sys.atom.count) continue;
                         md_float4_t* dst_xyzw = md_array_extend(req->xyzw, popcount, req->alloc);
-                        if (dst_xyzw) {
-                            extract_xyzw_from_mask(dst_xyzw, &bf, &sc.data.sys, &sc.data.state);
-                            // Where the system is placed
-                            for (size_t i = 0; i < popcount; ++i) {
-                                const md_float3_t p = md_float4x4_mul_float3(sc.scene.placement, md_float3_from_float4(dst_xyzw[i]), 1.0f);
-                                dst_xyzw[i] = md_float4_from_float3(p, dst_xyzw[i].w);
-                            }
+                        if (!dst_xyzw) break;
+                        extract_xyzw_from_mask(dst_xyzw, &bf, &sc.data.sys, &inst.state);
+                        for (size_t i = 0; i < popcount; ++i) {
+                            const md_float3_t p = md_float4x4_mul_float3(inst.scene.placement, md_float3_from_float4(dst_xyzw[i]), 1.0f);
+                            dst_xyzw[i] = md_float4_from_float3(p, dst_xyzw[i].w);
                         }
                     }
                 }
@@ -8939,9 +9201,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             MD_ASSERT(event.payload_type == viamd::EventPayloadType_System);
             SystemContext& sys = *(SystemContext*)event.payload;
 
-            // The event means its state was just written from its source, in the lattice frame of its
-            // cell: whatever turn the previous coordinates carried went with them.
-            sys.scene.operations.state_rotation = md_float4x4_ident();
+            // The event means the first instance's state was just written from its source, in the lattice frame of
+            // its cell: whatever turn the previous coordinates carried went with them.
+            SystemInstance& inst = system_instance(sys);
+            inst.state_rotation = md_float4x4_ident();
 
             // The bond changes of the frame are not here: bond_tracking_update keeps them up to date with the frame
             // shown once a frame, and they leave the bonds of the system as they are
@@ -8951,9 +9214,9 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             // broadcasts of this event do not pass through the interpolation step that would otherwise
             // have set the bit.
             // Not while an assembly is shown, whose operators place the coordinates as the file gives them
-            const auto& op = sys.scene.operations;
-            if (sys.scene.assembly < 0 && apply_state_operations(sys, op.recenter, op.apply_pbc, op.unwrap_structures)) {
-                sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
+            const auto& op = sys.operations;
+            if (inst.scene.assembly < 0 && apply_state_operations(inst, op.recenter, op.apply_pbc, op.unwrap_structures)) {
+                inst.dirty_gpu_buffers |= MolBit_DirtyPosition;
             }
             break;
         }
@@ -9131,7 +9394,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->sys = &state->mold.sys;
     job->run = md_alloc_str(job->arena, run_path(state->system_context));
     job->state.alloc = job->arena;
-    md_system_state_copy(&job->state, &state->mold.state);
+    md_system_state_copy(&job->state, &system_instance(state->system_context).state);
     script::drawing_init(&job->vis, job->arena);
     if (t.kind == ScriptVisTarget::Ref) {
         // The value in the unit its mark shows it in
@@ -9253,7 +9516,7 @@ void script_vis_update(ApplicationState* state) {
     }
 
     const uint64_t key = vis_target_key(state, sc.vis_target);
-    const uint64_t state_key = vis_state_key(state->mold.state);
+    const uint64_t state_key = vis_state_key(system_instance(state->system_context).state);
 
     // At most one at a time. While one runs, whatever is set when it has finished is what comes next: the
     // targets in between are never computed.
@@ -9317,7 +9580,7 @@ const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
     // A run's errors change version with every run that ends: what the plot is of
     const uint64_t run = script::eval_errors(eval).version;
     if (!run) return nullptr;
-    const int64_t frame = (int64_t)floor(state->mold.state.frame);
+    const int64_t frame = (int64_t)floor(system_instance(state->system_context).state.frame);
     uint64_t h = md_hash64(&run, sizeof(run), key);
     h = md_hash64(&eval, sizeof(eval), h);
     h = md_hash64(&frame, sizeof(frame), h);
@@ -9328,7 +9591,7 @@ const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
         script::DrawCtx ctx = {
             .prog  = ir,
             .sys   = &state->mold.sys,
-            .state = &state->mold.state,
+            .state = &system_instance(state->system_context).state,
             .eval  = eval,
             .run   = run_path(state->system_context),
         };

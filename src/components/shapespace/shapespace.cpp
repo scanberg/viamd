@@ -1261,7 +1261,7 @@ struct Shapespace : viamd::EventHandler {
     // The shapes of the structures in the state shown: found again when it changes
     void update_current(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
-        const md_system_state_t& st = app->mold.state;
+        const md_system_state_t& st = system_instance(app->system_context).state;
         uint64_t key = md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22);
         key = md_hash64_combine(key, md_hash64(&st.frame, sizeof(st.frame), (uint64_t)(uintptr_t)st.xyz));
         key = md_hash64_combine(key, md_hash64_combine(system_generation, state_generation));

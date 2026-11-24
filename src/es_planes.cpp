@@ -153,7 +153,7 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
 }
 
 Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info, md_float3_t* out_centre) {
-    const md_system_state_t& st = state->mold.state;
+    const md_system_state_t& st = system_instance(state->system_context).state;
     const size_t count = md_bitmask_count(&state->system_context.selection.selection_mask);
     if (count == 0 || !st.xyz) {
         if (info) *info = PlaneFitInfo{};

@@ -93,11 +93,22 @@ void remove_representation_group(SystemContext& sys, uint32_t id);
 // The group goes, and what it held takes its place, in the group around it
 void ungroup_representation_group(SystemContext& sys, uint32_t id);
 
+// --- Instances ---
+
+// What is of instance from (its representations and groups) copied as of instance to, after everything there is. Nothing
+// when the copies would take the system beyond as many representations as it can have.
+void representations_copy_to_instance(SystemContext& sys, const SystemInstance& from, const SystemInstance& to);
+// The representations and groups of the instance, which is about to go
+void remove_instance_representations(SystemContext& sys, const SystemInstance& inst);
+// The representation, or the group and all within it, of the instance with the id from now on
+void representation_node_set_instance(SystemContext& sys, bool group, uint32_t id, uint32_t instance);
+
 RepresentationGroup* find_representation_group(SystemContext& sys, uint32_t id);
 const RepresentationGroup* find_representation_group(const SystemContext& sys, uint32_t id);
 
 // --- Tree ---
 
+// Shown: its system, its instance, it and every group around it
 bool representation_shown(const SystemContext& sys, const Representation& rep);
 bool representation_group_shown(const SystemContext& sys, const RepresentationGroup& group);
 
@@ -111,12 +122,15 @@ struct RepresentationContext {
 };
 RepresentationContext representation_context(const SystemContext& sys, uint32_t parent);
 // What a filter in that context is evaluated and completed against: the application's (filter_context), within its atoms
-script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx);
+// Evaluated on the coordinates of inst, of the system's first instance without one
+script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx, const SystemInstance* inst = nullptr);
 
 // Moves a representation (group false) or a group, with everything within it, to where 'drop' puts it
 // relative to the target - a representation or a group by id, or the top level (target_id 0, which takes only
 // RepresentationDrop_IntoLast). False when it cannot go there: a group cannot go anywhere within itself.
-bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
+// Into another instance when the target is of another (or, at the top level, instance is): it and all within it are of
+// that one from then on
+bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop, uint32_t instance = 0);
 bool representation_can_move(const SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop);
 
 // --- Evaluation ---

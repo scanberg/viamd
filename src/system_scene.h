@@ -22,6 +22,8 @@
 
 struct ApplicationState;
 struct SystemContext;
+struct SystemScene;
+struct SystemInstance;
 
 namespace viamd {
 struct serialization_state_t;
@@ -53,23 +55,46 @@ void system_reset_operations(SystemContext& sys);
 // while an assembly is shown.
 void system_apply_now(SystemContext& sys, bool center, bool wrap, bool make_whole);
 
-// The assembly shown, -1 for none: its copies at once, and the view frames it
-void system_set_assembly(SystemContext& sys, int assembly);
+// The assembly the instance shows, -1 for none: its copies at once, and the view frames it unless told not to
+void instance_set_assembly(SystemInstance& inst, int assembly, bool frame = true);
 
 // The display name of the system: the file that built it
 void system_label(char* buf, size_t cap, const SystemContext& sys);
+// The display name of an instance: the name given it, else where its coordinates come from (its run, at the frame it
+// keeps to, or the system's own)
+void instance_label(char* buf, size_t cap, const SystemInstance& inst);
 
 // ## UI
 
 // The header of the system in the Scene window: the system, shown or not, its menu of the operations to add, the
 // actions, and removing it, which is asked first and then left to the caller (*remove), once the window is drawn.
 // Returns whether it is open: what is the system's is listed under it then, indented, by the caller.
-bool draw_system_header(SystemContext& sys, bool* remove);
+bool draw_system_header(SystemContext& sys, bool* remove, struct InstanceActions* inst_act);
+
+// What is changed of the instances of a system in the Scene window, applied once it is drawn (apply_instance_actions):
+// they have representations, which are listed meanwhile
+struct InstanceActions {
+    uint32_t add_like = 0;      // An instance added as the one with this id: its source, what it is shown as, its representations
+    int      add_run = -1;      // ... but of this run, when it is not negative
+    uint32_t remove = 0;        // The instance with this id, and its representations
+};
+void apply_instance_actions(SystemContext& sys, const InstanceActions& act);
+
+// The row of an instance in the Scene window, of a system which has several: where its coordinates come from, shown or
+// not, its menu (its source, the frame it keeps to, its placement, its name), removing it. Returns whether it is open:
+// what it is shown as and its representations are listed under it then, by the caller.
+bool draw_instance_header(SystemInstance& inst, InstanceActions* act);
+// Whether the instances are listed on rows of their own: of several, or of one with something of its own to show (a
+// name, a frame it keeps to, a placement, hidden). Otherwise what is of the one is listed as the system's.
+bool instance_rows_shown(const SystemContext& sys);
+// What the instance is shown as (as it is, its periodic images, an assembly): one row, none when it can only be shown as
+// it is
+void draw_instance_copies_row(SystemInstance& inst);
 
 // The files of the system, one line each: what it is, its name and what it holds in short. The System window has them
 // in full (its Files), and this links to it. A file is dragged (SYSTEM_FILE_DND), or moved from its menu, into another
 // system or a new one (ApplicationState::file_move).
-void draw_system_files(SystemContext& sys);
+void draw_system_files(SystemContext& sys, struct InstanceActions* inst_act);
 
 // The payload of a file of a system dragged in the Scene window
 #define SYSTEM_FILE_DND "VIAMD_SYSTEM_FILE"
@@ -94,10 +119,15 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
 
 // ## Workspace
 
-// [SystemScene] of the system, by its id, which its [System] has too (file_list_serialize)
+// [SystemScene] of the system, by its id, which its [System] has too (file_list_serialize), and an [Instance] of each of
+// its instances
 void system_scene_serialize(viamd::serialization_state_t& state, const SystemContext& sys);
 
 // One entry of [SystemScene] or of the [Operations] of a workspace written before it, read into app. Returns false
 // for an entry it does not read: System, which the caller matches against the system loaded, and what refers to the
-// loaded system (Assembly, RecenterTarget), which the caller keeps until it is loaded.
+// loaded system (Assembly, RecenterTarget), which the caller keeps until it is loaded. What was the system's before it
+// had instances (Placement, PeriodicImages) goes to its first.
 bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg);
+
+// One entry of an [Instance] of what it is shown as (Visible, Placement, PeriodicImages). Returns false for any other.
+bool system_scene_read_instance_entry(SystemScene& scene, md_str_t ident, md_str_t arg);

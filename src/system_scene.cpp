@@ -67,7 +67,7 @@ const char* system_operation_name(SystemOperation op) {
 
 // The flag that turns it on and off
 static bool* enabled_flag(SystemContext& sys, SystemOperation op) {
-    auto& o = sys.scene.operations;
+    auto& o = sys.operations;
     switch (op) {
     case SystemOperation_Center:     return &o.recenter;
     case SystemOperation_Wrap:       return &o.apply_pbc;
@@ -79,7 +79,7 @@ static bool* enabled_flag(SystemContext& sys, SystemOperation op) {
 }
 
 bool system_operation_enabled(const SystemContext& sys, SystemOperation op) {
-    const auto& o = sys.scene.operations;
+    const auto& o = sys.operations;
     switch (op) {
     case SystemOperation_Center:     return o.recenter;
     case SystemOperation_Wrap:       return o.apply_pbc;
@@ -91,15 +91,18 @@ bool system_operation_enabled(const SystemContext& sys, SystemOperation op) {
 
 
 void system_apply_now(SystemContext& sys, bool center, bool wrap, bool make_whole) {
-    // Its operators place the coordinates as the file gives them (system.assembly)
-    if (sys.scene.assembly >= 0) return;
-    if (apply_state_operations(sys, center, wrap, make_whole)) {
-        sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        SystemInstance& inst = *sys.instances[k];
+        // Its operators place the coordinates as the file gives them (scene.assembly)
+        if (inst.scene.assembly >= 0) continue;
+        if (apply_state_operations(inst, center, wrap, make_whole)) {
+            inst.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+        }
     }
 }
 
 void system_set_operation_enabled(SystemContext& sys, SystemOperation op, bool enabled) {
-    auto& o = sys.scene.operations;
+    auto& o = sys.operations;
     *enabled_flag(sys, op) = enabled;
 
     if (op == SystemOperation_TrackBonds) {
@@ -113,7 +116,7 @@ void system_set_operation_enabled(SystemContext& sys, SystemOperation op, bool e
 void system_reset_operations(SystemContext& sys) {
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
-    auto& o = sys.scene.operations;
+    auto& o = sys.operations;
     o.recenter = false;
     o.fixate_orientation = false;
     o.recenter_query.enabled = false;
@@ -139,15 +142,17 @@ void system_reset_operations(SystemContext& sys) {
 // Copies and naming
 // ---------------------------------------------------------------------------------------------------------
 
-void system_set_assembly(SystemContext& sys, int assembly) {
+void instance_set_assembly(SystemInstance& inst, int assembly, bool frame) {
+    SystemContext& sys = *inst.sys;
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
-    if (assembly == sys.scene.assembly) return;
+    if (assembly == inst.scene.assembly) return;
     // Its copies at once (they are set every frame, update_view_param), and what is shown changes its extent: the
     // view frames it
-    sys.scene.assembly = assembly;
-    assembly_transforms(&sys.scene.assembly_transforms, &sys.scene.assembly_copy_offset, sys.data.sys, assembly, app->allocator.persistent);
-    reset_view(&app->view.target, sys.data.state, &sys.representation.visibility_mask, app->view.camera.fov_y, app->view.region, &sys.data.sys, assembly);
+    inst.scene.assembly = assembly;
+    assembly_transforms(&inst.scene.assembly_transforms, &inst.scene.assembly_copy_offset, sys.data.sys, assembly, app->allocator.persistent);
+    if (!frame) return;
+    reset_view(&app->view.target, inst.state, &sys.representation.visibility_mask, app->view.camera.fov_y, app->view.region, &sys.data.sys, assembly);
     // Room to zoom out to all of it
     app->view.trackball_param.max_distance = MD_MAX(app->view.trackball_param.max_distance, app->view.target.distance * 10.0f);
 }
@@ -155,6 +160,40 @@ void system_set_assembly(SystemContext& sys, int assembly) {
 void system_label(char* buf, size_t cap, const SystemContext& sys) {
     const char* name = sys.name;
     snprintf(buf, cap, "%s", name[0] ? name : "System");
+}
+
+// Called after where its coordinates come from: its run by the name of its file ("run/<name>"), at the frame it keeps to,
+// or the system's own coordinates
+static void instance_source_label(char* buf, size_t cap, const SystemInstance& inst) {
+    const SystemRun* run = instance_run(inst);
+    const char* name = "Own coordinates";
+    if (run) {
+        name = run->path;
+        if (strncmp(name, "run/", 4) == 0) name += 4;
+    }
+    if (run && inst.frame >= 0) snprintf(buf, cap, "%s @ frame %lld", name, (long long)inst.frame);
+    else                        snprintf(buf, cap, "%s", name);
+}
+
+void instance_label(char* buf, size_t cap, const SystemInstance& inst) {
+    if (inst.name[0]) {
+        snprintf(buf, cap, "%s", inst.name);
+        return;
+    }
+    instance_source_label(buf, cap, inst);
+    // Of several called the same, the second and on by their place among them
+    const SystemContext& sys = *inst.sys;
+    size_t same = 0;
+    for (size_t k = 0; k < sys.num_instances && sys.instances[k] != &inst; ++k) {
+        char other[96];
+        if (sys.instances[k]->name[0]) continue;
+        instance_source_label(other, sizeof(other), *sys.instances[k]);
+        if (strcmp(other, buf) == 0) same += 1;
+    }
+    if (same > 0) {
+        const size_t len = strlen(buf);
+        if (len < cap) snprintf(buf + len, cap - len, " (%zu)", same + 1);
+    }
 }
 
 // A chain of an assembly: a copy of a polymer strand, a part of the instances it copies
@@ -201,9 +240,11 @@ static void refresh_representations(SystemContext& sys) {
 }
 
 // The system's menu, of its header's right click and of its ⋮ button: what is done once, the details, removing it
-static void draw_system_menu(SystemContext& sys, bool* remove_request) {
+static void draw_system_menu(SystemContext& sys, bool* remove_request, InstanceActions* inst_act) {
     ApplicationState* app = sys.app;
-    const bool assembly_shown = sys.scene.assembly >= 0;
+    // Every instance shows an assembly: there is nothing the operations move
+    bool assembly_shown = true;
+    for (size_t k = 0; k < sys.num_instances; ++k) assembly_shown &= sys.instances[k]->scene.assembly >= 0;
     const bool has_cell = md_unitcell_flags(&sys.data.state.unitcell) != 0;
 
     ImGui::TextDisabled("Now, to the frame shown");
@@ -241,6 +282,11 @@ static void draw_system_menu(SystemContext& sys, bool* remove_request) {
     }
 
     ImGui::Separator();
+    if (ImGui::MenuItem(ICON_FA_CLONE " Add instance", nullptr, false, sys.num_instances < INSTANCE_MAX)) {
+        inst_act->add_like = system_instance(sys).id;
+    }
+    ImGui::SetItemTooltip("Another instance of the system, as the first is: of the same coordinates, with copies of its\n"
+                          "representations. Shown beside the others, of another run or frame, placed elsewhere.");
     if (ImGui::MenuItem(ICON_FA_FILE_CIRCLE_PLUS " Add File...")) {
         char path[1024] = "";
         if (application::file_dialog(path, sizeof(path), application::FileDialogFlag_Open)) {
@@ -269,7 +315,7 @@ static void draw_bond_tracking_details(SystemContext& sys);
 // The settings of an operation, under its row
 static void draw_operation_properties(SystemContext& sys, SystemOperation op) {
     ApplicationState* app = sys.app;
-    auto& o = sys.scene.operations;
+    auto& o = sys.operations;
     prop::begin("system_operation");
     switch (op) {
     case SystemOperation_Center: {
@@ -350,7 +396,7 @@ static bool operation_has_properties(SystemOperation op) {
 static void draw_operation_row(SystemContext& sys, const OperationInfo& info) {
     ImGui::PushID(info.key);
 
-    const bool assembly_shown = sys.scene.assembly >= 0;
+    const bool assembly_shown = system_instance(sys).scene.assembly >= 0;
     const bool inactive = info.moves_atoms && assembly_shown;
     const bool enabled = system_operation_enabled(sys, info.op);
 
@@ -405,18 +451,19 @@ static void draw_operation_row(SystemContext& sys, const OperationInfo& info) {
     ImGui::PopID();
 }
 
-// What the system is shown as: as it is, in its periodic images, or as one of its assemblies. One row, as a system is
-// shown as one of them; none when it can only be shown as it is.
-static void draw_copies_row(SystemContext& sc) {
+// What the instance is shown as: as it is, in its periodic images, or as one of its assemblies. One row, as an instance
+// is shown as one of them; none when it can only be shown as it is.
+void draw_instance_copies_row(SystemInstance& inst) {
+    const SystemContext& sc = *inst.sys;
     const md_system_t& sys = sc.data.sys;
-    const bool has_cell = md_unitcell_flags(&sc.data.state.unitcell) != 0;
+    const bool has_cell = md_unitcell_flags(&inst.state.unitcell) != 0;
     const size_t num_assemblies = sys.assembly.count;
     if (!has_cell && num_assemblies == 0) return;
 
     ImGui::PushID("copies");
-    int* n = sc.scene.periodic_images;
-    const bool images = sc.scene.assembly < 0 && (n[0] | n[1] | n[2]) != 0;
-    const bool shown = images || sc.scene.assembly >= 0;
+    int* n = inst.scene.periodic_images;
+    const bool images = inst.scene.assembly < 0 && (n[0] | n[1] | n[2]) != 0;
+    const bool shown = images || inst.scene.assembly >= 0;
 
     const float btn = row_button_size();
     const ImVec2 min = ImGui::GetCursorScreenPos();
@@ -436,28 +483,28 @@ static void draw_copies_row(SystemContext& sc) {
     ImGui::SameLine();
 
     char preview[64] = "Coordinates as they are";
-    if (sc.scene.assembly >= 0 && (size_t)sc.scene.assembly < num_assemblies) {
-        const md_str_t id = md_assembly_id(&sys.assembly, (size_t)sc.scene.assembly);
-        snprintf(preview, sizeof(preview), "Assembly " MD_STR_FMT " (%zu chains)", MD_STR_ARG(id), assembly_num_chains(sys, (size_t)sc.scene.assembly));
+    if (inst.scene.assembly >= 0 && (size_t)inst.scene.assembly < num_assemblies) {
+        const md_str_t id = md_assembly_id(&sys.assembly, (size_t)inst.scene.assembly);
+        snprintf(preview, sizeof(preview), "Assembly " MD_STR_FMT " (%zu chains)", MD_STR_ARG(id), assembly_num_chains(sys, (size_t)inst.scene.assembly));
     } else if (images) {
         snprintf(preview, sizeof(preview), "Periodic images");
     }
     ImGui::SetNextItemWidth(MD_MAX(ImGui::GetContentRegionAvail().x, 1.0f));
     if (ImGui::BeginCombo("##shown_as", preview)) {
         if (ImGui::Selectable("Coordinates as they are", !shown)) {
-            system_set_assembly(sc, -1);
+            instance_set_assembly(inst, -1);
             n[0] = n[1] = n[2] = 0;
         }
         if (has_cell && ImGui::Selectable("Periodic images", images)) {
-            system_set_assembly(sc, -1);
+            instance_set_assembly(inst, -1);
             if ((n[0] | n[1] | n[2]) == 0) n[0] = n[1] = n[2] = 1;
         }
         for (size_t k = 0; k < num_assemblies; ++k) {
             char label[64];
             const md_str_t id = md_assembly_id(&sys.assembly, k);
             snprintf(label, sizeof(label), "Assembly " MD_STR_FMT " (%zu chains)##%zu", MD_STR_ARG(id), assembly_num_chains(sys, k), k);
-            if (ImGui::Selectable(label, sc.scene.assembly == (int)k)) {
-                system_set_assembly(sc, (int)k);
+            if (ImGui::Selectable(label, inst.scene.assembly == (int)k)) {
+                instance_set_assembly(inst, (int)k);
             }
         }
         ImGui::EndCombo();
@@ -475,7 +522,7 @@ static void draw_copies_row(SystemContext& sc) {
     ImGui::PopID();
 }
 
-bool draw_system_header(SystemContext& sys, bool* remove) {
+bool draw_system_header(SystemContext& sys, bool* remove, InstanceActions* inst_act) {
     ImGui::PushID("system");
 
     char label[128];
@@ -489,9 +536,9 @@ bool draw_system_header(SystemContext& sys, bool* remove) {
     // the representations), without the tree's own push: the two are drawn in different places.
     const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Framed | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap |
                                      ImGuiTreeNodeFlags_NoTreePushOnOpen | ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_FramePadding;
-    if (!sys.scene.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    if (!sys.visible) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
     const bool open = ImGui::TreeNodeEx("##system", flags, ICON_FA_ATOM "  %s", label);
-    if (!sys.scene.visible) ImGui::PopStyleColor();
+    if (!sys.visible) ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("The system, %zu atoms: the operations on its coordinates, what it is shown as, its representations.\n"
                           "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": apply an operation to the frame shown now, recompute the bonds, the details.",
@@ -499,16 +546,16 @@ bool draw_system_header(SystemContext& sys, bool* remove) {
     }
     bool remove_request = false;
     if (ImGui::BeginPopupContextItem("##system_menu_rc")) {
-        draw_system_menu(sys, &remove_request);
+        draw_system_menu(sys, &remove_request, inst_act);
         ImGui::EndPopup();
     }
 
     // As the rows of the representations: show/hide, more, remove
     ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
-    if (ImGui::Button(sys.scene.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
-        sys.scene.visible = !sys.scene.visible;
+    if (ImGui::Button(sys.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
+        sys.visible = !sys.visible;
         sys.representation.atom_visibility_mask_dirty = true;
-        if (sys.scene.visible) refresh_representations(sys);
+        if (sys.visible) refresh_representations(sys);
     }
     ImGui::SetItemTooltip("Show/Hide the system: all of its representations");
     ImGui::SameLine(0, spacing);
@@ -517,7 +564,7 @@ bool draw_system_header(SystemContext& sys, bool* remove) {
     }
     ImGui::SetItemTooltip("Apply an operation to the frame shown now, recompute the bonds, the details");
     if (ImGui::BeginPopup("##system_menu")) {
-        draw_system_menu(sys, &remove_request);
+        draw_system_menu(sys, &remove_request, inst_act);
         ImGui::EndPopup();
     }
     ImGui::SameLine(0, spacing);
@@ -551,6 +598,211 @@ bool draw_system_header(SystemContext& sys, bool* remove) {
     return open;
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Instances
+// ---------------------------------------------------------------------------------------------------------
+
+// What an instance is turned about by its placement: the centre of the system's cell, or of its own coordinates without
+// one, so that turning it turns it in place
+static md_float3_t instance_pivot(const SystemInstance& inst) {
+    const SystemContext& sys = *inst.sys;
+    if (md_unitcell_flags(&sys.data.state.unitcell) != 0) {
+        md_float3x3_t A;
+        md_unitcell_A_extract_float(A.elem, &sys.data.state.unitcell);
+        return md_float3x3_mul_float3(A, md_float3_set(0.5f, 0.5f, 0.5f));
+    }
+    const md_system_state_t& st = sys.data.state;
+    md_float3_t c = md_float3_zero();
+    if (!st.xyz || st.num_atoms == 0) return c;
+    for (size_t i = 0; i < st.num_atoms; ++i) c = md_float3_add(c, st.xyz[i]);
+    return md_float3_mul1(c, 1.0f / (float)st.num_atoms);
+}
+
+// The placement as an offset and turns about x, y and z (degrees, applied in that order) about the pivot, and back
+static void placement_decompose(md_float3_t* offset, md_float3_t* degrees, const md_float4x4_t& M, md_float3_t pivot) {
+    // R(i, j) is M.elem[j][i]: column major
+    const float r20 = M.elem[0][2], r21 = M.elem[1][2], r22 = M.elem[2][2], r10 = M.elem[0][1], r00 = M.elem[0][0];
+    const float to_deg = 180.0f / 3.14159265f;
+    // + 0: no -0 shown
+    degrees->x = atan2f(r21, r22) * to_deg + 0.0f;
+    degrees->y = asinf(MD_CLAMP(-r20, -1.0f, 1.0f)) * to_deg + 0.0f;
+    degrees->z = atan2f(r10, r00) * to_deg + 0.0f;
+    // M p = R (p - c) + c + offset: the translation of M is c + offset - R c
+    const md_float3_t Rc = md_float4x4_mul_float3(M, pivot, 0.0f);
+    const md_float3_t t  = md_float3_set(M.elem[3][0], M.elem[3][1], M.elem[3][2]);
+    *offset = md_float3_add(md_float3_sub(t, pivot), Rc);
+}
+
+static md_float4x4_t placement_compose(md_float3_t offset, md_float3_t degrees, md_float3_t pivot) {
+    const float to_rad = 3.14159265f / 180.0f;
+    const md_quat_t q = md_quat_mul(md_quat_axis_angle(md_float3_set(0, 0, 1), degrees.z * to_rad),
+                        md_quat_mul(md_quat_axis_angle(md_float3_set(0, 1, 0), degrees.y * to_rad),
+                                    md_quat_axis_angle(md_float3_set(1, 0, 0), degrees.x * to_rad)));
+    const md_float4x4_t R = md_float4x4_from_quat(q);
+    return md_float4x4_mul(md_float4x4_translate_float3(md_float3_add(pivot, offset)), md_float4x4_mul(R, md_float4x4_translate_float3(md_float3_mul1(pivot, -1.0f))));
+}
+
+bool instance_rows_shown(const SystemContext& sys) {
+    if (sys.num_instances != 1) return true;
+    // Of the one instance, what the system's rows would not tell: a name, a frame it keeps to, a placement
+    const SystemInstance& inst = system_instance(sys);
+    return inst.name[0] || (inst.run >= 0 && inst.frame >= 0) || !md_float4x4_equal(inst.scene.placement, md_float4x4_ident()) || !inst.scene.visible;
+}
+
+// The menu of an instance, of its row's right click and of its ⋮ button
+static void draw_instance_menu(SystemInstance& inst, InstanceActions* act) {
+    SystemContext& sys = *inst.sys;
+    const bool first = &inst == &system_instance(sys);
+
+    char label[96];
+    instance_label(label, sizeof(label), inst);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+    ImGui::InputTextWithHint("##name", label, inst.name, sizeof(inst.name));
+    ImGui::SetItemTooltip("Its name; without one it is called after where its coordinates come from");
+
+    ImGui::SeparatorText("Coordinates");
+    if (ImGui::RadioButton("The system's own", inst.run < 0)) instance_show(inst, -1);
+    ImGui::SetItemTooltip("Those its files gave, or the first frame of its first run");
+    for (size_t r = 0; r < sys.num_runs; ++r) {
+        const SystemRun& run = *sys.runs[r];
+        if (run_num_frames(sys, &run) == 0) continue;   // held in its place, not opened
+        const char* name = strncmp(run.path, "run/", 4) == 0 ? run.path + 4 : run.path;
+        char item[160];
+        snprintf(item, sizeof(item), "%s##run%zu", name, r);
+        if (ImGui::RadioButton(item, inst.run == (int)r)) instance_show(inst, (int)r, inst.run == (int)r ? inst.frame : -1);
+    }
+    if (const SystemRun* run = instance_run(inst)) {
+        const size_t num_frames = run_num_frames(sys, run);
+        ImGui::Indent();
+        if (ImGui::RadioButton("Follows the time shown", inst.frame < 0)) instance_show(inst, inst.run, -1);
+        ImGui::SetItemTooltip(first ? "The time of the timeline, which is of this run" : "The time of the timeline, as a frame of this run");
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Keeps to a frame", inst.frame >= 0) && inst.frame < 0) {
+            instance_show(inst, inst.run, (int64_t)MD_CLAMP(sys.app->animation.frame + 0.5, 0.0, (double)(num_frames - 1)));
+        }
+        ImGui::SetItemTooltip("One frame of the run, whatever the time shown: a reference, a ghost of where it was");
+        if (inst.frame >= 0 && num_frames > 0) {
+            int frame = (int)inst.frame;
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+            if (ImGui::SliderInt("frame", &frame, 0, (int)num_frames - 1, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+                instance_show(inst, inst.run, frame);
+            }
+        }
+        ImGui::Unindent();
+    }
+
+    ImGui::SeparatorText("Placement");
+    {
+        const md_float3_t pivot = instance_pivot(inst);
+        md_float3_t offset, degrees;
+        placement_decompose(&offset, &degrees, inst.scene.placement, pivot);
+        bool changed = false;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        changed |= ImGui::DragFloat3("offset (" TOOLTIP_ANGSTROM ")", offset.elem, 0.1f, 0.0f, 0.0f, "%.2f");
+        ImGui::SetItemTooltip("Where it is moved to, from where its coordinates put it");
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        changed |= ImGui::DragFloat3("turn (deg)", degrees.elem, 0.5f, -180.0f, 180.0f, "%.1f");
+        ImGui::SetItemTooltip("Turned about x, then y, then z, about the centre of its cell (of its atoms without one)");
+        if (changed) inst.scene.placement = placement_compose(offset, degrees, pivot);
+        if (ImGui::Button("Reset placement")) inst.scene.placement = md_float4x4_ident();
+        ImGui::SetItemTooltip("Where its coordinates put it, over the other instances");
+    }
+
+    ImGui::Separator();
+    if (ImGui::MenuItem(ICON_FA_COPY " Duplicate instance", nullptr, false, sys.num_instances < INSTANCE_MAX)) {
+        act->add_like = inst.id;
+    }
+    ImGui::SetItemTooltip("Another instance like it: of the same coordinates, with copies of its representations");
+    if (ImGui::MenuItem(ICON_FA_XMARK " Remove instance", nullptr, false, sys.num_instances > 1)) {
+        act->remove = inst.id;
+    }
+    ImGui::SetItemTooltip(first ? "It and its representations. The timeline and the script follow the next one." : "It and its representations");
+}
+
+bool draw_instance_header(SystemInstance& inst, InstanceActions* act) {
+    SystemContext& sys = *inst.sys;
+    ImGui::PushID((int)inst.id);
+    ImGui::PushID("instance");
+
+    char label[96];
+    instance_label(label, sizeof(label), inst);
+    const float btn = row_button_size();
+    const float spacing = 2.0f;
+    const float right_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+
+    const bool hidden = !inst.scene.visible || !sys.visible;
+    if (hidden) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    const ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_AllowOverlap | ImGuiTreeNodeFlags_DefaultOpen |
+                                     ImGuiTreeNodeFlags_FramePadding | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+    const bool open = ImGui::TreeNodeEx("##instance", flags, ICON_FA_CLONE "  %s", label);
+    if (hidden) ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+        const bool first = &inst == &system_instance(sys);
+        ImGui::SetTooltip("An instance of the system: its coordinates from %s, made by the system's operations,\n"
+                          "placed and drawn with representations of its own.%s\n"
+                          "Right click or " ICON_FA_ELLIPSIS_VERTICAL ": where its coordinates come from, its placement, its name.",
+                          inst.run < 0 ? "the system's own" : inst.frame >= 0 ? "a frame of a run" : "a run, at the time shown",
+                          first ? "\nThe first: the one the timeline, the script and the tools read." : "");
+    }
+    if (ImGui::BeginPopupContextItem("##instance_menu_rc")) {
+        draw_instance_menu(inst, act);
+        ImGui::EndPopup();
+    }
+
+    ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
+    if (ImGui::Button(inst.scene.visible ? ICON_FA_EYE : ICON_FA_EYE_SLASH, {btn, btn})) {
+        inst.scene.visible = !inst.scene.visible;
+        sys.representation.atom_visibility_mask_dirty = true;
+        if (inst.scene.visible) refresh_representations(sys);
+    }
+    ImGui::SetItemTooltip("Show/Hide the instance: all of its representations");
+    ImGui::SameLine(0, spacing);
+    if (ImGui::Button(ICON_FA_ELLIPSIS_VERTICAL, {btn, btn})) {
+        ImGui::OpenPopup("##instance_menu");
+    }
+    ImGui::SetItemTooltip("Where its coordinates come from, its placement, its name");
+    if (ImGui::BeginPopup("##instance_menu")) {
+        draw_instance_menu(inst, act);
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine(0, spacing);
+    ImGui::BeginDisabled(sys.num_instances == 1);
+    if (ImGui::DeleteButton(ICON_FA_XMARK, {btn, btn})) {
+        act->remove = inst.id;
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip(sys.num_instances == 1 ? "A system has an instance at least" : "Remove the instance and its representations");
+
+    ImGui::PopID();
+    ImGui::PopID();
+    return open;
+}
+
+void apply_instance_actions(SystemContext& sys, const InstanceActions& act) {
+    if (act.remove) {
+        for (size_t k = 0; k < sys.num_instances; ++k) {
+            if (sys.instances[k]->id == act.remove) {
+                instance_remove(sys, k);
+                break;
+            }
+        }
+    }
+    if (act.add_like) {
+        const SystemInstance* like = instance_find(sys, act.add_like);
+        if (!like) return;
+        SystemInstance* inst = instance_add(sys);
+        if (!inst) return;
+        // Of another run, where its coordinates put it; else as like is, where it is placed
+        const bool other_run = act.add_run >= 0;
+        instance_show(*inst, other_run ? act.add_run : like->run, other_run ? -1 : like->frame);
+        inst->scene.visible = like->scene.visible;
+        if (!other_run) inst->scene.placement = like->scene.placement;
+        for (int i = 0; i < 3; ++i) inst->scene.periodic_images[i] = like->scene.periodic_images[i];
+        instance_set_assembly(*inst, like->scene.assembly, false);
+        representations_copy_to_instance(sys, *like, *inst);
+    }
+}
+
 void draw_system_operations(SystemContext& sys) {
     ImGui::PushID("system");
 
@@ -561,7 +813,7 @@ void draw_system_operations(SystemContext& sys) {
     for (const OperationInfo& info : operation_info) {
         if (!system_operation_enabled(sys, info.op)) continue;
         len += snprintf(on + len, sizeof(on) - len, "%s%s", len ? ", " : "", info.name);
-        inactive |= info.moves_atoms && sys.scene.assembly >= 0;
+        for (size_t k = 0; k < sys.num_instances; ++k) inactive |= info.moves_atoms && sys.instances[k]->scene.assembly >= 0;
     }
 
     const float btn = row_button_size();
@@ -592,7 +844,8 @@ void draw_system_operations(SystemContext& sys) {
         ImGui::TreePop();
     }
 
-    draw_copies_row(sys);
+    // What the system is shown as, of its one instance, when that is not listed on a row of its own
+    if (!instance_rows_shown(sys)) draw_instance_copies_row(system_instance(sys));
 
     // What is done to the system and what it is shown as, apart from how it is drawn
     ImGui::Spacing();
@@ -605,7 +858,7 @@ void draw_system_operations(SystemContext& sys) {
 static void draw_bond_tracking_details(SystemContext& sys) {
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
-    auto& tracking = sys.scene.operations.bond_tracking;
+    auto& tracking = sys.operations.bond_tracking;
 
     const md_bond_delta_t* delta = bond_tracking_delta(sys);
     if (delta) {
@@ -825,7 +1078,7 @@ static void draw_file_move_menu(SystemContext& sc, size_t i) {
     ImGui::EndMenu();
 }
 
-void draw_system_files(SystemContext& sc) {
+void draw_system_files(SystemContext& sc, InstanceActions* inst_act) {
     const SystemContext& sys = sc;
     const FileList* list = &sys.files;
     const size_t num_files = file_list_count(list);
@@ -896,11 +1149,19 @@ void draw_system_files(SystemContext& sc) {
                 if (!e.missing) draw_file_move_menu(sc, i);
                 if (role == FileRole_Trajectory && e.run >= 0 && (size_t)e.run < sc.num_runs) {
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Show this run", nullptr, e.run == (int)sc.shown_run, !e.missing && e.run != (int)sc.shown_run)) {
-                        system_show_run(sc, (size_t)e.run);
+                    SystemInstance& first = system_instance(sc);
+                    if (ImGui::MenuItem("Show this run", nullptr, e.run == first.run, !e.missing && e.run != first.run)) {
+                        instance_show(first, e.run);
                     }
+                    ImGui::SetItemTooltip("In the first instance of the system, which the timeline and the script follow");
+                    if (ImGui::MenuItem("Show in a new instance", nullptr, false, !e.missing && sc.num_instances < INSTANCE_MAX)) {
+                        inst_act->add_like = first.id;
+                        inst_act->add_run  = e.run;
+                    }
+                    ImGui::SetItemTooltip("Beside the instances there are, superposed on them, drawn as the first is");
                     if (ImGui::MenuItem("Close this run")) sc.app->run_close = { sc.id, (size_t)e.run };
-                    ImGui::SetItemTooltip("Its file and the series along it are unloaded");
+                    ImGui::SetItemTooltip("Its file and the series along it are unloaded, and the instances which show it\n"
+                                          "with their representations, but for the first");
                 }
                 ImGui::EndPopup();
             }
@@ -911,7 +1172,9 @@ void draw_system_files(SystemContext& sc) {
                 ImGui::TextDisabled("%s", details);
             }
             // Of several runs, the one the system is drawn at
-            if (role == FileRole_Trajectory && sc.num_runs > 1 && e.run == (int)sc.shown_run) {
+            bool shown = false;
+            for (size_t k = 0; k < sc.num_instances; ++k) shown |= sc.instances[k]->run == e.run && sc.instances[k]->scene.visible;
+            if (role == FileRole_Trajectory && sc.num_runs > 1 && shown) {
                 ImGui::SameLine();
                 ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), ICON_FA_EYE " shown");
             }
@@ -934,15 +1197,20 @@ void system_remove(SystemContext& sys) {
         free_system_data(app, sys);
     }
 
-    // What was of it: its representations, its operations and what it was shown as
+    // What was of it: its representations, its operations, its instances and what they were shown as. The first stays,
+    // as a system has one.
     remove_all_representations(sys);
-    sys.scene.visible = true;
-    sys.scene.placement = md_float4x4_ident();
+    while (sys.num_instances > 1) instance_remove(sys, sys.num_instances - 1);
+    sys.visible = true;
     system_reset_operations(sys);
-    sys.scene.periodic_images[0] = sys.scene.periodic_images[1] = sys.scene.periodic_images[2] = 0;
-    sys.scene.assembly = -1;
-    md_array_shrink(sys.scene.assembly_transforms, 0);
-    md_array_shrink(sys.scene.assembly_copy_offset, 0);
+    SystemInstance& first = system_instance(sys);
+    first.name[0] = '\0';
+    first.scene.visible = true;
+    first.scene.placement = md_float4x4_ident();
+    first.scene.periodic_images[0] = first.scene.periodic_images[1] = first.scene.periodic_images[2] = 0;
+    first.scene.assembly = -1;
+    md_array_shrink(first.scene.assembly_transforms, 0);
+    md_array_shrink(first.scene.assembly_copy_offset, 0);
     sys.representation.atom_visibility_mask_dirty = true;
     if (system_count(*app) == 0) app->animation.frame = 0.0;
 }
@@ -952,16 +1220,11 @@ void system_remove(SystemContext& sys) {
 // ---------------------------------------------------------------------------------------------------------
 
 void system_scene_serialize(viamd::serialization_state_t& state, const SystemContext& sys) {
-    const auto& s = sys.scene;
-    const auto& op = s.operations;
+    const auto& op = sys.operations;
 
     viamd::write_section_header(state, MD_STR_LIT("SystemScene"));
     viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
-    viamd::write_bool(state, MD_STR_LIT("Visible"), s.visible);
-    if (!md_float4x4_equal(s.placement, md_float4x4_ident())) {
-        // Column major
-        viamd::write_flt_vec(state, MD_STR_LIT("Placement"), &s.placement.elem[0][0], 16);
-    }
+    viamd::write_bool(state, MD_STR_LIT("Visible"), sys.visible);
 
     // The operations: on or off, and their settings
     viamd::write_bool(state, MD_STR_LIT("Recenter"), op.recenter);
@@ -979,25 +1242,58 @@ void system_scene_serialize(viamd::serialization_state_t& state, const SystemCon
     char origins[64];
     viamd::write_str(state,  MD_STR_LIT("TrackBondsBreakable"), md_str_from_cstr(bond_origins_str(origins, sizeof(origins), op.bond_tracking.breakable)));
 
-    // What it is shown as
-    if ((s.periodic_images[0] | s.periodic_images[1] | s.periodic_images[2]) != 0) {
-        viamd::write_int_vec(state, MD_STR_LIT("PeriodicImages"), s.periodic_images, 3);
-    }
-    if (s.assembly >= 0 && (size_t)s.assembly < sys.data.sys.assembly.count) {
-        viamd::write_str(state, MD_STR_LIT("Assembly"), md_assembly_id(&sys.data.sys.assembly, (size_t)s.assembly));
+    // Its instances, the first first
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        const SystemInstance& inst = *sys.instances[k];
+        const SystemScene& s = inst.scene;
+        viamd::write_section_header(state, MD_STR_LIT("Instance"));
+        viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
+        viamd::write_int(state, MD_STR_LIT("Id"), (int)inst.id);
+        if (inst.name[0]) viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(inst.name));
+        // The run by its index among the system's, which is that of the workspace's [Run]s of it
+        viamd::write_int(state, MD_STR_LIT("Run"), inst.run);
+        if (inst.run >= 0 && inst.frame >= 0) viamd::write_int(state, MD_STR_LIT("Frame"), (int)inst.frame);
+        viamd::write_bool(state, MD_STR_LIT("Visible"), s.visible);
+        if (!md_float4x4_equal(s.placement, md_float4x4_ident())) {
+            // Column major
+            viamd::write_flt_vec(state, MD_STR_LIT("Placement"), &s.placement.elem[0][0], 16);
+        }
+        if ((s.periodic_images[0] | s.periodic_images[1] | s.periodic_images[2]) != 0) {
+            viamd::write_int_vec(state, MD_STR_LIT("PeriodicImages"), s.periodic_images, 3);
+        }
+        if (s.assembly >= 0 && (size_t)s.assembly < sys.data.sys.assembly.count) {
+            viamd::write_str(state, MD_STR_LIT("Assembly"), md_assembly_id(&sys.data.sys.assembly, (size_t)s.assembly));
+        }
     }
 }
 
-bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg) {
-    auto& s = sys.scene;
-    auto& op = s.operations;
-
+bool system_scene_read_instance_entry(SystemScene& s, md_str_t ident, md_str_t arg) {
     if (md_str_eq(ident, MD_STR_LIT("Visible"))) {
         viamd::extract_bool(s.visible, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("Placement"))) {
         // Column major
         md_float4x4_t M;
         if (viamd::extract_flt_vec(&M.elem[0][0], 16, arg)) s.placement = M;
+    } else if (md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
+        // Integers; a workspace written before [SystemScene] had them as floats ([RenderSettings])
+        float n[3];
+        if (viamd::extract_flt_vec(n, 3, arg)) {
+            for (int k = 0; k < 3; ++k) s.periodic_images[k] = MD_CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
+        }
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg) {
+    auto& op = sys.operations;
+
+    if (md_str_eq(ident, MD_STR_LIT("Visible"))) {
+        viamd::extract_bool(sys.visible, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("Placement")) || md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
+        // Of a workspace written before the instances ([Instance]): the system's, now its first instance's
+        return system_scene_read_instance_entry(system_instance(sys).scene, ident, arg);
     } else if (md_str_eq(ident, MD_STR_LIT("Operations"))) {
         // The operations a system had, of a workspace written while they were added and removed: every system has
         // them all now, on or off by their own entries
@@ -1027,12 +1323,6 @@ bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg) {
     } else if (md_str_eq(ident, MD_STR_LIT("RecenterQuery"))) {
         viamd::extract_to_char_buf(op.recenter_query.filter.text, sizeof(op.recenter_query.filter.text), arg);
         recenter_mark_query_dirty(sys);
-    } else if (md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
-        // Integers; a workspace written before [SystemScene] had them as floats ([RenderSettings])
-        float n[3];
-        if (viamd::extract_flt_vec(n, 3, arg)) {
-            for (int k = 0; k < 3; ++k) s.periodic_images[k] = MD_CLAMP((int)n[k], 0, PERIODIC_IMAGES_MAX);
-        }
     } else {
         return false;
     }

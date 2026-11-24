@@ -138,11 +138,11 @@ static bool groups_enabled(const SystemContext& sys, uint32_t parent) {
 }
 
 bool representation_shown(const SystemContext& sys, const Representation& rep) {
-    return sys.scene.visible && rep.enabled && groups_enabled(sys, rep.node.parent);
+    return sys.visible && representation_instance(sys, rep).scene.visible && rep.enabled && groups_enabled(sys, rep.node.parent);
 }
 
 bool representation_group_shown(const SystemContext& sys, const RepresentationGroup& group) {
-    return sys.scene.visible && group.enabled && groups_enabled(sys, group.node.parent);
+    return sys.visible && instance_resolve(sys, group.instance).scene.visible && group.enabled && groups_enabled(sys, group.node.parent);
 }
 
 RepresentationContext representation_context(const SystemContext& sys, uint32_t parent) {
@@ -171,8 +171,9 @@ bool representation_is_dynamic(const SystemContext& sys, const Representation& r
     return rep.filter.result.is_dynamic || representation_context(sys, rep.node.parent).dynamic;
 }
 
-script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx) {
+script::FilterCtx representation_filter_context(const SystemContext& sys, const RepresentationContext& ctx, const SystemInstance* inst) {
     script::FilterCtx fctx = filter_context(sys);
+    if (inst) fctx.state = &inst->state;
     fctx.atoms = ctx.atoms;
     return fctx;
 }
@@ -227,7 +228,21 @@ bool representation_can_move(const SystemContext& sys, bool group, uint32_t id, 
     return ok;
 }
 
-bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop) {
+// The instance of a node, as it names it (0 for one that is not there)
+static uint32_t node_instance(const SystemContext& sys, bool group, uint32_t id) {
+    if (group) {
+        const RepresentationGroup* g = find_representation_group(sys, id);
+        return g ? g->instance : 0;
+    }
+    const int i = find_rep_idx(sys, id);
+    return i >= 0 ? sys.representation.reps[i].instance : 0;
+}
+
+bool representation_move(SystemContext& sys, bool group, uint32_t id, bool target_group, uint32_t target_id, RepresentationDrop drop, uint32_t instance) {
+    // From its instance to the target's, or to the one given for the top level
+    const SystemInstance& from = instance_resolve(sys, node_instance(sys, group, id));
+    const SystemInstance& to   = instance_resolve(sys, target_id ? node_instance(sys, target_group, target_id) : instance);
+
     md_temp_scope_t temp = md_temp_begin();
     TreeNodes t = tree_nodes(sys, md_temp_allocator(temp));
     const int idx    = representation_tree_find(t.nodes, t.count, group, id);
@@ -250,6 +265,10 @@ bool representation_move(SystemContext& sys, bool group, uint32_t id, bool targe
     if (old_parent != new_parent) {
         flag_within_as_dirty(sys, group, id);
     }
+    // Into another instance: of its coordinates, drawn in its place
+    if (&to != &from) {
+        representation_node_set_instance(sys, group, id, to.id);
+    }
     return true;
 }
 
@@ -257,12 +276,18 @@ bool representation_move(SystemContext& sys, bool group, uint32_t id, bool targe
 // Representations
 // ---------------------------------------------------------------------------------------------------------
 
+// Of the molecule and the glyphs of its instance as they are now: those it had before go
+static void bind_representation(SystemContext& sys, Representation* rep) {
+    const SystemInstance& inst = representation_instance(sys, *rep);
+    md_gl_rep_destroy(rep->md_rep);
+    rep->md_rep = md_gl_rep_create(inst.gl_mol);
+    md_gl_rep_destroy(rep->glyph_rep);
+    rep->glyph_rep = cartoon_glyphs_rep_create(inst.cartoon_glyphs);
+}
+
 static void init_representation(SystemContext& sys, Representation* rep) {
     ApplicationState* state = sys.app;
-    rep->md_rep = md_gl_rep_create(sys.data.gl_mol);
-    // Of the glyphs of the system loaded now: one of a system before it goes
-    md_gl_rep_destroy(rep->glyph_rep);
-    rep->glyph_rep = cartoon_glyphs_rep_create(sys.data.cartoon_glyphs);
+    bind_representation(sys, rep);
     rep->atom_mask = md_bitset_empty_set();
 
     // Default to the first per atom field the system offers, if it offers any - unless the
@@ -348,6 +373,7 @@ Representation* create_representation(SystemContext& sys, RepresentationType typ
     rep->node.id     = sys.representation.next_rep_id++;
     rep->node.parent = group;
     rep->node.order  = INT32_MAX;   // the last in its group
+    if (const RepresentationGroup* g = find_representation_group(sys, group)) rep->instance = g->instance;
     rep->type = type;
     rep->color_mapping = color_mapping;
     if (!md_str_empty(filter)) {
@@ -464,6 +490,7 @@ RepresentationGroup* create_representation_group(SystemContext& sys, md_str_t na
     group.node.parent = parent;
     group.node.order  = INT32_MAX;
     group.node.group  = true;
+    if (const RepresentationGroup* g = find_representation_group(sys, parent)) group.instance = g->instance;
     md_str_copy_to_char_buf(group.name, sizeof(group.name), md_str_empty(name) ? MD_STR_LIT("group") : name);
     md_array_push(sys.representation.groups, group, state->allocator.persistent);
     tree_normalize(sys);
@@ -480,12 +507,12 @@ size_t representation_group_rep_count(const SystemContext& sys, uint32_t id) {
     return n;
 }
 
-void clone_representation_group(SystemContext& sys, uint32_t id) {
+// A copy of the group and everything within it, in parent at order, of the instance (all of it): what is within keeps the
+// orders it had, which are only ever compared with each other. Nothing when the representations within it would take the
+// system beyond as many as it can have. Does not normalize.
+static bool copy_group(SystemContext& sys, uint32_t id, uint32_t parent, int32_t order, uint32_t instance) {
     ApplicationState* state = sys.app;
-    MD_ASSERT(state);
-    tree_normalize(sys);
-    const RepresentationGroup* orig = find_representation_group(sys, id);
-    if (!orig) return;
+    if (!find_representation_group(sys, id)) return false;
 
     md_temp_scope_t temp = md_temp_begin();
     md_allocator_i* alloc = md_temp_allocator(temp);
@@ -498,23 +525,21 @@ void clone_representation_group(SystemContext& sys, uint32_t id) {
     if (!representation_can_add(sys, md_array_size(rep_ids))) {
         log_representation_limit();
         md_temp_end(temp);
-        return;
+        return false;
     }
 
-    // The groups first, so that every parent within the copy has its new id before anything refers to it.
-    // The copy of the group itself goes just after the original and what it holds; what is within it keeps
-    // the orders it had, which are only ever compared with each other.
+    // The groups first, so that every parent within the copy has its new id before anything refers to it
     const size_t num_groups = md_array_size(group_ids) + 1;
     uint32_t* old_ids = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_groups);
     uint32_t* new_ids = (uint32_t*)md_temp_alloc(temp, sizeof(uint32_t) * num_groups);
     old_ids[0] = id;
     for (size_t i = 1; i < num_groups; ++i) old_ids[i] = group_ids[i - 1];
 
-    auto map_parent = [&](uint32_t parent) -> uint32_t {
+    auto map_parent = [&](uint32_t p) -> uint32_t {
         for (size_t i = 0; i < num_groups; ++i) {
-            if (old_ids[i] == parent) return new_ids[i];
+            if (old_ids[i] == p) return new_ids[i];
         }
-        return parent;
+        return p;
     };
 
     for (size_t i = 0; i < num_groups; ++i) {
@@ -527,8 +552,10 @@ void clone_representation_group(SystemContext& sys, uint32_t id) {
         copy.atom_mask = {};            // its own, evaluated again
         copy.filt_is_dirty = true;
         copy.node.id = new_ids[i];
+        copy.instance = instance;
         if (i == 0) {
-            copy.node.order = src->node.order + 1;
+            copy.node.parent = parent;
+            copy.node.order  = order;
         } else {
             copy.node.parent = map_parent(src->node.parent);
         }
@@ -537,11 +564,115 @@ void clone_representation_group(SystemContext& sys, uint32_t id) {
     for (size_t i = 0; i < md_array_size(rep_ids); ++i) {
         const Representation* src = find_representation(sys, rep_ids[i]);
         if (!src) continue;
-        push_copy(sys, *src, map_parent(src->node.parent), src->node.order);
+        Representation copy = *src;
+        copy.instance = instance;
+        push_copy(sys, copy, map_parent(src->node.parent), src->node.order);
     }
 
     md_temp_end(temp);
+    sys.representation.atom_visibility_mask_dirty = true;
+    return true;
+}
+
+void clone_representation_group(SystemContext& sys, uint32_t id) {
     tree_normalize(sys);
+    const RepresentationGroup* orig = find_representation_group(sys, id);
+    if (!orig) return;
+    // Just after the original and what it holds
+    copy_group(sys, id, orig->node.parent, orig->node.order + 1, orig->instance);
+    tree_normalize(sys);
+}
+
+void representations_copy_to_instance(SystemContext& sys, const SystemInstance& from, const SystemInstance& to) {
+    if (&from == &to) return;
+    tree_normalize(sys);
+    md_temp_scope_t temp = md_temp_begin();
+    md_allocator_i* alloc = md_temp_allocator(temp);
+
+    // What is at the top level of from, in its order, and how many representations it holds
+    md_array(uint32_t) rep_ids = 0;
+    md_array(uint32_t) group_ids = 0;
+    size_t num_reps = 0;
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        const Representation& r = sys.representation.reps[i];
+        if (r.node.parent != 0 || &representation_instance(sys, r) != &from) continue;
+        md_array_push(rep_ids, r.node.id, alloc);
+        num_reps += 1;
+    }
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        const RepresentationGroup& g = sys.representation.groups[i];
+        if (g.node.parent != 0 || &instance_resolve(sys, g.instance) != &from) continue;
+        md_array_push(group_ids, g.node.id, alloc);
+        num_reps += representation_group_rep_count(sys, g.node.id);
+    }
+    if (!representation_can_add(sys, num_reps)) {
+        log_representation_limit();
+        md_temp_end(temp);
+        return;
+    }
+
+    // After everything there is, in the order they have among themselves
+    const int32_t base = (int32_t)(md_array_size(sys.representation.reps) + md_array_size(sys.representation.groups)) + 1;
+    for (size_t i = 0; i < md_array_size(rep_ids); ++i) {
+        const Representation* src = find_representation(sys, rep_ids[i]);
+        if (!src) continue;
+        Representation copy = *src;
+        copy.instance = to.id;
+        push_copy(sys, copy, 0, base + src->node.order);
+    }
+    for (size_t i = 0; i < md_array_size(group_ids); ++i) {
+        const RepresentationGroup* src = find_representation_group(sys, group_ids[i]);
+        if (!src) continue;
+        copy_group(sys, group_ids[i], 0, base + src->node.order, to.id);
+    }
+    md_temp_end(temp);
+    tree_normalize(sys);
+    sys.representation.atom_visibility_mask_dirty = true;
+}
+
+void remove_instance_representations(SystemContext& sys, const SystemInstance& inst) {
+    for (size_t i = md_array_size(sys.representation.reps); i-- > 0;) {
+        if (&representation_instance(sys, sys.representation.reps[i]) == &inst) remove_representation(sys, i);
+    }
+    for (size_t i = md_array_size(sys.representation.groups); i-- > 0;) {
+        if (&instance_resolve(sys, sys.representation.groups[i].instance) == &inst) free_group(sys, i);
+    }
+    tree_normalize(sys);
+    recompute_atom_visibility_mask(sys);
+}
+
+void representation_node_set_instance(SystemContext& sys, bool group, uint32_t id, uint32_t instance) {
+    if (!group) {
+        if (Representation* rep = find_representation(sys, id)) {
+            rep->instance = instance;
+            bind_representation(sys, rep);
+            flag_representation_as_dirty(rep);
+        }
+    } else {
+        RepresentationGroup* g = find_representation_group(sys, id);
+        if (!g) return;
+        g->instance = instance;
+        g->filt_is_dirty = true;
+        md_temp_scope_t temp = md_temp_begin();
+        md_allocator_i* alloc = md_temp_allocator(temp);
+        md_array(uint32_t) rep_ids = 0;
+        md_array(uint32_t) group_ids = 0;
+        collect_within(&rep_ids, &group_ids, sys, id, alloc);
+        for (size_t i = 0; i < md_array_size(group_ids); ++i) {
+            if (RepresentationGroup* in = find_representation_group(sys, group_ids[i])) {
+                in->instance = instance;
+                in->filt_is_dirty = true;
+            }
+        }
+        for (size_t i = 0; i < md_array_size(rep_ids); ++i) {
+            if (Representation* rep = find_representation(sys, rep_ids[i])) {
+                rep->instance = instance;
+                bind_representation(sys, rep);
+                flag_representation_as_dirty(rep);
+            }
+        }
+        md_temp_end(temp);
+    }
     sys.representation.atom_visibility_mask_dirty = true;
 }
 
@@ -612,6 +743,7 @@ static void wrap_in_group(SystemContext& sys, bool group, uint32_t id) {
     wrapper.node.parent = node->parent;
     wrapper.node.order  = node->order - 1;
     wrapper.node.group  = true;
+    wrapper.instance    = group ? find_representation_group(sys, id)->instance : find_representation(sys, id)->instance;
     snprintf(wrapper.name, sizeof(wrapper.name), "group");
     md_array_push(sys.representation.groups, wrapper, state->allocator.persistent);
 
@@ -689,7 +821,7 @@ bool representation_particle_type_valid(const SystemContext& sc, RepresentationT
     case RepresentationType::BallAndStick:  return sys.atom.count > 0;
     case RepresentationType::Ribbons:       return sys.protein_backbone.range.count > 0;
     // Proteins, and the lipids and nucleic acids of the glyphs
-    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(sc.data.cartoon_glyphs);
+    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(system_instance(sc).cartoon_glyphs);
     default:                                return false;
     }
 }
@@ -756,11 +888,12 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep) {
 
 // The draws of the glyphs of a Cartoon (see representation.h)
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc) {
-    if (!cartoon_glyphs_valid(sys.data.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !sys.data.cartoon_glyphs.positions_valid) return;
+    const CartoonGlyphs& glyphs = representation_instance(sys, rep).cartoon_glyphs;
+    if (!cartoon_glyphs_valid(glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !glyphs.positions_valid) return;
     const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
 
     // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
-    if (sys.data.cartoon_glyphs.num_spheres > 0) {
+    if (glyphs.num_spheres > 0) {
         md_gl_draw_op_t spheres = {
             .type = MD_GL_REP_SPACE_FILL,
             .args = {},
@@ -771,7 +904,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemC
         md_array_push(*ops, spheres, alloc);
     }
 
-    if (sys.data.cartoon_glyphs.num_tubes > 0) {
+    if (glyphs.num_tubes > 0) {
         md_gl_draw_op_t tubes = {
             .type = MD_GL_REP_TUBES,
             .args = {},
@@ -784,7 +917,7 @@ void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemC
         md_array_push(*ops, tubes, alloc);
     }
 
-    if (sys.data.cartoon_glyphs.num_slabs > 0) {
+    if (glyphs.num_slabs > 0) {
         md_gl_draw_op_t slabs = {
             .type = MD_GL_REP_SLABS,
             .args = {},
@@ -844,7 +977,7 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContex
             .helix = convert_color(rep->secondary_structure.color_helix),
             .sheet = convert_color(rep->secondary_structure.color_sheet),
         };
-        color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(sc), palette);
+        color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(representation_instance(sc, *rep)), palette);
         break;
     }
     case ColorMapping::Attribute: {
@@ -942,7 +1075,7 @@ static void update_representation(SystemContext& sc, Representation* rep) {
                 // The bonds, and the atoms at their ends: those are what is coloured, and shown
                 md_array(md_atom_pair_t) pairs = nullptr;
                 md_array(uint32_t) flags = nullptr;
-                if (filter_evaluate_bonds(&rep->filter, &pairs, &flags, state->script.language, representation_filter_context(sc, ctx), alloc)) {
+                if (filter_evaluate_bonds(&rep->filter, &pairs, &flags, state->script.language, representation_filter_context(sc, ctx, &representation_instance(sc, *rep)), alloc)) {
                     md_array_free(rep->bond_pairs, alloc);
                     md_array_free(rep->bond_flags, alloc);
                     rep->bond_pairs = pairs;
@@ -961,7 +1094,7 @@ static void update_representation(SystemContext& sc, Representation* rep) {
                 rep->filter.result.is_dynamic |= ctx.dynamic;
             } else {
                 md_bitset_t picked = md_bitset_empty_set();
-                if (filter_evaluate(&rep->filter, &picked, state->script.language, representation_filter_context(sc, ctx), alloc)) {
+                if (filter_evaluate(&rep->filter, &picked, state->script.language, representation_filter_context(sc, ctx, &representation_instance(sc, *rep)), alloc)) {
                     md_bitset_free(&rep->atom_mask, alloc);
                     rep->atom_mask = picked;
                 } else {
@@ -1001,7 +1134,7 @@ static void update_representation(SystemContext& sc, Representation* rep) {
         rep->type_is_valid = md_attributes_get(&sc.data.sys.attributes, rep->dipole.dipole_key) != NULL;
         break;
     case RepresentationType::SimulationBox:
-        rep->type_is_valid = md_unitcell_flags(&sc.data.state.unitcell) != 0;
+        rep->type_is_valid = md_unitcell_flags(&representation_instance(sc, *rep).state.unitcell) != 0;
         break;
     case RepresentationType::Bonds:
         rep->type_is_valid = sys.atom.count > 0;
@@ -1024,7 +1157,7 @@ static void update_representation(SystemContext& sc, Representation* rep) {
         representation_set_weak_bonds(sc, rep);
         rep->glyphs_shown = false;
         if (rep->type == RepresentationType::Cartoon) {
-            rep->glyphs_shown = cartoon_glyphs_rep_set_colors(sc.data.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
+            rep->glyphs_shown = cartoon_glyphs_rep_set_colors(representation_instance(sc, *rep).cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
         }
         sc.representation.gl_version += 1;
     }
@@ -1495,7 +1628,7 @@ void target_suggest(RepresentationTarget* t, const SystemContext& sc) {
         num_backbone += ca >= 0 && md_bitset_test(atoms, (uint32_t)ca);
     }
     size_t num_glyphs = 0;
-    const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
+    const CartoonGlyphs& glyphs = system_instance(sc).cartoon_glyphs;
     if (cartoon_glyphs_valid(glyphs)) {
         for (uint32_t i = 0; i < glyphs.num_points; ++i) {
             const int32_t a = glyphs.point_color_atom[i];
@@ -1627,7 +1760,7 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
             push(bb.segment.atoms[hit.local_idx].ca);
         }
     } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const CartoonGlyphs& glyphs = sc.data.cartoon_glyphs;
+        const CartoonGlyphs& glyphs = system_instance(sc).cartoon_glyphs;
         const uint32_t point = cartoon_glyphs_picked_point(glyphs, hit.local_idx);
         if (point < glyphs.num_points) {
             cartoon = true;
@@ -1921,7 +2054,7 @@ void create_default_representations(SystemContext& sc) {
         for (size_t i = 0; i < lipids.count; ++i) {
             if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_lipid_residue_count(&lipids, i);
         }
-        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
+        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(system_instance(sc).cartoon_glyphs);
         if (!lipid_cartoon || num_known < num_lipid_residues) ligand_present = true;
     }
     if (lipid_cartoon) {
@@ -1938,7 +2071,7 @@ void create_default_representations(SystemContext& sc) {
         // membrane are most of it. The rest as beads.
         const bool protein_trace = amino_acid_present && sc.data.sys.protein_backbone.segment.count > 0;
         const size_t num_on_backbone = num_nucleotides_on_backbone(sc.data.sys);
-        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
+        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(system_instance(sc).cartoon_glyphs);
         if (protein_trace) {
             Representation* prot = create_representation(sc, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, MD_STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
@@ -2004,7 +2137,7 @@ void create_default_representations(SystemContext& sc) {
         // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
         // shows nothing of a nucleotide off a backbone
         const size_t num_on_backbone = num_nucleotides_on_backbone(sc.data.sys);
-        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(sc.data.cartoon_glyphs);
+        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(system_instance(sc).cartoon_glyphs);
         Representation* nucl = create_representation(sc, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::ResType : ColorMapping::Type, MD_STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
@@ -2821,10 +2954,17 @@ static void deserialize_representation(SystemContext& sys, viamd::Entries& e) {
         return;
     }
     Representation* rep = create_representation(sys);
-    // By the id of a [RepresentationGroup] before it. One that names nothing leaves it at the top level.
+    // By the id of a [RepresentationGroup] before it, whose instance it is of. One that names nothing leaves it at the
+    // top level, of the instance it names (Instance=), the first where it names none.
     int group = 0;
-    if (viamd::get(e, MD_STR_LIT("Group"), group) && group > 0 && find_representation_group(sys, (uint32_t)group)) {
-        rep->node.parent = (uint32_t)group;
+    int instance = 0;
+    viamd::get(e, MD_STR_LIT("Instance"), instance);
+    rep->instance = instance > 0 ? (uint32_t)instance : 0;
+    if (viamd::get(e, MD_STR_LIT("Group"), group) && group > 0) {
+        if (const RepresentationGroup* g = find_representation_group(sys, (uint32_t)group)) {
+            rep->node.parent = (uint32_t)group;
+            rep->instance = g->instance;
+        }
     }
     read_representation(e, *rep);
     // Last in the group it says it is in: the sections are in the order of the window
@@ -2838,6 +2978,7 @@ void representation_write_entries(viamd::serialization_state_t& state, const Sys
 static void serialize_representation(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep) {
     viamd::write_section_header(state, MD_STR_LIT("Representation"));
     viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
+    viamd::write_int(state, MD_STR_LIT("Instance"), (int)representation_instance(sys, rep).id);
     if (find_representation_group(sys, rep.node.parent)) {
         viamd::write_int(state, MD_STR_LIT("Group"), rep.node.parent);
     }
@@ -2850,8 +2991,11 @@ static void deserialize_group(SystemContext& sys, viamd::Entries& e) {
     RepresentationGroup group = {};
     int id = 0;
     int parent = 0;
+    int instance = 0;
     viamd::get(e, MD_STR_LIT("Id"), id);
     viamd::get(e, MD_STR_LIT("Group"), parent);
+    viamd::get(e, MD_STR_LIT("Instance"), instance);
+    group.instance = instance > 0 ? (uint32_t)instance : 0;
     viamd::get(e, MD_STR_LIT("Name"), group.name, sizeof(group.name));
     viamd::get(e, MD_STR_LIT("Filter"), group.filter.text, sizeof(group.filter.text));
     viamd::get(e, MD_STR_LIT("Enabled"), group.enabled);
@@ -2864,9 +3008,12 @@ static void deserialize_group(SystemContext& sys, viamd::Entries& e) {
     } else {
         group.node.id = sys.representation.next_group_id++;
     }
-    // A group comes before what is within it, so the group it is in has been read already
-    if (parent > 0 && find_representation_group(sys, (uint32_t)parent)) {
-        group.node.parent = (uint32_t)parent;
+    // A group comes before what is within it, so the group it is in has been read already: its instance is that one's
+    if (parent > 0) {
+        if (const RepresentationGroup* g = find_representation_group(sys, (uint32_t)parent)) {
+            group.node.parent = (uint32_t)parent;
+            group.instance = g->instance;
+        }
     }
     group.node.order = INT32_MAX;
     group.node.group = true;
@@ -2879,6 +3026,7 @@ static void serialize_group(viamd::serialization_state_t& state, const SystemCon
     viamd::write_section_header(state, MD_STR_LIT("RepresentationGroup"));
     viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
     viamd::write_int(state, MD_STR_LIT("Id"), group.node.id);
+    viamd::write_int(state, MD_STR_LIT("Instance"), (int)instance_resolve(sys, group.instance).id);
     if (find_representation_group(sys, group.node.parent)) {
         viamd::write_int(state, MD_STR_LIT("Group"), group.node.parent);
     }
@@ -3737,6 +3885,7 @@ struct WindowActions {
     bool add_group = false;
     uint32_t add_into = 0;  // the group to add into, 0 for the top level
     bool remove_all = false;
+    uint32_t instance = 0;  // The instance the top level of the above is of: what is added to it or moved into it, what is removed
 };
 
 // The tree as it is drawn this frame
@@ -3749,11 +3898,13 @@ struct WindowTree {
 
 static void apply_window_actions(SystemContext& sys, const WindowActions& act) {
     if (act.remove_all) {
-        remove_all_representations(sys);
+        // Of the instance, of a system which has several
+        if (sys.num_instances > 1) remove_instance_representations(sys, instance_resolve(sys, act.instance));
+        else                       remove_all_representations(sys);
         return;
     }
     if (act.move.node.id) {
-        representation_move(sys, act.move.node.group, act.move.node.id, act.move.target.group, act.move.target.id, act.move.drop);
+        representation_move(sys, act.move.node.group, act.move.node.id, act.move.target.group, act.move.target.id, act.move.drop, act.instance);
     }
     if (act.clone.id) {
         if (act.clone.group) {
@@ -3776,11 +3927,14 @@ static void apply_window_actions(SystemContext& sys, const WindowActions& act) {
     if (act.ungroup) {
         ungroup_representation_group(sys, act.ungroup);
     }
+    // Into a group, of its instance; at the top level, of the instance given
     if (act.add_representation) {
-        create_representation(sys, RepresentationType::SpaceFill, ColorMapping::Type, MD_STR_LIT(""), act.add_into);
+        Representation* rep = create_representation(sys, RepresentationType::SpaceFill, ColorMapping::Type, MD_STR_LIT(""), act.add_into);
+        if (rep && !act.add_into && act.instance) representation_node_set_instance(sys, false, rep->node.id, act.instance);
     }
     if (act.add_group) {
-        create_representation_group(sys, MD_STR_LIT("group"), act.add_into);
+        RepresentationGroup* g = create_representation_group(sys, MD_STR_LIT("group"), act.add_into);
+        if (g && !act.add_into && act.instance) representation_node_set_instance(sys, true, g->node.id, act.instance);
     }
 }
 
@@ -3973,7 +4127,7 @@ static void draw_row_buttons(const WindowTree& tree, bool* enabled, float right_
     ImGui::SetItemTooltip(node.group ? "Remove the representation group and everything in it" : "Remove");
 }
 
-static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act);
+static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act, const SystemInstance* inst);
 
 // How the atoms of a representation are coloured, as rows of its Color section: the mapping and what it takes - a
 // colour, an attribute through a colour scale, the colours of the secondary structures - and for sticks the bonds.
@@ -4166,18 +4320,18 @@ bool draw_representation_geometry(SystemContext& sys, Representation& rep) {
         update_rep |= ImGui::SliderFloat("##sheet", &rep.scale[1], 0.1f, 3.f, scale_fmt);
         prop::row("helix");
         update_rep |= ImGui::SliderFloat("##helix", &rep.scale[2], 0.1f, 3.f, scale_fmt);
-        if (cartoon_glyphs_valid(sys.data.cartoon_glyphs)) {
+        if (cartoon_glyphs_valid(system_instance(sys).cartoon_glyphs)) {
             prop::row("lipid, nucleic", "Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
             update_rep |= ImGui::SliderFloat("##lipid_nucleic", &rep.scale[3], 0.1f, 3.f, scale_fmt);
             if (sys.data.sys.nucleic_backbone.range.count > 0) {
                 prop::row("nucleic backbone", "Radius of the band along the backbone of the nucleic acids: half its thickness, its width stays (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_backbone", &rep.nucleic_band_radius, 0.1f, 1.5f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (sys.data.cartoon_glyphs.num_slabs > 0) {
+            if (system_instance(sys).cartoon_glyphs.num_slabs > 0) {
                 prop::row("nucleic rings", "Radius of the rims of the sugar and base rings, and of the stick from each sugar to its base (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_rings", &rep.nucleic_ring_radius, 0.1f, 1.0f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (sys.data.cartoon_glyphs.num_split_heads > 0) {
+            if (system_instance(sys).cartoon_glyphs.num_split_heads > 0) {
                 prop::row("two head spheres", "The head of a phospholipid as two spheres, split at its phosphate: the head group with the phosphate, and the backbone the tails hang off");
                 update_rep |= ImGui::Checkbox("##two_head_spheres", &rep.two_head_spheres);
             }
@@ -4748,7 +4902,7 @@ static void draw_group_row(SystemContext& sys, const WindowTree& tree, Represent
         // What is within a hidden group is drawn dimmed: it is hidden too, whatever its own eye says
         const bool dim = !group.enabled;
         if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-        draw_tree_level(sys, tree, group.node.id, depth + 1, act);
+        draw_tree_level(sys, tree, group.node.id, depth + 1, act, nullptr);
         if (dim) ImGui::PopStyleVar();
 
         ImGui::TreePop();
@@ -4758,7 +4912,8 @@ static void draw_group_row(SystemContext& sys, const WindowTree& tree, Represent
     ImGui::PopID();
 }
 
-static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act) {
+// Of the top level, what is of the instance (inst, when it is given): within a group, everything is of the group's
+static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t parent, size_t depth, WindowActions* act, const SystemInstance* inst) {
     ApplicationState* state = sys.app;
     const TreeNodes& t = tree.t;
     if (depth > t.count) return;    // A cycle; the tree breaks those when it is normalized
@@ -4768,19 +4923,39 @@ static void draw_tree_level(SystemContext& sys, const WindowTree& tree, uint32_t
     for (size_t i = 0; i < n; ++i) {
         const size_t k = (size_t)kids[i];
         if (k < t.num_reps) {
-            draw_representation_row(sys, tree, sys.representation.reps[k], act);
+            Representation& rep = sys.representation.reps[k];
+            if (inst && !representation_of(sys, rep, *inst)) continue;
+            draw_representation_row(sys, tree, rep, act);
         } else {
-            draw_group_row(sys, tree, sys.representation.groups[k - t.num_reps], depth, act);
+            RepresentationGroup& group = sys.representation.groups[k - t.num_reps];
+            if (inst && &instance_resolve(sys, group.instance) != inst) continue;
+            draw_group_row(sys, tree, group, depth, act);
         }
     }
 }
 
-// The representations of a system: a heading with what adds to them and removes them all, then their tree
-static void draw_representations_section(SystemContext& sys, const WindowTree& tree, WindowActions* act) {
+// Whether anything at the top level is of the instance
+static bool instance_has_nodes(const SystemContext& sys, const SystemInstance& inst) {
+    for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
+        if (sys.representation.reps[i].node.parent == 0 && representation_of(sys, sys.representation.reps[i], inst)) return true;
+    }
+    for (size_t i = 0; i < md_array_size(sys.representation.groups); ++i) {
+        const RepresentationGroup& g = sys.representation.groups[i];
+        if (g.node.parent == 0 && &instance_resolve(sys, g.instance) == &inst) return true;
+    }
+    return false;
+}
+
+// The representations of an instance of a system: a heading with what adds to them and removes them all (where things
+// dragged go last, at its top level), then their tree
+static void draw_representations_section(SystemContext& sys, const WindowTree& tree, WindowActions* act, const SystemInstance& inst) {
     ImGui::PushID("representations");
     const float btn = tree.button_size;
     const float spacing = tree.button_spacing;
     const float right_x = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+    const bool several = sys.num_instances > 1;
+    const ImVec2 row_min = ImGui::GetCursorScreenPos();
+    const float row_width = ImGui::GetContentRegionAvail().x;
 
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Representations");
@@ -4796,6 +4971,8 @@ static void draw_representations_section(SystemContext& sys, const WindowTree& t
     ImGui::SameLine(right_x - (btn + spacing) * 3, spacing);
     if (ImGui::Button(ICON_FA_FOLDER_PLUS, {btn, btn})) {
         act->add_group = true;
+        act->add_into = 0;
+        act->instance = inst.id;
     }
     ImGui::SetItemTooltip("Add a representation group. What is in it is shown and hidden with it, and its filter is the\n"
                           "context the filters within it are evaluated in.");
@@ -4803,22 +4980,26 @@ static void draw_representations_section(SystemContext& sys, const WindowTree& t
     ImGui::BeginDisabled(!representation_can_add(sys));
     if (ImGui::Button(ICON_FA_PLUS, {btn, btn})) {
         act->add_representation = true;
+        act->add_into = 0;
+        act->instance = inst.id;
     }
     ImGui::EndDisabled();
     ImGui::SetItemTooltip("%s", representation_can_add(sys) ? "Add a representation" : limit_tip());
 
     // Removing them all, behind a question: it cannot be taken back
+    const bool any = instance_has_nodes(sys, inst);
     ImGui::SameLine(0, spacing);
-    ImGui::BeginDisabled(md_array_size(sys.representation.reps) == 0 && md_array_size(sys.representation.groups) == 0);
+    ImGui::BeginDisabled(!any);
     if (ImGui::Button(ICON_FA_TRASH_CAN, {btn, btn})) {
         ImGui::OpenPopup("##remove_all");
     }
     ImGui::EndDisabled();
-    ImGui::SetItemTooltip("Remove every representation and representation group");
+    ImGui::SetItemTooltip(several ? "Remove every representation and representation group of the instance" : "Remove every representation and representation group");
     if (ImGui::BeginPopup("##remove_all")) {
-        ImGui::TextUnformatted("Remove every representation and representation group?");
+        ImGui::TextUnformatted(several ? "Remove every representation and representation group of the instance?" : "Remove every representation and representation group?");
         if (ImGui::DeleteButton("remove all")) {
             act->remove_all = true;
+            act->instance = inst.id;
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -4827,27 +5008,61 @@ static void draw_representations_section(SystemContext& sys, const WindowTree& t
         }
         ImGui::EndPopup();
     }
+
+    // Dragged onto the heading, a representation or a group goes last at the top level of the instance
+    const ImRect heading = {row_min, {row_min.x + MD_MAX(row_width, 1.0f), row_min.y + ImGui::GetFrameHeight()}};
+    if (ImGui::BeginDragDropTargetCustom(heading, ImGui::GetID("##into_instance"))) {
+        const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(REPRESENTATION_NODE_DND, ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (payload && payload->DataSize == (int)sizeof(NodeRef)) {
+            NodeRef src;
+            md_memcpy(&src, payload->Data, sizeof(src));
+            if (src.system == sys.id && representation_can_move(sys, src.group, src.id, false, 0, RepresentationDrop_IntoLast)) {
+                ImGui::GetWindowDrawList()->AddRect(heading.Min, heading.Max, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 0.0f, 0, 2.0f);
+                if (payload->IsDelivery()) {
+                    act->move.node   = src;
+                    act->move.target = NodeRef{};
+                    act->move.drop   = RepresentationDrop_IntoLast;
+                    act->instance    = inst.id;
+                }
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
     ImGui::PopID();
 
-    if (tree.t.count == 0) {
+    if (!any) {
         ImGui::TextDisabled("None yet. Add one with " ICON_FA_PLUS ".");
     }
-    // What is within a hidden system is drawn dimmed: it is hidden too, whatever its own eye says
-    const bool dim = !sys.scene.visible;
+    // What is within a hidden system or instance is drawn dimmed: it is hidden too, whatever its own eye says
+    const bool dim = !sys.visible || !inst.scene.visible;
     if (dim) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-    draw_tree_level(sys, tree, 0, 0, act);
+    draw_tree_level(sys, tree, 0, 0, act, &inst);
     if (dim) ImGui::PopStyleVar();
 }
 
-// One system in the window: its header and, under it, one level in: its files, what is done to its coordinates and
-// what it is shown as, then its representations. Closed, it lists none of them. The changes to it, in act, are applied
-// once the window is drawn.
-static void draw_system_in_window(SystemContext& sys, const WindowTree& tree, WindowActions* act, bool* remove) {
-    if (draw_system_header(sys, remove)) {
+// One system in the window: its header and, under it, one level in: its files, what is done to its coordinates, then
+// what it is shown as and its representations - of each of its instances under a row of its own, when it has several.
+// Closed, it lists none of them. The changes to it, in act and inst_act, are applied once the window is drawn.
+static void draw_system_in_window(SystemContext& sys, const WindowTree& tree, WindowActions* act, InstanceActions* inst_act, bool* remove) {
+    if (draw_system_header(sys, remove, inst_act)) {
         ImGui::Indent();
-        draw_system_files(sys);
+        draw_system_files(sys, inst_act);
         draw_system_operations(sys);
-        draw_representations_section(sys, tree, act);
+        if (!instance_rows_shown(sys)) {
+            draw_representations_section(sys, tree, act, system_instance(sys));
+        } else {
+            for (size_t k = 0; k < sys.num_instances; ++k) {
+                SystemInstance& inst = *sys.instances[k];
+                ImGui::PushID((int)inst.id);
+                if (draw_instance_header(inst, inst_act)) {
+                    ImGui::Indent();
+                    draw_instance_copies_row(inst);
+                    draw_representations_section(sys, tree, act, inst);
+                    ImGui::Unindent();
+                }
+                ImGui::PopID();
+            }
+        }
         ImGui::Unindent();
     }
 }
@@ -4904,9 +5119,11 @@ static void draw_below_rows(SystemContext& sys, WindowActions* act) {
                 const ImVec2 min = ImGui::GetItemRectMin();
                 ImGui::GetWindowDrawList()->AddLine(min, {ImGui::GetItemRectMax().x, min.y}, ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f);
                 if (payload->IsDelivery()) {
+                    // Of the last instance listed, which the space is below
                     act->move.node   = src;
                     act->move.target = NodeRef{};
                     act->move.drop   = RepresentationDrop_IntoLast;
+                    act->instance    = sys.instances[sys.num_instances - 1]->id;
                 }
             }
         }
@@ -4914,6 +5131,7 @@ static void draw_below_rows(SystemContext& sys, WindowActions* act) {
     }
     if (ImGui::BeginPopupContextItem("##below_menu")) {
         draw_tree_menu(sys, NodeRef{}, act);
+        if (act->add_representation || act->add_group) act->instance = sys.instances[sys.num_instances - 1]->id;
         ImGui::EndPopup();
     }
 }
@@ -4935,6 +5153,7 @@ void draw_representations_window(ApplicationState* state) {
         SystemContext* sys;
         WindowTree tree;
         WindowActions act;
+        InstanceActions inst_act;
         bool remove;
     };
     Listed listed[SYSTEM_MAX];
@@ -4955,6 +5174,7 @@ void draw_representations_window(ApplicationState* state) {
         l.tree.button_spacing = 2.0f;
         l.tree.handle_width = handle_width;
         l.act = WindowActions{};
+        l.inst_act = InstanceActions{};
         l.remove = false;
     }
 
@@ -4969,11 +5189,11 @@ void draw_representations_window(ApplicationState* state) {
         if (system_loaded(*l.sys)) {
             const ImVec2 min = ImGui::GetCursorScreenPos();
             const float width = ImGui::GetContentRegionAvail().x;
-            draw_system_in_window(*l.sys, l.tree, &l.act, &l.remove);
+            draw_system_in_window(*l.sys, l.tree, &l.act, &l.inst_act, &l.remove);
             system_rows_drop_target(*l.sys, min, {min.x + width, ImGui::GetCursorScreenPos().y});
         } else {
             ImGui::Spacing();
-            draw_representations_section(*l.sys, l.tree, &l.act);
+            draw_representations_section(*l.sys, l.tree, &l.act, system_instance(*l.sys));
         }
         if (i + 1 == num_listed) draw_below_rows(*l.sys, &l.act);
         ImGui::PopID();
@@ -4991,6 +5211,7 @@ void draw_representations_window(ApplicationState* state) {
             continue;
         }
         apply_window_actions(*l.sys, l.act);
+        apply_instance_actions(*l.sys, l.inst_act);
     }
 }
 

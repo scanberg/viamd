@@ -563,7 +563,7 @@ static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
 
 // Where the atoms are: a field is of one geometry
 static uint64_t panel_positions_hash(const ApplicationState& state) {
-    const md_system_state_t& st = state.mold.state;
+    const md_system_state_t& st = system_instance(state.system_context).state;
     return (st.xyz && st.num_atoms) ? md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, 0x9a7e1) : 0x9a7e1;
 }
 
@@ -730,7 +730,7 @@ struct GtoCriticalPointJob {
 // does not carry what the search needs.
 static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
     const md_system_t& sys = app.mold.sys;
-    const md_system_state_t& state = app.mold.state;
+    const md_system_state_t& state = system_instance(app.system_context).state;
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
 
@@ -1027,7 +1027,7 @@ struct CtGeometry {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         size_t n = 0;
-        const md_float3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, state.mold.state);
+        const md_float3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, system_instance(state.system_context).state);
         if (!p || n == 0) return false;
         xyz = (md_float3_t*)md_alloc(md_get_heap_allocator(), sizeof(md_float3_t) * n);
         md_memcpy(xyz, p, sizeof(md_float3_t) * n);
@@ -2395,9 +2395,9 @@ struct QuantumChemistry : viamd::EventHandler {
 					const size_t count = qm.count;
                     for (size_t i = 0; i < count; ++i) {
                         const size_t idx = qm_to_system_atom(qm, i);
-                        atom_xyzw[i].x = (float)(state.mold.state.xyz[idx].x * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].y = (float)(state.mold.state.xyz[idx].y * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].z = (float)(state.mold.state.xyz[idx].z * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].x = (float)(system_instance(state.system_context).state.xyz[idx].x * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].y = (float)(system_instance(state.system_context).state.xyz[idx].y * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].z = (float)(system_instance(state.system_context).state.xyz[idx].z * ANGSTROM_TO_BOHR);
 
 						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
 						nucl_dipole.x += atom_xyzw[i].x * z;
@@ -2771,12 +2771,12 @@ struct QuantumChemistry : viamd::EventHandler {
         if (qm.system_index) {
             md_bitset_t mask = md_bitset_from_indices((uint32_t*)qm.system_index, qm.count, state.allocator.frame);
             filter_colors(colors, num_colors, mask);
-            reset_view(&default_view, state.mold.state, &mask);
+            reset_view(&default_view, system_instance(state.system_context).state, &mask);
         } else {
-            reset_view(&default_view, state.mold.state);
+            reset_view(&default_view, system_instance(state.system_context).state);
         }
 
-        gl_rep = md_gl_rep_create(state.mold.gl_mol);
+        gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
         md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
         orb.render_hash = 0;
 
@@ -2834,7 +2834,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // structure in front of the user and then invited them to read charge
             // transfer off it.
             nto.group.count = 1;
-            nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            nto.gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
             update_nto_group_colors(state.mold.sys);
 
             // Callculate ballpark scaling factor for dipole vectors
@@ -2865,7 +2865,7 @@ struct QuantumChemistry : viamd::EventHandler {
             picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
             ctv.target = default_view;
             ctv.camera = ctv.target;
-            ctv.gl_rep = md_gl_rep_create(state.mold.gl_mol);
+            ctv.gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
             {
                 QmAtoms qm = {};
                 if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
@@ -5370,13 +5370,13 @@ struct QuantumChemistry : viamd::EventHandler {
         // subset used to scramble the first N atoms of the molecule.
         for (size_t i = 0; i < qm.count; i++) {
             const size_t idx = qm_to_system_atom(qm, i);
-            if (idx >= state.mold.state.num_atoms) continue;
-            state.mold.state.xyz[idx].x = (float)coords[i].x;
-            state.mold.state.xyz[idx].y = (float)coords[i].y;
-            state.mold.state.xyz[idx].z = (float)coords[i].z;
+            if (idx >= system_instance(state.system_context).state.num_atoms) continue;
+            system_instance(state.system_context).state.xyz[idx].x = (float)coords[i].x;
+            system_instance(state.system_context).state.xyz[idx].y = (float)coords[i].y;
+            system_instance(state.system_context).state.xyz[idx].z = (float)coords[i].z;
         }
 		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
-        state.mold.dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
+        system_instance(state.system_context).dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
     }
 
     // The ground state dipole vector, in the e*bohr it is stored in, or zero when absent. Read as
@@ -5515,7 +5515,7 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
 
         size_t num_atoms = 0;
-        const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, state.mold.state);
+        const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, system_instance(state.system_context).state);
         uint64_t hash = md_hash64(&cp.rho_min, sizeof(cp.rho_min), qm_version);
         hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
         if (atom_pos) hash = md_hash64(atom_pos, sizeof(md_float3_t) * num_atoms, hash);
@@ -7875,8 +7875,8 @@ struct QuantumChemistry : viamd::EventHandler {
                                 vz[i] = (float)(norm_modes[i].z * scl);
                             }
 
-                            //md_gl_mol_set_atom_position(state.mold.gl_mol, 0, num_atoms, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, 0);
-                            md_gl_mol_set_atom_velocity(state.mold.gl_mol, 0, num_atoms, vx, vy, vz, 0);
+                            //md_gl_mol_set_atom_position(system_instance(state.system_context).gl_mol, 0, num_atoms, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, 0);
+                            md_gl_mol_set_atom_velocity(system_instance(state.system_context).gl_mol, 0, num_atoms, vx, vy, vz, 0);
                             
 
 #else
@@ -7886,14 +7886,14 @@ struct QuantumChemistry : viamd::EventHandler {
                             // calculation covers the whole system.
                             for (size_t i = 0; i < num_atoms; i++) {
                                 const size_t idx = qm_to_system_atom(qm, i);
-                                if (idx >= state.mold.state.num_atoms) continue;
-                                state.mold.state.xyz[idx].x = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.state.xyz[idx].y = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.state.xyz[idx].z = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                if (idx >= system_instance(state.system_context).state.num_atoms) continue;
+                                system_instance(state.system_context).state.xyz[idx].x = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                system_instance(state.system_context).state.xyz[idx].y = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                system_instance(state.system_context).state.xyz[idx].z = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
-                            state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
+                            system_instance(state.system_context).dirty_gpu_buffers |= MolBit_DirtyPosition;
 #endif
                             vib.coord_modified = true;
 
@@ -7914,13 +7914,13 @@ struct QuantumChemistry : viamd::EventHandler {
                         // is re-read every frame and the guard costs nothing.
                         for (size_t i = 0; atom_coord && i < num_atoms; i++) {
                             const size_t idx = qm_to_system_atom(qm, i);
-                            if (idx >= state.mold.state.num_atoms) continue;
-                            state.mold.state.xyz[idx].x = (float)atom_coord[i].x;
-                            state.mold.state.xyz[idx].y = (float)atom_coord[i].y;
-                            state.mold.state.xyz[idx].z = (float)atom_coord[i].z;
+                            if (idx >= system_instance(state.system_context).state.num_atoms) continue;
+                            system_instance(state.system_context).state.xyz[idx].x = (float)atom_coord[i].x;
+                            system_instance(state.system_context).state.xyz[idx].y = (float)atom_coord[i].y;
+                            system_instance(state.system_context).state.xyz[idx].z = (float)atom_coord[i].z;
                         }
                         viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
-                        state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+                        system_instance(state.system_context).dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         vib.coord_modified = false;
                     }
 
@@ -8532,9 +8532,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                 render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
-                render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
                 // Baked into the picking buffer, which hovering reads
-                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
+                const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
                 render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                 render_hash = render_hash ? render_hash : 1;
             }
@@ -8577,7 +8577,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(state.system_context),
+                    .picking_offset = gl_picking_offset(system_instance(state.system_context)),
                 };
 
                 md_gl_draw(&draw_args);
@@ -9735,7 +9735,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 candidate_mask = &selected;
                             }
                             point_set_region_mask_compute(&state.system_context.selection.highlight_mask,
-                                state.mold.state.xyz, state.mold.state.num_atoms,
+                                system_instance(state.system_context).state.xyz, system_instance(state.system_context).state.num_atoms,
                                 candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
 
                             grow_mask_by_selection_granularity(&state.system_context.selection.highlight_mask, state.selection.granularity, state.mold.sys);
@@ -9952,9 +9952,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                     render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-                    render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
+                    render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
                     // Baked into the picking buffer, which hovering reads
-                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
+                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
                     render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                     render_hash = render_hash ? render_hash : 1;
                 }
@@ -9999,7 +9999,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .proj_matrix = (const float*)proj_mat.elem,
                             },
 
-                            .picking_offset = gl_picking_offset(state.system_context),
+                            .picking_offset = gl_picking_offset(system_instance(state.system_context)),
 
                             .atom_mask = atom_mask,
                         };
@@ -12124,8 +12124,8 @@ struct QuantumChemistry : viamd::EventHandler {
             render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
             render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
             render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-            render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
-            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
+            render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
             render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
             render_hash = render_hash ? render_hash : 1;
         }
@@ -12164,7 +12164,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(state.system_context),
+                    .picking_offset = gl_picking_offset(system_instance(state.system_context)),
                     .atom_mask = atom_mask,
                 };
                 md_gl_draw(&draw_args);
