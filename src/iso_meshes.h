@@ -7,8 +7,8 @@
 // one GL mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
 // a field in several slots costs its functions once - and the result is read back once; without a GPU device
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
-// job (md_gto_iso_gpu_job_t) advanced by every update for a few milliseconds at most: the mesh shown stays the
-// previous one until the job is done, so a long extraction never stalls the frame (iso_meshes_progress tells how
+// job (md_gto_iso_gpu_job_t, run as a GpuJob: gpu_job.h) advanced once a frame: the mesh shown stays the
+// previous one until the job is done, so a long extraction never stalls the frame (the overlay tells how
 // far it is). The CPU path blocks.
 //
 // Before a job, the fields go to the device (md_gto_iso_gpu_set_t), which for a large density is seconds of CPU
@@ -71,9 +71,9 @@ struct IsoMeshes {
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
 
-    // The GPU extraction under way (md_gto_iso_gpu_job_t), of the slots whose key is job_key: until it is done
-    // the mesh above is the previous one
-    void*    job = nullptr;
+    // The GPU extraction under way (a GpuJob of an md_gto_iso_gpu_job_t: gpu_job.h, listed in the overlay while it
+    // runs), of the slots whose key is job_key: until it is done the mesh above is the previous one
+    class GpuJob* job = nullptr;
     uint64_t job_key = 0;
     uint32_t job_slots = 0;
     int64_t  job_start = 0;     // md_tick_t: when it began
@@ -113,11 +113,6 @@ void iso_meshes_collect();
 // Waits for the pool tasks under way and frees what they made. Before the GPU device and the task system go.
 void iso_meshes_shutdown(ApplicationState* state);
 
-// The GPU extractions under way for longer than a moment, for a progress display: how far each is (0 to 1), or
-// negative for what is being prepared on a worker thread (a field, a set), which has no fraction. Returns how many
-// (at most cap).
-size_t iso_meshes_progress(float* fraction, size_t cap);
-
 md_float4x4_t iso_meshes_model_matrix();
 
 // Lattice spacing in bohr for a volume resolution: the same three steps of detail as the volumes
@@ -144,6 +139,16 @@ md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const d
 // Coloring_VertexField; the caller sets the colour map and the range. The colour scale's range follows
 // the values on the vertices when it is automatic.
 size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, ApplicationState* state, Representation* rep, const IsoDesc& iso);
+
+// Brings a representation's meshes up to date, once a frame whether or not the view is drawn: lazy rendering draws
+// the scene only when its key changes, and what electronic_structure_mesh_surfaces takes over frames (the field from
+// its worker thread, the extraction's job, the field at the vertices) is to arrive all the same. Nothing for a
+// representation that the mesh rendering does not draw (hidden, another display, the isosurfaces raycast).
+void electronic_structure_meshes_update(ApplicationState* state, Representation* rep);
+
+// What the representation's meshes are as drawn (their geometry and the values at their vertices), for the key of the
+// view: 0 without any
+uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es);
 
 // The spread of the field over the vertices of the representation's meshes; not valid without any
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es);

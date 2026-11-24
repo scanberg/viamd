@@ -705,13 +705,16 @@ md_array(ScriptSuggestion) script_suggest_measurement_vial(md_str_t ident, const
         return picks_exactly(expr, md_bitset_range((uint32_t)atom, (uint32_t)atom + 1), sys, temp);
     };
 
-    // By position: always right, whatever the particles are called
-    md_str_t args[4] = {};
-    for (size_t i = 0; i < count; ++i) {
-        md_str_writer_fmt(&sb, "particle[%d]", atoms[i]);
-        args[i] = take(&sb, temp);
+    // By position: always right, whatever the particles are called. Stacked, as the one argument the measurements
+    // take, in the order picked: particle[[30, 31, 32]]. One set, particle[30, 31, 32], would have no order
+    md_str_writer_fmt(&sb, MD_STR_FMT " = %s(particle[[", MD_STR_ARG(ident), proc);
+    for (size_t i = 0; i < count; ++i) md_str_writer_fmt(&sb, i ? ", %d" : "%d", atoms[i]);
+    sb += "]])";
+    {
+        Line l = {take(&sb, temp), {}};
+        md_array_push(lines, l, temp);
     }
-    push_call(args, {});
+    md_str_t args[4] = {};
 
     // Within residues as the file numbers them, each written once: particle(chain='A', resid=12). A particle is named
     // where its name picks it alone in its residue, and taken by its position there where it does not.

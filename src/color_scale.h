@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdint.h>
 
+#include <core/md_str.h>
 #include <core/md_unit.h>
 #include <gfx/isolines.h>
 
@@ -34,6 +35,12 @@ struct ColorScale {
     bool  auto_range  = true;   // the range follows the span of the values
     bool  show_legend = false;  // the colour map with its range and unit, drawn over the view
 };
+
+// A colour map as a workspace keeps it, by ImPlot's name for it: an index changes when a map is added before it. NULL
+// for an index that is no map.
+const char* color_scale_colormap_name(int colormap);
+// The map of a name, -1 for none
+int color_scale_colormap_index(md_str_t name);
 
 // What the values span. lo / hi are what an automatic range takes: the extremes, or a robust part of
 // the spread where the extremes are not representative of it. min / max are the extremes.

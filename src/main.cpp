@@ -49,6 +49,8 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <gpu_job.h>
+#include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
 #include <md_gto_iso.h>
@@ -59,6 +61,7 @@
 #include <imgui_widgets.h>
 #include <property_grid.h>
 #include <implot_widgets.h>
+#include <plot_input.h>
 #include <task_system.h>
 #include <color_utils.h>
 #include <image.h>
@@ -77,6 +80,7 @@
 #include <representation.h>
 #include <system_scene.h>
 #include <timeline_periods_ui.h>
+#include <frame_axis.h>
 #include <plot_periodic.h>
 #include <script_reference.h>
 #include <script_suggestions.h>
@@ -88,7 +92,9 @@
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
-#define VIS_FLAGS (script::DRAW_ATOMS | script::DRAW_GEOMETRY | script::DRAW_TEXT)
+// What a frame spends issuing the GPU jobs' next pieces, all of them (gpu_job.h): the pieces are the GPU's time, this
+// is the frame's
+#define GPU_JOBS_BUDGET_MS 6.0
 
 // Global data for application
 // Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
@@ -348,11 +354,14 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
         break;
     }
 
-    // A temporal property goes to a timeline (which a distribution takes as well), a distribution to a distribution,
-    // a volume to the density volume
+    // A matrix goes to the heatmaps, a temporal property to a timeline (which a distribution takes as well), a
+    // distribution to a distribution, a volume to the density volume
     const char* dnd_type = nullptr;
     const char* hint = "";
-    if (m.kinds & script::OUTPUT_TEMPORAL) {
+    if (m.kinds & script::OUTPUT_MATRIX) {
+        dnd_type = HEATMAP_SERIES_DND;
+        hint = "Drag into the Heatmaps window";
+    } else if (m.kinds & script::OUTPUT_TEMPORAL) {
         dnd_type = TIMELINE_SERIES_DND;
         hint = "Drag into a Timelines or Distributions subplot";
     } else if (m.kinds & script::OUTPUT_DISTRIBUTION) {
@@ -374,54 +383,6 @@ static void draw_script_gutter_mark(ApplicationState* app, const TextEditor::Dec
     } else if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s%s%s", m.text, hint[0] ? "\n" : "", hint);
     }
-}
-
-static double frame_to_time(double frame, const ApplicationState& data) {
-    const int64_t num_frames = md_array_size(data.timeline.x_values);
-    MD_ASSERT(num_frames);
-    const int64_t f0 = MD_CLAMP((int64_t)frame + 0, 0, num_frames - 1);
-    const int64_t f1 = MD_CLAMP((int64_t)frame + 1, 0, num_frames - 1);
-    return lerp(data.timeline.x_values[f0], data.timeline.x_values[f1], md_f64_fract(frame));
-}
-
-// Try to map time t back into frame
-static double time_to_frame(double time, const md_array(float) frame_times) {
-    const int64_t num_frames = md_array_size(frame_times);
-    if (!num_frames) return 0.0;
-
-    const double beg = frame_times[0];
-    const double end = frame_times[num_frames - 1];
-    time = MD_CLAMP(time, beg, end);
-
-    // Estimate the frame
-    const double frame_est = MD_CLAMP(((time - beg) / (end-beg)) * (num_frames - 1), 0, num_frames - 1);
-
-    int64_t prev_frame_idx = MD_CLAMP((int64_t)frame_est,     0, num_frames - 1);
-    int64_t next_frame_idx = MD_CLAMP((int64_t)frame_est + 1, 0, num_frames - 1);
-
-    if (time < (double)frame_times[prev_frame_idx]) {
-        // Linear search down
-        for (prev_frame_idx = prev_frame_idx - 1; prev_frame_idx >= 0; --prev_frame_idx) {
-            next_frame_idx = prev_frame_idx + 1;
-            if ((double)frame_times[prev_frame_idx] <= time && time <= (double)frame_times[next_frame_idx])
-                break;
-        }
-    }
-    else if (time > (double)frame_times[next_frame_idx]) {
-        // Linear search up
-        for (next_frame_idx = next_frame_idx + 1; next_frame_idx < num_frames; ++next_frame_idx) {
-            prev_frame_idx = next_frame_idx - 1;
-            if ((double)frame_times[prev_frame_idx] <= time && time <= (double)frame_times[next_frame_idx])
-                break;
-        }
-    }
-
-    // Compute true fraction between timestamps
-    double t = (time - (double)frame_times[prev_frame_idx]) / ((double)frame_times[next_frame_idx] - (double)frame_times[prev_frame_idx]);
-    t = MD_CLAMP(t, 0.0, 1.0);
-
-    // Compose frame value (base + fraction)
-    return (double)prev_frame_idx + t;
 }
 
 static void update_view_param(ApplicationState* state);
@@ -585,6 +546,7 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 static void draw_representations_opaque(ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
+static void draw_glyph_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
 // Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
 static bool draw_representations_transparent(ApplicationState* state);
@@ -642,6 +604,32 @@ static void apply_font_size(void* user_data) {
     style._NextFrameFontSizeBase = style.FontSizeBase;  // From the demo, seems like a temporary fix
 }
 
+// The script language a session starts in, as the .ini keeps it: one it does not know is v1
+static void apply_script_language(void* user_data) {
+    ApplicationState* state = (ApplicationState*)user_data;
+    script::Language& lang = state->settings.script_language;
+    if (lang != script::Language::V1 && lang != script::Language::V2) lang = script::Language::V1;
+    state->script.language = lang;
+}
+
+// The default dataset's script, in either language: the same measurements, so the two can be read side by side
+static const char* default_script(script::Language lang) {
+    if (lang == script::Language::V2) {
+        return "s1 = residue('ALA')[1:8]\n"
+               "d1 = distance(particle[[9, 29]])\n"
+               "a1 = angle(residue('ALA').particle[[1, 0, 2]])\n"
+               "r = rdf(particle(element='C'), particle(element='H'), 10.0)\n"
+               "v = sdf(s1, particle(element='H'), 10.0)\n"
+               "lin, plan, iso = shape_weights(particle)\n";
+    }
+    return "s1 = resname(\"ALA\")[2:8];\n"
+           "d1 = distance(10,30);\n"
+           "a1 = angle(2,1,3) in resname(\"ALA\");\n"
+           "r = rdf(element('C'), element('H'), 10.0);\n"
+           "v = sdf(s1, element('H'), 10.0);\n"
+           "{lin,plan,iso} = shape_weights(all);";
+}
+
 // The look of the Visuals menu a session starts with (settings.look) and the session's own (visuals): a workspace
 // sets the latter, Save as Default copies it to the former, which the .ini keeps
 static void visual_look_save(ApplicationState* state) {
@@ -674,39 +662,6 @@ static void apply_visual_settings(void* user_data) {
     if (!(0 <= (int)look.shading.colors && (int)look.shading.colors < postprocess_pipeline::ColorSpace_Count)) look.shading.colors = factory.shading.colors;
     if (!(0 <= (int)look.tonemapping.tonemapper && (int)look.tonemapping.tonemapper < postprocess_pipeline::Tonemapper_Count)) look.tonemapping.tonemapper = factory.tonemapping.tonemapper;
     visual_look_restore(state);
-}
-
-// timeline.x_values and view_range are stored in display units, so a change to the time preference
-// has to be carried into them. The raw frame times are still with the trajectory, so this re-derives
-// rather than compounding factors, and the visible range is moved by the ratio so the user keeps
-// looking at the same stretch of trajectory.
-static void update_timeline_time_unit(ApplicationState* state) {
-    MD_ASSERT(state);
-
-    if (state->timeline.units_version == display_units::version()) {
-        return;
-    }
-    state->timeline.units_version = display_units::version();
-
-    const double prev_scl = state->timeline.time_scale;
-    const double time_scl = display_units::factor(&state->timeline.time_unit, run_time_unit(state->system_context));
-    state->timeline.time_scale = time_scl;
-
-    if (time_scl == prev_scl) {
-        return;
-    }
-
-    const double* frame_times = run_frame_times(state->system_context);
-    const size_t  num_frames  = md_array_size(state->timeline.x_values);
-    if (frame_times) {
-        for (size_t i = 0; i < num_frames; ++i) {
-            state->timeline.x_values[i] = (float)(frame_times[i] * time_scl);
-        }
-    }
-
-    const double ratio = prev_scl != 0.0 ? time_scl / prev_scl : 1.0;
-    state->timeline.view_range.beg_x *= ratio;
-    state->timeline.view_range.end_x *= ratio;
 }
 
 static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
@@ -785,7 +740,9 @@ int main(int argc, char** argv) {
 
     md_temp_arena_system_init();
 
-    // The masks of the windows are edited in place, over any atom index
+    // The masks of the windows are edited in place, over any atom index; those over the frames of the run too
+    md_bitmask_init(&state.selection.frame_mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
+    md_bitmask_init(&state.selection.frame_highlight_mask, 0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.query.mask,           0, MD_BITSET_MAX_INDEX, persistent_alloc);
     md_bitmask_init(&state.selection.grow.mask,            0, MD_BITSET_MAX_INDEX, persistent_alloc);
 
@@ -842,6 +799,8 @@ int main(int argc, char** argv) {
         app_settings::bind(MD_STR_LIT("look_dof_strength"), &look.dof.aperture);
     }
     app_settings::on_apply(apply_visual_settings, &state);
+    app_settings::bind_enum(MD_STR_LIT("script_language"), &state.settings.script_language);
+    app_settings::on_apply(apply_script_language, &state);
     display_units::register_settings();
     app_settings::initialize();
 
@@ -974,7 +933,10 @@ int main(int argc, char** argv) {
                 // @NOTE: We want explicitly to disable writing of cache files for the default dataset
                 // The motivation is that the dataset may reside in a shared folder on the system that has no write access.
                 file_queue_push(&state.file_queue, path, FileFlags_DisableCacheWrite);
-                state.editor.SetText("s1 = resname(\"ALA\")[2:8];\nd1 = distance(10,30);\na1 = angle(2,1,3) in resname(\"ALA\");\nr = rdf(element('C'), element('H'), 10.0);\nv = sdf(s1, element('H'), 10.0);\n{lin,plan,iso} = shape_weights(all);");
+                const script::Language lang = state.script.language;
+                const script::Language other = lang == script::Language::V2 ? script::Language::V1 : script::Language::V2;
+                state.editor.SetText(default_script(lang));
+                state.script.other_text = default_script(other);
             }
         }
 #endif
@@ -1024,12 +986,12 @@ int main(int argc, char** argv) {
             md_gpu_device_poll(state.gpu_device);
         }
 #endif
+        // The GPU work over frames (gpu_job.h): every job advanced, a few ms in all
+        gpu_jobs_poll(GPU_JOBS_BUDGET_MS);
         // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
-        // and what the ELF and LOL evaluations left (es_jobs_collect)
-        es_jobs_collect(&state);
 
         viamd::event_system_broadcast_event(viamd::EventType_ViamdFrameTick, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1155,6 +1117,9 @@ int main(int argc, char** argv) {
             }
         }
 
+        // Off the view, no glyph is under the cursor
+        if (!surface_state.hovered) state.glyph_hover = {};
+
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
@@ -1197,6 +1162,28 @@ int main(int argc, char** argv) {
 
         PUSH_GPU_SECTION("Update");
 
+        // Play and pause, from wherever the focus is: the viewport, a plot, any window. Unless the key is taken: by text
+        // being typed, by a window or an item that routes it to itself (ImGui's shortcut routing, of which this is the
+        // global, last, route), or by keyboard navigation (with its cursor shown, space presses the item it is on).
+        if (!ImGui::GetIO().WantTextInput && !ImGui::GetIO().NavVisible && ImGui::Shortcut(KEY_PLAY_PAUSE, ImGuiInputFlags_RouteGlobal)) {
+            switch (state.animation.mode) {
+                case PlaybackMode::Playing:
+                    state.animation.mode = PlaybackMode::Stopped;
+                    for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
+                    break;
+                case PlaybackMode::Stopped:
+                    state.animation.mode = PlaybackMode::Playing;
+                    if (state.animation.frame == max_frame && state.animation.fps > 0) {
+                        state.animation.frame = 0;
+                    } else if (state.animation.frame == 0 && state.animation.fps < 0) {
+                        state.animation.frame = max_frame;
+                    }
+                    break;
+                default:
+                    MD_ASSERT(false);
+            }
+        }
+
         // Capture non-window specific keyboard events
         if (!ImGui::GetIO().WantCaptureKeyboard) {
             if (ImGui::IsKeyPressed(KEY_SHOW_DEBUG_WINDOW)) {
@@ -1213,26 +1200,6 @@ int main(int argc, char** argv) {
                 state.gl.shaders = md_gl_shaders_create(output_snippet(state));
                 state.gl.shaders_marks = md_gl_shaders_create(shader_output_snippet_marks);
                 render_invalidate(&state);
-            }
-
-            if (ImGui::IsKeyPressed(KEY_PLAY_PAUSE)) {
-                switch (state.animation.mode) {
-                    case PlaybackMode::Playing:
-                        state.animation.mode = PlaybackMode::Stopped;
-                        for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        break;
-                    case PlaybackMode::Stopped:
-                        state.animation.mode = PlaybackMode::Playing;
-                        if (state.animation.frame == max_frame && state.animation.fps > 0) {
-                            state.animation.frame = 0;
-                        } else if (state.animation.frame == 0 && state.animation.fps < 0) {
-                            state.animation.frame = max_frame;
-                        }
-                        break;
-                    default:
-                        MD_ASSERT(false);
-                }
-
             }
 
             if (ImGui::IsKeyPressed(KEY_SKIP_TO_PREV_FRAME) || ImGui::IsKeyPressed(KEY_SKIP_TO_NEXT_FRAME)) {
@@ -1269,6 +1236,7 @@ int main(int argc, char** argv) {
         if (time_changed) {
             for (size_t i = 0; i < state.num_systems; ++i) state.systems[i]->data.interpolate_system_state = true;
             time_stopped = false;
+            viamd::event_system_broadcast_event(viamd::EventType_ViamdAnimationFrameChanged, viamd::EventPayloadType_ApplicationState, &state);
 
             PUSH_CPU_SECTION("Flag dynamic representations for update")
             flag_dynamic_representations_as_dirty(&state);
@@ -1424,6 +1392,7 @@ int main(int argc, char** argv) {
                             state.script.ir = nullptr;
                         }
                     }
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptCompiled, viamd::EventPayloadType_ApplicationState, &state);
                 }
             }
         }
@@ -1451,6 +1420,7 @@ int main(int argc, char** argv) {
                     // same thing keeps its values and is not evaluated again (script::eval_create).
                     // Not remade if the last compilation failed (in the same frame as the request).
                     script::Eval* prev = state.script.eval;
+                    if (prev) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, &state);
                     state.script.eval = nullptr;
 
                     if (script::valid(state.script.ir)) {
@@ -1459,6 +1429,7 @@ int main(int argc, char** argv) {
                         const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = md_str_from_cstr(state.run.path),
                                                         .executor = task_system::executor() };
                         state.script.eval = script::eval_create(prev, state.script.eval_ir, desc, state.allocator.persistent);
+                        if (state.script.eval) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalInit, viamd::EventPayloadType_ApplicationState, &state);
                     }
 
                     if (prev) {
@@ -1509,13 +1480,18 @@ int main(int argc, char** argv) {
                             // Once it has ended, run or cancelled: the IR it held goes
 #if MEASURE_EVALUATION_TIME
                             const uint64_t t0 = (uint64_t)md_tick_now();
-                            auto on_main = [ir, t0, n](task_system::Status) {
+                            auto on_main = [&state, ir, t0, n](task_system::Status) {
                                 VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
                                 script::program_release(ir);
+                                viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
                             };
 #else
-                            auto on_main = [ir](task_system::Status) { script::program_release(ir); };
+                            auto on_main = [&state, ir](task_system::Status) {
+                                script::program_release(ir);
+                                viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
+                            };
 #endif
+                            viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalBegin, viamd::EventPayloadType_ApplicationState, &state);
                             if (script::eval_whole(eval)) {
                                 // v2: one call evaluates every pending frame, spreading them over the pool itself
                                 state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval]() {
@@ -1619,7 +1595,9 @@ int main(int argc, char** argv) {
             POP_CPU_SECTION();
         }
 
-        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT) && !state.editor_focused) {
+        // Also while the script editor has the keyboard: it was held back from there when this was F1, which the editor
+        // takes to look up the word under the cursor; F2 means nothing to the editor
+        if (ImGui::IsKeyPressed(KEY_RECENTER_ON_HIGHLIGHT)) {
 			ViewFitRequest fit_request = {
 				.app = state,
 				.surface_id = interaction_surface_main,
@@ -1765,7 +1743,6 @@ int main(int argc, char** argv) {
 
         PUSH_GPU_SECTION("Upload");
         update_md_buffers(&state);
-        update_timeline_time_unit(&state);
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Render");
@@ -1810,10 +1787,14 @@ int main(int argc, char** argv) {
         electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
         // what its field has under way holds the GPU stream and pool tasks: both still here
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
+        surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
     }
+    gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
-    es_jobs_shutdown(&state);       // the ELF and LOL evaluations under way: their streams before the device
     isomesh::shutdown();
+    // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
+    density_cache_destroy(state.mold.density_cache);
+    state.mold.density_cache = nullptr;
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
@@ -1823,13 +1804,16 @@ int main(int argc, char** argv) {
         // A queued readback writes into a GL texture and frees its staging memory, so nothing
         // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
-        system_gpu_data_free(&state);
+        system_gpu_data_free(state.system_context);
         md_gto_int_gpu_shutdown();
         md_gto_iso_gpu_shutdown();
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
         if (state.gpu_plane) md_gpu_texture_destroy(state.gpu_plane);
+        if (state.gpu_grad) md_gpu_texture_destroy(state.gpu_grad);
+        if (state.gpu_normals) md_gpu_texture_destroy(state.gpu_normals);
+        state.gpu_grad = state.gpu_normals = nullptr;
         state.gpu_plane = nullptr;
         state.gpu_coeff = 0;
         state.gpu_coeff_capacity = 0;
@@ -2290,25 +2274,18 @@ static void draw_main_menu(ApplicationState* data) {
 
             if (prop::section("Isosurfaces", false)) {
                 int rendering = MD_CLAMP(data->settings.isosurface_rendering, 0, 1);
-                prop::row("rendering", "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
-                                       "Mesh: the surfaces of orbitals and densities are extracted as triangle meshes from the\n"
-                                       "field itself rather than from the volume, at a spacing set by the representation's resolution,\n"
-                                       "and drawn with stochastic transparency that is refined over the frames while the view\n"
-                                       "is still. Extraction runs when the surface changes (an isovalue, an orbital, a frame);\n"
-                                       "drawing is cheap. Volumes from scripts are always ray cast.");
+                prop::row("panels", "How the isosurfaces of the Orbital Grid and Transition Analysis panels are drawn\n"
+                                    "(a Field representation has its own, in its Surface section).\n"
+                                    "Ray Casting: the surfaces are found in the evaluated volume, ray by ray, every frame.\n"
+                                    "Mesh: extracted as triangle meshes from the field itself, drawn with stochastic\n"
+                                    "transparency refined over the frames while the view is still.");
                 if (ImGui::Combo("##rendering", &rendering, "Ray Casting\0Mesh\0")) {
                     data->settings.isosurface_rendering = rendering;
                     app_settings::mark_dirty();
-                    // Their volumes are evaluated only when something draws from them
-                    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-                        if (data->representation.reps[i].type == RepresentationType::ElectronicStructure) {
-                            flag_representation_as_dirty(&data->representation.reps[i]);
-                        }
-                    }
                 }
                 // Also for the volumes that are ray cast in either mode (from scripts)
                 int iso_mode = data->settings.exact_isosurfaces ? 1 : 0;
-                prop::row("intersection", "How ray cast isosurfaces are found (with Mesh rendering: only those of volumes from scripts).\n"
+                prop::row("intersection", "How ray cast isosurfaces are found, of every representation and window that ray casts them.\n"
                                           "Fast: samples the volume once per voxel along each ray. Parts of a surface thinner than\n"
                                           "about a voxel can be missed, and up close or at grazing angles the sampling can show;\n"
                                           "a finer volume resolution makes both smaller.\n"
@@ -2548,6 +2525,23 @@ static void draw_main_menu(ApplicationState* data) {
                 data->settings.font_size = font_sizes[font_size_idx];
                 apply_font_size(data);
                 app_settings::mark_dirty();
+            }
+
+            // The script and every filter are in one language. Each language keeps a script of its own, which the
+            // editor shows when it is chosen; what was evaluated is of the language left
+            {
+                static const char* names[] = {"mdscript (v1)", "VIAL (v2)"};
+                int idx = data->script.language == script::Language::V2 ? 1 : 0;
+                if (ImGui::Combo("Script Language", &idx, names, (int)MD_COUNTOF(names))) {
+                    const script::Language lang = idx == 1 ? script::Language::V2 : script::Language::V1;
+                    data->settings.script_language = lang;
+                    script_switch_language(data, lang);
+                    app_settings::mark_dirty();
+                }
+                ImGui::SetItemTooltip("The language of the script and of every filter. Chosen here, it is also the one\n"
+                                      "a session starts in; a workspace opens in its own.\n"
+                                      "Each keeps a script of its own: switching shows the other's in the editor,\n"
+                                      "and what was evaluated has to be evaluated again.");
             }
 
 			if (ImGui::TreeNode("Units")) {
@@ -2931,8 +2925,8 @@ static void context_targets_update(SystemContext& sc, const PickingHit& hit) {
     if (hit.domain == PickingDomain_Bond) {
         md_atom_pair_t pair;
         md_bond_flags_t flags;
-        bool formed;
-        if (picked_bond(sc, hit.local_idx, &pair, &flags, &formed)) {
+        PickedBondSource source;
+        if (picked_bond(*state, hit, &pair, &flags, &source)) {
             context_targets.hit_bond[0] = pair.idx[0];
             context_targets.hit_bond[1] = pair.idx[1];
         }
@@ -3030,7 +3024,7 @@ static void draw_script_suggestion(ApplicationState* state, const ScriptSuggesti
     }
     if (ImGui::IsItemHovered()) {
         // What the line picks or measures is shown in the viewport
-        script_visualize_str(state, s.text, VIS_FLAGS);
+        script_visualize_str(state, s.text, script::DRAW_HOVER);
         if (cut || !md_str_empty(s.hint)) {
             ImGui::BeginTooltip();
             ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
@@ -3102,12 +3096,12 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
 
             md_system_t& sys = sc.data.sys;
             md_bond_idx_t bond_idx = md_system_bond_find(&sys, idx[0], idx[1]);
-            if (bond_idx == -1) bond_idx = md_bond_find_noncovalent(&sys.bond, idx[0], idx[1]);
+            if (bond_idx == -1) bond_idx = md_bond_find_interaction(&sys.bond, idx[0], idx[1]);
             if (bond_idx == -1) {
                 char buf[256];
                 snprintf(buf, sizeof(buf), "Create Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
                 if (ImGui::BeginMenu(buf)) {
-                    // Of the bond graph, or a non-covalent bond: those are not followed by the structures, the rings or the
+                    // Of the bond graph, or an interaction: those are not followed by the structures, the rings or the
                     // bonds tracked. Each kind but covalent is drawn dashed, in a style of its own. A kind chosen is kept
                     // as given.
                     struct BondKind {
@@ -3119,17 +3113,20 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                         {"Bond",          MD_BOND_FLAG_NONE,
                          "A bond of the bond graph: covalent, or coordinate between a metal and a non-metal\n(drawn dashed, thick with long dashes). It joins the molecules of its atoms."},
                         {"Hydrogen Bond", md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HYDROGEN),
-                         "Non-covalent, drawn with even dashes. bond(kind='hydrogen') in the script."},
-                        {"Interaction",   md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_INTERACTION),
-                         "Non-covalent, of no particular kind (a salt bridge, a halogen bond), drawn with\nshort, sparse dashes. bond(kind='interaction') in the script."},
+                         "An interaction, D-H...A, drawn with even dashes. bond(kind='hydrogen') in the script."},
+                        {"Ionic Bond",    md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_IONIC),
+                         "An interaction, between two ions or charged groups (a salt bridge), drawn with dashes\nthicker and longer than a hydrogen bond's. bond(kind='ionic') in the script."},
+                        {"Halogen Bond",  md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_HALOGEN),
+                         "An interaction, C-X...A, drawn with dashes thinner and shorter than a hydrogen bond's.\nbond(kind='halogen') in the script."},
+                        {"Contact",       md_bond_flags_set_kind(MD_BOND_FLAG_KIND_GIVEN, MD_BOND_KIND_CONTACT),
+                         "An interaction of no particular kind, drawn with short, sparse dashes.\nbond(kind='contact') in the script; bond(kind='interaction') takes in all four."},
                     };
                     for (size_t k = 0; k < MD_COUNTOF(kinds); ++k) {
                         if (ImGui::MenuItem(kinds[k].label)) {
-                            const bool graph = !md_bond_is_noncovalent(kinds[k].flags);
-                            system_bonds_edit_begin(sc);
-                            md_system_bond_insert(&sys, idx[0], idx[1], md_bond_flags_set_origin(kinds[k].flags, MD_BOND_ORIGIN_USER));
-                            if (graph) md_system_infer_coordination(&sys);
-                            system_bonds_changed(sc, graph);
+                            // The user's, and the system inferred again with it: drawn once that is in place
+                            system_core_edit_begin(sc);
+                            md_system_bond_insert(&sys, idx[0], idx[1], kinds[k].flags);
+                            system_core_changed(sc);
                             ImGui::CloseCurrentPopup();
                         }
                         ImGui::SetItemTooltip("%s", kinds[k].tip);
@@ -3149,7 +3146,7 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                         ImGui::CloseCurrentPopup();
                     }
                     ImGui::SetItemTooltip("A representation of this bond alone, drawn over the sticks, to style it by.\n"
-                                          "Turn off 'non-covalent bonds' in a licorice or ball and stick to have it drawn only here.");
+                                          "Turn off 'interactions' in a licorice or ball and stick to have it drawn only here.");
                     bool separated = false;
                     for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
                         Representation& rep = sc.representation.reps[i];
@@ -3171,15 +3168,15 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                     }
                     ImGui::EndMenu();
                 }
-                if (md_bond_origin(flags) == MD_BOND_ORIGIN_USER) {
-                    snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
-                    if (ImGui::MenuItem(buf)) {
-                        const bool graph = (size_t)bond_idx < sys.bond.count;
-                        system_bonds_edit_begin(sc);
-                        md_system_bond_remove(&sys, bond_idx);
-                        system_bonds_changed(sc, graph);
-                        ImGui::CloseCurrentPopup();
-                    }
+                snprintf(buf, sizeof(buf), "Remove Bond (%i, %i)", idx[0] + 1, idx[1] + 1);
+                if (ImGui::MenuItem(buf)) {
+                    // Any bond: the user's goes, one the data gives or inference finds is removed, as neither is
+                    // certain. The system is inferred again without it (the index is of the bonds as they are drawn,
+                    // which stay until then)
+                    system_core_edit_begin(sc);
+                    md_system_bond_remove(&sys, pair.idx[0], pair.idx[1], flags);
+                    system_core_changed(sc);
+                    ImGui::CloseCurrentPopup();
                 }
             }
         }
@@ -3466,24 +3463,19 @@ static void draw_animation_window(ApplicationState* data) {
     size_t num_frames = run_num_frames(data->system_context);
     if (num_frames == 0) return;
 
-    MD_ASSERT(data->timeline.x_values);
-    MD_ASSERT(md_array_size(data->timeline.x_values) == num_frames);
-
     ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
         ImGui::Text("Num Frames: %zu", num_frames);
-        md_unit_t time_unit = data->timeline.time_unit;
-        double t   = frame_to_time(data->animation.frame, *data);
-        double min = data->timeline.x_values[0];
-        double max = data->timeline.x_values[num_frames - 1];
-        char time_label[64];
-        if (md_unit_is_none(time_unit)) {
-            snprintf(time_label, sizeof(time_label), "Time");
-        } else {
-            char unit_buf[32];
-            md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-            snprintf(time_label, sizeof(time_label), "Time (%s)", unit_buf);
+        // The slider picks a frame, whole when dragged, and shows its time in the display unit beside it. A run
+        // without time of its own prints no unit, and its frames' numbers are all there is to show.
+        char unit_buf[32];
+        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(data->system_context));
+        char frame_fmt[64] = "%.0f";
+        if (unit_buf[0] != '\0') {
+            snprintf(frame_fmt, sizeof(frame_fmt), "%%.0f  (%.4g %s)", run_time_at_frame(data->system_context, data->animation.frame) * scl, unit_buf);
         }
+        const double min_frame = 0.0;
+        const double max_frame = (double)(num_frames - 1);
         const float w = ImGui::CalcTextSize("Time (ps)").x;
         const float item_width = MD_MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
         ImGui::PushItemWidth(item_width);
@@ -3509,9 +3501,7 @@ static void draw_animation_window(ApplicationState* data) {
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Interpolation Mode for Atom Positions");
         }
-        if (ImGui::SliderScalar(time_label, ImGuiDataType_Double, &t, &min, &max, "%.2f")) {
-            data->animation.frame = time_to_frame(t, data->timeline.x_values);
-        }
+        ImGui::SliderScalar("Frame", ImGuiDataType_Double, &data->animation.frame, &min_frame, &max_frame, frame_fmt);
         ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
         if (ImGui::IsItemHovered()) {
             ImGui::SetTooltip("Animation Speed in Frames Per Second");
@@ -3565,36 +3555,48 @@ static void draw_animation_window(ApplicationState* data) {
 static void draw_async_task_window(ApplicationState* data) {
     constexpr float WIDTH = 300.f;
     constexpr float MARGIN = 10.f;
+    // What ends within a few frames shows nothing: a bar that flashes says nothing
+    constexpr double MIN_SECONDS = 0.25;
 
-    // The jobs with a label (task_system activities)
-    task_system::ActivityInfo activities[8];
-    const size_t num_activities = task_system::activity_list(activities, MD_COUNTOF(activities));
+    // Everything under way over time, in one list (task_system activities): the pool's labelled jobs (what the GPU
+    // evaluations wait for: density matrices, fields, orbitals read on demand), the GPU jobs (gpu_job.h: the surface
+    // fields, the isosurface meshes) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
+    task_system::ActivityInfo all[32];
+    const size_t num_all = task_system::activity_list(all, MD_COUNTOF(all));
+    task_system::ActivityInfo activities[32];
+    size_t num_activities = 0;
+    for (size_t i = 0; i < num_all; ++i) {
+        const bool is_evaluate = all[i].id == data->tasks.evaluate.activity_id();
+        if (all[i].seconds >= MIN_SECONDS || is_evaluate) activities[num_activities++] = all[i];
+    }
     bool any_task_label_visible = num_activities > 0;
-    // the isosurface meshes extracted on the GPU over frames (iso_meshes.h)
-    float iso_fraction[8];
-    const size_t num_iso = iso_meshes_progress(iso_fraction, MD_COUNTOF(iso_fraction));
-    any_task_label_visible |= num_iso > 0;
-    // the density volumes evaluated on the GPU over frames
-    float vol_fraction[8];
-    const size_t num_vol = gpu_volume_jobs_progress(data, vol_fraction, MD_COUNTOF(vol_fraction));
-    any_task_label_visible |= num_vol > 0;
-    // the density matrix a volume waits for, made on a worker thread
-    double dmat_seconds = 0.0;
-    const bool dmat_preparing = density_dmat_preparing(data, &dmat_seconds) && dmat_seconds > 0.25;
-    any_task_label_visible |= dmat_preparing;
-    // the natural transition orbitals of an excited state, read on a worker thread (es_nto_ready)
-    double nto_seconds = 0.0;
-    const bool nto_warming = es_nto_warming(data, &nto_seconds) && nto_seconds > 0.25;
-    any_task_label_visible |= nto_warming;
-    // and the fields surfaces are coloured by, evaluated over frames (surface_field.h)
-    SurfaceFieldProgress field_progress[8];
-    const size_t num_field = surface_field_progress(field_progress, MD_COUNTOF(field_progress));
-    any_task_label_visible |= num_field > 0;
     // and what the components have under way that the task system does not show, such as the analytic critical
     // point search of the QM module: asked for through an event, as a component may not be built
     TaskProgressRequest component_progress = {};
     viamd::event_system_broadcast_event(viamd::EventType_ViamdTaskProgressRequest, viamd::EventPayloadType_TaskProgressRequest, &component_progress);
     any_task_label_visible |= component_progress.count > 0;
+
+    // The representations shown whose filter, or the context of their groups, is not valid: they show what it picked
+    // when it last was, or nothing (representation_filter_invalid). Said once it has stayed so for a moment, so that a
+    // filter being typed does not flash it here; its row in the Representations window says it at once.
+    constexpr double INVALID_SECONDS = 1.0;
+    Representation* invalid[4];
+    size_t num_invalid = 0;
+    const double now = ImGui::GetTime();
+    for (size_t s = 0; s < data->num_systems; ++s)
+    for (size_t i = 0; i < md_array_size(data->systems[s]->representation.reps); ++i) {
+        SystemContext& sys = *data->systems[s];
+        Representation& rep = sys.representation.reps[i];
+        if (!representation_filter_invalid(rep)) {
+            rep.invalid_since = 0.0;
+            continue;
+        }
+        if (rep.invalid_since == 0.0) rep.invalid_since = now;
+        if (!representation_shown(sys, rep) || now - rep.invalid_since < INVALID_SECONDS) continue;
+        if (num_invalid < MD_COUNTOF(invalid)) invalid[num_invalid] = &rep;
+        num_invalid += 1;
+    }
+    any_task_label_visible |= num_invalid > 0;
     
     if (any_task_label_visible) {
         ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -3609,7 +3611,7 @@ static void draw_async_task_window(ApplicationState* data) {
         const float pad = 3.0f;
         const float size = ImGui::GetFontSize() + pad * 2;
 
-        char buf[64];
+        char buf[96];
         for (size_t i = 0; i < num_activities; i++) {
             const task_system::ActivityInfo& a = activities[i];
             const bool is_evaluate = a.id == data->tasks.evaluate.activity_id();
@@ -3617,12 +3619,13 @@ static void draw_async_task_window(ApplicationState* data) {
             // One task over every frame (v2): the evaluation says how far it is
             if (is_evaluate && data->script.eval && script::eval_whole(data->script.eval)) fract = script::eval_progress(data->script.eval);
 
+            const float width = ImGui::GetContentRegionAvail().x - (a.cancellable ? size + pad : 0.0f);
             if (fract < 0.0f) {
                 // no fraction to show: an indeterminate bar, to say it is not stuck
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), a.label);
+                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(width, 0), a.label);
             } else {
-                snprintf(buf, sizeof(buf), "%s %.1f%%", a.label, fract * 100.f);
-                ImGui::ProgressBar(fract, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
+                snprintf(buf, sizeof(buf), "%s %.0f%%", a.label, fract * 100.f);
+                ImGui::ProgressBar(fract, ImVec2(width, 0), buf);
             }
             if (a.cancellable) {
                 ImGui::SameLine();
@@ -3634,36 +3637,6 @@ static void draw_async_task_window(ApplicationState* data) {
                     }
                 }
                 ImGui::PopID();
-            }
-        }
-        for (size_t i = 0; i < num_iso; i++) {
-            if (iso_fraction[i] < 0.0f) {
-                // being prepared on a worker thread: an indeterminate bar
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Isosurface mesh: preparing");
-            } else {
-                snprintf(buf, sizeof(buf), "Isosurface mesh %.0f%%", iso_fraction[i] * 100.f);
-                ImGui::ProgressBar(iso_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            }
-        }
-        if (dmat_preparing) {
-            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Density matrix: preparing");
-        }
-        for (size_t i = 0; i < num_vol; i++) {
-            snprintf(buf, sizeof(buf), "Density volume %.0f%%", vol_fraction[i] * 100.f);
-            ImGui::ProgressBar(vol_fraction[i], ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-        }
-        if (nto_warming) {
-            ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), "Natural transition orbitals: computing");
-        }
-        for (size_t i = 0; i < num_field; i++) {
-            const SurfaceFieldProgress& p = field_progress[i];
-            if (p.preparing) {
-                snprintf(buf, sizeof(buf), "%s: preparing", p.label);
-                // no fraction to show: an indeterminate bar (a negative fraction moving with time), to say it is not stuck
-                ImGui::ProgressBar(-0.5f * (float)ImGui::GetTime() - 1.0e-3f, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            } else {
-                snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
-                ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
             }
         }
         for (size_t i = 0; i < component_progress.count; i++) {
@@ -3679,256 +3652,32 @@ static void draw_async_task_window(ApplicationState* data) {
                 ImGui::PopID();
             }
         }
+        for (size_t i = 0; i < MD_MIN(num_invalid, MD_COUNTOF(invalid)); ++i) {
+            Representation& rep = *invalid[i];
+            const bool none = md_bitset_empty(rep.atom_mask);
+            char label[160];
+            snprintf(label, sizeof(label), "%s %s: %s##invalid %u", (const char*)ICON_FA_TRIANGLE_EXCLAMATION, rep.name, none ? "nothing shown" : "earlier result", rep.node.id);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.3f, 1.0f));
+            const bool clicked = ImGui::Selectable(label);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s\n\n%s\n\nClick to open it in the Representations window",
+                    none ? "Its filter is not valid, and has not been since the system was loaded: it shows nothing."
+                         : "Its filter is not valid: it shows what the filter picked when it last was.",
+                    rep.filter.result.error);
+            }
+            if (clicked) {
+                data->show_representation_window = true;
+                rep.open_properties = true;
+            }
+        }
+        if (num_invalid > MD_COUNTOF(invalid)) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "and %zu more", (size_t)(num_invalid - MD_COUNTOF(invalid)));
+        }
 
         ImGui::End();
         ImGui::PopStyleColor();
     }
-}
-
-struct TimelineArgs {
-    const char* lbl;
-    uint32_t col;
-    int plot_height;
-
-    struct {
-        int count;
-        int dim_y;
-
-        const float* x;
-        const float* y;
-        const float* y_mean;
-        const float* y_var;
-        const float* y_min;
-        const float* y_max;
-
-        float min_y;
-        float max_y;
-        md_str_t unit;
-    } values;
-
-    struct {
-        double* beg;
-        double* end;
-        double  min;
-        double  max;
-    } view_range;
-
-    struct {
-        bool* is_dragging;
-        bool* is_selecting;
-    } input;
-
-    struct {
-        bool show;
-        bool enabled;
-
-        double* beg;
-        double* end;
-
-        double min;
-        double max;
-    } filter;
-
-    struct {
-        bool enabled;
-        double min;
-        double max;
-    } value_filter;
-
-    double* time;
-};
-
-struct TimePayload {
-    const TimelineArgs* args;
-    int y_idx;
-};
-
-static ImPlotPoint get_time_point(int index, void* user_data) {
-    const TimePayload* payload = (const TimePayload*)user_data;
-    const TimelineArgs* args = payload->args;
-    return ImPlotPoint(args->values.x[index], args->values.y[index * args->values.dim_y + payload->y_idx]);
-}
-
-bool draw_property_timeline(const ApplicationState& data, const TimelineArgs& args) {
-    const ImPlotAxisFlags axis_flags = ImPlotAxisFlags_NoSideSwitch | ImPlotAxisFlags_NoHighlight;
-    const ImPlotAxisFlags axis_flags_x = axis_flags;
-    const ImPlotAxisFlags axis_flags_y = axis_flags | ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit | ImPlotAxisFlags_NoLabel |ImPlotAxisFlags_NoTickLabels;
-    
-    const ImPlotFlags flags = ImPlotFlags_NoBoxSelect | ImPlotFlags_NoFrame;
-    
-    const float pad_x = ImPlot::GetStyle().PlotPadding.x;
-    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(pad_x, 0));
-    MD_DEFER { ImPlot::PopStyleVar(1); };
-
-    if (ImPlot::BeginPlot("##Timeline", ImVec2(-1,args.plot_height), flags)) {
-        ImPlot::SetupAxisLinks(ImAxis_X1, args.view_range.beg, args.view_range.end);
-        ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, args.view_range.min, args.view_range.max);
-        ImPlot::SetupAxes(0, 0, axis_flags_x, axis_flags_y);
-        ImPlot::SetupFinish();
-
-        bool active = ImGui::IsItemActive();
-        bool print_timeline_tooltip = false;
-
-        if (args.value_filter.enabled) {
-            float* y_vals = (float*)md_alloc(frame_alloc, args.values.count * sizeof(float));
-            for (int i = 0; i < args.values.count; ++i) {
-                float val = args.values.y[i];
-                y_vals[i] = (args.value_filter.min < val && val < args.value_filter.max) ? args.values.max_y : -FLT_MAX;
-            }
-
-            const ImVec4 filter_frame_color = ImVec4(1, 1, 1, 1);
-            ImPlot::SetNextFillStyle(filter_frame_color, 0.15f);
-            ImPlot::PlotShaded("##value_filter", args.values.x, y_vals, args.values.count, -FLT_MAX);
-        }
-
-        if (args.filter.show) {
-            if (!args.filter.enabled) ImGui::PushDisabled();
-            ImPlot::DragRangeX("Time Filter", args.filter.beg, args.filter.end, args.filter.min, args.filter.max);
-            if (!args.filter.enabled) ImGui::PopDisabled();
-            *args.filter.beg = MD_CLAMP(*args.filter.beg, args.filter.min, args.filter.max);
-            *args.filter.end = MD_CLAMP(*args.filter.end, args.filter.min, args.filter.max);
-        }
-
-        ImVec4 line_col = ImGui::ColorConvertU32ToFloat4(args.col);
-        ImPlot::SetNextLineStyle(line_col);
-
-        if (args.values.count > 0) {
-            MD_ASSERT(args.values.x);
-            MD_ASSERT(args.values.y);
-            if (args.values.y_var) {
-                MD_ASSERT(args.values.y_min);
-                MD_ASSERT(args.values.y_max);
-                char lbl[32];
-
-                snprintf(lbl, sizeof(lbl), "%s", args.lbl);
-                TimePayload payload = {
-                    .args = &args,
-                    .y_idx = 0,
-                };
-                for (int i = 0; i < args.values.dim_y; ++i) {
-                    payload.y_idx = i;
-                    ImPlot::PlotLineG(lbl, get_time_point, &payload, args.values.count);
-                }
-
-                ImPlot::SetNextLineStyle(line_col);
-                snprintf(lbl, sizeof(lbl), "%s (mean)", args.lbl);
-                ImPlot::PlotLine(lbl, args.values.x, args.values.y_mean, args.values.count);
-
-                ImPlot::SetNextFillStyle(line_col, 0.4f);
-                snprintf(lbl, sizeof(lbl), "%s (var)", args.lbl);
-                ImPlot::PlotShadedG(lbl,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_mean[idx] - args->values.y_var[idx]);
-                    },
-                    (void*)&args,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_mean[idx] + args->values.y_var[idx]);
-                    },
-                    (void*)&args,
-                    args.values.count
-                );
-
-                ImPlot::SetNextFillStyle(line_col, 0.2f);
-                snprintf(lbl, sizeof(lbl), "%s (min,max)", args.lbl);
-                ImPlot::PlotShadedG(lbl,
-                    [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_min[idx]);
-                    },
-                    (void*)&args,
-                        [](int idx, void* payload) -> ImPlotPoint {
-                        TimelineArgs* args = (TimelineArgs*)payload;
-                        return ImPlotPoint(args->values.x[idx], args->values.y_max[idx]);
-                    },
-                    (void*)&args,
-                    args.values.count
-                );
-            } 
-            else {
-                ImPlot::PlotLine(args.lbl, args.values.x, args.values.y, args.values.count);
-            }
-        }
-        
-        if (*args.input.is_dragging) {
-            *args.time = ImPlot::GetPlotMousePos().x;
-        }
-        else if (*args.input.is_selecting) {
-            *args.filter.end = MD_MAX(ImPlot::GetPlotMousePos().x, *args.filter.beg);
-        }
-        else if (ImPlot::IsPlotHovered()) {
-            if (active && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {           
-                if (ImGui::GetIO().KeyMods == ImGuiMod_Shift) {
-                    if (args.filter.show && args.filter.enabled) {
-                        *args.input.is_selecting = true;
-                        *args.filter.beg = ImPlot::GetPlotMousePos().x;
-                    }
-                } else {
-                    *args.input.is_dragging = true;
-                }
-            }
-        }
-
-        if (ImPlot::IsPlotHovered()) {
-            print_timeline_tooltip = true;
-        }
-        
-        if (ImPlot::DragLineX(0, args.time, ImVec4(1,1,0,1))) {
-            *args.time = MD_CLAMP(*args.time, args.filter.min, args.filter.max);
-        }
-        if (ImGui::IsItemHovered()) {
-            print_timeline_tooltip = true;
-        }
-
-        if (print_timeline_tooltip) {
-            ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
-            ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
-            ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
-            ImVec2 p1 = {screen_pos.x, ImPlot::GetPlotPos().y + ImPlot::GetPlotSize().y};
-            ImPlot::PushPlotClipRect();
-            ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
-            ImPlot::PopPlotClipRect();
-
-            char buf[128] = "";
-            int len = 0;
-
-            double time = plot_pos.x;
-            int frame_idx = MD_CLAMP((int)(time_to_frame(time, data.timeline.x_values) + 0.5), 0, (int)md_array_size(data.timeline.x_values)-1);
-            len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), "time: %.2f", time);
-
-            md_unit_t time_unit = data.timeline.time_unit;
-            if (!md_unit_is_none(time_unit)) {
-                char unit_buf[32];
-                md_unit_print(unit_buf, sizeof(unit_buf), time_unit);
-                len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%s)", unit_buf);
-            }
-
-            if (0 <= frame_idx && frame_idx < args.values.count) {
-                const char* value_lbl = args.values.y_var ? "mean" : "value";
-                if (args.values.y) {
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", %s: %.2f", value_lbl, args.values.y[frame_idx]);
-                }
-                if (args.values.y_var) {
-                    MD_ASSERT(args.values.y_min);
-                    MD_ASSERT(args.values.y_max);
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), ", var: %.2f, min: %.2f, max: %.2f",
-                        args.values.y_var[frame_idx],
-                        args.values.y_min[frame_idx],
-                        args.values.y_max[frame_idx]);
-                }
-
-                if (!md_str_empty(args.values.unit)) {
-                    len += snprintf(buf + len, MD_MAX(0, (int)sizeof(buf) - len), " (%.*s)", (int)args.values.unit.len, args.values.unit.ptr);
-                }
-            }
-            ImGui::SetTooltip("%.*s", len, buf);
-        }
-
-        ImPlot::EndPlot();
-    }
-
-    return true;
 }
 
 static double distance_to_linesegment(ImPlotPoint p0, ImPlotPoint p1, ImPlotPoint p) {
@@ -4030,7 +3779,7 @@ static void plot_series_style_popup(ApplicationState* data, PlotSeries& s, int d
             }
             if (ImGui::IsItemHovered()) {
                 if (script_ident[0] != '\0') {
-                    script_visualize_ref(data, vis_ref, k, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                    script_visualize_ref(data, vis_ref, k, script::DRAW_HOVER);
                     script_set_hovered_property(data, md_str_from_cstr(script_ident), k);
                 }
                 *hovered_pop_idx = k;
@@ -4064,7 +3813,7 @@ static void plot_series_list_item(ApplicationState* data, const char* dnd_type, 
     if (ImGui::IsItemHovered()) {
         const md_str_t ident = series_script_ident(key);
         if (!md_str_empty(ident)) {
-            script_visualize_ref(data, script::output_ref(data->script.eval_ir, ident), -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+            script_visualize_ref(data, script::output_ref(data->script.eval_ir, ident), -1, script::DRAW_HOVER);
             script_set_hovered_property(data, ident);
         } else {
             ImGui::SetTooltip("%s\nClick to show in the first subplot, drag into any", key.path);
@@ -4277,6 +4026,11 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
     plot_system_series_menu(data, TIMELINE_SERIES_DND, first);
 }
 
+// A tick label of the timeline's time axis: the run's time, in its own unit, shown in the display unit (user_data, the factor)
+static int format_scaled(double value, char* buf, int size, void* user_data) {
+    return snprintf(buf, size, "%g", value * *(const double*)user_data);
+}
+
 static void draw_timeline_window(ApplicationState* data) {
     MD_ASSERT(data);
     ImGui::SetNextWindowSize(ImVec2(600, 300), ImGuiCond_FirstUseEver);
@@ -4285,10 +4039,12 @@ static void draw_timeline_window(ApplicationState* data) {
         int& num_subplots = data->timeline.num_subplots;
         num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
-        const float* x_values   = data->timeline.x_values;
-        const int num_x_values  = (int)md_array_size(data->timeline.x_values);
-        const float min_x_value = num_x_values > 0 ? x_values[0] : 0.0f;
-        const float max_x_value = num_x_values > 0 ? x_values[num_x_values - 1] : 1.0f;
+        // The plots are in the run's time, in its own unit: the display unit is applied to the tick labels and
+        // the tooltips only, so changing it moves nothing
+        const double* frame_times = run_frame_times(data->system_context);
+        const int     num_frames  = (int)run_num_frames(data->system_context);
+        const double  min_time    = num_frames > 0 ? frame_times[0] : 0.0;
+        const double  max_time    = num_frames > 0 ? frame_times[num_frames - 1] : 1.0;
 
         ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(ImPlot::GetStyle().PlotPadding.x, 2));
         MD_DEFER { ImPlot::PopStyleVar(); };
@@ -4300,6 +4056,27 @@ static void draw_timeline_window(ApplicationState* data) {
             }
             if (ImGui::BeginMenu("Periods")) {
                 timeline_periods_menu(&data->timeline.periods);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Frames")) {
+                // The frames selected: a temporal selection, made where a view selects frames (the Shapespace)
+                const uint64_t num_selected = md_bitmask_count(&data->selection.frame_mask);
+                const uint32_t num_frames = (uint32_t)run_num_frames(data->system_context);
+                if (num_selected > 0) ImGui::TextDisabled("%llu of %u frames selected", (unsigned long long)num_selected, num_frames);
+                else                  ImGui::TextDisabled("No frames selected");
+                if (ImGui::MenuItem("Clear selection", nullptr, false, num_selected > 0)) {
+                    frame_selection_clear(data);
+                }
+                if (ImGui::MenuItem("Invert selection", nullptr, false, num_frames > 0)) {
+                    md_bitmask_invert_range(&data->selection.frame_mask, 0, num_frames);
+                    data->selection.frame_generation += 1;
+                }
+                if (ImGui::MenuItem("Select current frame", nullptr, false, num_frames > 0)) {
+                    const uint32_t f = (uint32_t)MD_CLAMP((int)(data->animation.frame + 0.5), 0, (int)num_frames - 1);
+                    frame_selection_modify(data, md_bitset_range(f, f + 1), SelectionOperator::Or);
+                }
+                ImGui::Separator();
+                ImGui::TextDisabled("Select frames in the Shapespace: shift-drag over\nits points selects the frames they are of.");
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {
@@ -4315,11 +4092,9 @@ static void draw_timeline_window(ApplicationState* data) {
             ImGui::EndMenuBar();
         }
 
-        if (ImGui::IsWindowFocused() && ImGui::IsKeyPressed(KEY_PLAY_PAUSE, false)) {
-            data->animation.mode = data->animation.mode == PlaybackMode::Playing ? PlaybackMode::Stopped : PlaybackMode::Playing;
-        }
+        // (Space plays and pauses from here as from anywhere: main())
 
-        if (num_x_values > 0) {
+        if (num_frames > 0) {
             ImPlotInputMap old_map = ImPlot::GetInputMap();
 
             static bool is_dragging  = false;
@@ -4331,31 +4106,36 @@ static void draw_timeline_window(ApplicationState* data) {
                 is_dragging = false;
             }
 
-            // Shift-drag marks a period and ctrl-drag moves the current frame: neither may pan the plots
-            // meanwhile, and nor may a period being dragged in the lane
+            // Shift-drag marks a period and ctrl-drag moves the current frame: neither may pan the plots meanwhile, and
+            // nor may a period being dragged in the lane. The left button is theirs then; the right still pans
+            // (plot_input.h).
             if (ImGui::GetIO().KeyShift || ImGui::GetIO().KeyCtrl || timeline_periods_dragging()) {
-                ImPlot::GetInputMap().Pan = ImGuiMouseButton_Middle;
+                ImPlot::GetInputMap().Pan = ImGuiMouseButton_Right;
+                ImPlot::GetInputMap().PanAlt = -1;
             }
 
+            // A run without time of its own has its frames numbered: its unit prints as nothing, and the factor is one
             char x_label[64] = "Frame";
             char x_unit_str[32] = "";
-            md_unit_t x_unit = data->timeline.time_unit;
-            if (!md_unit_is_none(x_unit)) {
-                md_unit_print(x_unit_str, sizeof(x_unit_str), x_unit);
+            const double x_scale = display_units::factor_print(x_unit_str, sizeof(x_unit_str), run_time_unit(data->system_context));
+            if (x_unit_str[0] != '\0') {
                 snprintf(x_label, sizeof(x_label), "Time (%s)", x_unit_str);
             }
 
             // The periods, above the plots and on their time axis
             TimelinePeriodAxis range_axis;
-            range_axis.frame_times = x_values;
-            range_axis.num_frames  = num_x_values;
-            range_axis.view_beg    = &data->timeline.view_range.beg_x;
-            range_axis.view_end    = &data->timeline.view_range.end_x;
-            range_axis.time_unit   = x_unit_str;
+            range_axis.frame_times   = frame_times;
+            range_axis.num_frames    = num_frames;
+            range_axis.view_beg      = &data->timeline.view_range.beg_x;
+            range_axis.view_end      = &data->timeline.view_range.end_x;
+            range_axis.time_unit     = x_unit_str;
+            range_axis.display_scale = x_scale;
             timeline_periods_lane(&data->timeline.periods, range_axis, &data->animation.frame);
 
-            // After the lane, which ctrl-drag in it may have moved
-            double time = frame_to_time(data->animation.frame, *data);
+            // After the lane, which ctrl-drag in it may have moved. The current frame is set from the time only when
+            // something below moves the time: a frame taken to its time and back may not be the same frame.
+            double time = run_time_at_frame(data->system_context, data->animation.frame);
+            bool   time_moved = false;
 
             ImPlot::BeginSubplots("##Temporal", num_subplots, 1, ImVec2(-1,-1));
 
@@ -4396,7 +4176,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                 if (ImPlot::BeginPlot("", ImVec2(), plot_flags)) {
                     ImPlot::SetupAxisLinks(ImAxis_X1, &data->timeline.view_range.beg_x, &data->timeline.view_range.end_x);
-                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_x_value, max_x_value);
+                    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, min_time, max_time);
 
                     const ImPlotAxisFlags axis_flags_x = axis_flags;
 
@@ -4418,6 +4198,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     ImPlot::SetupAxis(ImAxis_X1, x_label, axis_flags_x);
+                    ImPlot::SetupAxisFormat(ImAxis_X1, format_scaled, (void*)&x_scale);
                     if (axis_view) {
                         // Not fitted to the values: they fill the period, wherever it is cut
                         periodic_axis_setup(ImAxis_Y1, y_label, axis_view, axis_flags | ImPlotAxisFlags_Opposite);
@@ -4432,6 +4213,10 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     // The periods shaded below the series, and shift-press marking a new one
                     timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.frame);
+                    // The frames selected (a temporal selection, as the Shapespace makes) and highlighted
+                    timeline_frames_plot(&data->selection.frame_mask, &data->selection.frame_highlight_mask, range_axis,
+                        ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.selection.outline)),
+                        ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.highlight.outline)));
 
                     // The entry, and the member of its population, under the mouse
                     int  hovered_idx      = -1;
@@ -4440,7 +4225,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     bool print_timeline_tooltip = false;
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         md_bitmask_clear(&data->system_context.selection.highlight_mask);
                         script_set_hovered_property(data,  MD_STR_LIT(""));
 
@@ -4568,7 +4353,8 @@ static void draw_timeline_window(ApplicationState* data) {
 
                     if (is_dragging) {
                         time = ImPlot::GetPlotMousePos().x;
-                    } else if (ImPlot::IsPlotHovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
+                        time_moved = true;
+                    } else if (plot_input_hovered() && ImGui::IsMouseDown(ImGuiMouseButton_Left) && ImGui::IsKeyDown(ImGuiKey_LeftCtrl)) {
                         is_dragging = true;
                     }
 
@@ -4578,7 +4364,7 @@ static void draw_timeline_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_HOVER);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
@@ -4703,13 +4489,13 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     if (ImPlot::DragLineX(0, &time, ImVec4(1,1,0,1), 1.0f, ImPlotDragToolFlags_NoFit)) {
-                        time = MD_CLAMP(time, min_x_value, max_x_value);
+                        time_moved = true;
                     }
 
-                    if (ImPlot::IsPlotHovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
+                    if (plot_input_hovered() && hovered_idx != -1 && views[hovered_idx].script_ident[0] != '\0') {
                         const SeriesTemporalView& v = views[hovered_idx];
                         const int pop_idx = v.dim > 1 ? hovered_pop_idx : -1;
-                        script_visualize_ref(data, v.vis_ref, pop_idx, ~script::DRAW_SDF);
+                        script_visualize_ref(data, v.vis_ref, pop_idx, script::DRAW_HOVER);
                         script_set_hovered_property(data, md_str_from_cstr(v.script_ident), hovered_pop_idx);
                     }
 
@@ -4737,12 +4523,12 @@ static void draw_timeline_window(ApplicationState* data) {
                         ImPlot::GetPlotDrawList()->AddLine(p0, p1, IM_COL32(255, 255, 255, 120));
                         ImPlot::PopPlotClipRect();
 
-                        double t = plot_pos.x;
-                        if (md_unit_is_none(x_unit)) {
-                            int32_t frame_idx = MD_CLAMP((int)(time_to_frame(t, x_values) + 0.5), 0, num_x_values-1);
+                        const double t = plot_pos.x;
+                        if (x_unit_str[0] == '\0') {
+                            const int frame_idx = (int)(frame_at_time(frame_times, num_frames, t) + 0.5);
                             ImGui::SetTooltip("Frame: %i\n%s", frame_idx, hovered_label);
                         } else {
-                            ImGui::SetTooltip("Time: %.2f (%s)\n%s", t, x_unit_str, hovered_label);
+                            ImGui::SetTooltip("Time: %.2f (%s)\n%s", t * x_scale, x_unit_str, hovered_label);
                         }
                     }
 
@@ -4759,8 +4545,9 @@ static void draw_timeline_window(ApplicationState* data) {
 
             ImPlot::EndSubplots();
 
-            time = MD_CLAMP(time, (double)min_x_value, (double)max_x_value);
-            data->animation.frame = time_to_frame(time, data->timeline.x_values);
+            if (time_moved) {
+                data->animation.frame = frame_at_time(frame_times, num_frames, time);
+            }
 
             ImPlot::GetInputMap() = old_map;
         }
@@ -5300,7 +5087,7 @@ static void draw_distribution_window(ApplicationState* data) {
                     int  hovered_bin       = -1;
                     char hovered_label[192] = "";
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         script_set_hovered_property(data, MD_STR_LIT(""));
 
                         const ImPlotPoint mouse_pos = ImPlot::GetPlotMousePos();
@@ -5417,7 +5204,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             }
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident), member);
-                                script_visualize_ref(data, v.vis_ref, member, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, member, script::DRAW_HOVER);
                             }
                             if (v.num_periods > 0 && hovered_bin >= 0) {
                                 if (hovered_pop_idx >= 0 && v.periods[hovered_pop_idx].id != 0) {
@@ -5446,7 +5233,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
                         if (ImPlot::IsLegendEntryHovered(v.plot_id)) {
                             if (v.script_ident[0] != '\0') {
-                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_ATOMS | script::DRAW_GEOMETRY);
+                                script_visualize_ref(data, v.vis_ref, -1, script::DRAW_HOVER);
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
@@ -5664,7 +5451,7 @@ static void draw_distribution_window(ApplicationState* data) {
                         ImPlot::EndDragDropTarget();
                     }
 
-                    if (ImPlot::IsPlotHovered()) {
+                    if (plot_input_hovered()) {
                         ImPlotPoint plot_pos = ImPlot::GetPlotMousePos();
                         ImVec2 screen_pos = ImPlot::PlotToPixels(plot_pos);
                         ImVec2 p0 = {screen_pos.x, ImPlot::GetPlotPos().y};
@@ -5875,6 +5662,156 @@ static bool script_drop_text(char* buf, size_t cap, const ApplicationState* stat
     return false;
 }
 
+// A value's numbers drawn small beside its text in the editor's hover (script::value_plot): a population binned, each
+// column of it overlaid, a distribution over its bins, a matrix as a heatmap. Nothing in it reacts to the pointer,
+// which the tooltip follows.
+static void draw_value_plot(const script::ValuePlot& p) {
+    const float em = ImGui::GetFontSize();
+    const ImPlotFlags flags = ImPlotFlags_NoInputs | ImPlotFlags_NoMenus | ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText | ImPlotFlags_NoFrame;
+    const size_t n = (size_t)(p.ndim > 0 ? p.dims[0] : 1) * (p.ndim > 1 ? p.dims[1] : 1);
+    if (!p.data || n == 0) return;
+
+    if (p.kind == script::PlotKind::Heatmap) {
+        if (p.ndim != 2) return;
+        // At most 128 cells a side: blocks of cells as one, a truth where any of them is, a number their mean
+        const uint32_t rows = p.dims[0], cols = p.dims[1];
+        const uint32_t br = (rows + 127) / 128, bc = (cols + 127) / 128;
+        const int nr = (int)((rows + br - 1) / br), nc = (int)((cols + bc - 1) / bc);
+        ImVector<float> cells;
+        cells.resize(nr * nc);
+        double lo = INFINITY, hi = -INFINITY;
+        for (int r = 0; r < nr; ++r) {
+            for (int c = 0; c < nc; ++c) {
+                double sum = 0.0, top = -INFINITY;
+                int count = 0;
+                for (uint32_t i = r * br; i < MD_MIN((r + 1) * br, rows); ++i) {
+                    for (uint32_t j = c * bc; j < MD_MIN((c + 1) * bc, cols); ++j) {
+                        const double x = p.data[(size_t)i * cols + j];
+                        if (isnan(x)) continue;
+                        sum += x;
+                        top = MD_MAX(top, x);
+                        ++count;
+                    }
+                }
+                const double v = count == 0 ? NAN : p.truth ? top : sum / count;
+                cells[r * nc + c] = (float)v;
+                if (!isnan(v)) { lo = MD_MIN(lo, v); hi = MD_MAX(hi, v); }
+            }
+        }
+        if (p.truth) { lo = 0.0; hi = 1.0; }
+        if (!(hi >= lo)) return;
+        if (hi == lo) hi = lo + 1.0;
+        // Missing cells as the least
+        for (int i = 0; i < cells.Size; ++i) if (isnan(cells[i])) cells[i] = (float)lo;
+        const float w = 14.0f * em;
+        const float h = MD_CLAMP(w * (float)rows / (float)cols, 4.0f * em, 20.0f * em);
+        ImPlot::PushColormap(ImPlotColormap_Viridis);
+        if (ImPlot::BeginPlot("##value_heatmap", ImVec2(w, h), flags | ImPlotFlags_NoLegend | ImPlotFlags_NoTitle)) {
+            ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_NoDecorations, ImPlotAxisFlags_NoDecorations);
+            ImPlot::PlotHeatmap("##cells", cells.Data, nr, nc, lo, hi, nullptr, ImPlotPoint(0, 0), ImPlotPoint(1, 1));
+            ImPlot::EndPlot();
+        }
+        ImPlot::PopColormap();
+        auto label = [&](int d, uint32_t i) { return p.labels[d] ? p.labels[d][i] : md_str_t{}; };
+        if (p.labels[0] && p.labels[1]) {
+            ImGui::TextDisabled("Rows " MD_STR_FMT " to " MD_STR_FMT ", columns " MD_STR_FMT " to " MD_STR_FMT,
+                MD_STR_ARG(label(0, 0)), MD_STR_ARG(label(0, rows - 1)), MD_STR_ARG(label(1, 0)), MD_STR_ARG(label(1, cols - 1)));
+        } else {
+            ImGui::TextDisabled("%u rows, %u columns", rows, cols);
+        }
+        if (!p.truth) {
+            char unit[64] = "";
+            const double f = display_units::factor_print(unit, sizeof(unit), p.unit);
+            ImGui::TextDisabled("From %.4g to %.4g %s", lo * f, hi * f, unit);
+        }
+        return;
+    }
+
+    // The series: a histogram's columns, the rows of bins; of one dimension, one
+    const bool hist = p.kind == script::PlotKind::Histogram;
+    if (!hist && (p.kind != script::PlotKind::Bins || !p.has_range)) return;
+    const uint32_t num_series = p.ndim == 2 ? (hist ? p.dims[1] : p.dims[0]) : 1;
+    const uint32_t len = p.ndim == 2 ? (hist ? p.dims[0] : p.dims[1]) : p.dims[0];
+    auto at = [&](uint32_t s, uint32_t i) { return p.ndim != 2 ? p.data[i] : hist ? p.data[(size_t)i * p.dims[1] + s] : p.data[(size_t)s * p.dims[1] + i]; };
+    char unit[64] = "";
+    const double f = display_units::factor_print(unit, sizeof(unit), hist ? p.unit : p.range_unit);
+
+    double lo, hi;
+    int bins;
+    if (hist) {
+        size_t num_finite = 0;
+        lo = INFINITY;
+        hi = -INFINITY;
+        for (uint32_t s = 0; s < num_series; ++s) {
+            for (uint32_t i = 0; i < len; ++i) {
+                const double x = at(s, i);
+                if (isnan(x)) continue;
+                lo = MD_MIN(lo, x);
+                hi = MD_MAX(hi, x);
+                ++num_finite;
+            }
+        }
+        if (num_finite == 0) return;
+        const double per_series = (double)num_finite / num_series;
+        if (p.has_period && p.period[1] > p.period[0]) {
+            // Over the circle, in bins of whole parts of it: of 360°, 30°, 10° or 5°
+            lo = p.period[0];
+            hi = p.period[1];
+            bins = per_series < 50 ? 12 : per_series < 500 ? 36 : 72;
+        } else {
+            if (hi == lo) { lo -= 0.5; hi += 0.5; }
+            bins = MD_CLAMP((int)ceil(2.0 * sqrt(per_series)), 8, 60);
+        }
+    } else {
+        lo = p.range[0];
+        hi = p.range[1];
+        bins = (int)len;
+    }
+    if (!(hi > lo) || bins <= 0) return;
+
+    // Edges, one more than the bins, the last bin's height repeated at the last edge to close it
+    ImVector<double> xs, ys;
+    xs.resize(bins + 1);
+    ys.resize((bins + 1) * (int)num_series);
+    for (int b = 0; b <= bins; ++b) xs[b] = (lo + (hi - lo) * b / bins) * f;
+    double top = 0.0;
+    for (uint32_t s = 0; s < num_series; ++s) {
+        double* y = ys.Data + (size_t)s * (bins + 1);
+        for (int b = 0; b <= bins; ++b) y[b] = 0.0;
+        if (hist) {
+            const double width = hi - lo;
+            for (uint32_t i = 0; i < len; ++i) {
+                const double x = at(s, i);
+                if (isnan(x)) continue;
+                double t = x - lo;
+                if (p.has_period) { t = fmod(t, width); if (t < 0) t += width; }
+                y[MD_CLAMP((int)(t / width * bins), 0, bins - 1)] += 1.0;
+            }
+        } else {
+            for (int b = 0; b < bins; ++b) { const double v = at(s, (uint32_t)b); y[b] = isnan(v) ? 0.0 : v; }
+        }
+        y[bins] = y[bins - 1];
+        for (int b = 0; b < bins; ++b) top = MD_MAX(top, y[b]);
+    }
+
+    const bool legend = hist && p.ndim == 2 && num_series > 1 && p.labels[1];
+    if (ImPlot::BeginPlot("##value_plot", ImVec2(20.0f * em, 8.0f * em), flags | ImPlotFlags_NoTitle | (legend ? 0 : ImPlotFlags_NoLegend))) {
+        ImPlot::SetupAxes(unit[0] ? unit : nullptr, nullptr, 0, ImPlotAxisFlags_NoTickLabels);
+        ImPlot::SetupAxisLimits(ImAxis_X1, xs[0], xs[bins], ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, top > 0.0 ? top * 1.08 : 1.0, ImPlotCond_Always);
+        if (legend) ImPlot::SetupLegend(ImPlotLocation_NorthEast);
+        for (uint32_t s = 0; s < num_series; ++s) {
+            char name[64];
+            const md_str_t lbl = legend ? p.labels[1][s] : md_str_t{};
+            if (lbl.len) snprintf(name, sizeof(name), MD_STR_FMT "##%u", MD_STR_ARG(lbl), s);
+            else snprintf(name, sizeof(name), "##series%u", s);
+            ImPlot::SetNextFillStyle(IMPLOT_AUTO_COL, 0.25f);
+            ImPlot::PlotStairs(name, xs.Data, ys.Data + (size_t)s * (bins + 1), bins + 1, ImPlotStairsFlags_Shaded);
+        }
+        ImPlot::EndPlot();
+    }
+}
+
 static void draw_script_editor_window(ApplicationState* state) {
     MD_ASSERT(state);
 
@@ -5907,16 +5844,6 @@ static void draw_script_editor_window(ApplicationState* state) {
                 }
                 if (ImGui::MenuItem("Export")) {
                     state->show_property_export_window = true;
-                }
-                ImGui::EndMenu();
-            }
-            if (ImGui::BeginMenu("Language")) {
-                // The script and every filter of the workspace are in one language; the text is kept as it is
-                if (ImGui::MenuItem("mdscript (v1)", nullptr, state->script.language == script::Language::V1)) {
-                    script_set_language(state, script::Language::V1);
-                }
-                if (ImGui::MenuItem("VIAL (v2)", nullptr, state->script.language == script::Language::V2)) {
-                    script_set_language(state, script::Language::V2);
                 }
                 ImGui::EndMenu();
             }
@@ -5979,6 +5906,15 @@ static void draw_script_editor_window(ApplicationState* state) {
                     open_script_reference(state, {word.data(), word.size()}, false);
                 }
                 ImGui::EndMenu();
+            }
+            // Which language the script is in, which is chosen under Settings in the main menu
+            {
+                const char* lang = state->script.language == script::Language::V2 ? "VIAL (v2)" : "mdscript (v1)";
+                // At the right, or after the menus when the window is too narrow for both
+                const float right = ImGui::GetWindowContentRegionMax().x - ImGui::CalcTextSize(lang).x;
+                ImGui::SetCursorPosX(MD_MAX(ImGui::GetCursorPosX(), right));
+                ImGui::TextDisabled("%s", lang);
+                ImGui::SetItemTooltip("The script's language: Settings > Script Language switches it, and the script with it");
             }
 
             ImGui::EndMenuBar();
@@ -6182,6 +6118,10 @@ static void draw_script_editor_window(ApplicationState* state) {
                         ImGui::Separator();
                         if (dynamic) ImGui::TextDisabled("At the frame shown");
                         ImGui::Text(MD_STR_FMT, MD_STR_ARG(value));
+                    }
+                    if (const script::ValuePlot* plot = script_vis_value_plot(state)) {
+                        ImGui::Separator();
+                        draw_value_plot(*plot);
                     }
                 }
                 if (state->script.sub_idx != -1) {
@@ -6676,12 +6616,15 @@ static void draw_property_export_window(ApplicationState* data) {
                     if (series_resolve_temporal(&view, data, selected)) {
                         num_rows = (size_t)view.num_samples;
                         char time_unit_str[32] = "";
-                        md_unit_print(time_unit_str, sizeof(time_unit_str), data->timeline.time_unit);
-                        x_label = md_unit_is_none(data->timeline.time_unit) ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
+                        const double time_scl = display_units::factor_print(time_unit_str, sizeof(time_unit_str), run_time_unit(data->system_context));
+                        x_label = time_unit_str[0] == '\0' ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
                         if (view.unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.unit_str);
 
+                        // The columns written are float (md_csv, md_xvg)
                         float* x = md_temp_alloc_array(temp, float, num_rows);
-                        md_memcpy(x, view.x, num_rows * sizeof(float));
+                        for (size_t r = 0; r < num_rows; ++r) {
+                            x[r] = (float)(view.x[r] * time_scl);
+                        }
                         md_array_push(column_data, x, alloc);
                         md_array_push(column_labels, x_label, alloc);
                         push_columns(view.dim, [&](size_t r, int k) { return (float)series_temporal_point(view, (int)r, k).y; });
@@ -7119,7 +7062,7 @@ static void update_md_buffers(SystemContext& sc) {
         // The orders of the frame shown where the bonds tracked changed them (bond_tracking_chem)
         md_gl_mol_set_bond_orders(sc.data.gl_mol, &sys, delta, bond_tracking_chem(sc));
 
-        // The non-covalent bonds of the system are drawn dashed by the licorice and ball and stick representations
+        // The interactions of the system are drawn dashed by the licorice and ball and stick representations
         for (size_t i = 0; i < md_array_size(sc.representation.reps); ++i) {
             representation_set_weak_bonds(sc, &sc.representation.reps[i]);
         }
@@ -7594,9 +7537,12 @@ static void render(ApplicationState* state) {
         selection_empty &= md_bitmask_empty(&state->systems[i]->selection.selection_mask);
         highlight_empty &= md_bitmask_empty(&state->systems[i]->selection.highlight_mask);
     }
-    const bool draw_marks = !selection_empty || !highlight_empty;
+    const bool glyph_hovered = state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
+    const bool draw_marks = !selection_empty || !highlight_empty || glyph_hovered;
     if (draw_marks) {
         uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
+        marks_key = md_hash64(&state->glyph_hover, sizeof(state->glyph_hover), marks_key);
+        marks_key = md_hash64(&state->glyph_hover_ui, sizeof(state->glyph_hover_ui), marks_key);
         marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
         marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
         marks_key = marks_key ? marks_key : 1;
@@ -7604,6 +7550,7 @@ static void render(ApplicationState* state) {
             PUSH_GPU_SECTION("Marks")
             gbuffer_marks_begin(&state->gbuffer);
             draw_representations_marks(state);
+            draw_glyph_marks(state);
             gbuffer_marks_end(&state->gbuffer);
             POP_GPU_SECTION()
             lazy.marks_key = marks_key;
@@ -7925,7 +7872,7 @@ static void draw_representations_opaque(SystemContext& sys) {
                 const md_gl_draw_op_t op = representation_draw_op(rep);
                 const size_t beg = md_array_size(draw_ops);
                 md_array_push(draw_ops, op, frame_alloc);
-                // The weak bonds it draws over its sticks (the non-covalent bonds of the system), in its copies
+                // The weak bonds it draws over its sticks (the interactions of the system), in its copies
                 representation_weak_bond_draw_ops(&draw_ops, sys, rep, frame_alloc);
                 place_ops(&draw_ops, beg, sys, rep, false, frame_alloc);
             }
@@ -8017,6 +7964,32 @@ static void draw_representations_opaque(SystemContext& sys) {
         args.picking_offset = gl_picking_offset_glyphs(sys);
         draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
     }
+
+    // The glyphs of the point sets, ray cast by a pass of their own, picking as their points
+    {
+        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
+        for (size_t i = 0; i < num_representations; ++i) {
+            const Representation& rep = sys.representation.reps[i];
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(sys, rep) || !rep.type_is_valid) continue;
+            const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Glyph, rep.node.id, sys.id) : nullptr;
+            if (!range) continue;
+            glyphs_draw(rep.glyphs, state->view.param, range->beg);
+        }
+    }
+}
+
+// The glyph hovered, into the marks of the highlight
+static void draw_glyph_marks(ApplicationState* state) {
+    const bool ui = state->glyph_hover_ui.rep_id != 0;
+    const uint32_t rep_id = ui ? state->glyph_hover_ui.rep_id : state->glyph_hover.rep_id;
+    const uint32_t point  = ui ? state->glyph_hover_ui.point : state->glyph_hover.point;
+    if (!rep_id) return;
+    // Of the system whose representation it is: an id is its system's own
+    SystemContext* sys = system_find(state, ui ? state->glyph_hover_ui.system : state->glyph_hover.system);
+    if (!sys) return;
+    const Representation* rep = find_representation(*sys, rep_id);
+    if (!rep || rep->type != RepresentationType::Glyphs || !representation_shown(*sys, *rep) || !rep->type_is_valid) return;
+    glyphs_draw_marks(rep->glyphs, point, state->gbuffer, state->view.param);
 }
 
 // What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
@@ -8040,7 +8013,7 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
         h = md_hash64(&rep.bond_orders, sizeof(rep.bond_orders), h);
         h = md_hash64(&rep.chain_gaps, sizeof(rep.chain_gaps), h);
         h = md_hash64(&rep.elastic_bonds, sizeof(rep.elastic_bonds), h);
-        h = md_hash64(&rep.noncovalent_bonds, sizeof(rep.noncovalent_bonds), h);
+        h = md_hash64(&rep.interaction_bonds, sizeof(rep.interaction_bonds), h);
         h = md_hash64(&rep.coordinate_bonds_dashed, sizeof(rep.coordinate_bonds_dashed), h);
         if (rep.type == RepresentationType::Bonds) {
             h = md_hash64(&rep.bond_dashes, sizeof(rep.bond_dashes), h);
@@ -8072,6 +8045,19 @@ static uint64_t opaque_scene_hash(const SystemContext& sys) {
                 h = md_hash64(&im.current, sizeof(im.current), h);
             }
             h = md_hash64_combine(h, transfer_function_hash(es.volume.tf));
+            // What arrives over frames, whether or not the view is drawn: the meshes of its isosurfaces and the values
+            // at their vertices (electronic_structure_meshes_update), the field its surfaces are coloured by
+            // (electronic_structure_field_poll), and the range of its colour scale, which follows the values
+            const uint64_t meshes = electronic_structure_mesh_key(es);
+            h = md_hash64(&meshes, sizeof(meshes), h);
+            h = md_hash64(&es.field_vol.tex_id, sizeof(es.field_vol.tex_id), h);
+            h = md_hash64(&es.field_vol.version, sizeof(es.field_vol.version), h);
+            const float field_map[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
+            h = md_hash64(field_map, sizeof(field_map), h);
+        }
+        if (rep.type == RepresentationType::Glyphs) {
+            const uint64_t c = glyphs_hash(rep.glyphs);
+            h = md_hash64(&c, sizeof(c), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
             h = md_hash64(&rep.dipole.dipole_key, sizeof(rep.dipole.dipole_key), h);
@@ -8121,6 +8107,8 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
         if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(sys, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (es.display != ElectronicStructureDisplay::Isosurface) continue;
+        // the fields meshes are not made of: raycast (draw_representations_transparent)
+        if (!es_mesh_mode(state, es)) continue;
 
         IsoDesc iso;
         electronic_structure_iso_desc_init(&iso, es);
@@ -8268,13 +8256,22 @@ static bool draw_representations_transparent(ApplicationState* state) {
     if (num_representations == 0) return false;
 
     iso_mesh_converged = true;
-    if (state->settings.isosurface_rendering == IsosurfaceRendering_Mesh) {
-        const bool meshes = draw_representations_transparent_mesh(state);
-        return draw_representations_volumes(state, meshes) || meshes;
-    }
-    isomesh::target_free(&iso_mesh_target);
-
     bool written = false;
+    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: as each
+    // representation has it, and whatever meshes are not made of (es_mesh_mode)
+    bool any_mesh = false;
+    // Of the first system, whose quantum chemistry is evaluated (until it is per system)
+    const SystemContext& es_sys = state->system_context;
+    for (size_t i = 0; i < md_array_size(es_sys.representation.reps); ++i) {
+        const Representation& rep = es_sys.representation.reps[i];
+        any_mesh |= representation_shown(es_sys, rep) && rep.type == RepresentationType::ElectronicStructure &&
+                    rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface && es_mesh_mode(state, rep.electronic_structure);
+    }
+    if (any_mesh) {
+        written = draw_representations_transparent_mesh(state);
+    } else {
+        isomesh::target_free(&iso_mesh_target);
+    }
 
     for (size_t s = 0; s < state->num_systems; ++s)
     for (size_t i = 0; i < md_array_size(state->systems[s]->representation.reps); ++i) {
@@ -8282,7 +8279,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
         if (sys.data.sys.atom.count == 0) break;
         Representation& rep = sys.representation.reps[i];
         if (!representation_shown(sys, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface) {
+        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface &&
+            !es_mesh_mode(state, rep.electronic_structure)) {
             const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
             IsoDesc iso;
             electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
@@ -8304,6 +8302,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .color_volume = rep.electronic_structure.color_vol.tex_id,
                     .field_volume = use_field ? rep.electronic_structure.field_vol.tex_id : 0,
                     .field_colormap = use_field ? surface_field_colormap_texture(&rep.electronic_structure.field_vol, rep.electronic_structure.field_map.colormap) : 0,
+                    .normal_volume = es_normals_of(rep.electronic_structure.density_vol.tex_id),
                 },
                 .matrix = {
                     .model = rep.electronic_structure.density_vol.texture_to_world,

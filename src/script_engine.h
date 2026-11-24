@@ -25,6 +25,7 @@ struct md_system_t;
 struct md_system_state_t;
 struct md_attribute_t;
 struct md_attributes_t;
+struct md_pair_frames_t;
 struct md_atom_pair_t;
 struct md_writer_i;
 
@@ -135,6 +136,7 @@ enum OutputFlags : uint32_t {
     OUTPUT_VOLUME       = 0x0004,   // an aggregate over frames: a grid
     OUTPUT_PERIODIC     = 0x0008,   // temporal values that wrap, such as angles; see script/<name>/period and /seam
     OUTPUT_SDF          = 0x0010,
+    OUTPUT_MATRIX       = 0x0020,   // two dimensions: rows /labels, columns /column_labels; truths per frame by eval_pairs
 };
 
 size_t       num_outputs(const Program* prog);
@@ -143,6 +145,9 @@ uint32_t     output_flags(const Program* prog, md_str_t name);         // OUTPUT
 Range        output_range(const Program* prog, md_str_t name);         // where it is named; empty for none
 uint64_t     output_fingerprint(const Program* prog, md_str_t name);   // what it is computed from; 0 for none
 Ref          output_ref(const Program* prog, md_str_t name);           // empty for none
+// v2: the atoms index `index` of dimension dim of an output stands for, where that runs over a selection (the residue
+// of a row of contacts(residue)), at most cap into out; returns how many there are, 0 for none
+size_t       output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap);
 
 // Whether ref was made by this compilation of prog, and so resolves in it
 bool  ref_valid(const Program* prog, Ref ref);
@@ -206,6 +211,11 @@ void eval_reset_interrupt(Eval* eval);
 // The outputs as attributes: script/<name>, with /range, /mean, /variance, /extent, /labels beside a temporal one,
 // and /weight, /bin beside a distribution. Created with the evaluation, written in place as frames are evaluated.
 const md_attributes_t* attributes(const Eval* eval);
+
+// v2: an output that is a matrix of truths per frame (OUTPUT_MATRIX and OUTPUT_TEMPORAL, of bools), which has no
+// script/<name>, as the frames each entry is true in (md_pair_frames.h): written as frames are evaluated and read
+// meanwhile. NULL for any other output, and in v1. The evaluation's.
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name);
 
 // ### WHAT AN EDIT CHANGES ###
 // How a program's outputs stand against an evaluation of an earlier one: what eval_create(eval, prog) would take
@@ -283,6 +293,8 @@ enum DrawFlags : uint32_t {
     DRAW_ATOMS    = 2,
     DRAW_SDF      = 4,
     DRAW_TEXT     = 8,
+    // What a hover over a property shows of it, wherever the property is hovered: all but an sdf's structures
+    DRAW_HOVER    = DRAW_GEOMETRY | DRAW_ATOMS | DRAW_TEXT,
 };
 
 struct DrawCtx {
@@ -305,6 +317,34 @@ bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t fl
 bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 // The value of what ref refers to in a few lines, at ctx.state; returns its length, 0 if nothing
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
+
+// How a value is plotted beside its text, as the language says (v2; v1 plots nothing)
+enum class PlotKind : uint8_t {
+    None = 0,
+    Histogram,      // the population of the numbers, binned: each column overlaid when of two dimensions
+    Bins,           // a distribution, its bins spanning range: each row overlaid when of two dimensions
+    Heatmap,        // a matrix, its rows and columns labels[0] and labels[1]
+};
+
+struct ValuePlot {
+    PlotKind        kind = PlotKind::None;
+    bool            truth = false;          // truths, each 0 or 1
+    uint8_t         ndim = 0;
+    uint32_t        dims[2] = {};
+    const double*   data = nullptr;         // [dims[0]][dims[1]], NaN where missing
+    md_unit_t       unit = {};
+    const md_str_t* labels[2] = {};         // what each index of a dimension is, or NULL
+    bool            has_period = false;     // on a circle from period[0] to period[1]
+    double          period[2] = {};
+    bool            has_range = false;      // of Bins: what they span, in range_unit
+    double          range[2] = {};
+    md_unit_t       range_unit = {};
+};
+
+// The numbers of what ref refers to and how they are plotted, from alloc; false when it is not plotted. Without ctx.eval
+// a value of a frame, computed at ctx.state; with it a value over the trajectory, read from the evaluation, which
+// nothing may evaluate meanwhile, and nothing computed.
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
 
 // ### EDITOR ###
 
@@ -363,7 +403,10 @@ struct FilterResult {
 
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+// The bonds it picks, pairs of atoms, and in VIAL the flags (md_bond_flags_t) of the bond of each: the system's, or the
+// one its evaluation computed for the frame (a hydrogen, ionic or halogen bond found, a bond formed), MD_BOND_FLAG_INACTIVE for a pair of
+// no bond. v1 gives no flags (flags is left empty, and may be NULL).
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions  filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 
 }  // namespace script

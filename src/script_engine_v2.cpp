@@ -165,8 +165,10 @@ Program* compile(Language lang, md_str_t src, const CompileDesc& desc, md_alloca
     for (size_t i = 0; i < nm; ++i) {
         md_vial_hover_t h;
         if (!md_vial_expr_info(x->prog, mk[i].expr, &h)) continue;
+        // The type, the value where known, and a note about the expression: the frame an at() reads and its time
         char buf[256];
-        const int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
+        int len = h.value[0] ? snprintf(buf, sizeof(buf), "%s -> %s", h.type, h.value) : snprintf(buf, sizeof(buf), "%s", h.type);
+        if (h.note[0] && len > 0 && len < (int)sizeof(buf)) len += snprintf(buf + len, sizeof(buf) - (size_t)len, " (%s)", h.note);
         Mark m = {range_of(mk[i].span), (int)mk[i].depth, md_alloc_str(alloc, md_str_t{buf, (size_t)(len > 0 ? MD_MIN(len, (int)sizeof(buf) - 1) : 0)}), Ref{x->id, mk[i].expr}};
         m.unit = h.unit;
         m.unit_at = h.unit_at;
@@ -263,12 +265,18 @@ uint32_t output_flags(const Program* p, md_str_t name) {
     if (o->flags & MD_VIAL_OUTPUT_PERIODIC)     f |= OUTPUT_PERIODIC;
     if (o->flags & MD_VIAL_OUTPUT_VOLUME)       f |= OUTPUT_VOLUME;
     if (o->flags & MD_VIAL_OUTPUT_SDF)          f |= OUTPUT_SDF;
+    if (o->flags & MD_VIAL_OUTPUT_MATRIX)       f |= OUTPUT_MATRIX;
     return f;
 }
 
 Range output_range(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? range_of(o->span) : Range{}; }
 
 uint64_t output_fingerprint(const Program* p, md_str_t name) { const md_vial_output_t* o = output_of(p, name); return o ? o->fingerprint : 0; }
+
+size_t output_atoms(const Program* p, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap) {
+    if (!pv(p) || dim < 0 || dim > 1) return 0;
+    return md_vial_output_atoms(vp(p), name, (uint8_t)dim, index, out, cap);
+}
 
 Ref output_ref(const Program* p, md_str_t name) {
     const md_vial_output_t* o = output_of(p, name);
@@ -487,6 +495,8 @@ void eval_interrupt(Eval* e) { if (ve(e)) md_vial_eval_interrupt(ve(e)); }
 void eval_reset_interrupt(Eval* e) { if (ve(e)) md_vial_eval_reset_interrupt(ve(e)); }
 
 const md_attributes_t* attributes(const Eval* e) { return ve(e) ? md_vial_eval_attributes(ve(e)) : nullptr; }
+
+const md_pair_frames_t* eval_pairs(const Eval* e, md_str_t name) { return ve(e) ? md_vial_eval_pairs(ve(e), name) : nullptr; }
 
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc) {
     ProgramV2* x = pv(prog);
@@ -858,6 +868,41 @@ size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx
     return md_vial_value_text(buf, cap, &d, ref.node);
 }
 
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc) {
+    if (!out) return false;
+    *out = {};
+    if (!v2::ref_valid(ctx.prog, ref) || !ctx.sys || !alloc) return false;
+    md_vial_hover_t h;
+    if (!md_vial_expr_info(vp(ctx.prog), ref.node, &h)) return false;
+    const bool over_trajectory = h.stage == MD_VIAL_STAGE_TRAJECTORY || h.stage == MD_VIAL_STAGE_TRAJECTORY_PER_FRAME;
+    if (over_trajectory != (ctx.eval != nullptr)) return false;
+    const md_vial_draw_desc_t d = draw_desc(ctx, subidx);
+    md_vial_value_t v;
+    if (!md_vial_value(&v, &d, ref.node, alloc)) return false;
+    switch (v.plot) {
+    case MD_VIAL_PLOT_HISTOGRAM: out->kind = PlotKind::Histogram; break;
+    case MD_VIAL_PLOT_BINS:      out->kind = PlotKind::Bins; break;
+    case MD_VIAL_PLOT_HEATMAP:   out->kind = PlotKind::Heatmap; break;
+    default: return false;
+    }
+    out->truth = v.truth;
+    out->ndim = v.ndim;
+    out->dims[0] = v.dims[0];
+    out->dims[1] = v.dims[1];
+    out->data = v.data;
+    out->unit = v.unit;
+    out->labels[0] = v.labels[0];
+    out->labels[1] = v.labels[1];
+    out->has_period = v.has_period;
+    out->period[0] = v.period[0];
+    out->period[1] = v.period[1];
+    out->has_range = v.has_range;
+    out->range[0] = v.range[0];
+    out->range[1] = v.range[1];
+    out->range_unit = v.range_unit;
+    return true;
+}
+
 // The language's lists, made once
 static const std::vector<md_str_t>& keyword_list() {
     static const std::vector<md_str_t> list = [] {
@@ -1007,12 +1052,14 @@ FilterResult filter_sets(Language, md_array(md_bitset_t)* dst, md_str_t expr, co
     return r;
 }
 
-FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
-    // bond(...) gives pairs of one particle each; atoms give the system's bonds among them, every kind, as v1 does
+FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    // bond(...) gives pairs of one particle each, with the flags of their bonds; atoms give the system's bonds among
+    // them, every kind, as v1 does
     Filtered f;
     run_filter(&f, expr, ctx);
     if (f.r.success && dst) {
         md_array_shrink(*dst, 0);
+        if (flags) md_array_shrink(*flags, 0);
         const md_vial_filter_t& v = f.f;
         bool pairs = v.ndim == 2 && v.dims[1] == 2;
         for (size_t i = 0; pairs && i < v.num_sets; ++i) pairs = v.offsets[i + 1] - v.offsets[i] == 1;
@@ -1022,6 +1069,7 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr
                 p.idx[0] = (md_atom_idx_t)v.atoms[v.offsets[i]];
                 p.idx[1] = (md_atom_idx_t)v.atoms[v.offsets[i + 1]];
                 md_array_push(*dst, p, alloc);
+                if (flags) md_array_push(*flags, v.pair_flags ? v.pair_flags[i / 2] : (uint32_t)MD_BOND_FLAG_INACTIVE, alloc);
             }
         } else {
             const md_system_t* sys = ctx.sys;
@@ -1029,10 +1077,13 @@ FilterResult filter_bonds(Language, md_array(md_atom_pair_t)* dst, md_str_t expr
             uint8_t* in = (uint8_t*)md_alloc(f.temp, na ? na : 1);
             memset(in, 0, na);
             for (uint32_t k = 0; k < v.offsets[v.num_sets]; ++k) if (v.atoms[k] < na) in[v.atoms[k]] = 1;
-            const size_t total = sys->bond.count + sys->bond.noncovalent_count;
+            const size_t total = sys->bond.count + sys->bond.interaction_count;
             for (size_t i = 0; i < total; ++i) {
                 const md_atom_pair_t p = sys->bond.pairs[i];
-                if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) md_array_push(*dst, p, alloc);
+                if ((size_t)p.idx[0] < na && (size_t)p.idx[1] < na && in[p.idx[0]] && in[p.idx[1]]) {
+                    md_array_push(*dst, p, alloc);
+                    if (flags) md_array_push(*flags, (uint32_t)sys->bond.flags[i], alloc);
+                }
             }
         }
     }

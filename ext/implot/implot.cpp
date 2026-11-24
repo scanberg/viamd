@@ -1850,7 +1850,7 @@ bool UpdateInput(ImPlotPlot& plot) {
 #endif
 
     if (plot_clicked) {
-        if (!ImHasFlag(plot.Flags, ImPlotFlags_NoBoxSelect) && IO.MouseClicked[gp.InputMap.Select] && ImHasFlag(IO.KeyMods, gp.InputMap.SelectMod)) {
+        if (!ImHasFlag(plot.Flags, ImPlotFlags_NoBoxSelect) && gp.InputMap.Select >= 0 && IO.MouseClicked[gp.InputMap.Select] && ImHasFlag(IO.KeyMods, gp.InputMap.SelectMod)) {
             plot.Selecting   = true;
             plot.SelectStart = IO.MousePos;
             plot.SelectRect  = ImRect(0,0,0,0);
@@ -1862,7 +1862,9 @@ bool UpdateInput(ImPlotPlot& plot) {
         }
     }
 
-    const bool can_pan = IO.MouseDown[gp.InputMap.Pan] && ImHasFlag(IO.KeyMods, gp.InputMap.PanMod);
+    // [viamd] Either pan button: PanAlt too, when there is one
+    const bool pan_alt_down = gp.InputMap.PanAlt >= 0 && IO.MouseDown[gp.InputMap.PanAlt];
+    const bool can_pan = (IO.MouseDown[gp.InputMap.Pan] || pan_alt_down) && ImHasFlag(IO.KeyMods, gp.InputMap.PanMod);
 
     plot.Held = plot.Held && can_pan;
 
@@ -1915,8 +1917,9 @@ bool UpdateInput(ImPlotPlot& plot) {
     const bool any_hov         = any_x_hov    || any_y_hov;
     const bool any_held        = any_x_held   || any_y_held;
 
-    const ImVec2 select_drag   = ImGui::GetMouseDragDelta(gp.InputMap.Select);
-    const ImVec2 pan_drag      = ImGui::GetMouseDragDelta(gp.InputMap.Pan);
+    const ImVec2 select_drag   = gp.InputMap.Select >= 0 ? ImGui::GetMouseDragDelta(gp.InputMap.Select) : ImVec2(0, 0);
+    const ImGuiMouseButton pan_button = pan_alt_down ? gp.InputMap.PanAlt : gp.InputMap.Pan;    // [viamd]
+    const ImVec2 pan_drag      = ImGui::GetMouseDragDelta(pan_button);
     const float select_drag_sq = ImLengthSqr(select_drag);
     const float pan_drag_sq    = ImLengthSqr(pan_drag);
     const bool selecting       = plot.Selecting && select_drag_sq > MOUSE_CURSOR_DRAG_THRESHOLD;
@@ -1968,7 +1971,7 @@ bool UpdateInput(ImPlotPlot& plot) {
                 }
             }
         }
-        if (IO.MouseDragMaxDistanceSqr[gp.InputMap.Pan] > MOUSE_CURSOR_DRAG_THRESHOLD) {
+        if (IO.MouseDragMaxDistanceSqr[pan_button] > MOUSE_CURSOR_DRAG_THRESHOLD) {
             switch (drag_direction) {
                 case 0        : ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed); break;
                 case (1 << 1) : ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);   break;
@@ -4795,6 +4798,7 @@ ImPlotInputMap& GetInputMap() {
 void MapInputDefault(ImPlotInputMap* dst) {
     ImPlotInputMap& map = dst ? *dst : GetInputMap();
     map.Pan             = ImGuiMouseButton_Left;
+    map.PanAlt          = -1;
     map.PanMod          = ImGuiMod_None;
     map.Fit             = ImGuiMouseButton_Left;
     map.Menu            = ImGuiMouseButton_Right;
@@ -4811,6 +4815,7 @@ void MapInputDefault(ImPlotInputMap* dst) {
 void MapInputReverse(ImPlotInputMap* dst) {
     ImPlotInputMap& map = dst ? *dst : GetInputMap();
     map.Pan             = ImGuiMouseButton_Right;
+    map.PanAlt          = -1;
     map.PanMod          = ImGuiMod_None;
     map.Fit             = ImGuiMouseButton_Left;
     map.Menu            = ImGuiMouseButton_Right;

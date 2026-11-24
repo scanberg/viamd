@@ -569,9 +569,10 @@ struct ImPlotStyle {
 // Input mapping structure. Default values listed. See also MapInputDefault, MapInputReverse.
 struct ImPlotInputMap {
     ImGuiMouseButton Pan;           // LMB    enables panning when held,
+    ImGuiMouseButton PanAlt;        // none   [viamd] a second button that pans as Pan does (-1: none)
     int              PanMod;        // none   optional modifier that must be held for panning/fitting
     ImGuiMouseButton Fit;           // LMB    initiates fit when double clicked
-    ImGuiMouseButton Select;        // RMB    begins box selection when pressed and confirms selection when released
+    ImGuiMouseButton Select;        // RMB    begins box selection when pressed and confirms selection when released ([viamd] -1: none)
     ImGuiMouseButton SelectCancel;  // LMB    cancels active box selection when pressed; cannot be same as Select
     int              SelectMod;     // none   optional modifier that must be held for box selection
     int              SelectHorzMod; // Alt    expands active box selection horizontally to plot edge when held

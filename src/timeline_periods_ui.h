@@ -15,14 +15,16 @@
 // Empty lane space pans and zooms the timeline like the plots do.
 
 #include <timeline_periods.h>
+#include <core/md_bitset.h>
 
-// How frames map to the screen, shared with the timeline's plots
+// How frames map to the screen, shared with the timeline's plots: in the run's time, in its own unit (frame_axis.h)
 struct TimelinePeriodAxis {
-    const float* frame_times = nullptr;     // per frame, in the timeline's unit (timeline.x_values)
-    int          num_frames = 0;
-    double*      view_beg = nullptr;        // the visible span of time, which the lane pans and zooms
-    double*      view_end = nullptr;
-    const char*  time_unit = "";            // "ns"; empty when the frames have no time of their own
+    const double* frame_times = nullptr;    // per frame, never decreasing
+    int           num_frames = 0;
+    double*       view_beg = nullptr;       // the visible span of time, which the lane pans and zooms
+    double*       view_end = nullptr;
+    const char*   time_unit = "";           // the display unit, "ns"; empty when the frames have no time of their own
+    double        display_scale = 1.0;      // from the unit of frame_times into time_unit
 };
 
 // Call where the lane goes, before the plots of the timeline. Ctrl-drag in it moves current_frame.
@@ -31,6 +33,11 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
 // Call inside each plot of the timeline, after its setup: shades the periods in the plot, and starts
 // a new period on shift-press. The first plot each frame tells the lane where the plots' area is.
 void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double current_frame);
+
+// Call inside each plot of the timeline, after timeline_periods_plot: the frames of a selection over frames (frames, as
+// md_bitmask_t members) shaded faintly over the plot, with a band of their colour along its bottom edge, and those of a
+// highlight over that, brighter. Runs of frames closer than a pixel are drawn as one. Either may be NULL.
+void timeline_frames_plot(const md_bitmask_t* selected, const md_bitmask_t* highlighted, const TimelinePeriodAxis& axis, uint32_t selected_color, uint32_t highlight_color);
 
 // The contents of the timeline's Periods menu: the layout of the lanes, the shading
 void timeline_periods_menu(TimelinePeriods* rs);

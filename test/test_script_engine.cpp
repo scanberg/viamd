@@ -11,6 +11,7 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_bitset.h>
 #include <core/md_writer.h>
+#include <core/md_pair_frames.h>
 
 #include <core/md_os.h>
 
@@ -40,7 +41,7 @@ const Peptide* peptide() {
         p.state = { .alloc = p.alloc };
         const md_str_t path = MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1ALA-560ns.pdb");
         if (md_pdb_system_init_from_file(&p.sys, &p.state, path, NULL) &&
-            md_system_infer(&p.sys, &p.state, MD_SYSTEM_INFER_ALL, NULL) &&
+            md_system_infer(&p.sys, &p.state, NULL) &&
             md_pdb_system_publish_run(&p.sys, path, MD_STR_LIT("run"), MD_RUN_FLAG_DISABLE_CACHE_WRITE)) {
             const md_attribute_t* t = md_attributes_find(&p.sys.attributes, MD_STR_LIT("run/time"));
             p.num_frames = t ? (size_t)t->format.shape[0] : 0;
@@ -313,6 +314,105 @@ UTEST(script_v2, evaluate) {
     script::program_free(p);
 }
 
+// What hover plots beside a value: a value of a frame computed without the evaluation, one over the trajectory read
+// from it and only from it
+UTEST(script_v2, value_plot) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "bb   = backbone_angles(residue)\n"
+        "ca   = particle(name='CA')\n"
+        "dc   = distance(ca[0], ca.xyz)\n"
+        "n    = len(ca)\n"
+        "ends = distance(ca[0], ca[14])\n"
+        "h    = histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    script::DrawCtx ctx;
+    ctx.prog = p;
+    ctx.sys = &peptide()->sys;
+    ctx.state = &peptide()->state;
+    ctx.run = MD_STR_LIT("run");
+    auto mark_of = [&](const char* text) {
+        const size_t n = script::num_marks(p);
+        const script::Mark* m = script::marks(p);
+        const int beg = (int)(strstr(src, text) - src), end = beg + (int)strlen(text);
+        for (size_t i = 0; i < n; ++i) if (m[i].range.beg == beg && m[i].range.end == end) return m[i].ref;
+        return script::Ref{};
+    };
+    script::ValuePlot vp;
+    ASSERT_TRUE(script::value_plot(&vp, mark_of("backbone_angles(residue)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Histogram, (int)vp.kind);
+    ASSERT_EQ(2, (int)vp.ndim);
+    EXPECT_EQ(15u, vp.dims[0]);
+    EXPECT_EQ(3u, vp.dims[1]);
+    ASSERT_TRUE(vp.labels[1] != nullptr);
+    EXPECT_TRUE(md_str_eq(vp.labels[1][2], MD_STR_LIT("omega")));
+    EXPECT_TRUE(vp.has_period);
+    ASSERT_TRUE(script::value_plot(&vp, mark_of("distance(ca[0], ca.xyz)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Histogram, (int)vp.kind);
+    EXPECT_EQ(1, (int)vp.ndim);
+    EXPECT_FALSE(script::value_plot(&vp, mark_of("len(ca)"), -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::None, (int)vp.kind);
+
+    // Over the trajectory: nothing without the evaluation; with it, once it has run, the bins and their range, and
+    // then nothing of a frame, which is computed apart
+    const script::Ref rh = mark_of("histogram(ends, axis='frame', bins=8, range=(0.0, 50.0))");
+    EXPECT_FALSE(script::value_plot(&vp, rh, -1, ctx, alloc));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    ASSERT_TRUE(script::eval_frames(e, p, &peptide()->sys, MD_STR_LIT("run"), nullptr, 0));
+    ctx.eval = e;
+    ASSERT_TRUE(script::value_plot(&vp, rh, -1, ctx, alloc));
+    EXPECT_EQ((int)script::PlotKind::Bins, (int)vp.kind);
+    EXPECT_EQ(8u, vp.dims[0]);
+    ASSERT_TRUE(vp.has_range);
+    EXPECT_EQ(0.0, vp.range[0]);
+    EXPECT_EQ(50.0, vp.range[1]);
+    double total = 0.0;
+    for (uint32_t i = 0; i < 8; ++i) total += vp.data[i];
+    EXPECT_EQ((double)peptide()->num_frames, total);
+    EXPECT_FALSE(script::value_plot(&vp, mark_of("backbone_angles(residue)"), -1, ctx, alloc));
+    script::eval_free(e);
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}
+
+// A matrix of truths per frame: kept as pairs, not as script/<name>; its rows stand for the residues
+UTEST(script_v2, matrices) {
+    ASSERT_TRUE(peptide() != nullptr);
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
+    const char* src =
+        "m = contacts(residue)\n"
+        "d = distance(particle(name='CA')[0], particle(name='CA')[14])\n";
+    script::Program* p = compile_v2(src, alloc);
+    ASSERT_TRUE(script::valid(p));
+    const uint32_t fm = script::output_flags(p, MD_STR_LIT("m"));
+    EXPECT_TRUE(fm & script::OUTPUT_MATRIX);
+    EXPECT_TRUE(fm & script::OUTPUT_TEMPORAL);
+    EXPECT_FALSE(script::output_flags(p, MD_STR_LIT("d")) & script::OUTPUT_MATRIX);
+    const md_urange_t r2 = md_system_residue_atom_range(&peptide()->sys, 2);
+    uint32_t atoms[64];
+    ASSERT_EQ((size_t)(r2.end - r2.beg), script::output_atoms(p, MD_STR_LIT("m"), 1, 2, atoms, 64));
+    EXPECT_EQ(r2.beg, atoms[0]);
+    EXPECT_EQ(0u, script::output_atoms(p, MD_STR_LIT("d"), 0, 0, atoms, 64));
+    script::Eval* e = script::eval_create(nullptr, p, eval_desc(), alloc);
+    ASSERT_TRUE(e != nullptr);
+    ASSERT_TRUE(script::eval_frames(e, p, &peptide()->sys, MD_STR_LIT("run"), nullptr, 0));
+    const md_pair_frames_t* pf = script::eval_pairs(e, MD_STR_LIT("m"));
+    ASSERT_TRUE(pf != nullptr);
+    EXPECT_EQ(15u, md_pair_frames_rows(pf));
+    EXPECT_EQ((uint64_t)peptide()->num_frames, md_bitset_count(md_pair_frames_added(pf, alloc)));
+    EXPECT_GT(md_pair_frames_count(pf), 0u);
+    EXPECT_TRUE(script::eval_pairs(e, MD_STR_LIT("d")) == nullptr);
+    const md_attributes_t* attrs = script::attributes(e);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m")) == nullptr);
+    EXPECT_TRUE(md_attributes_find(attrs, MD_STR_LIT("script/m/column_labels")) != nullptr);
+    script::eval_free(e);
+    script::program_free(p);
+    md_arena_allocator_destroy(alloc);
+}
+
 UTEST(script_v2, drawing) {
     ASSERT_TRUE(peptide() != nullptr);
     md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(4));
@@ -415,8 +515,8 @@ UTEST(script_v2, filters) {
     // Bonds: the pairs bond() gives, or the bonds among atoms; the same for one residue
     md_array(md_atom_pair_t) b1 = nullptr;
     md_array(md_atom_pair_t) b2 = nullptr;
-    ASSERT_TRUE(script::filter_bonds(V2, &b1, MD_STR_LIT("bond(residue()[0])"), ctx, alloc).success);
-    ASSERT_TRUE(script::filter_bonds(V2, &b2, MD_STR_LIT("residue()[0]"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b1, nullptr, MD_STR_LIT("bond(residue()[0])"), ctx, alloc).success);
+    ASSERT_TRUE(script::filter_bonds(V2, &b2, nullptr, MD_STR_LIT("residue()[0]"), ctx, alloc).success);
     EXPECT_GT(md_array_size(b1), 0u);
     EXPECT_EQ(md_array_size(b1), md_array_size(b2));
 

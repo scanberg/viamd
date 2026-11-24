@@ -36,12 +36,12 @@ bool load(Loaded* l, const char* file) {
     md_system_state_t st = { .alloc = l->alloc };
     const md_str_t p = md_str_from_cstr(path);
     bool ok = false;
-    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p, NULL) && md_system_infer(&l->sys, &st, MD_SYSTEM_INFER_ALL & ~MD_SYSTEM_INFER_BOND_BIT, NULL);
+    if (strstr(file, ".tpr"))      return md_tpr_system_init_from_file(&l->sys, &st, p, NULL) && md_system_infer(&l->sys, &st, NULL);
     if (strstr(file, ".cif"))      ok = md_mmcif_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".gro")) ok = md_gro_system_init_from_file(&l->sys, &st, p, NULL);
     else if (strstr(file, ".xyz")) ok = md_xyz_system_init_from_file(&l->sys, &st, p, NULL);
     else                           ok = md_pdb_system_init_from_file(&l->sys, &st, p, NULL);
-    return ok && md_system_infer(&l->sys, &st, MD_SYSTEM_INFER_ALL, NULL);
+    return ok && md_system_infer(&l->sys, &st, NULL);
 }
 
 void unload(Loaded* l) {
@@ -352,7 +352,7 @@ UTEST(script_suggestions, glycans) {
     l.sys = { .alloc = l.alloc };
     md_system_state_t st = { .alloc = l.alloc };
     ASSERT_TRUE(md_pdb_system_init_from_str(&l.sys, &st, md_str_from_cstr(pdb), NULL));
-    ASSERT_TRUE(md_system_infer(&l.sys, &st, MD_SYSTEM_INFER_ALL, NULL));
+    ASSERT_TRUE(md_system_infer(&l.sys, &st, NULL));
     ASSERT_EQ(2u, (unsigned)md_system_molecule_count(&l.sys));
     ASSERT_EQ(4u, (unsigned)md_system_part_count(&l.sys));
 
@@ -779,7 +779,7 @@ UTEST(script_suggestions, vial_measurement_by_position) {
     l.sys = {.alloc = l.alloc};
     md_system_state_t st = {.alloc = l.alloc};
     ASSERT_TRUE(md_pdb_system_init_from_file(&l.sys, &st, md_str_from_cstr(file), NULL));
-    md_system_infer(&l.sys, &st, MD_SYSTEM_INFER_ALL, NULL);
+    md_system_infer(&l.sys, &st, NULL);
     const int32_t atoms[3] = {1, 0, 2};
     md_array(ScriptSuggestion) s = script_suggest_measurement(V2, MD_STR_LIT("m1"), atoms, 3, l.sys, l.alloc);
     print(s);
@@ -802,7 +802,8 @@ UTEST(script_suggestions, vial_measurement) {
     md_array(ScriptSuggestion) s = measure(l, {"name(\"N\") in residue(5)", "name(\"CA\") in residue(5)", "name(\"C\") in residue(5)"}, V2);
     print(s);
     for (size_t i = 0; i < md_array_size(s); ++i) EXPECT_TRUE(compiles(l, s[i].text, V2));
-    EXPECT_TRUE(contains(s, "m1 = angle(particle[30], particle[31], particle[32])"));
+    EXPECT_TRUE(contains(s, "m1 = angle(particle[[30, 31, 32]])"));
+    EXPECT_FALSE(any_contains(s, "particle[30], "));
     // Within one residue, written once, with its particles stacked by name
     EXPECT_TRUE(contains(s, "m1 = angle(particle(chain='A', resid=5)[['N', 'CA', 'C']])"));
     EXPECT_TRUE(contains(s, "m1 = angle(residue('HIS')[['N', 'CA', 'C']])"));

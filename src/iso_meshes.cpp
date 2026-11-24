@@ -1,8 +1,11 @@
 #include <iso_meshes.h>
+#include <gpu_job.h>
 
 #include <viamd.h>
+#include <representation.h>
 #include <task_system.h>
 #include <surface_field.h>
+#include <gostshyp.h>
 
 #include <md_gto_iso.h>
 #include <md_qm.h>
@@ -14,6 +17,8 @@
 
 #include <math.h>
 #include <stdlib.h>
+#include <mutex>
+#include <vector>
 
 // Newton steps onto the surface and tangential relaxation passes: display quality (md_gto_iso_mesh_desc_t)
 static constexpr uint32_t PROJECT_ITERATIONS = 8;
@@ -171,37 +176,10 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, m
 // ---------------------------------------------------------------------------------------------------------------
 
 #if MD_ENABLE_GPU
-// The jobs under way, for iso_meshes_progress: a job and when it began
-static constexpr uint32_t MAX_JOBS = 64;
-static md_gto_iso_gpu_job_t* active_job[MAX_JOBS];
-static md_tick_t             active_t0[MAX_JOBS];
-static uint32_t              num_active = 0;
-
-static void job_register(md_gto_iso_gpu_job_t* job) {
-    if (num_active < MAX_JOBS) {
-        active_job[num_active] = job;
-        active_t0[num_active] = md_tick_now();
-        num_active++;
-    }
-}
-
-static void job_unregister(md_gto_iso_gpu_job_t* job) {
-    for (uint32_t i = 0; i < num_active; ++i) {
-        if (active_job[i] == job) {
-            num_active--;
-            active_job[i] = active_job[num_active];
-            active_t0[i] = active_t0[num_active];
-            return;
-        }
-    }
-}
-
 // Drops the job under way, if any: what it made is lost, the mesh shown stays
 static void job_cancel(IsoMeshes* m) {
     if (!m->job) return;
-    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
-    job_unregister(job);
-    md_gto_iso_gpu_job_end(job, nullptr);
+    delete m->job;      // cancels: what it has in flight completes, its mesh is freed
     m->job = nullptr;
     m->job_key = 0;
     m->job_slots = 0;
@@ -221,18 +199,6 @@ static void job_cancel(IsoMeshes* m) {
 // made (iso_field_release) goes when that task ends. A task whose result is no longer wanted is orphaned and
 // cleaned up once it ends (iso_meshes_collect); nothing here waits for one, but iso_meshes_shutdown.
 
-// What an electronic structure representation's field is of, copied for the task that makes it
-struct IsoFieldSpec {
-    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
-    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
-    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
-    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
-    int orbital_idx = 0;
-    int excited_state_idx = 0;
-    int nto_lambda_idx = 0;
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
-};
-
 struct IsoBuild {
     enum Kind { Field, Set } kind = Field;
     task_system::Job task;       // a cancelled one (a load) made nothing to be taken
@@ -243,7 +209,7 @@ struct IsoBuild {
     md_float3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
     // Field
-    IsoFieldSpec spec = {};
+    FieldRef spec = {};
     md_gto_iso_field_t* field = nullptr;
     // Set
     const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS] = {};
@@ -263,7 +229,40 @@ static uint32_t  g_num_builds = 0;
 static md_gto_iso_field_t* g_dead_fields[256];   // let go of while a set of them was being made
 static uint32_t  g_num_dead = 0;
 
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& spec);
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec);
+
+// Fields over a basis of their own rather than the system's (the GOSTSHYP wall's, on its tesserae): the basis a set
+// of one is made over on the device. Made by pool tasks, looked up by them: under a lock.
+struct OwnBasis {
+    const md_gto_iso_field_t* field;
+    GostshypOrbital* orbital;
+};
+static std::mutex g_own_lock;
+static std::vector<OwnBasis> g_own;
+
+static void own_basis_add(const md_gto_iso_field_t* f, GostshypOrbital* o) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    g_own.push_back({f, o});
+}
+
+static const GostshypOrbital* own_basis(const md_gto_iso_field_t* f) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    for (const OwnBasis& e : g_own) if (e.field == f) return e.orbital;
+    return nullptr;
+}
+
+// Before the field goes, so that a field made later at its address is not taken for it
+static void own_basis_remove(const md_gto_iso_field_t* f) {
+    std::lock_guard<std::mutex> lock(g_own_lock);
+    for (size_t i = 0; i < g_own.size(); ++i) {
+        if (g_own[i].field == f) {
+            delete g_own[i].orbital;
+            g_own[i] = g_own.back();
+            g_own.pop_back();
+            return;
+        }
+    }
+}
 
 static IsoBuild* build_new(IsoBuild::Kind kind, uint64_t key, const md_system_t* sys, const md_float3_t* xyz, size_t num_atoms) {
     if (g_num_builds == MD_COUNTOF(g_builds)) return nullptr;
@@ -305,7 +304,9 @@ static void build_run(IsoBuild* b) {
 #if MD_ENABLE_GPU
     md_temp_scope_t temp = md_temp_begin();
     FieldContext ctx;
-    if (field_context(&ctx, temp, g)) {
+    if (const GostshypOrbital* o = b->num_fields == 1 ? own_basis(b->fields[0]) : nullptr) {
+        b->set = md_gto_iso_gpu_set_create(b->stream, &o->basis, (const float*)o->centres.data(), sizeof(md_float3_t), b->fields, 1, md_get_heap_allocator());
+    } else if (field_context(&ctx, temp, g)) {
         b->set = md_gto_iso_gpu_set_create(b->stream, &ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), b->fields, b->num_fields, md_get_heap_allocator());
     }
     md_temp_end(temp);
@@ -315,9 +316,10 @@ static void build_run(IsoBuild* b) {
 }
 
 static void build_start(IsoBuild* b) {
-    // and the worker's temp arenas given back after: a density's orbitals are read there, hundreds of MB that a
-    // pool thread would otherwise hold until it exits
-    b->task.start({}, [b]() { build_run(b); md_temp_trim(); });
+    // listed while it runs (a protein's density is seconds of it), and the worker's temp arenas given back after: a
+    // density's orbitals are read there, hundreds of MB that a pool thread would otherwise hold until it exits
+    b->task.start(b->kind == IsoBuild::Field ? MD_STR_LIT("Isosurface field: preparing") : MD_STR_LIT("Isosurface mesh: preparing"),
+                  [b]() { build_run(b); md_temp_trim(); });
 }
 
 static bool field_held(const md_gto_iso_field_t* f) {
@@ -332,6 +334,7 @@ static bool field_held(const md_gto_iso_field_t* f) {
 // Fields destroyed on the pool: a protein's density field is a few hundred MB in large blocks, tens of ms to
 // give back, at the frame that takes the next one
 static void field_destroy(md_gto_iso_field_t* field) {
+    own_basis_remove(field);
     task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
@@ -406,24 +409,6 @@ void iso_meshes_shutdown(ApplicationState* state) {
     (void)state;
 }
 
-size_t iso_meshes_progress(float* fraction, size_t cap) {
-    size_t n = 0;
-    const md_tick_t now = md_tick_now();
-    // what is being made on worker threads: no fraction (negative)
-    for (uint32_t i = 0; i < g_num_builds && n < cap; ++i) {
-        const IsoBuild* b = g_builds[i];
-        if (b->orphan || !build_running(b) || md_tick_to_seconds(now - b->t0) < 0.25) continue;
-        fraction[n++] = -1.0f;
-    }
-#if MD_ENABLE_GPU
-    for (uint32_t i = 0; i < num_active && n < cap; ++i) {
-        // a job done within a few frames shows nothing
-        if (md_tick_to_seconds(now - active_t0[i]) < 0.25) continue;
-        fraction[n++] = md_gto_iso_gpu_job_progress(active_job[i]);
-    }
-#endif
-    return n;
-}
 
 static void release_extraction_state(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
@@ -508,6 +493,13 @@ static constexpr double JOB_POLL_MS = 3.0;
 // not take). g: where the fields' atoms are.
 static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, const IsoFieldGeometry& g) {
     if (!state->gpu_device || !state->gpu_stream) return -1;
+    // a field made of other fields (ELF, LOL), or over a basis of its own (the GOSTSHYP wall's), is a set of its own
+    // on the device: with others, on the CPU
+    for (uint32_t k = 0; k < n && n > 1; ++k) {
+        md_gto_iso_field_info_t info;
+        md_gto_iso_field_info(&info, slots[k].field);
+        if (info.kind == MD_GTO_ISO_FIELD_COMPOSITE || own_basis(slots[k].field)) return -1;
+    }
     if (m->gpu_set) return 1;
     if (m->set_failed_key == m->fields_key) return -1;
     IsoBuild* b = (IsoBuild*)m->set_build;
@@ -562,23 +554,24 @@ static bool job_start(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     }
     md_gto_iso_gpu_job_t* job = md_gto_iso_gpu_job_begin(state->gpu_stream, (const md_gto_iso_gpu_set_t*)m->gpu_set, &desc);
     if (!job) return false;
-    m->job = job;
+    m->job = new GpuJob();
+    m->job->start(job, MD_STR_LIT("Isosurface mesh"));
     m->job_key = key;
     m->job_slots = n;
     m->job_start = md_tick_now();
-    job_register(job);
     return true;
 }
 
 // Advances the job. Done: its mesh replaces the one shown (m->key becomes the job's). Returns 1 while it runs,
 // 2 when it is done, 0 when it failed (the mesh shown is kept)
 static int job_poll(IsoMeshes* m, ApplicationState* state) {
-    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job;
-    // waited for in its first frames only: a short job then ends within them, and a long one costs the frame
-    // nothing more than a look
+    // advanced once a frame with every GPU job (gpu_jobs_poll); here too in its first frames, so that a short job ends
+    // within them
     const double age_ms = md_tick_to_milliseconds(md_tick_now() - m->job_start);
-    if (md_gto_iso_gpu_job_poll(job, age_ms < 4.0 * JOB_POLL_MS ? JOB_POLL_MS : 0.0) == MD_GTO_ISO_GPU_JOB_RUNNING) return 1;
-    job_unregister(job);
+    if (age_ms < 4.0 * JOB_POLL_MS) m->job->advance(JOB_POLL_MS);
+    if (m->job->status() == GpuJob::Status::Running) return 1;
+    md_gto_iso_gpu_job_t* job = (md_gto_iso_gpu_job_t*)m->job->take();     // NULL unless done: failed or cancelled
+    delete m->job;
     md_gto_iso_gpu_mesh_t gm = {};
     const bool done = md_gto_iso_gpu_job_end(job, &gm);
     const uint64_t key = m->job_key;
@@ -835,7 +828,7 @@ static bool iso_meshes_busy(const IsoMeshes* m) {
 struct EsIsoMesh {
     uint64_t field_key = 0;
     md_gto_iso_field_t* field = nullptr;
-    IsoFieldSpec field_spec = {};   // what it is of
+    FieldRef field_spec = {};   // what it is of
     bool field_failed = false;
     md_float3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
@@ -848,29 +841,46 @@ struct EsIsoMesh {
     ColorScaleSpan span = {};
 };
 
-static bool field_spec_equal(const IsoFieldSpec& a, const IsoFieldSpec& b) {
+static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
            a.transition_density_component == b.transition_density_component && a.orbital_idx == b.orbital_idx &&
            a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx &&
            a.density_property_key == b.density_property_key;
 }
 
-static IsoFieldSpec field_spec_of(const ElectronicStructureRepresentation& es) {
-    IsoFieldSpec f;
-    f.source = es.source;
-    f.spin = es.spin;
-    f.nto_component = es.nto_component;
-    f.transition_density_component = es.transition_density_component;
-    f.orbital_idx = es.orbital_idx;
-    f.excited_state_idx = es.excited_state_idx;
-    f.nto_lambda_idx = es.nto_lambda_idx;
-    f.density_property_key = es.density_property_key;
+// What a representation's field is of, copied for the task that makes it: the field (FieldRef), as that is all a
+// field of the electronic structure is
+static FieldRef field_spec_of(const ElectronicStructureRepresentation& es) {
+    return es.shown;
+}
+
+// Where ELF and LOL are meshed at all: they are 0 where the density is below this, which bounds their surfaces
+// (both fall to 0 in a gaussian basis' tails by themselves, so it changes nothing an isovalue of interest shows;
+// the volume takes them without)
+static constexpr double LOCALIZATION_MESH_RHO_MIN = 1.0e-6;
+
+// A field of the GOSTSHYP wall: an orbital over its tesserae (gostshyp_wall_orbital), placed where g's atoms are,
+// which are the QM atoms the cavity is of
+static md_gto_iso_field_t* field_create_gostshyp(const IsoFieldGeometry& g, GostshypField which) {
+    GostshypTesserae t;
+    GostshypPlacement pl;
+    if (!g.sys || !gostshyp_read(&t, *g.sys) || !gostshyp_place(&pl, t, g.atom_xyz, g.num_atoms, nullptr, 1.0 / 0.52917721092)) return nullptr;
+    GostshypWall* w = gostshyp_wall_create(t, pl);
+    GostshypOrbital* o = new GostshypOrbital();
+    const bool ok = gostshyp_wall_orbital(o, w, which);
+    gostshyp_wall_destroy(w);
+    md_gto_iso_field_t* f = ok ? md_gto_iso_field_create(&o->basis, (const float*)o->centres.data(), sizeof(md_float3_t), o->ao.data(), md_get_heap_allocator()) : nullptr;
+    if (!f) {
+        delete o;
+        return nullptr;
+    }
+    own_basis_add(f, o);
     return f;
 }
 
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldSpec& es) {
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -906,6 +916,29 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const IsoFieldS
         const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.density_property_key);
         return attr ? field_create_density(g, attr->path, nullptr) : nullptr;
     }
+    case ElectronicStructureSource::ElectronLocalization:
+    case ElectronicStructureSource::LocalizedOrbitalLocator: {
+        // made of each spin's density and kinetic energy density, which it takes; bounded through theirs
+        md_gto_iso_field_t *rho[2], *tau[2];
+        const int ns = localization_fields_create(rho, tau, *g.sys, g.atom_xyz, g.num_atoms);
+        if (!ns) return nullptr;
+        md_gto_iso_field_t* rb = ns == 2 ? rho[1] : nullptr;
+        md_gto_iso_field_t* tb = ns == 2 ? tau[1] : nullptr;
+        md_allocator_i* heap = md_get_heap_allocator();
+        md_gto_iso_field_t* f = es.source == ElectronicStructureSource::ElectronLocalization ?
+            md_gto_iso_field_create_elf(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, MD_QM_ELF_D_MIN, heap) :
+            md_gto_iso_field_create_lol(rho[0], tau[0], rb, tb, LOCALIZATION_MESH_RHO_MIN, heap);
+        if (!f) {
+            for (int s = 0; s < 2; ++s) {
+                md_gto_iso_field_destroy(rho[s]);
+                md_gto_iso_field_destroy(tau[s]);
+            }
+        }
+        return f;
+    }
+    case ElectronicStructureSource::GostshypWallPotential:
+    case ElectronicStructureSource::GostshypEffectivePotential:
+        return field_create_gostshyp(g, es.source == ElectronicStructureSource::GostshypEffectivePotential ? GostshypField::EffectivePotential : GostshypField::WallPotential);
     default:
         return nullptr;
     }
@@ -916,14 +949,14 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
     uint64_t h = 0x150;
     const md_system_state_t& st = state->mold.state;
     if (st.xyz && st.num_atoms) h = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, h);
-    h = md_hash64(&es.source, sizeof(es.source), h);
-    h = md_hash64(&es.spin, sizeof(es.spin), h);
-    h = md_hash64(&es.nto_component, sizeof(es.nto_component), h);
-    h = md_hash64(&es.transition_density_component, sizeof(es.transition_density_component), h);
-    h = md_hash64(&es.orbital_idx, sizeof(es.orbital_idx), h);
-    h = md_hash64(&es.excited_state_idx, sizeof(es.excited_state_idx), h);
-    h = md_hash64(&es.nto_lambda_idx, sizeof(es.nto_lambda_idx), h);
-    h = md_hash64(&es.density_property_key, sizeof(es.density_property_key), h);
+    h = md_hash64(&es.shown.source, sizeof(es.shown.source), h);
+    h = md_hash64(&es.shown.spin, sizeof(es.shown.spin), h);
+    h = md_hash64(&es.shown.nto_component, sizeof(es.shown.nto_component), h);
+    h = md_hash64(&es.shown.transition_density_component, sizeof(es.shown.transition_density_component), h);
+    h = md_hash64(&es.shown.orbital_idx, sizeof(es.shown.orbital_idx), h);
+    h = md_hash64(&es.shown.excited_state_idx, sizeof(es.shown.excited_state_idx), h);
+    h = md_hash64(&es.shown.nto_lambda_idx, sizeof(es.shown.nto_lambda_idx), h);
+    h = md_hash64(&es.shown.density_property_key, sizeof(es.shown.density_property_key), h);
     return h ? h : 1;
 }
 
@@ -943,7 +976,7 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // one shown is (so after the meshes' update, which begins that): for a large density each is seconds of the CPU and
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
-static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const IsoFieldSpec& spec) {
+static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const FieldRef& spec) {
     if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
         // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
         (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
@@ -972,7 +1005,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     // field that will itself be out of date by the time its mesh is would, on a trajectory played faster than
     // a mesh is made, leave the surface where it was. A field of something else (another orbital) is not taken.
     const uint64_t field_key = electronic_structure_field_key(state, es);
-    const IsoFieldSpec spec = field_spec_of(es);
+    const FieldRef spec = field_spec_of(es);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
     if (em.field_build && !build_running(em.field_build) &&
         !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
@@ -1008,7 +1041,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // One slot per distinct isovalue, its sheets those of the entries that share it: the + and - surfaces of
     // an orbital are the two sheets of one slot. A magnitude |f| = v is both sheets of f at v.
-    const bool magnitude = electronic_structure_uses_magnitude_toggle(es) && es.use_magnitude;
+    const bool magnitude = electronic_structure_uses_magnitude_toggle(es) && es.shown.use_magnitude;
     IsoMeshSlot slots[ISO_MESHES_MAX_SLOTS];
     uint32_t num_slots = 0;
     int      entry_slot[8];
@@ -1060,6 +1093,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             desc.sys         = &state->mold.sys;
             desc.state       = &state->mold.state;
             desc.source_hash = source;
+            desc.density_cache = density_cache_of(state);
             if (surface_field_uses_basis(es.field_kind)) {
                 desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, state->mold.state);
             }
@@ -1115,6 +1149,28 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
         }
     }
     return n;
+}
+
+void electronic_structure_meshes_update(ApplicationState* state, Representation* rep) {
+    MD_ASSERT(state);
+    MD_ASSERT(rep);
+    // as draw_representations_transparent_mesh draws them
+    if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(state->system_context, *rep)) return;
+    ElectronicStructureRepresentation& es = rep->electronic_structure;
+    if (!es_mesh_mode(state, es) || state->mold.sys.atom.count == 0) return;
+    if (es.display != ElectronicStructureDisplay::Isosurface) return;
+    IsoDesc iso;
+    electronic_structure_iso_desc_init(&iso, es);
+    isomesh::Surface surfaces[16];      // 8 values, 2 sheets each
+    electronic_structure_mesh_surfaces(surfaces, MD_COUNTOF(surfaces), state, rep, iso);
+}
+
+uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es) {
+    if (!es.iso_mesh) return 0;
+    const EsIsoMesh& em = *es.iso_mesh;
+    const uint64_t v[4] = {(uint64_t)(uintptr_t)&em, em.meshes.mesh.version, (uint64_t)em.meshes.ok | ((uint64_t)em.span.valid << 1),
+                           em.meshes.num_slots};
+    return md_hash64(v, sizeof(v), 0x150e5);
 }
 
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es) {

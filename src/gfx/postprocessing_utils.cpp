@@ -53,7 +53,7 @@ static void record_gl_reset_state(GLResetState* state) {
 	glGetIntegerv(GL_VIEWPORT, state->viewport);
 	glGetIntegerv(GL_SCISSOR_BOX, state->scissor_rect);
 	for (size_t i = 0; i < MD_COUNTOF(state->draw_buffers); ++i) {
-		glGetIntegerv(GL_DRAW_BUFFER0 + i, &state->draw_buffers[i]);
+		glGetIntegerv(GL_DRAW_BUFFER0 + (GLenum)i, &state->draw_buffers[i]);
 	}
 }
 

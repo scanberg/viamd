@@ -53,6 +53,7 @@ uint32_t output_flags(const Program* prog, md_str_t name);
 Range output_range(const Program* prog, md_str_t name);
 uint64_t output_fingerprint(const Program* prog, md_str_t name);
 Ref output_ref(const Program* prog, md_str_t name);
+size_t output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap);
 bool ref_valid(const Program* prog, Ref ref);
 md_str_t ref_name(const Program* prog, Ref ref);
 int ref_dim(const Program* prog, Ref ref);
@@ -71,6 +72,7 @@ EvalErrors eval_errors(const Eval* eval);
 void eval_interrupt(Eval* eval);
 void eval_reset_interrupt(Eval* eval);
 const md_attributes_t* attributes(const Eval* eval);
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name);
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc);
 bool aggregate_request(Eval* eval, uint64_t key, md_str_t name, const md_bitset_t* frames);
 void aggregate_release(Eval* eval, uint64_t key, md_str_t name);
@@ -81,6 +83,7 @@ void drawing_clear(Drawing* d);
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags);
 bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
 size_t num_keywords(Language lang);
 const md_str_t* keywords(Language lang);
 size_t builtin_names(Language lang, md_str_t* out, size_t cap);
@@ -89,7 +92,7 @@ md_str_t attr_path(Language lang, const md_attributes_t* table, const md_attribu
 bool name_valid(Language lang, md_str_t name);
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 }  // namespace v1
 
@@ -114,6 +117,7 @@ uint32_t output_flags(const Program* prog, md_str_t name);
 Range output_range(const Program* prog, md_str_t name);
 uint64_t output_fingerprint(const Program* prog, md_str_t name);
 Ref output_ref(const Program* prog, md_str_t name);
+size_t output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap);
 bool ref_valid(const Program* prog, Ref ref);
 md_str_t ref_name(const Program* prog, Ref ref);
 int ref_dim(const Program* prog, Ref ref);
@@ -132,6 +136,7 @@ EvalErrors eval_errors(const Eval* eval);
 void eval_interrupt(Eval* eval);
 void eval_reset_interrupt(Eval* eval);
 const md_attributes_t* attributes(const Eval* eval);
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name);
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc);
 bool aggregate_request(Eval* eval, uint64_t key, md_str_t name, const md_bitset_t* frames);
 void aggregate_release(Eval* eval, uint64_t key, md_str_t name);
@@ -140,6 +145,7 @@ bool aggregate_read(AggregateInfo* out, float* values, float* weights, size_t nu
 bool draw_ref(Drawing* out, Ref ref, int subidx, const DrawCtx& ctx, uint32_t flags);
 bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags);
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx);
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc);
 size_t num_keywords(Language lang);
 const md_str_t* keywords(Language lang);
 size_t builtin_names(Language lang, md_str_t* out, size_t cap);
@@ -148,7 +154,7 @@ md_str_t attr_path(Language lang, const md_attributes_t* table, const md_attribu
 bool name_valid(Language lang, md_str_t name);
 FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc);
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc);
 }  // namespace v2
 

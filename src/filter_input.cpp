@@ -24,8 +24,8 @@ bool filter_evaluate_sets(AtomFilter* filter, md_array(md_bitset_t)* sets, scrip
     return filter->result.success;
 }
 
-bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
-    filter->result = script::filter_bonds(lang, bonds, md_str_from_cstr(filter->text), ctx, alloc);
+bool filter_evaluate_bonds(AtomFilter* filter, md_array(md_atom_pair_t)* bonds, md_array(uint32_t)* flags, script::Language lang, const script::FilterCtx& ctx, md_allocator_i* alloc) {
+    filter->result = script::filter_bonds(lang, bonds, flags, md_str_from_cstr(filter->text), ctx, alloc);
     return filter->result.success;
 }
 

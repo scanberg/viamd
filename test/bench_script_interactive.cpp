@@ -66,7 +66,7 @@ bool load(Bench* b, const char* top, const char* traj) {
     const md_str_t t = md_str_from_cstr(top);
     bool ok = ends_with(top, ".gro") ? md_gro_system_init_from_file(&b->sys, &b->state, t, NULL)
                                       : md_pdb_system_init_from_file(&b->sys, &b->state, t, NULL);
-    ok = ok && md_system_infer(&b->sys, &b->state, MD_SYSTEM_INFER_ALL, NULL);
+    ok = ok && md_system_infer(&b->sys, &b->state, NULL);
     if (!ok) return false;
     const md_str_t r = md_str_from_cstr(traj ? traj : top);
     bool run = false;

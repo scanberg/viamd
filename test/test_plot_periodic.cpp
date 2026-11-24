@@ -21,7 +21,7 @@ UTEST(plot_periodic, wrap_and_near) {
 
 // 170 to -170 is 20 the short way, across 180: out at the top of [-180, 180[ and in at the bottom, where it crosses
 UTEST(plot_periodic, polyline_cut_where_it_crosses) {
-    const float x[] = {0, 1, 2};
+    const double x[] = {0, 1, 2};
     const float y[] = {170, -170, -160};
     double px[16], py[16];
     const int m = periodic_polyline(px, py, 16, x, y, 3, 1, 0, 1.0, -180, 360, 360 * PERIODIC_MAX_STEP);
@@ -36,7 +36,7 @@ UTEST(plot_periodic, polyline_cut_where_it_crosses) {
 
 // The same values cut at 0 instead: [0, 360[, through which they run unbroken
 UTEST(plot_periodic, polyline_unbroken_away_from_the_cut) {
-    const float x[] = {0, 1, 2};
+    const double x[] = {0, 1, 2};
     const float y[] = {170, -170, -160};
     double px[16], py[16];
     const int m = periodic_polyline(px, py, 16, x, y, 3, 1, 0, 1.0, 0, 360, 360 * PERIODIC_MAX_STEP);
@@ -48,7 +48,7 @@ UTEST(plot_periodic, polyline_unbroken_away_from_the_cut) {
 
 // Downwards across the cut; a step too long to tell which way it went, and a frame not evaluated, are gaps
 UTEST(plot_periodic, polyline_gaps) {
-    const float x[] = {0, 1, 2, 3, 4};
+    const double x[] = {0, 1, 2, 3, 4};
     const float y[] = {-175, 175, 0, NAN, 10};
     double px[32], py[32];
     const int m = periodic_polyline(px, py, 32, x, y, 5, 1, 0, 1.0, -180, 360, 360 * PERIODIC_MAX_STEP);
@@ -65,7 +65,7 @@ UTEST(plot_periodic, polyline_gaps) {
 
 // A member of a population (stride, k), in radians shown in degrees
 UTEST(plot_periodic, polyline_member_and_scale) {
-    const float x[] = {0, 1};
+    const double x[] = {0, 1};
     const float y[] = {0, 3.0f, 0, -3.0f};
     double px[16], py[16];
     const int m = periodic_polyline(px, py, 16, x, y, 2, 2, 1, 180.0 / M_PI, -180, 360, 360 * PERIODIC_MAX_STEP);

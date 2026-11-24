@@ -15,7 +15,7 @@ double periodic_wrap(double x, double beg, double len) {
     return w;
 }
 
-int periodic_polyline(double* out_x, double* out_y, int cap, const float* x, const float* y, int n, int stride, int k, double scale,
+int periodic_polyline(double* out_x, double* out_y, int cap, const double* x, const float* y, int n, int stride, int k, double scale,
                       double base, double len, double max_step) {
     MD_ASSERT(out_x && out_y && x && y);
     const double top = base + len;

@@ -4,7 +4,9 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
+#include <plot_input.h>
 #include <imgui_widgets.h>
+#include <frame_axis.h>
 #include <app/IconsFontAwesome6.h>
 
 #include <core/md_common.h>
@@ -82,26 +84,11 @@ bool is_hot(uint32_t id) {
 }
 
 double frame_time(const TimelinePeriodAxis& a, double frame) {
-    const int last = a.num_frames - 1;
-    const double f = MD_CLAMP(frame, 0.0, (double)last);
-    const int f0 = (int)f;
-    const int f1 = MD_MIN(f0 + 1, last);
-    const double t = f - f0;
-    return a.frame_times[f0] * (1.0 - t) + a.frame_times[f1] * t;
+    return time_at_frame(a.frame_times, (size_t)a.num_frames, frame);
 }
 
 int nearest_frame(const TimelinePeriodAxis& a, double time) {
-    const float* ft = a.frame_times;
-    int lo = 0;
-    int hi = a.num_frames - 1;
-    if (hi <= 0 || time <= ft[0]) return 0;
-    if (time >= ft[hi]) return hi;
-    while (hi - lo > 1) {
-        const int mid = (lo + hi) / 2;
-        if (ft[mid] <= time) lo = mid;
-        else hi = mid;
-    }
-    return (time - ft[lo] <= ft[hi] - time) ? lo : hi;
+    return (int)(frame_at_time(a.frame_times, (size_t)a.num_frames, time) + 0.5);
 }
 
 float plot_width() { return MD_MAX(ui.plot_x1 - ui.plot_x0, 1.0f); }
@@ -148,10 +135,10 @@ TimelinePeriodPart lit_part(const TimelinePeriod& r) {
 
 void tooltip_frames(const TimelinePeriodAxis& a, bool marker, int beg, int end) {
     if (marker) {
-        if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg], a.time_unit);
+        if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg] * a.display_scale, a.time_unit);
         else                ImGui::Text("Frame %d", beg);
     } else {
-        if (a.time_unit[0]) ImGui::Text("Frames %d to %d, %d frames (%.4g to %.4g %s)", beg, end, end - beg + 1, a.frame_times[beg], a.frame_times[end], a.time_unit);
+        if (a.time_unit[0]) ImGui::Text("Frames %d to %d, %d frames (%.4g to %.4g %s)", beg, end, end - beg + 1, a.frame_times[beg] * a.display_scale, a.frame_times[end] * a.display_scale, a.time_unit);
         else                ImGui::Text("Frames %d to %d, %d frames", beg, end, end - beg + 1);
     }
 }
@@ -748,9 +735,89 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     ImPlot::PopPlotClipRect();
 
     // Shift-press in a plot starts a period there; the lane follows it from the next frame on
-    if (ui.drag.kind == Drag_None && ImPlot::IsPlotHovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (ui.drag.kind == Drag_None && plot_input_hovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         start_create(nearest_frame(axis, ImPlot::GetPlotMousePos().x));
     }
+}
+
+// The runs of a set of frames, as spans of x in pixels: from halfway to the frame before to halfway to the one after, at
+// least a pixel wide, merged when they touch
+template <typename F>
+static void for_each_frame_span(md_bitset_t frames, const TimelinePeriodAxis& axis, float x_min, float x_max, F&& f) {
+    if (md_bitset_empty(frames) || axis.num_frames <= 0) return;
+    auto px = [&](double frame) { return ImPlot::PlotToPixels(frame_time(axis, frame), 0.0).x; };
+    const uint32_t nf = (uint32_t)axis.num_frames;
+    float span_a = 0.0f, span_b = -1.0f;
+    bool open = false;
+    md_bitset_iter_t it = md_bitset_iter_range(frames, 0, nf);
+    uint32_t run_beg = 0, run_end = 0;      // [run_beg, run_end)
+    bool in_run = false;
+    auto flush = [&](uint32_t b, uint32_t e) {
+        float xa = px(b > 0 ? b - 0.5 : 0.0);
+        float xb = px(e < nf ? e - 0.5 : (double)(nf - 1));
+        if (xb - xa < 1.0f) xb = xa + 1.0f;
+        if (xb < x_min || xa > x_max) return;
+        if (open && xa <= span_b + 1.0f) {
+            span_b = MD_MAX(span_b, xb);
+            return;
+        }
+        if (open) f(span_a, span_b);
+        span_a = xa;
+        span_b = xb;
+        open = true;
+    };
+    while (md_bitset_iter_next(&it)) {
+        const uint32_t i = it.idx;
+        if (in_run && i == run_end) {
+            run_end += 1;
+            continue;
+        }
+        if (in_run) flush(run_beg, run_end);
+        run_beg = i;
+        run_end = i + 1;
+        in_run = true;
+    }
+    if (in_run) flush(run_beg, run_end);
+    if (open) f(span_a, span_b);
+}
+
+void timeline_frames_plot(const md_bitmask_t* selected, const md_bitmask_t* highlighted, const TimelinePeriodAxis& axis, uint32_t selected_color, uint32_t highlight_color) {
+    if (axis.num_frames <= 0 || !axis.frame_times) return;
+    const bool any_sel = selected && !md_bitmask_empty(selected);
+    const bool any_hl = highlighted && !md_bitmask_empty(highlighted);
+    if (!any_sel && !any_hl) return;
+
+    const ImVec2 plot_pos  = ImPlot::GetPlotPos();
+    const ImVec2 plot_size = ImPlot::GetPlotSize();
+    const float x0 = plot_pos.x, x1 = plot_pos.x + plot_size.x;
+    const float y0 = plot_pos.y, y1 = plot_pos.y + plot_size.y;
+    const float band = MD_MIN(4.0f, plot_size.y * 0.25f);
+
+    auto with_alpha = [](ImU32 c, float a) {
+        ImVec4 v = ImGui::ColorConvertU32ToFloat4(c);
+        v.w *= a;
+        return ImGui::ColorConvertFloat4ToU32(v);
+    };
+
+    ImPlot::PushPlotClipRect();
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    if (any_sel) {
+        const ImU32 fill = with_alpha(selected_color, 0.10f);
+        const ImU32 edge = with_alpha(selected_color, 0.85f);
+        for_each_frame_span(md_bitmask_view(selected), axis, x0, x1, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill);
+            dl->AddRectFilled(ImVec2(xa, y1 - band), ImVec2(xb, y1), edge);
+        });
+    }
+    if (any_hl) {
+        const ImU32 fill = with_alpha(highlight_color, 0.16f);
+        const ImU32 edge = with_alpha(highlight_color, 0.95f);
+        for_each_frame_span(md_bitmask_view(highlighted), axis, x0, x1, [&](float xa, float xb) {
+            dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill);
+            dl->AddRectFilled(ImVec2(xa, y1 - band), ImVec2(xb, y1), edge);
+        });
+    }
+    ImPlot::PopPlotClipRect();
 }
 
 void timeline_periods_menu(TimelinePeriods* rs) {

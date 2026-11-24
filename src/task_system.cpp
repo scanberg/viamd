@@ -4,6 +4,7 @@
 
 #include <core/md_common.h>
 #include <core/md_log.h>
+#include <core/md_os.h>
 
 #include <deque>
 #include <mutex>
@@ -44,6 +45,7 @@ static Activity*  g_activity_tail = nullptr;
 void activity_begin(Activity* a, md_str_t label) {
     MD_ASSERT(a);
     md_str_copy_to_char_buf(a->label, sizeof(a->label), label);
+    a->t0 = (int64_t)md_tick_now();
     std::lock_guard<std::mutex> lock(g_activity_mutex);
     MD_ASSERT(!a->listed);
     a->prev = g_activity_tail;
@@ -67,6 +69,7 @@ void activity_end(Activity* a) {
 }
 
 size_t activity_list(ActivityInfo* out, size_t cap) {
+    const md_tick_t now = md_tick_now();
     std::lock_guard<std::mutex> lock(g_activity_mutex);
     size_t n = 0;
     for (const Activity* a = g_activity_head; a && n < cap; a = a->next) {
@@ -75,6 +78,7 @@ size_t activity_list(ActivityInfo* out, size_t cap) {
         md_memcpy(info.label, a->label, sizeof(info.label));
         info.progress = a->progress.load(std::memory_order_relaxed);
         info.cancellable = a->cancellable;
+        info.seconds = md_tick_to_seconds(now - (md_tick_t)a->t0);
     }
     return n;
 }

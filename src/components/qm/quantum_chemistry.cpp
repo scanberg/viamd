@@ -4,8 +4,10 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <attribute_access.h>
 #include <representation.h>
 #include <task_system.h>
+#include <density_cache.h>
 #include <color_utils.h>
 
 #include <gfx/volumerender_utils.h>
@@ -46,9 +48,11 @@
 #include "fragment_tree.h"
 
 #include <implot_widgets.h>
+#include <plot_input.h>
 #include <implot_internal.h>
 
 #include <algorithm>
+#include <vector>
 #include <atomic>
 #include <app/IconsFontAwesome6.h>
 
@@ -744,10 +748,12 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         return nullptr;
     }
 
+    // The density as the ESP keeps it too (density_cache.h): read from its file once, not for every search
     const md_str_t path = critical_points_density_path(sys);
-    size_t dim = 0;
-    const double* density = density_matrix_extract(&dim, temp, sys, path, nullptr);
-    if (!density || dim != num_ao) {
+    md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
+    const std::shared_ptr<const PackedDensity> density = density_cache_packed(density_cache_of(&app), sys, path, io);
+    md_attribute_io_destroy(io);
+    if (!density || density->dim != num_ao) {
         MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" MD_STR_FMT "'", num_ao, MD_STR_ARG(path));
         return nullptr;
     }
@@ -772,8 +778,18 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         job->atom_xyz[3 * i + 2] = atom_pos[i].z;
     }
 
+    // The square matrix the search takes, of the kept triangle: its symmetric part, both halves
     job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    md_memcpy(job->density, density, sizeof(double) * num_ao * num_ao);
+    {
+        const double* tri = density->tri;
+        size_t k = 0;
+        for (size_t i = 0; i < num_ao; ++i) {
+            for (size_t j = i; j < num_ao; ++j, ++k) {
+                job->density[i * num_ao + j] = tri[k];
+                job->density[j * num_ao + i] = tri[k];
+            }
+        }
+    }
 
     job->desc.basis              = &job->basis;
     job->desc.atom_xyz           = job->atom_xyz;
@@ -1397,6 +1413,36 @@ struct QuantumChemistry : viamd::EventHandler {
     struct Summary {
         bool show_window = false;
     } summary;
+
+    // The GOSTSHYP window: the cavity of a run under pressure (vlx/scf/gostshyp/*, md_vlx.h, which publishes what
+    // the wall is per tessera and in all) as a whole, and a table of its tesserae linked to the glyphs of the tesserae
+    // in the view (glyphs.h). Copied again when the attributes it is made of change.
+    struct GostshypTessera {
+        uint32_t atom = 0;          // the QM atom of its sphere
+        uint32_t sys_atom = 0;      // and that atom in the system
+        float area = 0;             // Å^2
+        float lambda = 0;           // decay length, Å
+        float density = 0;          // <rho|g> = P a lambda / p: e/bohr^3
+        float amp = 0;              // p: Eh bohr^3
+        float amp_area = 0;         // p / a: Eh bohr
+        float zeta = 0;             // exponent of its Gaussian, Å^-2
+        bool  inside = false;       // inside the sphere of another atom than its own
+    };
+    bool has_gostshyp = false;      // the system has a GOSTSHYP cavity: its window is offered (set each frame)
+    struct Gostshyp {
+        bool     show_window = false;
+        bool     follow = true;     // scroll the table to the tessera hovered in the view
+        uint64_t key = 0;
+        bool     valid = false;
+        size_t   num_spheres = 0;   // the QM atoms
+        size_t   num_inside = 0;
+        double   lambda_min = 0, lambda_max = 0;
+        std::vector<GostshypTessera> tess;
+        std::vector<uint32_t> order;        // the rows as sorted
+        bool     sort_dirty = true;
+        uint32_t view_hover_last = UINT32_MAX;
+        bool     row_hovered_last = false;  // a row was hovered the frame before: the patch fades in only where none was
+    } gostshyp;
 
     struct CriticalPoints {
         bool show_window = false;       // its window (draw_critical_points_window)
@@ -2102,6 +2148,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     draw_orb_window(state);
                     draw_summary_window(state);
+                    has_gostshyp = attribute_exists(state.mold.sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+                    draw_gostshyp_window(state);
                     draw_critical_points_window(state);
                     draw_rsp_window(state);
                     if (num_excited > 0) {
@@ -2123,6 +2171,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 const char* no_rsp       = has_orbitals ? "The calculation has no response, vibrational or XPS results" : no_orbitals;
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Summary", &summary.show_window,
                     {.order = 100, .enabled = has_orbitals, .disabled_reason = no_orbitals});
+                viamd::window_menu_add(e, "Analysis/Quantum Chemistry/GOSTSHYP", &gostshyp.show_window,
+                    {.order = 105, .enabled = has_gostshyp, .disabled_reason = "The calculation was not run under pressure (GOSTSHYP)"});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Critical Points", &critical_points.show_window,
                     {.order = 110, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Response", &rsp.show_window,
@@ -2839,7 +2889,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // OPT. Opens on the last step, which is the converged geometry.
         size_t num_opt_steps = 0;
-        if (attribute_series_f64(&num_opt_steps, state.mold.sys, MD_STR_LIT("vlx/opt/energy")) && num_opt_steps > 0) {
+        if (attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/opt/energy")).get(&num_opt_steps) && num_opt_steps > 0) {
             opt.selected = (int)(num_opt_steps - 1);
         }
 
@@ -4055,11 +4105,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // Dropped whenever the cursor is inside the plot, hidden or not, so that a hover taken
         // before the item was toggled off cannot keep driving a tooltip in the caller.
-        if (ImPlot::IsPlotHovered()) {
+        if (plot_input_hovered()) {
             hovered = -1;
         }
 
-        if (item_visible && ImPlot::IsPlotHovered()) {
+        if (item_visible && plot_input_hovered()) {
             // Calculate the hovered index as the closest peak or 'bar' to the mouse position
             // This comparison needs to be done in pixel space
 
@@ -4103,7 +4153,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // Update selected peak on click
         if (item_visible && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) &&
-            ImPlot::IsPlotHovered()) {
+            plot_input_hovered()) {
             selected = hovered == selected ? -1 : hovered;
         }
 
@@ -4192,16 +4242,16 @@ struct QuantumChemistry : viamd::EventHandler {
         size_t num_core     = 0;
         size_t num_core_osc = 0;
 
-        out.photon_energies_au     = attribute_series_f64(&num_photon,   sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy"));
-        out.elastic_cross_sections = attribute_series_f64(&num_elastic,  sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section"));
-        out.core_eigenvalues_au    = attribute_series_f64(&num_core,     sys, MD_STR_LIT("vlx/rsp/rixs/core_energy"));
-        out.core_osc_strengths     = attribute_series_f64(&num_core_osc, sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength"));
-        out.gamma_fwhm_ev          = attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"));
+        out.photon_energies_au     = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/photon_energy")).get(&num_photon);
+        out.elastic_cross_sections = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/elastic_cross_section")).get(&num_elastic);
+        out.core_eigenvalues_au    = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/core_energy")).get(&num_core);
+        out.core_osc_strengths     = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/core_oscillator_strength")).get(&num_core_osc);
+        out.gamma_fwhm_ev          = attribute_scalar(sys, MD_STR_LIT("vlx/rsp/rixs/gamma_fwhm"), md_unit_none());
 
         size_t cs_rows = 0, cs_cols = 0;
         size_t el_rows = 0, el_cols = 0;
-        out.cross_sections   = attribute_matrix_f64(&cs_rows, &cs_cols, sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"));
-        out.energy_losses_au = attribute_matrix_f64(&el_rows, &el_cols, sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"));
+        out.cross_sections   = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/cross_section"), 2).get(&cs_rows, &cs_cols);
+        out.energy_losses_au = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rixs/energy_loss"), 2).get(&el_rows, &el_cols);
 
         // The map itself needs the photon energies, the cross sections and the energy losses.
         if (!out.photon_energies_au || !out.cross_sections || !out.energy_losses_au) return false;
@@ -4467,7 +4517,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const float bar_thickness_in_pixels = 2.0f;
         hovered = -1;
 
-        if (ImPlot::IsPlotHovered() && r.num_core > 0) {
+        if (plot_input_hovered() && r.num_core > 0) {
             const ImVec2 mouse_pos = ImGui::GetMousePos();
             const float  tolerance = 7.0f;
             double min_dist = DBL_MAX;
@@ -4663,7 +4713,7 @@ struct QuantumChemistry : viamd::EventHandler {
             ImPlot::SetAxis(ImAxis_Y2);
             plot_peaks("Cross Section", peaks_x, peaks_y, num_peaks, r.selected_final, r.hovered_final);
 
-            if (ImPlot::IsPlotHovered() && r.hovered_final != -1) {
+            if (plot_input_hovered() && r.hovered_final != -1) {
                 const int i = r.hovered_final;
                 if (ImGui::BeginTooltip()) {
                     if (use_elastic && (size_t)i == F) {
@@ -4759,7 +4809,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // Clicking anywhere in the map moves the spectrum to the closest incoming photon energy.
             // Released rather than clicked, and dragging excluded, so that panning the plot does not
             // change the selection.
-            if (ImPlot::IsPlotHovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+            if (plot_input_hovered() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
                 !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && r.num_rows > 0) {
                 const double y = ImPlot::GetPlotMousePos().y;
 
@@ -4780,7 +4830,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
 
-            if (ImPlot::IsPlotHovered()) {
+            if (plot_input_hovered()) {
                 const ImPlotPoint p = ImPlot::GetPlotMousePos();
 
                 // Map the cursor back onto a cell to read out the intensity.
@@ -4834,7 +4884,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::EndTooltip();
                 }
 
-                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && ImPlot::IsPlotHovered()) {
+                if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left) && plot_input_hovered()) {
                     r.selected_core = (r.hovered_core == r.selected_core) ? -1 : r.hovered_core;
                 }
 
@@ -4914,27 +4964,23 @@ struct QuantumChemistry : viamd::EventHandler {
     static bool xps_table_gather(XpsTable* out, const md_system_t& sys) {
         size_t num_energy = 0;
         size_t num_element = 0;
-        const double*  energy  = (const double*) attribute_column(&num_energy,  sys, MD_STR_LIT("vlx/xps/ionization_energy"), MD_ATTRIBUTE_TYPE_F64);
-        const uint8_t* element = (const uint8_t*)attribute_column(&num_element, sys, MD_STR_LIT("vlx/xps/element"),           MD_ATTRIBUTE_TYPE_U8);
+        const double*  energy  = attribute_view<double>(sys, MD_STR_LIT("vlx/xps/ionization_energy")).get(&num_energy);
+        const uint8_t* element = attribute_view<uint8_t>(sys, MD_STR_LIT("vlx/xps/element")).get(&num_element);
         if (!energy || !element || num_energy == 0 || num_element != num_energy) {
             return false;
         }
 
         // A sibling whose length disagrees with the index space is dropped rather than trusted: it
         // would be read at an index that means something else in it.
-        auto column_of = [&](md_str_t path, md_attribute_type_t type) -> const void* {
-            size_t count = 0;
-            const void* data = attribute_column(&count, sys, path, type);
-            return (data && count == num_energy) ? data : nullptr;
-        };
+        auto column_of = [&](auto view) { return view.rows == num_energy ? view.data : nullptr; };
 
         out->count             = num_energy;
         out->ionization_energy = energy;
         out->element           = element;
-        out->contribution      = (const double*) column_of(MD_STR_LIT("vlx/xps/contribution"),   MD_ATTRIBUTE_TYPE_F64);
-        out->atom_index        = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/atom_index"),     MD_ATTRIBUTE_TYPE_I32);
-        out->mo_index          = (const int32_t*)column_of(MD_STR_LIT("vlx/xps/mo_index"),       MD_ATTRIBUTE_TYPE_I32);
-        out->is_delocalized    = (const uint8_t*)column_of(MD_STR_LIT("vlx/xps/is_delocalized"), MD_ATTRIBUTE_TYPE_U8);
+        out->contribution      = column_of(attribute_view<double>(sys, MD_STR_LIT("vlx/xps/contribution")));
+        out->atom_index        = column_of(attribute_view<int32_t>(sys, MD_STR_LIT("vlx/xps/atom_index")));
+        out->mo_index          = column_of(attribute_view<int32_t>(sys, MD_STR_LIT("vlx/xps/mo_index")));
+        out->is_delocalized    = column_of(attribute_view<uint8_t>(sys, MD_STR_LIT("vlx/xps/is_delocalized")));
         return true;
     }
 
@@ -4995,7 +5041,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const ImPlotNextItemData& s = ImPlot::GetItemData();
         const ImVec4 item_color = s.Colors[ImPlotCol_Fill];
 
-        const bool  plot_hovered = ImPlot::IsPlotHovered();
+        const bool  plot_hovered = plot_input_hovered();
         const ImVec2 mouse_pos   = ImGui::GetMousePos();
         const double min_line_d2  = pow(bar_width_in_pixels * 0.5 + 7.0, 2);
         const double min_point_d2 = pow(point_radius_in_pixels + 7.0, 2);
@@ -5238,7 +5284,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             // ---- Interaction ---------------------------------------------------------------------
-            const bool plot_hovered = ImPlot::IsPlotHovered();
+            const bool plot_hovered = plot_input_hovered();
             // An index into the FLAT columns, which is why plot_xps_sticks was handed the group's
             // offset as its base: a hover survives being compared against entries from any group.
             const int  hov = (xps.hovered >= 0 && xps.hovered < (int)num_entries) ? xps.hovered : -1;
@@ -5366,138 +5412,6 @@ struct QuantumChemistry : viamd::EventHandler {
         return max_len;
     }
 
-    // One string out of the table, or empty when the path is absent. Pool strings are NUL
-    // terminated, so str_ptr goes straight into a "%s".
-    static md_str_t attribute_str(const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || attr->format.type != MD_ATTRIBUTE_TYPE_STR) return {};
-        return md_attribute_str(&sys.attributes, attr, 0);
-    }
-
-    // Reads one rank 1 series of doubles out of the system's attribute table.
-    //
-    // Hands back the stored buffer rather than extracting to float, deliberately: the vlx/ series
-    // are resident F64 and this panel prints total energies to ten decimals, which a float does not
-    // carry. That is the opt-in fast path - it is only valid because the attribute is resident, and
-    // the null return covers every case where it is not.
-    static const double* attribute_series_f64(size_t* out_count, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 1);
-        if (values && out_count) *out_count = attr->format.shape[0];
-        return values;
-    }
-
-    // True when the table carries this path at all. "Does this file have X" is a question about the
-    // table and nothing else: a block a file does not contain publishes nothing, so there is no
-    // separate "was it parsed" to ask alongside it.
-    static bool attribute_exists(const md_system_t& sys, md_str_t path) {
-        return md_attributes_find(&sys.attributes, path) != nullptr;
-    }
-
-    // One single valued attribute as a double, or 'fallback' when the path is absent. Anything that
-    // is not single valued returns the fallback too: md_attribute_extract_f64 refuses a cap smaller
-    // than the attribute, which is exactly the guard wanted here.
-    static double attribute_scalar_f64(const md_system_t& sys, md_str_t path, double fallback = 0.0) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr) return fallback;
-        double value = 0.0;
-        if (md_attribute_extract_f64(&value, 1, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) != 1) return fallback;
-        return value;
-    }
-
-    // The length of a rank 1 series without reading it. Zero when the path is absent, which is how
-    // "how many optimisation steps / response frequencies / normal modes does this file carry" is
-    // asked now that there is no reader to ask it of.
-    static size_t attribute_series_count(const md_system_t& sys, md_str_t path) {
-        size_t count = 0;
-        return attribute_series_f64(&count, sys, path) ? count : 0;
-    }
-
-    // A series that is only handed out when it covers the index space the caller is going to read it
-    // over. Presence alone is not enough: an optional column is indexed with a count that came from
-    // somewhere else (the coefficient matrix, the frequency axis), and a file that publishes a
-    // shorter column - or a reader that fills it differently - would otherwise be read past its end.
-    // NULL when absent, not a plain F64 series, or shorter than 'required'.
-    static const double* attribute_series_f64_covering(const md_system_t& sys, md_str_t path, size_t required) {
-        size_t count = 0;
-        const double* data = attribute_series_f64(&count, sys, path);
-        return (data && count >= required) ? data : nullptr;
-    }
-
-    // A rank 2 {R,C} block of doubles, straight out of the table's storage. NULL when the path is
-    // absent, computed, or not that shape. Same opt-in as attribute_series_f64 above and for the
-    // same reason: these are resident F64 and the callers want them at that precision.
-    static const double* attribute_matrix_f64(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        const double* values = (const double*)md_attribute_view(attr, MD_ATTRIBUTE_TYPE_F64, 1, 2);
-        if (!values) return nullptr;
-
-        if (out_rows) *out_rows = attr->format.shape[0];
-        if (out_cols) *out_cols = attr->format.shape[1];
-        return values;
-    }
-
-    // One row of such a matrix. NULL when the row is out of range, which is what a caller holding a
-    // selection index left over from a previously loaded file needs - rather than a read past the
-    // end that looks like data.
-    static const double* attribute_matrix_row_f64(size_t* out_cols, const md_system_t& sys, md_str_t path, size_t row) {
-        size_t num_rows = 0;
-        size_t num_cols = 0;
-        const double* data = attribute_matrix_f64(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows) return nullptr;
-        if (out_cols) *out_cols = num_cols;
-        return data + row * num_cols;
-    }
-
-    // A rank 2 {R,C} of THREE component values - one vector per (r,c). This is the shape a per atom
-    // vector series over some other axis is published at: qm/atom/normal_mode is {M,N} displacements,
-    // vlx/opt/coordinate is {P,N} geometries. Components and rank are separate things, which is why
-    // this is not the matrix above with C*3 columns.
-    static const md_double3_t* attribute_vec3_rows(size_t* out_rows, size_t* out_cols, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 2 || attr->format.components != 3) return nullptr;
-
-        if (out_rows) *out_rows = attr->format.shape[0];
-        if (out_cols) *out_cols = attr->format.shape[1];
-        return (const md_double3_t*)attr->data;
-    }
-
-    // One row of it - one normal mode's displacements, one optimisation step's geometry. NULL when
-    // the row is out of range, or when a row holds fewer than min_cols entries: every caller walks
-    // the row over the QM atoms, so a row that does not cover them is not one to read.
-    static const md_double3_t* attribute_vec3_row(const md_system_t& sys, md_str_t path, size_t row, size_t min_cols) {
-        size_t num_rows = 0;
-        size_t num_cols = 0;
-        const md_double3_t* data = attribute_vec3_rows(&num_rows, &num_cols, sys, path);
-        if (!data || row >= num_rows || num_cols < min_cols) return nullptr;
-        return data + row * num_cols;
-    }
-
-    // A rank 1 series of 3 component values: dipole/<group>/vector is one per excited state.
-    static const md_double3_t* attribute_vec3_series(size_t* out_count, const md_system_t& sys, md_str_t path) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != MD_ATTRIBUTE_TYPE_F64) return nullptr;
-        if (attr->format.rank != 1 || attr->format.components != 3) return nullptr;
-
-        if (out_count) *out_count = attr->format.shape[0];
-        return (const md_double3_t*)attr->data;
-    }
-
-    // A rank 1 column of a given STORED type, for the sibling columns a record was published as.
-    // Typed rather than converted: an atom index is an index, and a widened double of one is a
-    // number that has lost the only thing that made it an index.
-    static const void* attribute_column(size_t* out_count, const md_system_t& sys, md_str_t path, md_attribute_type_t type) {
-        const md_attribute_t* attr = md_attributes_find(&sys.attributes, path);
-        if (!attr || !attr->data) return nullptr;
-        if (attr->format.type != type) return nullptr;
-        if (attr->format.rank != 1 || attr->format.components != 1) return nullptr;
-
-        if (out_count) *out_count = attr->format.shape[0];
-        return attr->data;
-    }
 
     // ---- What KIND of calculation this is -------------------------------------------------------
     //
@@ -6154,6 +6068,265 @@ struct QuantumChemistry : viamd::EventHandler {
         return true;
     }
 
+    // A series of the cavity's tesserae (vlx/scf/gostshyp/tessera/<leaf>) in the given unit, n of them; empty otherwise
+    static std::vector<double> gostshyp_series(const md_system_t& sys, const char* leaf, size_t n, md_unit_t unit) {
+        char path[128];
+        snprintf(path, sizeof(path), "vlx/scf/gostshyp/tessera/%s", leaf);
+        return attribute_values(sys, md_str_from_cstr(path), unit, 1, n);
+    }
+
+    // The cavity of a run under pressure, per tessera, as mdlib published it
+    void update_gostshyp(const md_system_t& sys) {
+        uint64_t key = 0x5bd1e995;
+        for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp")); md_attributes_next(&it);) {
+            const uint64_t v[2] = {(uint64_t)it.attr->id, it.attr->version};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (const md_attribute_t* a = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/system_index"))) {
+            const uint64_t v[2] = {(uint64_t)a->id, a->version};
+            key = md_hash64(v, sizeof(v), key);
+        }
+        if (key == gostshyp.key) return;
+
+        Gostshyp& g = gostshyp;
+        g.key = key;
+        g.valid = false;
+        g.num_spheres = g.num_inside = 0;
+        g.tess.clear();
+        g.order.clear();
+        g.sort_dirty = true;
+        g.view_hover_last = UINT32_MAX;
+
+        const md_attribute_t* ac = md_attributes_find(&sys.attributes, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+        if (!ac || ac->format.rank != 1 || ac->format.shape[0] == 0) return;
+        const size_t n = ac->format.shape[0];
+        const md_unit_t ang = md_unit_angstrom(), bohr = md_unit_bohr_radius();
+        const std::vector<double> area = gostshyp_series(sys, "area", n, md_unit_pow(ang, 2));
+        const std::vector<double> idx  = gostshyp_series(sys, "atom_index", n, md_unit_none());
+        const std::vector<double> lam  = gostshyp_series(sys, "decay_length", n, ang);
+        const std::vector<double> dens = gostshyp_series(sys, "wall_density", n, md_unit_div(md_unit_elementary_charge(), md_unit_pow(bohr, 3)));
+        const std::vector<double> amp  = gostshyp_series(sys, "amplitude", n, md_unit_mul(md_unit_hartree(), md_unit_pow(bohr, 3)));
+        const std::vector<double> pa   = gostshyp_series(sys, "amplitude_per_area", n, md_unit_mul(md_unit_hartree(), bohr));
+        const std::vector<double> zeta = gostshyp_series(sys, "exponent", n, md_unit_inv(md_unit_pow(ang, 2)));
+        const std::vector<double> bur  = gostshyp_series(sys, "buried", n, md_unit_none());
+        if (area.empty() || idx.empty()) return;
+        size_t n_map = 0;
+        const uint32_t* map = attribute_view<uint32_t>(sys, MD_STR_LIT("qm/atom/system_index")).get(&n_map);
+
+        g.valid = true;
+        g.num_spheres = attribute_count(sys, MD_STR_LIT("vlx/scf/gostshyp/sphere_radius"));
+        g.lambda_min = DBL_MAX;
+        g.lambda_max = -DBL_MAX;
+        g.tess.resize(n);
+        g.order.resize(n);
+        for (size_t j = 0; j < n; ++j) {
+            GostshypTessera& t = g.tess[j];
+            const uint32_t q = (uint32_t)idx[j];
+            t.atom = q;
+            t.sys_atom = map && q < n_map ? map[q] : q;
+            t.area = (float)area[j];
+            t.lambda = lam.empty() ? 0.0f : (float)lam[j];
+            t.density = dens.empty() ? 0.0f : (float)dens[j];
+            t.amp = amp.empty() ? 0.0f : (float)amp[j];
+            t.amp_area = pa.empty() ? 0.0f : (float)pa[j];
+            t.zeta = zeta.empty() ? 0.0f : (float)zeta[j];
+            t.inside = !bur.empty() && bur[j] > 0.5;
+            g.num_inside += t.inside;
+            g.order[j] = (uint32_t)j;
+            if (!lam.empty()) {
+                g.lambda_min = MD_MIN(g.lambda_min, lam[j]);
+                g.lambda_max = MD_MAX(g.lambda_max, lam[j]);
+            }
+        }
+    }
+
+    void draw_gostshyp_summary(const md_system_t& sys) {
+        const Gostshyp& g = gostshyp;
+        const double P = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), md_unit_none(), 0.0);
+        const double n_leb = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), md_unit_none(), 0.0);
+        const double scale = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), md_unit_none(), 0.0);
+        const double area = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), md_unit_none(), 0.0);
+        const double skin = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), md_unit_none(), 0.0);
+        const double energy_kj = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), md_unit_none(), 0.0);
+        const double buried = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/buried_area_fraction"), md_unit_none(), 0.0);
+        const md_str_t disc = attribute_str(sys, MD_STR_LIT("vlx/scf/gostshyp/discretization"));
+
+        ImGui::Text("Pressure:               %.4g GPa", P);
+        if (!md_str_empty(disc)) ImGui::Text("Discretization:         %.*s", (int)disc.len, disc.ptr);
+        if (n_leb > 0)  ImGui::Text("Lebedev points:         %.0f per sphere", n_leb);
+        if (scale > 0)  ImGui::Text("Sphere radius:          %.3g x vdW", scale);
+        if (n_leb > 0 && g.num_spheres > 0) {
+            ImGui::Text("Tesserae:               %zu of %.0f kept", g.tess.size(), n_leb * (double)g.num_spheres);
+        } else {
+            ImGui::Text("Tesserae:               %zu", g.tess.size());
+        }
+        ImGui::Text("Inside other spheres:   %zu (%.1f%% of the area)", g.num_inside, 100.0 * buried);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Tesserae inside the sphere of another atom than their own: the switching keeps points where\n"
+                              "the spheres overlap, so the cavity of the calculation is a smoothed union of the spheres");
+        }
+        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", area);
+        if (skin > 0) {
+            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", skin);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("The volume of density outside the cavity the wall holds against the pressure: each tessera's\n"
+                                  "area times the decay length of the density there, <rho|g> / (-d/dn <rho|g>)");
+            }
+            if (area > 0) ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", skin / area, g.lambda_min, g.lambda_max);
+            ImGui::Text("Wall energy:            %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("sum p_j <rho|g_j> = P sum a_j lambda_j: the amplitudes hold the pressure, p_j (-d/dn <rho|g_j>) = P a_j");
+            }
+            if (area > 0) ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / area);
+        }
+    }
+
+    // The glyph representation the table is linked to: the first one shown of the tesserae
+    static const Representation* gostshyp_linked_rep(const ApplicationState& state) {
+        for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
+            const Representation& rep = state.representation.reps[i];
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(state.system_context, rep) || !rep.type_is_valid) continue;
+            if (md_str_eq(glyphs_group(state.mold.sys, rep.glyphs.points), MD_STR_LIT("vlx/scf/gostshyp/tessera"))) return &rep;
+        }
+        return nullptr;
+    }
+
+    enum GostshypColumn {
+        GostshypColumn_Index, GostshypColumn_Atom, GostshypColumn_Area, GostshypColumn_Lambda,
+        GostshypColumn_Density, GostshypColumn_Amp, GostshypColumn_AmpArea, GostshypColumn_Zeta, GostshypColumn_Inside,
+        GostshypColumn_Count
+    };
+
+    static float gostshyp_value(const GostshypTessera& t, uint32_t j, int column) {
+        switch (column) {
+        case GostshypColumn_Index:   return (float)j;
+        case GostshypColumn_Atom:    return (float)t.sys_atom;
+        case GostshypColumn_Area:    return t.area;
+        case GostshypColumn_Lambda:  return t.lambda;
+        case GostshypColumn_Density: return t.density;
+        case GostshypColumn_Amp:     return t.amp;
+        case GostshypColumn_AmpArea: return t.amp_area;
+        case GostshypColumn_Zeta:    return t.zeta;
+        case GostshypColumn_Inside:  return t.inside ? 1.0f : 0.0f;
+        default:                     return 0.0f;
+        }
+    }
+
+    void draw_gostshyp_window(ApplicationState& state) {
+        // What the table hovers is marked in the view as long as it is hovered: none while the window is closed
+        state.glyph_hover_ui = {};
+        if (!gostshyp.show_window) {
+            gostshyp.row_hovered_last = false;
+            return;
+        }
+        const md_system_t& sys = state.mold.sys;
+        update_gostshyp(sys);
+        Gostshyp& g = gostshyp;
+
+        ImGui::SetNextWindowSize({ 720, 560 }, ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("GOSTSHYP", &g.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            if (!g.valid) {
+                ImGui::TextUnformatted("This dataset has no GOSTSHYP cavity");
+                ImGui::End();
+                return;
+            }
+            draw_gostshyp_summary(sys);
+            ImGui::Separator();
+
+            const Representation* rep = gostshyp_linked_rep(state);
+            // The tessera hovered in the view: its row is marked, and followed when asked
+            const uint32_t view_hover = (rep && state.glyph_hover.rep_id == rep->node.id) ? state.glyph_hover.point : UINT32_MAX;
+            ImGui::Checkbox("Follow the view", &g.follow);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scroll to the tessera under the cursor in the view");
+            ImGui::SameLine();
+            if (rep) {
+                ImGui::TextDisabled("hover a row to mark its patch on '%s'", rep->name);
+            } else {
+                ImGui::TextDisabled("no glyphs of the tesserae shown to mark them on");
+            }
+
+            const ImGuiTableFlags flags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersV |
+                                          ImGuiTableFlags_Resizable | ImGuiTableFlags_Sortable | ImGuiTableFlags_Hideable | ImGuiTableFlags_Reorderable |
+                                          ImGuiTableFlags_SizingStretchProp;
+            if (ImGui::BeginTable("##tesserae", GostshypColumn_Count, flags)) {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("#",           ImGuiTableColumnFlags_DefaultSort, 0, GostshypColumn_Index);
+                ImGui::TableSetupColumn("Atom",        0, 0, GostshypColumn_Atom);
+                ImGui::TableSetupColumn("Area Å²",     0, 0, GostshypColumn_Area);
+                ImGui::TableSetupColumn("λ Å",         0, 0, GostshypColumn_Lambda);
+                ImGui::TableSetupColumn("⟨ρ|g⟩ e/bohr³",0, 0, GostshypColumn_Density);
+                ImGui::TableSetupColumn("p a.u.",      0, 0, GostshypColumn_Amp);
+                ImGui::TableSetupColumn("p/a Eh bohr", 0, 0, GostshypColumn_AmpArea);
+                ImGui::TableSetupColumn("ζ Å⁻²",       ImGuiTableColumnFlags_DefaultHide, 0, GostshypColumn_Zeta);
+                ImGui::TableSetupColumn("Inside",      0, 0, GostshypColumn_Inside);
+                ImGui::TableHeadersRow();
+
+                if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
+                    if (specs->SpecsDirty || g.sort_dirty) {
+                        const ImGuiTableSortSpecs* sp = specs;
+                        const std::vector<GostshypTessera>& tess = g.tess;
+                        std::stable_sort(g.order.begin(), g.order.end(), [sp, &tess](uint32_t a, uint32_t b) {
+                            for (int i = 0; i < sp->SpecsCount; ++i) {
+                                const ImGuiTableColumnSortSpecs& s = sp->Specs[i];
+                                const float va = gostshyp_value(tess[a], a, s.ColumnUserID);
+                                const float vb = gostshyp_value(tess[b], b, s.ColumnUserID);
+                                if (va != vb) return s.SortDirection == ImGuiSortDirection_Ascending ? va < vb : va > vb;
+                            }
+                            return a < b;
+                        });
+                        specs->SpecsDirty = false;
+                        g.sort_dirty = false;
+                    }
+                }
+
+                // The row of the tessera hovered in the view, when it changed: drawn whatever the scroll, and scrolled to
+                int scroll_to = -1;
+                if (g.follow && view_hover != UINT32_MAX && view_hover != g.view_hover_last && view_hover < g.tess.size()) {
+                    for (size_t r = 0; r < g.order.size(); ++r) {
+                        if (g.order[r] == view_hover) { scroll_to = (int)r; break; }
+                    }
+                }
+                g.view_hover_last = view_hover;
+
+                ImGuiListClipper clipper;
+                clipper.Begin((int)g.order.size());
+                if (scroll_to >= 0) clipper.IncludeItemByIndex(scroll_to);
+                while (clipper.Step()) {
+                    for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
+                        const uint32_t j = g.order[r];
+                        const GostshypTessera& t = g.tess[j];
+                        ImGui::TableNextRow();
+                        ImGui::TableSetColumnIndex(GostshypColumn_Index);
+                        char label[32];
+                        snprintf(label, sizeof(label), "%u##t%u", j + 1, j);
+                        ImGui::Selectable(label, j == view_hover, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
+                        if (ImGui::IsItemHovered() && rep) {
+                            if (!g.row_hovered_last && !state.glyph_hover.rep_id) state.selection.highlight_time = ImGui::GetTime();
+                            state.glyph_hover_ui.rep_id = rep->node.id;
+                            state.glyph_hover_ui.point  = j;
+                        }
+                        if (r == scroll_to) ImGui::SetScrollHereY(0.5f);
+
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Atom)) {
+                            const md_str_t sym = md_atomic_number_symbol(md_atom_atomic_number(&sys.atom, t.sys_atom));
+                            ImGui::Text("%.*s%u", (int)sym.len, sym.ptr, t.sys_atom + 1);
+                        }
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Area))    ImGui::Text("%.3e", t.area);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Lambda))  ImGui::Text("%.4f", t.lambda);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Density)) ImGui::Text("%.3e", t.density);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Amp))     ImGui::Text("%.3e", t.amp);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_AmpArea)) ImGui::Text("%.3e", t.amp_area);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Zeta))    ImGui::Text("%.3f", t.zeta);
+                        if (ImGui::TableSetColumnIndex(GostshypColumn_Inside))  ImGui::TextUnformatted(t.inside ? "yes" : "");
+                    }
+                }
+                ImGui::EndTable();
+            }
+        }
+        ImGui::End();
+        g.row_hovered_last = state.glyph_hover_ui.rep_id != 0;
+    }
+
     void draw_summary_window(ApplicationState& state) {
         const md_system_t& sys = state.mold.sys;
 
@@ -6165,7 +6338,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!summary.show_window) {
             // Parked on the converged geometry while the window is closed, so re-opening it does not
             // step the molecule back to wherever the last session left the slider.
-            opt.selected = (int)attribute_series_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
+            opt.selected = (int)attribute_count(sys, MD_STR_LIT("vlx/opt/energy")) - 1;
             return;
         }
 
@@ -6211,10 +6384,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
-                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar_f64(sys, MD_STR_LIT("vlx/molecular_charge")));
+                ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar(sys, MD_STR_LIT("vlx/molecular_charge"), md_unit_none()));
                 ImGui::Text("Spin Multiplicity:   %-6.0f", fabs(n_alpha - n_beta) + 1.0);
                 if (rsp_type == RSP_C6) {
-                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/rsp/c6")));
+                    ImGui::Text("C6 Value:            %-12.6f (au)", attribute_scalar(sys, MD_STR_LIT("vlx/rsp/c6"), md_unit_none()));
                 }
                 ImGui::Spacing();
                 ImGui::TreePop();
@@ -6227,8 +6400,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // parsed" question to ask alongside it.
                 size_t num_iter = 0;
                 size_t num_grad = 0;
-                const double* energy    = attribute_series_f64(&num_iter, sys, MD_STR_LIT("vlx/scf/history/energy"));
-                const double* grad_norm = attribute_series_f64(&num_grad, sys, MD_STR_LIT("vlx/scf/history/gradient_norm"));
+                const double* energy    = attribute_view<double>(sys, MD_STR_LIT("vlx/scf/history/energy")).get(&num_iter);
+                const double* grad_norm = attribute_view<double>(sys, MD_STR_LIT("vlx/scf/history/gradient_norm")).get(&num_grad);
 
                 // Siblings in one group share a shape; a file which somehow disagrees is not a
                 // history anyone can plot.
@@ -6313,14 +6486,15 @@ struct QuantumChemistry : viamd::EventHandler {
                     ImGui::Text("Total energy:              %16.10f (au)", energy[num_iter - 1]);
                     ImGui::Text("Gradient norm:             %16.10f (au)", grad_norm[num_iter - 1]);
                 }
-                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar_f64(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy")));
+                ImGui::Text("Nuclear repulsion energy:  %16.10f (au)", attribute_scalar(sys, MD_STR_LIT("vlx/nuclear_repulsion_energy"), md_unit_none()));
                 ImGui::Spacing();
                 ImGui::TreePop();
             }
 
+
             {
                 size_t num_steps = 0;
-                const double* opt_energies = attribute_series_f64(&num_steps, sys, MD_STR_LIT("vlx/opt/energy"));
+                const double* opt_energies = attribute_view<double>(sys, MD_STR_LIT("vlx/opt/energy")).get(&num_steps);
                 if (opt_energies && num_steps > 0) {
                     if (ImGui::TreeNode("Optimization")) {
                         // FitPadding is pushed once for the whole window, at the top of this function.
@@ -6328,7 +6502,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         // Published for an IRC only, where it names the step the path was walked out
                         // from. num_steps is out of range on purpose everywhere else, so the branch
                         // below falls through to the minimum without a second test for the kind.
-                        const size_t ts_index = (size_t)attribute_scalar_f64(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), (double)num_steps);
+                        const size_t ts_index = (size_t)attribute_scalar(sys, MD_STR_LIT("vlx/opt/irc_ts_index"), md_unit_none(), (double)num_steps);
                         const double* energies = opt_energies;
                         const char* y_axis_label = "Relative Energy [kJ/mol]";
                         const char* plot_label = "OPT";
@@ -6391,7 +6565,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::PlotScatter("Transition State", &x, &y, 1);
                             }
 
-                            if (ImPlot::IsPlotHovered() && opt.hovered != -1) {
+                            if (plot_input_hovered() && opt.hovered != -1) {
                                 ImGui::SetTooltip("Step %d\nEnergy: %.8f kJ/mol", opt.hovered + 1, y_vals[opt.hovered]);
                             }
 
@@ -6416,7 +6590,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     static int prev_idx = -1;
                     if (opt.selected != prev_idx) {
                         prev_idx = opt.selected;
-                        set_atom_coordinates(state, attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, qm.count));
+                        set_atom_coordinates(state, attribute_view<md_double3_t>(sys, MD_STR_LIT("vlx/opt/coordinate"), 2).row((size_t)opt.selected, qm.count));
                     }
                 }
             }
@@ -6429,7 +6603,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 static const ImGuiTableColumnFlags columns_base_flags = ImGuiTableColumnFlags_NoSort;
 
                 if (ImGui::BeginTable("Geometry Table", 5, flags, ImVec2(500, -1), 0)) {
-                    const md_double3_t* opt_coord  = attribute_vec3_row(sys, MD_STR_LIT("vlx/opt/coordinate"), (size_t)opt.selected, num_atoms);
+                    const md_double3_t* opt_coord  = attribute_view<md_double3_t>(sys, MD_STR_LIT("vlx/opt/coordinate"), 2).row((size_t)opt.selected, num_atoms);
                     const md_double3_t* atom_coord = opt_coord ? opt_coord : qm.coordinate;
                     const uint8_t* atom_nr    = qm.atomic_number;
 
@@ -6672,8 +6846,8 @@ struct QuantumChemistry : viamd::EventHandler {
     // the window would draw nothing.
     static bool rsp_has_content(const md_system_t& sys) {
         size_t num_frequencies = 0;
-        const bool has_rsp = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency")) && num_frequencies > 0;
-        const bool has_vib = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency")) > 0;
+        const bool has_rsp = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_frequencies) && num_frequencies > 0;
+        const bool has_vib = attribute_count(sys, MD_STR_LIT("vlx/vib/frequency")) > 0;
         const bool has_xps = attribute_exists(sys, MD_STR_LIT("vlx/xps/ionization_energy"));
         return has_rsp || has_vib || has_xps;
     }
@@ -6690,10 +6864,10 @@ struct QuantumChemistry : viamd::EventHandler {
         // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
         // Its own length is the frequency count - there is no separate number to disagree with it.
         size_t num_frequencies = 0;
-        const double* x_freq_au = attribute_series_f64(&num_frequencies, sys, MD_STR_LIT("vlx/rsp/frequency"));
+        const double* x_freq_au = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_frequencies);
         if (!x_freq_au) num_frequencies = 0;
 
-        const size_t num_normal_modes = attribute_series_count(sys, MD_STR_LIT("vlx/vib/frequency"));
+        const size_t num_normal_modes = attribute_count(sys, MD_STR_LIT("vlx/vib/frequency"));
         // If the spetrum is broadened from peaks, this is the number of samples in the visual space (x_min -> x_max) used to sample that signal.
         constexpr int num_broadened_samples = 2048;
 
@@ -6801,18 +6975,18 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Samples are only used in CPP RSP, these hold intermediate results, i.e. converted to the selected x unit.
                 size_t num_samples = 0;
                 double* x_samples = NULL;
-                const double* y_samples_sigma = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), num_frequencies);
-                const double* y_samples_delta_epsilons = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), num_frequencies);
-                const double* y_samples_ord = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), num_frequencies);
-                const double* y_samples_cs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), num_frequencies);
+                const double* y_samples_sigma = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/sigma"), 1, num_frequencies).data;
+                const double* y_samples_delta_epsilons = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/delta_epsilon"), 1, num_frequencies).data;
+                const double* y_samples_ord = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/cpp/optical_rotation"), 1, num_frequencies).data;
+                const double* y_samples_cs = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/cross_section"), 1, num_frequencies).data;
 
                 // Peaks are only used in LINEAR RSP, not in CPP
 				size_t num_peaks = 0;
 				double* x_peaks = NULL;
-                const double* y_peaks_osc = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), num_frequencies);
-                const double* y_peaks_cgs = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), num_frequencies);
-                const double* y_peaks_tpa_trans_linear = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), num_frequencies);
-                const double* y_peaks_tpa_trans_circular = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), num_frequencies);
+                const double* y_peaks_osc = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/oscillator_strength"), 1, num_frequencies).data;
+                const double* y_peaks_cgs = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/rotatory_strength"), 1, num_frequencies).data;
+                const double* y_peaks_tpa_trans_linear = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/linear"), 1, num_frequencies).data;
+                const double* y_peaks_tpa_trans_circular = attribute_view<double>(sys, MD_STR_LIT("vlx/rsp/tpa/circular"), 1, num_frequencies).data;
 
                 bool refit = false;
 
@@ -6902,7 +7076,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 int hovered = -1;
                                 plot_peaks("Samples", x_samples, y_samples, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                                if (ImPlot::IsPlotHovered() && hovered != -1) {
+                                if (plot_input_hovered() && hovered != -1) {
                                     double x_val = x_samples[hovered];
                                     double y_val = y_samples[hovered];
                                     const char* x_unit = x_unit_short_str[rsp.x_unit];
@@ -6921,7 +7095,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::SetAxis(ImAxis_Y2);
                                 plot_peaks("Oscillator Strength", x_peaks, y_peaks_osc, num_peaks, rsp.selected, rsp.hovered);
 
-                                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                                if (plot_input_hovered() && rsp.hovered != -1) {
                                     double x_val = x_peaks[rsp.hovered];
                                     double y_val = y_peaks_osc[rsp.hovered];
                                     int state_idx = rsp.hovered + 1;
@@ -7029,7 +7203,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 int hovered = -1;
                                 plot_peaks("Samples", x_samples, y_samples_delta_epsilons, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                                if (ImPlot::IsPlotHovered() && hovered != -1) {
+                                if (plot_input_hovered() && hovered != -1) {
                                     double x_val = x_samples[hovered];
                                     double y_val = y_samples_delta_epsilons[hovered];
                                     const char* x_unit = x_unit_short_str[rsp.x_unit];
@@ -7048,7 +7222,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 ImPlot::SetAxis(ImAxis_Y2);
                                 plot_peaks("Rotatory Strength", x_peaks, y_peaks_cgs, num_peaks, rsp.selected, rsp.hovered);
 
-                                if (ImPlot::IsPlotHovered() && rsp.hovered != -1) {
+                                if (plot_input_hovered() && rsp.hovered != -1) {
                                     double x_val = x_peaks[rsp.hovered];
                                     double y_val = y_peaks_cgs[rsp.hovered];
                                     int state_idx = rsp.hovered + 1;
@@ -7122,7 +7296,7 @@ struct QuantumChemistry : viamd::EventHandler {
                             int hovered = -1;
                             plot_peaks("Samples", x_samples, y_samples_ord, num_samples, selected, hovered, PlotPeaksFlags_Points);
 
-                            if (ImPlot::IsPlotHovered() && hovered != -1) {
+                            if (plot_input_hovered() && hovered != -1) {
                                 double x_val = x_samples[hovered];
                                 double y_val = y_samples_ord[hovered];
                                 const char* x_unit = x_unit_short_str[rsp.x_unit];                                    
@@ -7393,12 +7567,12 @@ struct QuantumChemistry : viamd::EventHandler {
 						getter = spectrum_getter_gaussian;
 					}
 
-                    const double* x_peaks_raw = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/frequency"), num_normal_modes);
+                    const double* x_peaks_raw = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/frequency"), 1, num_normal_modes).data;
                     // Optional, and indexed over the normal modes - dropped when it does not cover them.
-                    const double* y_peaks_ir = attribute_series_f64_covering(sys, MD_STR_LIT("vlx/vib/ir_intensity"), num_normal_modes);
+                    const double* y_peaks_ir = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/ir_intensity"), 1, num_normal_modes).data;
 
                     size_t num_external_frequencies = 0;
-                    const double* external_frequencies = attribute_series_f64(&num_external_frequencies, sys, MD_STR_LIT("vlx/vib/external_frequency"));
+                    const double* external_frequencies = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/external_frequency")).get(&num_external_frequencies);
                     if (!external_frequencies) num_external_frequencies = 0;
 
                     // {E,M}: one row of per mode activities per external frequency, so a row IS the
@@ -7408,7 +7582,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // spectrum, and dropping both is better than plotting one against the other.
                     size_t num_raman_rows = 0;
                     size_t num_raman_cols = 0;
-                    const double* raman_activities = attribute_matrix_f64(&num_raman_rows, &num_raman_cols, sys, MD_STR_LIT("vlx/vib/raman_activity"));
+                    const double* raman_activities = attribute_view<double>(sys, MD_STR_LIT("vlx/vib/raman_activity"), 2).get(&num_raman_rows, &num_raman_cols);
                     const double** y_raman_activities = NULL;
                     if (raman_activities && num_raman_rows == num_external_frequencies && num_raman_cols == num_normal_modes && num_external_frequencies > 0) {
                         y_raman_activities = md_temp_alloc_array(temp, const double*, num_external_frequencies);
@@ -7674,7 +7848,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     if (vib.selected != -1) {
                         // Animate
                         vib.t += state.app.timing.delta_s * vib.displacement_freq_scl * 8.0;
-                        const md_double3_t* norm_modes = attribute_vec3_row(sys, MD_STR_LIT("qm/atom/normal_mode"), (size_t)vib.selected, num_atoms);
+                        const md_double3_t* norm_modes = attribute_view<md_double3_t>(sys, MD_STR_LIT("qm/atom/normal_mode"), 2).row((size_t)vib.selected, num_atoms);
 
                         // Both columns are needed: the displacement is added to the reference
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
@@ -7790,10 +7964,10 @@ struct QuantumChemistry : viamd::EventHandler {
             // only used when it covers all of those rows. Everything below reads a null as "show no
             // value", never as a column to index.
             const size_t num_mo_rows = num_molecular_orbitals();
-            const double* occ_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_occupation, num_mo_rows);
-            const double* occ_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_occupation,  num_mo_rows);
-            const double* ene_alpha = attribute_series_f64_covering(state.mold.sys, es_path::alpha_energy,     num_mo_rows);
-            const double* ene_beta  = attribute_series_f64_covering(state.mold.sys, es_path::beta_energy,      num_mo_rows);
+            const double* occ_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_occupation, 1, num_mo_rows).data;
+            const double* occ_beta  = attribute_view<double>(state.mold.sys, es_path::beta_occupation, 1,  num_mo_rows).data;
+            const double* ene_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_energy, 1,     num_mo_rows).data;
+            const double* ene_beta  = attribute_view<double>(state.mold.sys, es_path::beta_energy, 1,      num_mo_rows).data;
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
 
@@ -8360,7 +8534,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
                 render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                 // Baked into the picking buffer, which hovering reads
-                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
                 render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                 render_hash = render_hash ? render_hash : 1;
             }
@@ -8403,7 +8577,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(state),
+                    .picking_offset = gl_picking_offset(state.system_context),
                 };
 
                 md_gl_draw(&draw_args);
@@ -8560,7 +8734,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
                     bool is_selected = (export_state.source == source);
-                    bool disabled = source == ElectronicStructureSource::DensityProperty ||
+                    bool disabled = source == ElectronicStructureSource::DensityProperty || electronic_structure_source_field_kind(source) != SurfaceFieldKind::Count ||
                                     ((source == ElectronicStructureSource::NaturalTransitionOrbital ||
                                      source == ElectronicStructureSource::TransitionDensity) &&
                                     (num_excited == 0));
@@ -9600,8 +9774,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const md_double3_t* magnetic_dp = attribute_vec3_series(&num_magn, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector"));
-                        const md_double3_t* electric_dp = attribute_vec3_series(&num_elec, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector"));
+                        const md_double3_t* magnetic_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")).get(&num_magn);
+                        const md_double3_t* electric_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")).get(&num_elec);
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
@@ -9780,7 +9954,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
                     render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
                     // Baked into the picking buffer, which hovering reads
-                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
                     render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                     render_hash = render_hash ? render_hash : 1;
                 }
@@ -9825,7 +9999,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .proj_matrix = (const float*)proj_mat.elem,
                             },
 
-                            .picking_offset = gl_picking_offset(state),
+                            .picking_offset = gl_picking_offset(state.system_context),
 
                             .atom_mask = atom_mask,
                         };
@@ -10094,6 +10268,76 @@ struct QuantumChemistry : viamd::EventHandler {
         pending_groups.atoms_initialized = true;
     }
 
+    static constexpr const char* const flow_route_names[] = { "Fragments", "Orbitals" };
+    static constexpr const char* const flow_order_names[] = { "Weight", "Barycentre", "Graph" };
+    MD_STATIC_ASSERT(MD_COUNTOF(flow_route_names) == FLOW_MODE_COUNT, "a name for each route");
+    MD_STATIC_ASSERT(MD_COUNTOF(flow_order_names) == FLOW_ORDER_GRAPH + 1, "a name for each order");
+
+    // The windows and the flow, by path (serialization_utils.h)
+    void write_settings(viamd::serialization_state_t& s) {
+        viamd::PathPrefix p;
+        viamd::write_bool(s, p("ShowTransitionAnalysis"), nto.show_window);
+        viamd::write_bool(s, p("ShowChargeTransfer"), flow.show_window);
+        viamd::PathPrefix f = p.sub("Flow");
+        viamd::write_enum(s, f("Route"), (int)flow.mode, viamd::enum_names(flow_route_names));
+        viamd::write_int(s, f("Rows"), flow.max_rows);
+        viamd::write_flt(s, f("Threshold"), flow.cut.threshold);
+        viamd::write_int(s, f("OthersCap"), flow.cut.other_max);
+        viamd::write_bool(s, f("SizeNormalize"), flow.size_normalize);
+        viamd::write_int(s, f("OthersExpanded"), (int)flow.cut.other_expanded);
+        viamd::write_flt(s, f("BarWidth"), flow.params.node_thickness);
+        viamd::write_flt(s, f("NodeGap"), flow.params.node_gap);
+        viamd::write_flt(s, f("RibbonOpacity"), flow.style.ribbon_alpha);
+        viamd::write_flt(s, f("RibbonCurvature"), flow.style.ribbon_curvature);
+        viamd::write_enum(s, f("Order"), (int)flow.params.order, viamd::enum_names(flow_order_names));
+        viamd::write_int(s, f("Sweeps"), (int)flow.params.barycentre_sweeps);
+        viamd::write_flt(s, f("RibbonMinPx"), flow.style.ribbon_min_px);
+        viamd::write_flt(s, f("NodeTint"), flow.style.node_fill_tint);
+        viamd::write_flt(s, f("NodeBorder"), flow.style.border_width);
+        viamd::write_bool(s, f("ColorLabels"), flow.style.color_labels);
+        viamd::write_bool(s, f("ColorBySide"), flow.style.color_by_side);
+        viamd::write_bool(s, f("RibbonLabels"), flow.style.show_ribbon_labels);
+        viamd::write_bool(s, f("Legend"), flow.show_legend);
+    }
+
+    void read_settings(viamd::Entries& e) {
+        viamd::PathPrefix p;
+        viamd::get(e, p("ShowTransitionAnalysis"), nto.show_window);
+        viamd::get(e, p("ShowChargeTransfer"), flow.show_window);
+        viamd::PathPrefix f = p.sub("Flow");
+        viamd::get_enum(e, f("Route"), flow.mode, viamd::enum_names(flow_route_names));
+        if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("FlowMode"))) {
+            // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
+            int mode = 0;
+            if (viamd::extract_int(mode, *v)) flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
+        }
+        if (viamd::get(e, f("Rows"), flow.max_rows)) flow.max_rows = MD_CLAMP(flow.max_rows, 2, 40);
+        viamd::get(e, f("Threshold"), flow.cut.threshold);
+        viamd::get(e, f("OthersCap"), flow.cut.other_max);
+        viamd::get(e, f("SizeNormalize"), flow.size_normalize);
+        int expanded = 0;
+        if (viamd::get(e, f("OthersExpanded"), expanded)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, expanded);
+        if (viamd::get(e, f("BarWidth"), flow.params.node_thickness)) flow.bar_width = flow.params.node_thickness;
+        viamd::get(e, f("NodeGap"), flow.params.node_gap);
+        viamd::get(e, f("RibbonOpacity"), flow.style.ribbon_alpha);
+        viamd::get(e, f("RibbonCurvature"), flow.style.ribbon_curvature);
+        viamd::get_enum(e, f("Order"), flow.params.order, viamd::enum_names(flow_order_names));
+        int sweeps = 0;
+        if (viamd::get(e, f("Sweeps"), sweeps)) flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
+        viamd::get(e, f("RibbonMinPx"), flow.style.ribbon_min_px);
+        viamd::get(e, f("NodeTint"), flow.style.node_fill_tint);
+        viamd::get(e, f("NodeBorder"), flow.style.border_width);
+        viamd::get(e, f("ColorLabels"), flow.style.color_labels);
+        viamd::get(e, f("ColorBySide"), flow.style.color_by_side);
+        viamd::get(e, f("RibbonLabels"), flow.style.show_ribbon_labels);
+        viamd::get(e, f("Legend"), flow.show_legend);
+        // the boxed style's settings: they do not carry over to the bars
+        viamd::get_value(e, MD_STR_LIT("FlowNodeThickness"));
+        viamd::get_value(e, MD_STR_LIT("FlowRibbonAlpha"));
+        viamd::get_value(e, MD_STR_LIT("FlowNodeFillTint"));
+        viamd::get_value(e, MD_STR_LIT("FlowBorderWidth"));
+    }
+
     void serialize_workspace(viamd::serialization_state_t& ser) {
         // Nothing to write without a QM system loaded, and the group assignment is what this
         // section is FOR: num_qm_atoms is "did init_qm_from_system run", which is the same question
@@ -10106,36 +10350,16 @@ struct QuantumChemistry : viamd::EventHandler {
         // compatibility branch that has to be carried forever.
         viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
 
-        viamd::write_bool(ser, MD_STR_LIT("ShowTransitionAnalysis"), nto.show_window);
-        viamd::write_bool(ser, MD_STR_LIT("ShowChargeTransfer"),     flow.show_window);
-        viamd::write_int (ser, MD_STR_LIT("FlowRoute"),              (int64_t)flow.mode);
-        viamd::write_int (ser, MD_STR_LIT("FlowRows"),               (int64_t)flow.max_rows);
-        viamd::write_flt (ser, MD_STR_LIT("FlowThreshold"),          flow.cut.threshold);
-        viamd::write_flt (ser, MD_STR_LIT("FlowOthersCap"),          flow.cut.other_max);
-        viamd::write_flt (ser, MD_STR_LIT("FlowSizeNormalize"),      flow.size_normalize);
-        viamd::write_int (ser, MD_STR_LIT("FlowOthersExpanded"),     (int64_t)flow.cut.other_expanded);
-        viamd::write_flt (ser, MD_STR_LIT("FlowBarWidth"),           flow.params.node_thickness);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeGap"),            flow.params.node_gap);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonOpacity"),      flow.style.ribbon_alpha);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonCurvature"),    flow.style.ribbon_curvature);
-        viamd::write_int (ser, MD_STR_LIT("FlowOrder"),              (int64_t)flow.params.order);
-        viamd::write_int (ser, MD_STR_LIT("FlowSweeps"),             (int64_t)flow.params.barycentre_sweeps);
-        viamd::write_flt (ser, MD_STR_LIT("FlowRibbonMinPx"),        flow.style.ribbon_min_px);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeTint"),           flow.style.node_fill_tint);
-        viamd::write_flt (ser, MD_STR_LIT("FlowNodeBorder"),         flow.style.border_width);
-        viamd::write_bool(ser, MD_STR_LIT("FlowColorLabels"),        flow.style.color_labels);
-        viamd::write_bool(ser, MD_STR_LIT("FlowColorBySide"),        flow.style.color_by_side);
-        viamd::write_bool(ser, MD_STR_LIT("FlowRibbonLabels"),       flow.style.show_ribbon_labels);
-        viamd::write_bool(ser, MD_STR_LIT("FlowLegend"),             flow.show_legend);
+        write_settings(ser);
 
-        viamd::write_int(ser, MD_STR_LIT("GroupCount"), (int64_t)nto.group.count);
-
-        // One bitfield per group rather than one index per atom: the same information, but it
-        // survives being looked at in a text editor.
+        // One set of atoms per group rather than one index per atom: the same information, but it survives being
+        // looked at in a text editor
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         md_allocator_i* temp_alloc = md_temp_allocator(temp);
 
+        viamd::PathPrefix p;
+        viamd::write_int(ser, p("Group"), (int64_t)nto.group.count);
         for (size_t g = 0; g < nto.group.count; ++g) {
             md_bitmask_t b = md_bitmask_create(0, MD_BITSET_MAX_INDEX, temp_alloc);
             for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
@@ -10144,9 +10368,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             const md_bitset_t mask = md_bitmask_view(&b);
-            viamd::write_str(ser, MD_STR_LIT("GroupLabel"), md_str_from_cstr(nto.group.label[g]));
-            viamd::write_vec4(ser, MD_STR_LIT("GroupColor"), nto.group.color[g]);
-            viamd::write_bitset(ser, MD_STR_LIT("GroupAtoms"), &mask);
+            viamd::PathPrefix q = p.sub("Group", (int)g);
+            viamd::write_str(ser, q("Label"), md_str_from_cstr(nto.group.label[g]));
+            viamd::write_vec4(ser, q("Color"), nto.group.color[g]);
+            viamd::write_bitset(ser, q("Atoms"), &mask);
         }
     }
 
@@ -10161,96 +10386,73 @@ struct QuantumChemistry : viamd::EventHandler {
             pending_groups.color[i] = md_float4_t{0.5f, 0.5f, 0.5f, 1.0f};
         }
 
-        // 'GroupLabel' opens a group; the color and atom entries that follow belong to it. The
-        // index only advances on a label, so a malformed section cannot walk off the end.
-        int64_t group_idx = -1;
+        // Where the keys of workspaces from before the paths are now, of those that only moved
+        static const viamd::PathAlias aliases[] = {
+            { "FlowRoute",           "Flow.Route" },
+            { "FlowRows",            "Flow.Rows" },
+            { "FlowThreshold",       "Flow.Threshold" },
+            { "FlowOthersCap",       "Flow.OthersCap" },
+            { "FlowSizeNormalize",   "Flow.SizeNormalize" },
+            { "FlowOthersExpanded",  "Flow.OthersExpanded" },
+            { "FlowBarWidth",        "Flow.BarWidth" },
+            { "FlowNodeGap",         "Flow.NodeGap" },
+            { "FlowRibbonOpacity",   "Flow.RibbonOpacity" },
+            { "FlowRibbonCurvature", "Flow.RibbonCurvature" },
+            { "FlowOrder",           "Flow.Order" },
+            { "FlowSweeps",          "Flow.Sweeps" },
+            { "FlowRibbonMinPx",     "Flow.RibbonMinPx" },
+            { "FlowNodeTint",        "Flow.NodeTint" },
+            { "FlowNodeBorder",      "Flow.NodeBorder" },
+            { "FlowColorLabels",     "Flow.ColorLabels" },
+            { "FlowColorBySide",     "Flow.ColorBySide" },
+            { "FlowRibbonLabels",    "Flow.RibbonLabels" },
+            { "FlowLegend",          "Flow.Legend" },
+        };
 
-        md_str_t ident = {};
-        md_str_t arg   = {};
-        while (viamd::next_entry(ident, arg, deser)) {
-            if (md_str_eq_cstr(ident, "ShowTransitionAnalysis")) {
-                viamd::extract_bool(nto.show_window, arg);
-            } else if (md_str_eq_cstr(ident, "ShowChargeTransfer")) {
-                viamd::extract_bool(flow.show_window, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRoute")) {
-                int mode = FLOW_MODE_FRAGMENTS;
-                if (viamd::extract_int(mode, arg)) {
-                    flow.mode = (flow_mode_t)MD_CLAMP(mode, 0, FLOW_MODE_COUNT - 1);
-                }
-            } else if (md_str_eq_cstr(ident, "FlowRows")) {
-                int rows = flow.max_rows;
-                if (viamd::extract_int(rows, arg)) flow.max_rows = MD_CLAMP(rows, 2, 40);
-            } else if (md_str_eq_cstr(ident, "FlowMode")) {
-                // The prototype's numbering (groups, atoms via NTOs, orbitals): only its orbitals survive
-                int mode = 0;
-                if (viamd::extract_int(mode, arg)) {
-                    flow.mode = (mode == 2) ? FLOW_MODE_ORBITALS : FLOW_MODE_FRAGMENTS;
-                }
-            } else if (md_str_eq_cstr(ident, "FlowThreshold")) {
-                viamd::extract_flt(flow.cut.threshold, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOthersCap")) {
-                viamd::extract_flt(flow.cut.other_max, arg);
-            } else if (md_str_eq_cstr(ident, "FlowSizeNormalize")) {
-                viamd::extract_flt(flow.size_normalize, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOthersExpanded")) {
-                int mask = 0;
-                if (viamd::extract_int(mask, arg)) flow.cut.other_expanded = (uint32_t)MD_MAX(0, mask);
-            } else if (md_str_eq_cstr(ident, "FlowBarWidth")) {
-                if (viamd::extract_flt(flow.bar_width, arg)) flow.params.node_thickness = flow.bar_width;
-            } else if (md_str_eq_cstr(ident, "FlowNodeThickness") || md_str_eq_cstr(ident, "FlowRibbonAlpha") ||
-                       md_str_eq_cstr(ident, "FlowNodeFillTint") || md_str_eq_cstr(ident, "FlowBorderWidth")) {
-                // the boxed style's settings: they do not carry over to the bars
-            } else if (md_str_eq_cstr(ident, "FlowNodeGap")) {
-                viamd::extract_flt(flow.params.node_gap, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonOpacity")) {
-                viamd::extract_flt(flow.style.ribbon_alpha, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonCurvature")) {
-                viamd::extract_flt(flow.style.ribbon_curvature, arg);
-            } else if (md_str_eq_cstr(ident, "FlowOrder")) {
-                int order = FLOW_ORDER_WEIGHT;
-                if (viamd::extract_int(order, arg)) {
-                    flow.params.order = (flow_order_t)MD_CLAMP(order, 0, (int)FLOW_ORDER_GRAPH);
-                }
-            } else if (md_str_eq_cstr(ident, "FlowRibbonMinPx")) {
-                viamd::extract_flt(flow.style.ribbon_min_px, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeTint")) {
-                viamd::extract_flt(flow.style.node_fill_tint, arg);
-            } else if (md_str_eq_cstr(ident, "FlowNodeBorder")) {
-                viamd::extract_flt(flow.style.border_width, arg);
-            } else if (md_str_eq_cstr(ident, "FlowColorLabels")) {
-                viamd::extract_bool(flow.style.color_labels, arg);
-            } else if (md_str_eq_cstr(ident, "FlowColorBySide")) {
-                viamd::extract_bool(flow.style.color_by_side, arg);
-            } else if (md_str_eq_cstr(ident, "FlowRibbonLabels")) {
-                viamd::extract_bool(flow.style.show_ribbon_labels, arg);
-            } else if (md_str_eq_cstr(ident, "FlowLegend")) {
-                viamd::extract_bool(flow.show_legend, arg);
-            } else if (md_str_eq_cstr(ident, "FlowSweeps")) {
-                int sweeps = 2;
-                if (viamd::extract_int(sweeps, arg)) {
-                    flow.params.barycentre_sweeps = (uint32_t)MD_CLAMP(sweeps, 0, 8);
-                }
-            } else if (md_str_eq_cstr(ident, "GroupCount")) {
-                int count = 0;
-                if (viamd::extract_int(count, arg)) {
-                    pending_groups.count = (size_t)MD_CLAMP(count, 0, MAX_NTO_GROUPS);
-                }
-            } else if (md_str_eq_cstr(ident, "GroupLabel")) {
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        viamd::Entries e = viamd::read_entries(deser, aliases, md_temp_allocator(temp));
+        read_settings(e);
+
+        viamd::PathPrefix p;
+        int count = 0;
+        viamd::get_count(e, p("Group"), count, MAX_NTO_GROUPS);
+        for (int g = 0; g < count; ++g) {
+            viamd::PathPrefix q = p.sub("Group", g);
+            viamd::get(e, q("Label"), pending_groups.label[g], sizeof(pending_groups.label[0]));
+            viamd::get(e, q("Color"), pending_groups.color[g]);
+            if (const md_str_t* v = viamd::get_value(e, q("Atoms"))) {
+                md_bitset_free(&pending_groups.atoms[g], md_get_heap_allocator());
+                viamd::extract_bitset(&pending_groups.atoms[g], *v, md_get_heap_allocator());
+            }
+        }
+        // An older workspace's groups, a GroupLabel each and what follows it, in the order of the file
+        int64_t group_idx = count - 1;
+        for (size_t i = 0; i < e.count; ++i) {
+            viamd::Entry& entry = e.items[i];
+            const md_str_t arg = entry.value;
+            if (md_str_eq_cstr(entry.path, "GroupCount")) {
+                int n = 0;
+                if (viamd::extract_int(n, arg)) count = MD_MAX(count, MD_CLAMP(n, 0, MAX_NTO_GROUPS));
+            } else if (md_str_eq_cstr(entry.path, "GroupLabel")) {
                 group_idx += 1;
                 if (group_idx < MAX_NTO_GROUPS) {
                     viamd::extract_to_char_buf(pending_groups.label[group_idx], sizeof(pending_groups.label[0]), arg);
                 }
-            } else if (md_str_eq_cstr(ident, "GroupColor")) {
-                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
-                    viamd::extract_vec4(pending_groups.color[group_idx], arg);
-                }
-            } else if (md_str_eq_cstr(ident, "GroupAtoms")) {
+            } else if (md_str_eq_cstr(entry.path, "GroupColor")) {
+                if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) viamd::extract_vec4(pending_groups.color[group_idx], arg);
+            } else if (md_str_eq_cstr(entry.path, "GroupAtoms")) {
                 if (0 <= group_idx && group_idx < MAX_NTO_GROUPS) {
                     md_bitset_free(&pending_groups.atoms[group_idx], md_get_heap_allocator());
                     viamd::extract_bitset(&pending_groups.atoms[group_idx], arg, md_get_heap_allocator());
                 }
+            } else {
+                continue;
             }
+            entry.read = true;
         }
+        viamd::entries_unread(e, MD_STR_LIT("QuantumChemistry"));
+        pending_groups.count = (size_t)count;
 
         // Trust the labels actually present over a GroupCount that disagrees with them.
         pending_groups.count = MD_MAX(pending_groups.count, (size_t)(group_idx + 1));
@@ -11361,8 +11563,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t S = md_array_size(flow.strip);
         if (S == 0) return;
         size_t num_f = 0, num_e = 0;
-        const double* osc = attribute_series_f64(&num_f, state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength"));
-        const double* ene = attribute_series_f64(&num_e, state.mold.sys, MD_STR_LIT("vlx/rsp/frequency"));
+        const double* osc = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength")).get(&num_f);
+        const double* ene = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_e);
         double f_max = 0.0;
         for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
 
@@ -11923,7 +12125,7 @@ struct QuantumChemistry : viamd::EventHandler {
             render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
             render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
             render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
-            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state.system_context);
             render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
             render_hash = render_hash ? render_hash : 1;
         }
@@ -11962,7 +12164,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(state),
+                    .picking_offset = gl_picking_offset(state.system_context),
                     .atom_mask = atom_mask,
                 };
                 md_gl_draw(&draw_args);

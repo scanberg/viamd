@@ -13,6 +13,7 @@
 #include <md_gto.h>
 #include <core/md_grid.h>
 #include <script_engine.h>
+#include <string>
 #include <md_gl.h>
 #include <md_infer.h>
 #include <md_chem.h>
@@ -34,6 +35,7 @@
 
 #include <task_system.h>
 #include <surface_field.h>
+#include <glyphs.h>
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
@@ -105,6 +107,10 @@ typedef uint64_t PickingSourceID;
 typedef uint64_t InteractionSurfaceID;
 
 constexpr PickingDomainID PickingDomain_Atom   = HASH_STR_LIT64("picking domain atom");
+// A bond: what the middle half of a bond picks as, the quarters at its ends picking as their atoms, however it is drawn.
+// Of the system (key 0): a bond of the graph, or one formed in the frame shown after them (picked_bond). Or a weak bond
+// of a representation (key: its id), in a range of its own: one of a Bonds representation, an interaction over the
+// sticks of a licorice.
 constexpr PickingDomainID PickingDomain_Bond   = HASH_STR_LIT64("picking domain bond");
 constexpr PickingDomainID PickingDomain_Dipole = HASH_STR_LIT64("picking domain dipole");
 // A protein backbone segment (md_system_t::protein_backbone.segment): what the cartoon and ribbons pick as. They are
@@ -120,6 +126,9 @@ constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking d
 // The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
+// A point of a point set drawn as glyphs (glyphs.h), keyed by the representation: what its glyph picks as. The index is
+// the point.
+constexpr PickingDomainID PickingDomain_Glyph = HASH_STR_LIT64("picking domain point glyph");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
@@ -168,8 +177,19 @@ enum class ElectronicStructureSource {
     TransitionDensity,
     ElectronDensity,
     DensityProperty,
-    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf): drawn as a volume or on a plane
-    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol): likewise
+    ElectronLocalization,       // the electron localization function, ELF (md_qm_elf)
+    LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol)
+    // Fields of the system as a whole, evaluated as the fields a surface is coloured by are (surface_field.h, the kind
+    // of electronic_structure_source_field_kind): the volume all of the grid, on the GPU where mdlib evaluates them
+    // there, else on the CPU
+    ElectrostaticPotential,
+    EmbeddingPotential,
+    AverageLocalIonizationEnergy,
+    LocalElectronAttachmentEnergy,
+    DensityScaleLength,
+    GostshypWallPotential,      // of the GOSTSHYP wall of a run under pressure (gostshyp.h)
+    GostshypEffectivePotential,
+    GostshypEnergyDensity,
     Count
 };
 
@@ -240,6 +260,7 @@ enum class RepresentationType {
     DipoleMoment,
     SimulationBox,
     Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
+    Glyphs,             // A glyph per point of a point set of the attributes (glyphs.h): a cavity's tesserae, ...
     Count
 };
 
@@ -272,10 +293,11 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Ball And Stick",
     "Ribbons",
     "Cartoon",
-    "Electronic Structure",
+    "Field",
     "Dipole Moment",
     "Simulation Box",
     "Bonds",
+    "Glyphs",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -320,7 +342,53 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Density Property",
     "Electron Localization (ELF)",
     "Localized Orbital Locator (LOL)",
+    "Electrostatic Potential",
+    "Embedding Potential",
+    "Local Ionization Energy (ALIE)",
+    "Local Electron Attachment Energy",
+    "Density Scale Length",
+    "GOSTSHYP Wall Potential",
+    "GOSTSHYP Effective Potential",
+    "GOSTSHYP Energy Density",
 };
+
+// The kind of surface field a source is evaluated as (surface_field.h): Count for those evaluated of orbitals and
+// densities on the GPU (viamd.cpp, es_evaluate_into). ELF and LOL are both: by their own kernel on the GPU when
+// there is one, else as a surface field on the CPU.
+static inline SurfaceFieldKind electronic_structure_source_field_kind(ElectronicStructureSource s) {
+    switch (s) {
+    case ElectronicStructureSource::ElectronLocalization:          return SurfaceFieldKind::ElectronLocalization;
+    case ElectronicStructureSource::LocalizedOrbitalLocator:       return SurfaceFieldKind::LocalizedOrbitalLocator;
+    case ElectronicStructureSource::ElectrostaticPotential:        return SurfaceFieldKind::ElectrostaticPotential;
+    case ElectronicStructureSource::EmbeddingPotential:            return SurfaceFieldKind::EmbeddingPotential;
+    case ElectronicStructureSource::AverageLocalIonizationEnergy:  return SurfaceFieldKind::AverageLocalIonizationEnergy;
+    case ElectronicStructureSource::LocalElectronAttachmentEnergy: return SurfaceFieldKind::LocalElectronAttachmentEnergy;
+    case ElectronicStructureSource::DensityScaleLength:            return SurfaceFieldKind::DensityScaleLength;
+    case ElectronicStructureSource::GostshypWallPotential:         return SurfaceFieldKind::GostshypWallPotential;
+    case ElectronicStructureSource::GostshypEffectivePotential:    return SurfaceFieldKind::GostshypEffectivePotential;
+    case ElectronicStructureSource::GostshypEnergyDensity:         return SurfaceFieldKind::GostshypEnergyDensity;
+    default:                                                       return SurfaceFieldKind::Count;
+    }
+}
+
+// Whether the source is evaluated as a surface field (surface_field.h) whatever the GPU: all but the orbitals,
+// the densities and ELF and LOL
+static inline bool electronic_structure_source_is_surface_field(ElectronicStructureSource s) {
+    return electronic_structure_source_field_kind(s) != SurfaceFieldKind::Count &&
+           s != ElectronicStructureSource::ElectronLocalization && s != ElectronicStructureSource::LocalizedOrbitalLocator;
+}
+
+// Whether isosurface meshes can be extracted from the source (iso_meshes.h): the orbitals and densities, which
+// md_gto_iso evaluates, ELF and LOL, which it bounds through the density and the kinetic energy density, and the
+// GOSTSHYP potentials, orbitals over the tesserae (gostshyp_wall_orbital). The others' isosurfaces are raycast
+// through their volume, whatever the setting.
+static inline bool electronic_structure_source_meshable(ElectronicStructureSource s) {
+    return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
+           s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
+           s == ElectronicStructureSource::DensityProperty || s == ElectronicStructureSource::ElectronLocalization ||
+           s == ElectronicStructureSource::LocalizedOrbitalLocator || s == ElectronicStructureSource::GostshypWallPotential ||
+           s == ElectronicStructureSource::GostshypEffectivePotential;
+}
 
 enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_MolecularOrbital          = 1u << (int)ElectronicStructureSource::MolecularOrbital,
@@ -330,6 +398,14 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
     ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
     ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
+    ElectronicStructureSourceFlag_ElectrostaticPotential    = 1u << (int)ElectronicStructureSource::ElectrostaticPotential,
+    ElectronicStructureSourceFlag_EmbeddingPotential        = 1u << (int)ElectronicStructureSource::EmbeddingPotential,
+    ElectronicStructureSourceFlag_AverageLocalIonizationEnergy  = 1u << (int)ElectronicStructureSource::AverageLocalIonizationEnergy,
+    ElectronicStructureSourceFlag_LocalElectronAttachmentEnergy = 1u << (int)ElectronicStructureSource::LocalElectronAttachmentEnergy,
+    ElectronicStructureSourceFlag_DensityScaleLength        = 1u << (int)ElectronicStructureSource::DensityScaleLength,
+    ElectronicStructureSourceFlag_GostshypWallPotential     = 1u << (int)ElectronicStructureSource::GostshypWallPotential,
+    ElectronicStructureSourceFlag_GostshypEffectivePotential= 1u << (int)ElectronicStructureSource::GostshypEffectivePotential,
+    ElectronicStructureSourceFlag_GostshypEnergyDensity     = 1u << (int)ElectronicStructureSource::GostshypEnergyDensity,
 };
 
 typedef uint32_t ElectronicStructureSourceFlags;
@@ -643,7 +719,8 @@ struct Volume {
 // the world. Defined in viamd.cpp because it is the half that touches GL.
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
 
-// How the isosurfaces of the electronic structure are drawn (Settings::isosurface_rendering)
+// How isosurfaces are drawn: a Field representation's (ElectronicStructureRepresentation::rendering), and the
+// panels of the Orbital Grid and Transition Analysis windows (Settings::isosurface_rendering)
 enum IsosurfaceRendering {
     IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (volume::render_isosurfaces)
     IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h, isomesh::render)
@@ -675,14 +752,38 @@ struct ElectronicStructurePlaneImage {
     float     ms = 0.0f;
 };
 
+// A field over R^3 of the electronic structure: what it is (its path, field.h, names the source and a density
+// property's attribute) and the parameters that tell the fields of one family apart. What a representation draws is one.
+struct FieldRef {
+    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
+    bool use_magnitude = false;
+    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
+    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
+    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+
+    int orbital_idx = 0;
+    int excited_state_idx = 0;
+    int nto_lambda_idx = 0;
+    // The density property, named by the id of its attribute rather than by a position in a list. An index silently
+    // re-points at a different property whenever the set changes across a reload; an id is derived from the path, so
+    // it names the same thing or nothing at all.
+    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+};
+
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
+    // The analytic normals of density_vol (RGB10_A2, its dims), where its evaluation made them (es_normals_of): what the
+    // raycast isosurfaces are shaded with
+    uint32_t normal_tex = 0;
     EsIsoMesh* iso_mesh = nullptr;     // owned: the mesh rendering mode's surfaces, made on first use
     VolumeResolution resolution = VolumeResolution::Mid;
 
-    // Shared for all electronic structure representations
+    // The isovalue of the orbitals and densities (a density's squared: electronic_structure_uses_density_iso_squared)
     double iso_value = 0.05;
+    // and of the other fields (electronic_structure_source_field_kind), in their unit: both signs of it for one about
+    // zero (electronic_structure_is_signed), else this one, which may be negative
+    double field_iso_value = 0.8;
 
     // These are default values for different volume types.
     md_float4_t col_psi_pos = {0.f/255.f,75.f/255.f,135.f/255.f,0.75f};
@@ -721,20 +822,19 @@ struct ElectronicStructureRepresentation {
     // The grid density_vol was evaluated on (bohr), kept for what is evaluated on the same grid
     md_grid_t grid = {};
 
-    ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
-    bool use_magnitude = false;
-    ElectronicStructureSpin spin = ElectronicStructureSpin::Alpha;
-    ElectronicStructureNtoComponent nto_component = ElectronicStructureNtoComponent::Particle;
-    ElectronicStructureTransitionDensityComponent transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+    // The field (FieldRef): the data the representation draws, in every display - its isosurfaces, its volume, its
+    // planes. The isosurface display can colour its surfaces by another (coloring, field_kind).
+    FieldRef shown;
 
-    int orbital_idx = 0;
-    int excited_state_idx = 0;
-    int nto_lambda_idx = 0;
-    // The density property this representation draws, named by the id of its attribute rather than
-    // by a position in a list. An index silently re-points at a different property whenever the set
-    // changes across a reload; an id is derived from the path, so it names the same thing or
-    // nothing at all.
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
+    // How its isosurfaces are drawn (IsosurfaceRendering): meshes only of what they can be made of (es_mesh_mode),
+    // the others raycast whatever this says
+    int rendering = IsosurfaceRendering_Raycast;
+
+    // The source evaluated as a surface field (electronic_structure_source_is_surface_field, and ELF and LOL without
+    // their kernel): all of the grid, taken into density_vol once complete; its values' spread (1st to 99th
+    // percentile, the extremes) for the isovalue's range and the colour map's
+    SurfaceFieldVolume source_vol = {};
+    ColorScaleSpan     source_span = {};
 
 	uint64_t col_hash = 0;
 	uint64_t vol_hash = 0;
@@ -763,7 +863,10 @@ struct ElectronicStructureRepresentation {
     struct {
         TransferFunction tf = {};
         bool  map_init = false;        // tf was set up for a field (es_volume_map_update) ...
+        bool  map_auto = false;        // ... and its range is to be taken from the values when they come (a potential's)
         int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
+        int   map_source = -1;         // ... and of this field where it is a range of its own (a surface field's source;
+                                       // -2 for the others, -1 as loaded: taken to be the field it is of)
         uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
         uint64_t tf_hash = 0;
         TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
@@ -793,7 +896,7 @@ static inline bool electronic_structure_source_supported(ElectronicStructureSour
 }
 
 static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::DensityProperty;
+    return rep.shown.source == ElectronicStructureSource::DensityProperty;
 }
 
 // What the values of a representation's field are, which its colour map is set up for (es_volume_map_update)
@@ -801,58 +904,67 @@ enum class ElectronicStructureValueKind {
     Density,        // >= 0, largest at the nuclei
     Signed,         // an orbital, a difference: about 0
     Localization,   // in [0, 1]: ELF, LOL
+    Ranged,         // of a range of its own, set from the values, no value special: a potential that is not about
+                    // its sign, a length, an energy density
+    SignedRanged,   // likewise about 0, its sign the physics: an electrostatic potential
 };
 
-// ELF and LOL: in [0, 1] everywhere, of both spins together. An isosurface of one says little (what it is about is
-// how it varies through space), so they are drawn as a volume or on a plane only.
+// ELF and LOL: in [0, 1] everywhere, of both spins together
 static inline bool electronic_structure_is_localization(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::ElectronLocalization ||
-           rep.source == ElectronicStructureSource::LocalizedOrbitalLocator;
+    return rep.shown.source == ElectronicStructureSource::ElectronLocalization ||
+           rep.shown.source == ElectronicStructureSource::LocalizedOrbitalLocator;
 }
 
 static inline bool electronic_structure_uses_orbital_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital;
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital;
 }
 
 static inline bool electronic_structure_uses_excited_state_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
-           rep.source == ElectronicStructureSource::TransitionDensity;
+    return rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           rep.shown.source == ElectronicStructureSource::TransitionDensity;
 }
 
 static inline bool electronic_structure_uses_nto_lambda_idx(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::NaturalTransitionOrbital;
+    return rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital;
 }
 
 static inline bool electronic_structure_uses_magnitude_toggle(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital ||
-           rep.source == ElectronicStructureSource::NaturalTransitionOrbital ||
-           (rep.source == ElectronicStructureSource::ElectronDensity && rep.spin == ElectronicStructureSpin::Difference);
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.shown.source == ElectronicStructureSource::NaturalTransitionOrbital ||
+           (rep.shown.source == ElectronicStructureSource::ElectronDensity && rep.shown.spin == ElectronicStructureSpin::Difference);
 }
 
 static inline bool electronic_structure_uses_spin(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::MolecularOrbital ||
-           rep.source == ElectronicStructureSource::ElectronDensity;
+    return rep.shown.source == ElectronicStructureSource::MolecularOrbital ||
+           rep.shown.source == ElectronicStructureSource::ElectronDensity;
 }
 
 static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_density_property(rep)) {
         return false;
     }
-    if (rep.source == ElectronicStructureSource::TransitionDensity &&
-        rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep.shown.source);
+    if (fk != SurfaceFieldKind::Count) {
+        return surface_field_kind_info(fk).scale == SurfaceFieldScale::Diverging;
+    }
+    if (rep.shown.source == ElectronicStructureSource::TransitionDensity &&
+        rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Difference) {
         return true;
     }
-    return electronic_structure_uses_magnitude_toggle(rep) && !rep.use_magnitude;
+    return electronic_structure_uses_magnitude_toggle(rep) && !rep.shown.use_magnitude;
 }
 
 static inline ElectronicStructureValueKind electronic_structure_value_kind(const ElectronicStructureRepresentation& rep) {
     if (electronic_structure_is_localization(rep)) return ElectronicStructureValueKind::Localization;
+    if (electronic_structure_source_is_surface_field(rep.shown.source)) {
+        return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::SignedRanged : ElectronicStructureValueKind::Ranged;
+    }
     return electronic_structure_is_signed(rep) ? ElectronicStructureValueKind::Signed : ElectronicStructureValueKind::Density;
 }
 
 static inline bool electronic_structure_uses_density_iso_squared(const ElectronicStructureRepresentation& rep) {
-    return rep.source == ElectronicStructureSource::TransitionDensity ||
-           rep.source == ElectronicStructureSource::ElectronDensity;
+    return rep.shown.source == ElectronicStructureSource::TransitionDensity ||
+           rep.shown.source == ElectronicStructureSource::ElectronDensity;
 }
 
 static inline md_float4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
@@ -887,6 +999,11 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
     if (electronic_structure_is_density_property(rep)) {
         return "User-defined isosurfaces for arbitrary density-property volumes.";
     }
+    if (electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count) {
+        return electronic_structure_is_signed(rep) ?
+            "Where the surfaces are: the field at +isovalue and -isovalue, in its unit" :
+            "Where the surface is: the field at the isovalue, in its unit";
+    }
     if (electronic_structure_uses_density_iso_squared(rep)) {
         return electronic_structure_is_signed(rep) ?
             "Visual surface threshold. Signed density fields render both +isovalue^2 and -isovalue^2 surfaces." :
@@ -912,8 +1029,10 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         return;
     }
 
-    const float iso_value = (float)rep.iso_value;
-    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value : iso_value;
+    const bool field = electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count;
+    const float iso_value = field ? (float)rep.field_iso_value : (float)rep.iso_value;
+    const float iso_threshold = electronic_structure_uses_density_iso_squared(rep) ? iso_value * iso_value :
+                                electronic_structure_is_signed(rep) ? fabsf(iso_value) : iso_value;
 
     if (electronic_structure_is_signed(rep)) {
         iso->count = 2;
@@ -932,17 +1051,17 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
         iso->count = 1;
         iso->values[0] = iso_threshold;
         if (rep.coloring != SurfaceColoring::Uniform) {
-            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+            if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 iso->colors[0] = rep.tint_att;
-            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+            } else if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                 iso->colors[0] = rep.tint_det;
             } else {
                 iso->colors[0] = rep.tint_den;
             }
         } else {
-            if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
+            if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Attachment) {
                 iso->colors[0] = rep.col_att;
-            } else if (rep.source == ElectronicStructureSource::TransitionDensity && rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
+            } else if (rep.shown.source == ElectronicStructureSource::TransitionDensity && rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment) {
                 iso->colors[0] = rep.col_det;
             } else {
                 iso->colors[0] = rep.col_den;
@@ -953,61 +1072,54 @@ static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const Electr
 }
 
 static inline ElectronicStructureField electronic_structure_legacy_field(const ElectronicStructureRepresentation& rep) {
-    return rep.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
+    return rep.shown.use_magnitude ? ElectronicStructureField::Density : ElectronicStructureField::Amplitude;
 }
 
 static inline void electronic_structure_set_legacy_field(ElectronicStructureRepresentation* rep, int field) {
     MD_ASSERT(rep);
-    rep->use_magnitude = (rep->source == ElectronicStructureSource::MolecularOrbital ||
-                          rep->source == ElectronicStructureSource::NaturalTransitionOrbital) &&
+    rep->shown.use_magnitude = (rep->shown.source == ElectronicStructureSource::MolecularOrbital ||
+                          rep->shown.source == ElectronicStructureSource::NaturalTransitionOrbital) &&
                          (ElectronicStructureField)field == ElectronicStructureField::Density;
 }
 
-static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
-    MD_ASSERT(rep);
-    switch (rep->source) {
+// What a field of its source starts out with: the spin it is of, and its magnitude off
+static inline void field_ref_set_defaults(FieldRef* f) {
+    MD_ASSERT(f);
+    f->use_magnitude = false;
+    switch (f->source) {
     case ElectronicStructureSource::MolecularOrbital:
-        if (rep->spin != ElectronicStructureSpin::Alpha && rep->spin != ElectronicStructureSpin::Beta) {
-            rep->spin = ElectronicStructureSpin::Alpha;
+        if (f->spin != ElectronicStructureSpin::Alpha && f->spin != ElectronicStructureSpin::Beta) {
+            f->spin = ElectronicStructureSpin::Alpha;
         }
-        rep->use_magnitude = false;
-        break;
-    case ElectronicStructureSource::NaturalTransitionOrbital:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        break;
-    case ElectronicStructureSource::TransitionDensity:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
         break;
     case ElectronicStructureSource::ElectronDensity:
-        rep->spin = ElectronicStructureSpin::Total;
-        rep->use_magnitude = false;
+        f->spin = ElectronicStructureSpin::Total;
         break;
-    case ElectronicStructureSource::ElectronLocalization:
-    case ElectronicStructureSource::LocalizedOrbitalLocator:
-        // of both spins together, and drawn only as a volume or on a plane
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        if (rep->display == ElectronicStructureDisplay::Isosurface) {
-            rep->display = ElectronicStructureDisplay::Volume;
-        }
+    default:
+        // of no spin, or of both together
+        f->spin = ElectronicStructureSpin::None;
         break;
-    case ElectronicStructureSource::DensityProperty:
-        rep->spin = ElectronicStructureSpin::None;
-        rep->use_magnitude = false;
-        // The atoms' colours are not offered for a density property; a field is, as it is
-        // evaluated on the same grid
+    }
+}
+
+// What the representation starts out with for the field it shows: the field's defaults, and its isovalue and surface
+static inline void electronic_structure_set_source_defaults(ElectronicStructureRepresentation* rep) {
+    MD_ASSERT(rep);
+    field_ref_set_defaults(&rep->shown);
+    const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep->shown.source);
+    if (fk != SurfaceFieldKind::Count) {
+        // a field of the system as a whole: an isovalue in its unit
+        rep->field_iso_value = surface_field_kind_info(fk).iso;
+        rep->source_span = {};
+    }
+    if (rep->shown.source == ElectronicStructureSource::DensityProperty) {
+        // The atoms' colours are not offered for a density property; a field is, as it is evaluated on the same grid
         if (rep->coloring == SurfaceColoring::AtomColors) {
             rep->coloring = SurfaceColoring::Uniform;
         }
         if (rep->density_property.num_isos <= 0) {
             electronic_structure_density_property_init_defaults(rep);
         }
-        break;
-    default:
-        MD_ASSERT(false);
-        break;
     }
 }
 
@@ -1015,47 +1127,47 @@ static inline void electronic_structure_set_legacy_type(ElectronicStructureRepre
     MD_ASSERT(rep);
     switch ((ElectronicStructureLegacyType)type) {
     case ElectronicStructureLegacyType::MolecularOrbital:
-        rep->source = ElectronicStructureSource::MolecularOrbital;
-        rep->use_magnitude = false;
+        rep->shown.source = ElectronicStructureSource::MolecularOrbital;
+        rep->shown.use_magnitude = false;
         break;
     case ElectronicStructureLegacyType::MolecularOrbitalDensity:
-        rep->source = ElectronicStructureSource::MolecularOrbital;
-        rep->use_magnitude = true;
+        rep->shown.source = ElectronicStructureSource::MolecularOrbital;
+        rep->shown.use_magnitude = true;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = false;
-        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = false;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Particle;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalHole:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = false;
-        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = false;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Hole;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = true;
-        rep->nto_component = ElectronicStructureNtoComponent::Particle;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = true;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Particle;
         break;
     case ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole:
-        rep->source = ElectronicStructureSource::NaturalTransitionOrbital;
-        rep->use_magnitude = true;
-        rep->nto_component = ElectronicStructureNtoComponent::Hole;
+        rep->shown.source = ElectronicStructureSource::NaturalTransitionOrbital;
+        rep->shown.use_magnitude = true;
+        rep->shown.nto_component = ElectronicStructureNtoComponent::Hole;
         break;
     case ElectronicStructureLegacyType::AttachmentDensity:
-        rep->source = ElectronicStructureSource::TransitionDensity;
-        rep->use_magnitude = false;
-        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
+        rep->shown.source = ElectronicStructureSource::TransitionDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.transition_density_component = ElectronicStructureTransitionDensityComponent::Attachment;
         break;
     case ElectronicStructureLegacyType::DetachmentDensity:
-        rep->source = ElectronicStructureSource::TransitionDensity;
-        rep->use_magnitude = false;
-        rep->transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
+        rep->shown.source = ElectronicStructureSource::TransitionDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.transition_density_component = ElectronicStructureTransitionDensityComponent::Detachment;
         break;
     case ElectronicStructureLegacyType::ElectronDensity:
-        rep->source = ElectronicStructureSource::ElectronDensity;
-        rep->use_magnitude = false;
-        rep->spin = ElectronicStructureSpin::Total;
+        rep->shown.source = ElectronicStructureSource::ElectronDensity;
+        rep->shown.use_magnitude = false;
+        rep->shown.spin = ElectronicStructureSpin::Total;
         break;
     default:
         MD_ASSERT(false);
@@ -1065,33 +1177,29 @@ static inline void electronic_structure_set_legacy_type(ElectronicStructureRepre
 
 
 static inline int electronic_structure_legacy_type(const ElectronicStructureRepresentation& rep) {
-    switch (rep.source) {
+    switch (rep.shown.source) {
     case ElectronicStructureSource::MolecularOrbital:
-        return (int)(!rep.use_magnitude ?
+        return (int)(!rep.shown.use_magnitude ?
             ElectronicStructureLegacyType::MolecularOrbital :
             ElectronicStructureLegacyType::MolecularOrbitalDensity);
     case ElectronicStructureSource::NaturalTransitionOrbital:
-        if (!rep.use_magnitude) {
-            return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+        if (!rep.shown.use_magnitude) {
+            return (int)(rep.shown.nto_component == ElectronicStructureNtoComponent::Particle ?
                 ElectronicStructureLegacyType::NaturalTransitionOrbitalParticle :
                 ElectronicStructureLegacyType::NaturalTransitionOrbitalHole);
         }
-        return (int)(rep.nto_component == ElectronicStructureNtoComponent::Particle ?
+        return (int)(rep.shown.nto_component == ElectronicStructureNtoComponent::Particle ?
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityParticle :
             ElectronicStructureLegacyType::NaturalTransitionOrbitalDensityHole);
     case ElectronicStructureSource::TransitionDensity:
-        return (int)(rep.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
+        return (int)(rep.shown.transition_density_component == ElectronicStructureTransitionDensityComponent::Detachment ?
             ElectronicStructureLegacyType::DetachmentDensity :
             ElectronicStructureLegacyType::AttachmentDensity);
     case ElectronicStructureSource::ElectronDensity:
         return (int)ElectronicStructureLegacyType::ElectronDensity;
-    case ElectronicStructureSource::DensityProperty:
-    case ElectronicStructureSource::ElectronLocalization:
-    case ElectronicStructureSource::LocalizedOrbitalLocator:
-        return (int)ElectronicStructureLegacyType::ElectronDensity;
     default:
-        MD_ASSERT(false);
-        return 0;
+        // nothing of the legacy types: the electron density, as the key has always said for what it did not know
+        return (int)ElectronicStructureLegacyType::ElectronDensity;
     }
 }
 
@@ -1140,6 +1248,8 @@ struct Representation {
 
     RepresentationType type = RepresentationType::BallAndStick;
     ColorMapping color_mapping = ColorMapping::Type;
+    // What it shows: what its filter picked when it was last valid, kept while the filter or its context is not
+    // (representation_filter_invalid); empty when it has not been valid since the system was loaded
     md_bitset_t atom_mask = {};
     md_gl_rep_t md_rep = {};
     // The representation of the cartoon of the lipids and nucleic acids (CartoonGlyphs), drawn by a Cartoon, and whether
@@ -1181,12 +1291,16 @@ struct Representation {
     bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
     bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
-    bool   noncovalent_bonds = true; // Licorice, ball and stick: the non-covalent bonds of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
+    bool   interaction_bonds = true; // Licorice, ball and stick: the interactions of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
     bool   coordinate_bonds_dashed = true; // Licorice, ball and stick: the coordinate bonds (MD_BOND_KIND_COORDINATE) dashed, rather than sticks
-    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed
+    // Bonds: what the filter picks, as of its last evaluation (in the persistent allocator), and which are dashed. In
+    // VIAL also the flags (md_bond_flags_t) of each pair's bond, the system's or one found for the frame (a hydrogen, ionic
+    // or halogen bond bond() finds, a bond formed()): empty in v1, whose pairs are told by the system's bonds
     md_array(md_atom_pair_t) bond_pairs = nullptr;
+    md_array(uint32_t) bond_flags = nullptr;
     BondDashes bond_dashes = BondDashes::ByKind;
     bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
+    double invalid_since = 0.0;     // ImGui::GetTime() when its filter was found not valid, for the notice in the viewport; 0 while valid
     bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
@@ -1197,6 +1311,7 @@ struct Representation {
     AtomAttributeColoring atom_attribute = {};
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
+    GlyphRepresentation glyphs = {};
     bool periodic_images = true;    // Repeated in the periodic images of the view (system.periodic_images), as they are shown
 };
 
@@ -1238,11 +1353,11 @@ struct PickingRange {
 
 // Sized for the domains of every system (atoms, bonds, ...: six each, for at most SYSTEM_MAX) and one range per keyed
 // object. A VeloxChem file publishes four dipole groups today (ground state plus the electric, magnetic and velocity
-// transition sets); reserving past the end fails rather than aliasing, which costs those objects their picking,
-// nothing else.
+// transition sets), and each representation which draws weak bonds has a range of its own; reserving past the end fails
+// rather than aliasing, which costs those objects their picking, nothing else.
 struct PickingSpace {
     size_t num_ranges = 0;
-    PickingRange ranges[96] = {};
+    PickingRange ranges[128] = {};
 };
 
 struct PickingReadbackSlot {
@@ -1331,15 +1446,20 @@ inline constexpr uint32_t GPU_VOLUME_DIM = 512;
 // GPU_PLANE_DIM^2 x 1 R32F texture, the largest plane image (es_plane_images.h)
 inline constexpr uint32_t GPU_PLANE_DIM = 2048;
 
-// What is derived from the core a loader gives (the bonds, what the residues are, the structures, the chemistry:
-// md_system_infer), inferred in the background on a copy of the system and put in its place between frames. Until
-// then the system is shown as loaded: its atoms, as spheres where a representation needs what is not there yet. One
-// system at a time: a load cancels the inference of the system before it.
+// The largest grid the analytic normals of an evaluation are made for (ApplicationState::gpu_grad): 20 bytes a voxel
+// on the device while it is evaluated (the gradient in float, its normals packed), 4 in the GL texture. Past it the
+// isosurfaces take their normals from the volume's differences.
+inline constexpr size_t GPU_GRAD_MAX_VOXELS = size_t(1) << 25;
+
+// What is derived from the core a loader gives and the user edits (the bonds, what the residues are, the structures,
+// the chemistry: md_system_infer), inferred in the background and put in place of what the system had between frames.
+// Until then the system is shown as it was: as loaded, its atoms, as spheres where a representation needs what is not
+// there yet; after an edit of its bonds, as inferred before. One system at a time: a load cancels the inference of the
+// system before it.
 struct SystemInference {
     task_system::Job    job;
-    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, what is inferred on the heap
+    md_system_infer_work_t work = {};             // Inferred on: the core of the system shared, the derived in an arena of its own
     md_allocator_i*     arena = nullptr;        // The rest of the work: its copies of the types of the atoms
-    md_infer_flags_t    flags = MD_SYSTEM_INFER_NONE;
     std::atomic<bool>   done{false};            // The work is inferred: not cancelled half way
     bool                pending = false;        // The system shows its core: inference is under way, or to be started again
     bool                restart = false;        // Cancelled (the pool was interrupted) or of a topology since changed
@@ -1386,6 +1506,10 @@ struct SystemData {
     // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
     // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
     void*               nto_warm = nullptr;
+    // The SCF densities the CPU paths read (the ESP, the critical point search), each kept as its packed
+    // triangle in double once read (density_cache.h; density_cache_of). Its entries are of the system and go
+    // with it; the cache itself is the application's.
+    struct DensityCache* density_cache = nullptr;
 
 #if MD_ENABLE_GPU
     // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
@@ -1565,6 +1689,10 @@ struct SystemScene {
             md_chem_delta_t chem = {};
             size_t ring_capacity = 0;
             uint64_t key = 0;                           // What it was computed from, 0 when it is empty
+            // The topology of the system it was found against: the bonds its broken ones are indices of, which are of
+            // the system as inferred then. Another inference (an edit of the bonds, Recompute Bonds) puts other bonds
+            // in their place, and the delta is not of them until it is computed again (bond_tracking_update).
+            uint64_t topology_version = 0;
             double time_ms = 0.0;                       // How long that took
         } bond_tracking;
 
@@ -1737,6 +1865,16 @@ struct ApplicationState {
     // Where the evaluations write and their readbacks read: gpu_volume when null. An evaluation into another
     // scratch sets it for its call (gpu_eval_target_scope, viamd.cpp); a readback queued records its own.
     md_gpu_texture_t gpu_eval_target = nullptr;
+    // Normals of what is evaluated (for the raycast isosurfaces, es_normals_of): when gpu_eval_normals names a GL
+    // texture (RGB10_A2, the grid's dims) for the call, the orbitals' and densities' evaluations write their analytic
+    // gradient into gpu_grad (RGBA32F) and set gpu_grad_written, and the readback packs it into gpu_normals (R32UI,
+    // md_gto_gpu_gradient_pack) and fills that texture too. Both made for the largest grid asked for so far
+    // (gpu_grad_dim), up to GPU_GRAD_MAX_VOXELS; past it no normals.
+    uint32_t         gpu_eval_normals = 0;
+    bool             gpu_grad_written = false;
+    md_gpu_texture_t gpu_grad    = nullptr;
+    md_gpu_texture_t gpu_normals = nullptr;
+    int              gpu_grad_dim[3] = {};
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
@@ -1751,13 +1889,16 @@ struct ApplicationState {
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
+        uint32_t          normal_tex = 0;       // GL texture to receive the normals (gpu_eval_normals), 0: none
+        md_gpu_mem_t      rb_normals = {};      // their HOST_READ block
         // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
         // readback is queued when it is (gpu_volume_jobs_poll), of this grid
         void*             density_job = nullptr;
         md_grid_t         grid      = {};
-        // The same once it is all issued, kept for its progress until the readback lands (gpu_volume_jobs_progress)
+        // The same once it is all issued, kept for its progress until the readback lands (its activity)
         void*             issued_job = nullptr;
         int64_t           t0 = 0;               // md_tick_t: when the evaluation began
+        const char*       label = nullptr;      // what it evaluates, for the overlay (a static string)
     };
     // Readbacks are issued at most one per representation per change, and a change cannot be
     // requested again until the previous frame has been drawn, so a handful of slots is ample.
@@ -1866,6 +2007,13 @@ struct ApplicationState {
         // holds sets, replaced whole, but for the masks of the windows (query, grow), edited in place.
         Selection* stored_selections = NULL;
 
+        // The same over the frames of the run: the frames selected (a temporal selection, made in the Shapespace and
+        // shown in the timeline) and those highlighted, which whoever sets clears again. Whoever changes frame_mask
+        // bumps frame_generation, which is what the views over it key on (frame_selection_modify does both).
+        md_bitmask_t frame_mask {};
+        md_bitmask_t frame_highlight_mask {};
+        uint64_t     frame_generation = 1;
+
         // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
         // tint where they are in view, a fainter fill where they are behind something else, and the outline of their
         // silhouette, in view or not. The alpha is how much of the colour. While something is selected, the atoms that
@@ -1947,6 +2095,21 @@ struct ApplicationState {
 
     // The ranges reserved for each system are its own (SystemContext::picking)
 
+    // The glyph under the cursor (PickingDomain_Glyph): its representation's id and its point. Marked in the marks of the
+    // highlight (glyphs_draw_marks). rep_id 0: none.
+    struct {
+        uint32_t rep_id = 0;
+        uint32_t system = SYSTEM_ID_NONE;   // whose representation it is: a representation's id is its system's own
+        uint32_t point  = 0;
+    } glyph_hover;
+    // The same, hovered elsewhere than in the view (a row of the GOSTSHYP table): set by what draws it, every frame it
+    // is hovered. Marked in place of the one in the view.
+    struct {
+        uint32_t rep_id = 0;
+        uint32_t system = SYSTEM_ID_NONE;
+        uint32_t point  = 0;
+    } glyph_hover_ui;
+
     PickingHandler picking_handler {};      // Handler for managing picking interactions
 
     // --- ANIMATION ---
@@ -1969,22 +2132,12 @@ struct ApplicationState {
         // The named periods and markers along the timeline (see timeline_periods.h)
         TimelinePeriods periods;
 
+        // The visible span of the run's time ("<run>/time"), in its own unit like everything on the
+        // timeline: the display unit only changes how a time is printed (frame_axis.h)
         struct {
             double beg_x = 0;
             double end_x = 1;
         } view_range;
-
-        // Holds the timestamps for each frame, in 'time_unit' rather than in the trajectory's own
-        // unit. Converting here rather than at each view is what lets the animation window, the
-        // timeline plot, the tooltips and the frame/time mapping agree without any of them knowing
-        // about display_units: they all read these values.
-        md_array(float) x_values = 0;
-
-        // What the trajectory's time unit became once the display preference was applied,
-        // the factor that took it there, and the preference generation that produced both.
-        md_unit_t time_unit     = md_unit_none();
-        double    time_scale    = 1.0;
-        uint64_t  units_version = 0;
 
         // What each subplot draws, by attribute path (see plot_series.h)
         PlotSubplot subplots[PLOT_MAX_SUBPLOTS];
@@ -2100,7 +2253,8 @@ struct ApplicationState {
             decltype(visuals.tonemapping) tonemapping;
             decltype(visuals.dof)         dof;
         } look;
-        int  isosurface_rendering = 0;      // IsosurfaceRendering: raycast volumes or meshes of the fields (iso_meshes.h)
+        int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
+                                            // representation has its own: ElectronicStructureRepresentation::rendering)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
@@ -2109,6 +2263,9 @@ struct ApplicationState {
         // The scene rendered only while something in it changes, and settles; else the image made last is shown again
         // (render: lazy rendering)
         bool lazy_rendering = true;
+        // The script language a session starts in, as last chosen under Settings. A workspace is written in its own,
+        // and loading one switches to it without changing this
+        script::Language script_language = script::Language::V1;
     } settings;
 
 
@@ -2123,6 +2280,9 @@ struct ApplicationState {
 
         // The workspace's language: what the editor's text is compiled as, and what the filters are written in
         script::Language language = script::Language::V1;
+        // The script in the other language, kept while this one is used: the editor shows one buffer per language,
+        // and switching swaps them (script_switch_language)
+        std::string other_text;
 
         // ir: the last compilation of the editor's text, what its markers refer to. eval_ir: the compilation the
         // evaluation (eval) was made from, what the plots show. Often the same IR. Assigned directly: an IR is
@@ -2144,6 +2304,10 @@ struct ApplicationState {
         ScriptVisJob* vis_result = nullptr;
         task_system::Job vis_task;
         const script::Drawing* vis_shown = nullptr;
+        // The plot of a value over the trajectory hovered, read from eval on the main thread (script_vis_value_plot)
+        script::ValuePlot trajectory_plot = {};
+        uint64_t trajectory_plot_key = 0;
+        md_allocator_i* trajectory_plot_arena = nullptr;
 
         // Controls current subindex being visualized (if array)
         int sub_idx = -1;
@@ -2342,6 +2506,18 @@ static inline void modify_field(md_bitmask_t* m, md_bitset_t s, SelectionOperato
 
 static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOperator op) {
     modify_field(m, md_bitset_range(range.beg, range.end), op);
+}
+
+// Applies op to the frames selected (ApplicationState::selection.frame_mask), and says it changed
+static inline void frame_selection_modify(ApplicationState* app, md_bitset_t frames, SelectionOperator op) {
+    modify_field(&app->selection.frame_mask, frames, op);
+    app->selection.frame_generation += 1;
+}
+
+static inline void frame_selection_clear(ApplicationState* app) {
+    if (md_bitmask_empty(&app->selection.frame_mask)) return;
+    md_bitmask_clear(&app->selection.frame_mask);
+    app->selection.frame_generation += 1;
 }
 
 static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const md_system_t& sys) {
@@ -2663,31 +2839,35 @@ const SystemContext* picking_hit_system(const ApplicationState& app, const Picki
 void init_trajectory_data(ApplicationState* app, SystemContext& sys, md_str_t run_file, uint32_t traj_flags = 0);
 void free_trajectory_data(ApplicationState* app, SystemContext& sys);
 
-// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64) and their
-// unit, which is none when the file does not know time and the values are frame ordinals. NULL,
-// zero and empty without a trajectory.
+// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64, never
+// decreasing) and their unit, which is none when the file does not know time and the values are
+// frame ordinals. NULL, zero and empty without a trajectory.
 const md_attribute_t* run_time_axis(const SystemContext& sys);
 size_t                run_num_frames(const SystemContext& sys);
 const double*         run_frame_times(const SystemContext& sys);
 md_unit_t             run_time_unit(const SystemContext& sys);
+
+// The time at a fractional frame along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
+double run_time_at_frame(const SystemContext& sys, double frame);
 
 // One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of
 // its own (md_system_extract_begin) so the files stay open across them.
 bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out);
 
-// Guesses the covalent bonds again from the distances between atoms: in the given whole frame of the run, or in the
-// coordinates shown when there is no run. Inferred bonds are replaced, those of a file, a topology or a user are kept,
-// and what follows from them (rings, structures, bond orders) is inferred again from the same coordinates, which become
-// the reference of the topology (md_system_t::reference).
+// Infers the system again (in the background, system_inference_start) from the given whole frame of the run, or from
+// the coordinates shown when there is no run: the bonds inferred are found anew, those of a file, a topology or a user
+// are kept, and what follows from them (rings, structures, bond orders) is of the same coordinates, which become the
+// reference of the topology (md_system_t::reference).
 bool recompute_bonds(SystemContext& sys, int64_t frame);
 
 // An identifier the script does not use yet: base, or base with a number after it (main.cpp)
 md_str_t create_unique_identifier(const script::Program* ir, md_str_t base, md_allocator_i* alloc);
 
 // INFERENCE IN THE BACKGROUND (SystemInference), of each system on its own
-// Starts inferring what flags say on a copy of the system as it is now
-void system_inference_start(SystemContext& sys, md_infer_flags_t flags);
+// Starts inferring the system as it is now, from state (NULL: the coordinates shown): all of what is derived, put in
+// place of what it has once done
+void system_inference_start(SystemContext& sys, const md_system_state_t* state);
 // Once per frame: starts again what was cancelled, or was inferred from a topology which changed since
 void system_inference_update(SystemContext& sys);
 // Whether the system shows its core, what inference derives not there yet
@@ -2696,18 +2876,20 @@ bool system_inference_pending(const SystemContext& sys);
 // (a supplement, a workspace, an edit of the bonds)
 void system_inference_finish(SystemContext& sys);
 
-// To be called before the bonds of the system are changed: the script evaluation, which reads them on the worker
-// threads, is interrupted (the script is compiled again after the change, and starts over), and the other tasks of the
-// pool finish.
-void system_bonds_edit_begin(SystemContext& sys);
+// To be called before the core of the system is edited (the bonds: md_system_bond_insert, md_system_bond_remove):
+// what reads it on other threads stops. The script evaluation is interrupted (the script is compiled again once the
+// system is inferred again, and starts over), the other tasks of the pool finish, and an inference under way, whose work
+// shares the core, is dropped: the system is to be inferred again (system_core_changed, or system_inference_finish).
+// What the system shows stays what it was inferred as until then, and so do the indices of its bonds.
+void system_core_edit_begin(SystemContext& sys);
 
-// What follows the bonds of the system, after they changed (created, removed, inferred again): what is drawn of them,
-// the script (whose properties are of the topology) and the representations. graph_edited when bonds of the graph were
-// added or removed by hand: its connectivity, the structures and the rings are built again.
-void system_bonds_changed(SystemContext& sys, bool graph_edited);
+// After the core was edited: the system is inferred again in the background, from the coordinates shown, and what is
+// drawn of it, the script (whose properties are of the topology) and the representations follow once that is in place.
+void system_core_changed(SystemContext& sys);
 
-// The kind of a bond by its name in md_bond_kind_names ("coordinate", "hydrogen"), as a workspace stores it.
-// bond_kind_parse reads it back (flags of the kind alone), false for a name which is not of one kind.
+// The kind of a bond by its word (md_bond_kind_name: "coordinate", "hydrogen"), as a workspace stores it.
+// bond_kind_parse reads it back (flags of the kind alone), false for a word which is not of one kind; "interaction", of
+// workspaces from before it named every interaction, is a contact.
 const char* bond_kind_str(md_bond_flags_t flags);
 bool        bond_kind_parse(md_bond_flags_t* out, md_str_t str);
 // Origins of bonds, a mask of 1 << md_bond_origin_t, by name: "file,inferred"
@@ -2731,9 +2913,18 @@ md_atom_flags_t frame_atom_flags(const SystemContext& sys, size_t atom_idx, int*
 // after them. False when there is none.
 bool picked_ring(const SystemContext& sys, size_t idx, const int32_t** atoms, size_t* count, md_ring_flags_t* flags);
 
-// The bond that index idx of the bond picking domain names: a bond of the graph, or one formed in the frame shown, which
-// come after them as they are drawn (formed is set for those)
-bool picked_bond(const SystemContext& sys, size_t idx, md_atom_pair_t* pair, md_bond_flags_t* flags, bool* formed);
+// What a picked bond is (picked_bond)
+enum class PickedBondSource {
+    System,     // A bond of the system
+    Formed,     // Formed in the frame shown, the bonds tracked (bond_tracking): not a bond of the system
+    Found,      // Found for the frame shown by the filter of a Bonds representation (a hydrogen, ionic or halogen bond, a bond formed): not a bond of the system
+    Unbonded,   // No bond: two atoms a representation draws a bond between (a pair its filter gave) which none joins
+};
+
+// The bond a hit of the bond picking domain names: of the system, a bond of the graph or one formed in the frame shown,
+// which come after them as they are drawn; or a weak bond of a representation, that of the system (or of the frame)
+// between its atoms, as of the frame shown. Its atoms, its flags (none when unbonded) and what it is.
+bool picked_bond(const ApplicationState& app, const PickingHit& hit, md_atom_pair_t* pair, md_bond_flags_t* flags, PickedBondSource* source);
 
 // Sets the bits of what a hit stands for, grown by the granularity: what hovering it highlights, and what clicking it
 // selects (the atoms of a bond, the residue of a cartoon segment, ...)
@@ -2846,14 +3037,11 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 #define ES_PLANE_IMAGES_REVISION "plane-images r5"
 // Whether it is: the planes display, and the source on the GPU
 bool es_plane_images_supported(ApplicationState* state, const ElectronicStructureRepresentation& es);
+// Whether the representation's isosurfaces are drawn as meshes: its setting, for what meshes can be made of
+bool es_mesh_mode(const ApplicationState* state, const ElectronicStructureRepresentation& es);
 
 bool electronic_structure_representation_update(ApplicationState* state, Representation* rep, const uint32_t* atom_colors);
 
-// The evaluations of ELF and LOL run as pool tasks (viamd.cpp, localization_poll), polled by the representations'
-// updates: those nobody wants any more are let go of here once they have stopped, once a frame; all of them (waited
-// for) at the shutdown, before the GPU device goes.
-void es_jobs_collect(ApplicationState* state);
-void es_jobs_shutdown(ApplicationState* state);
 
 
 // Turns a dipole group name into something presentable: "ground_state" -> "Ground State".
@@ -2934,21 +3122,13 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
 void gpu_volume_jobs_drain(ApplicationState* state);
 
 // Issues what the density jobs have room for (their pieces, a few in flight), and queues the readbacks of those
-// all issued: once a frame.
+// all issued: once a frame. Each evaluation of a volume on the GPU (a density, ELF or LOL) is listed in the overlay
+// while it runs, as a task_system activity, from its first piece until its readback lands.
 void gpu_volume_jobs_poll(ApplicationState* state);
-
-// The density evaluations on the GPU under way for longer than a moment, for a progress display: how far each is
-// (0 to 1). Returns how many (at most cap). 0 without the GPU backend.
-size_t gpu_volume_jobs_progress(const ApplicationState* state, float* fraction, size_t cap);
 
 // Drops the density evaluation into vol_tex that is not yet all issued, if there is one: what it has in flight
 // completes, nothing more is issued, and the texture keeps what it held. True when one was dropped.
 bool gpu_volume_job_cancel(ApplicationState* state, uint32_t vol_tex);
-
-// Whether a density's matrix is being made on a worker thread for a representation's volume (an SCF density's
-// tiles, or another density's packed triangle), and for how long: for a progress display. False without the
-// GPU backend.
-bool density_dmat_preparing(const ApplicationState* state, double* seconds);
 
 // A line of the task overlay from a component, given in answer to EventType_ViamdTaskProgressRequest: what is
 // under way, how far it is (0 to 1), and optionally a flag the overlay's close button raises to stop it. Read in
@@ -3078,10 +3258,11 @@ size_t es_nto_lambdas(double* out_values, size_t cap, const md_system_t& sys, si
 // have not been. What waits on it keeps showing what it had. True when there is nothing to wait for (resident
 // or absent).
 bool es_nto_ready(ApplicationState* state, size_t state_idx);
-// Whether any are being read on a worker thread, and for how long the oldest has been (the async info panel)
-bool es_nto_warming(const ApplicationState* state, double* seconds);
 // What es_nto_ready keeps, freed: with the system, after its pool tasks have ended
 void es_nto_warm_free(SystemContext& sys);
+
+// The application's density cache (density_cache.h), made when first asked for. Main thread.
+struct DensityCache* density_cache_of(ApplicationState* state);
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow
@@ -3184,6 +3365,10 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
 // Whether the evaluations above can run: the GPU is there, and the main thread only queues them. False when they
 // cannot, and what would be evaluated ahead of being asked for should not be asked for.
 bool gpu_volume_evaluation_available(const ApplicationState* state);
+
+// The analytic normals of a density volume's texels (RGB10_A2: ElectronicStructureRepresentation::normal_tex), where its
+// last evaluation made them along with it; 0 where it did not (the texels came without: from the CPU, of ELF, or before)
+uint32_t es_normals_of(uint32_t vol_tex);
 
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::
@@ -3488,9 +3673,18 @@ void assembly_subsets_free(SystemContext& sys);
 script::Program* script_ir_create(ApplicationState* state, md_str_t src, const script::CompileDesc& desc);
 
 // Sets the workspace's script language: the editor's highlighting and completion follow, the script is compiled
-// again, and every filter is evaluated again in it. The text is kept as it is.
+// again, and every filter is evaluated again in it. The text is kept as it is: for a workspace being loaded, whose
+// texts are set beside it.
 void script_set_language(ApplicationState* state, script::Language lang);
+
+// Switches to the other language's script: the editor's text is kept as that language's, the other's shown in its
+// place, and the language set (script_set_language). What was evaluated is of the language left, and its properties
+// show as not evaluated until Evaluate is pressed again.
+void script_switch_language(ApplicationState* state, script::Language lang);
 void script_ir_collect(ApplicationState* state);
+
+// Frees state->script.eval, once what reads it has been told (EventType_ViamdScriptEvalFree), and leaves it NULL
+void script_eval_free(ApplicationState* state);
 
 // Script visualization
 // The script IR which made ref: the one being compiled (whose tokens the editor marks) or the one being
@@ -3506,6 +3700,9 @@ void script_visualize_ref(ApplicationState* state, script::Ref ref, int subidx, 
 // What the value visualized by reference (script_visualize_ref) is at the frame shown, in a few lines: what a hover shows
 // beside the type. Empty while it is computed, and for a visualization of an expression.
 md_str_t script_vis_value_text(ApplicationState* state);
+// How that value is plotted beside its text (script::value_plot), its numbers at the frame shown; one over the trajectory
+// once evaluated, while nothing evaluates. NULL when it is not plotted, or while it is computed.
+const script::ValuePlot* script_vis_value_plot(ApplicationState* state);
 // Sets an expression, compiled against the script being edited (its identifiers)
 void script_visualize_str(ApplicationState* state, md_str_t str, uint32_t flags = 0);
 // Clears what is set. Start of every frame, before anything sets one.

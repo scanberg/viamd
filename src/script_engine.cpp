@@ -83,6 +83,9 @@ Range output_range(const Program* prog, md_str_t name) {
 uint64_t output_fingerprint(const Program* prog, md_str_t name) {
     return lang_of(prog) == Language::V2 ? v2::output_fingerprint(prog, name) : v1::output_fingerprint(prog, name);
 }
+size_t output_atoms(const Program* prog, md_str_t name, int dim, uint32_t index, uint32_t* out, size_t cap) {
+    return lang_of(prog) == Language::V2 ? v2::output_atoms(prog, name, dim, index, out, cap) : v1::output_atoms(prog, name, dim, index, out, cap);
+}
 Ref output_ref(const Program* prog, md_str_t name) {
     return lang_of(prog) == Language::V2 ? v2::output_ref(prog, name) : v1::output_ref(prog, name);
 }
@@ -143,6 +146,9 @@ void eval_reset_interrupt(Eval* eval) {
 const md_attributes_t* attributes(const Eval* eval) {
     return lang_of(eval) == Language::V2 ? v2::attributes(eval) : v1::attributes(eval);
 }
+const md_pair_frames_t* eval_pairs(const Eval* eval, md_str_t name) {
+    return lang_of(eval) == Language::V2 ? v2::eval_pairs(eval, name) : v1::eval_pairs(eval, name);
+}
 bool plan(Plan* out, size_t cap, md_bitset_t* out_pending, const Eval* eval, const Program* prog, size_t num_frames, md_allocator_i* alloc) {
     return lang_of(prog) == Language::V2 ? v2::plan(out, cap, out_pending, eval, prog, num_frames, alloc) : v1::plan(out, cap, out_pending, eval, prog, num_frames, alloc);
 }
@@ -170,6 +176,9 @@ bool draw_text(Drawing* out, md_str_t expr, const DrawCtx& ctx, uint32_t flags) 
 size_t value_text(char* buf, size_t cap, Ref ref, int subidx, const DrawCtx& ctx) {
     return lang_of(ctx.prog) == Language::V2 ? v2::value_text(buf, cap, ref, subidx, ctx) : v1::value_text(buf, cap, ref, subidx, ctx);
 }
+bool value_plot(ValuePlot* out, Ref ref, int subidx, const DrawCtx& ctx, md_allocator_i* alloc) {
+    return lang_of(ctx.prog) == Language::V2 ? v2::value_plot(out, ref, subidx, ctx, alloc) : v1::value_plot(out, ref, subidx, ctx, alloc);
+}
 size_t num_keywords(Language lang) {
     return lang == Language::V2 ? v2::num_keywords(lang) : v1::num_keywords(lang);
 }
@@ -194,8 +203,8 @@ FilterResult filter(Language lang, md_bitset_t* dst, md_str_t expr, const Filter
 FilterResult filter_sets(Language lang, md_array(md_bitset_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
     return lang == Language::V2 ? v2::filter_sets(lang, dst, expr, ctx, alloc) : v1::filter_sets(lang, dst, expr, ctx, alloc);
 }
-FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
-    return lang == Language::V2 ? v2::filter_bonds(lang, dst, expr, ctx, alloc) : v1::filter_bonds(lang, dst, expr, ctx, alloc);
+FilterResult filter_bonds(Language lang, md_array(md_atom_pair_t)* dst, md_array(uint32_t)* flags, md_str_t expr, const FilterCtx& ctx, md_allocator_i* alloc) {
+    return lang == Language::V2 ? v2::filter_bonds(lang, dst, flags, expr, ctx, alloc) : v1::filter_bonds(lang, dst, flags, expr, ctx, alloc);
 }
 Completions filter_complete(Language lang, md_str_t expr, int cursor, const FilterCtx& ctx, md_allocator_i* alloc) {
     return lang == Language::V2 ? v2::filter_complete(lang, expr, cursor, ctx, alloc) : v1::filter_complete(lang, expr, cursor, ctx, alloc);

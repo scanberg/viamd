@@ -38,7 +38,7 @@ void create_default_representations(SystemContext& sys);
 Representation* find_representation(SystemContext& sys, uint32_t id);
 
 // The bond between two atoms (pair, of the system) in a Bonds representation, picked by 'bond(i, j)'. Into
-// NULL: a new one at the top level, dashed for a non-covalent bond and over the sticks of a licorice otherwise, opened
+// NULL: a new one at the top level, dashed for an interaction and over the sticks of a licorice otherwise, opened
 // in the window to be styled. Otherwise added to the filter of 'into', which representation_can_show_bond allows;
 // false when the filter would not fit.
 bool representation_show_bond(SystemContext& sys, md_atom_pair_t pair, md_bond_flags_t flags, Representation* into);
@@ -130,7 +130,7 @@ void update_all_representations(ApplicationState* app);     // of every system
 void flag_representation_as_dirty(Representation* rep);
 
 // The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds), with their kinds, which give their
-// dashes: of a licorice or a ball and stick, the non-covalent bonds of the system among its atoms; of a Bonds
+// dashes: of a licorice or a ball and stick, the interactions of the system among its atoms; of a Bonds
 // representation, the bonds its filter picked.
 // Set again whenever the bonds of the system change.
 void representation_set_weak_bonds(SystemContext& sys, Representation* rep);
@@ -146,6 +146,9 @@ void flag_dynamic_representations_as_dirty(ApplicationState* app);     // of eve
 // Whether the atoms of a representation depend on the frame: its own filter, or the context it is in
 bool representation_is_dynamic(const SystemContext& sys, const Representation& rep);
 bool representation_uses_atom_colors(const Representation& rep);
+// Whether its filter, or the context of the groups it is in, is not valid as of its last evaluation. It then shows
+// what the filter picked when it was last valid, or nothing if it has not been since the system was loaded.
+bool representation_filter_invalid(const Representation& rep);
 
 // The union of the atoms of the shown representations, visibility_mask
 void recompute_atom_visibility_mask(SystemContext& sys);
@@ -167,10 +170,18 @@ md_gl_draw_op_t representation_draw_op(const Representation& rep);
 // glyphs) are the caller's.
 void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
 // The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
-// dashed as it says (BondDashes), and the non-covalent bonds of the system, dashed by kind, over the sticks of a
-// licorice or a ball and stick.
+// dashed as it says (BondDashes), and the interactions of the system, dashed by kind, over the sticks of a
+// licorice or a ball and stick. They pick as bonds of the representation, in the range reserved for it this frame
+// (PickingDomain_Bond, keyed by its id), as long as that holds them all; otherwise as their atoms.
 // Nothing for the others. The copies and the subset are the caller's.
 void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const SystemContext& sys, const Representation& rep, md_allocator_i* alloc);
+// How many weak bonds it draws (representation_weak_bond_draw_ops), 0 for none: what its picking range is reserved for
+size_t representation_weak_bond_count(const SystemContext& sys, const Representation& rep);
+// The atoms of weak bond i of the system's representation of id rep_id, as it draws them; false when there is none such
+bool representation_weak_bond_pair(md_atom_pair_t* pair, const SystemContext& sys, uint32_t rep_id, size_t i);
+// The flags of weak bond i of a Bonds representation as its filter gave them (VIAL): of the system's bond of the pair, or
+// of one found for the frame; MD_BOND_FLAG_INACTIVE for none. False where the filter gave none (v1, another type).
+bool representation_weak_bond_flags(md_bond_flags_t* flags, const SystemContext& sys, uint32_t rep_id, size_t i);
 
 // The colours of all num_atoms atoms of the system for a representation which colours by atom
 // (representation_uses_atom_colors): by its colour mapping, then towards its tint and saturation. 'shown' are the
@@ -180,12 +191,14 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContex
 // --- Workspace ---
 
 // [RepresentationGroup] and [Representation] sections of the system, which each names by its id (System=), depth first:
-// a group before what is within it
+// a group before what is within it. A representation's keys are paths within it (ElectronicStructure.Slice.0.Opacity,
+// serialization_utils.h).
 void representations_serialize(viamd::serialization_state_t& state, const SystemContext& sys);
-// The entries of a representation in a section, all but where it is in the tree (Group), and one of them read: false
-// when it is not one of them
+// The fields of a representation, all but where it is in the tree (Group), into the current section
 void representation_write_entries(viamd::serialization_state_t& state, const SystemContext& sys, const Representation& rep);
-bool representation_read_entry(Representation* rep, md_str_t ident, md_str_t arg);
+// Reads them, from the entries of the current section up to the next header (section: its name, for the log), and the
+// keys of a workspace from before the paths
+void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section);
 // True when the section was one of the above, which it has then read
 bool representations_deserialize(md_str_t section, viamd::deserialization_state_t& state, WorkspaceSystemFn system_of, void* user);
 
@@ -198,6 +211,11 @@ void draw_representations_window(ApplicationState* app);
 bool draw_representation_type(SystemContext& sys, Representation& rep, bool atoms_only);
 bool draw_representation_coloring(SystemContext& sys, Representation& rep);
 bool draw_representation_geometry(SystemContext& sys, Representation& rep);
+// Whether the geometry of the representation's type is one row (a spacefill's radius): drawn with the type then, not
+// in a section of its own, as a section of one row is only a header in the way
+static inline bool representation_geometry_is_one_row(const Representation& rep) {
+    return rep.type == RepresentationType::SpaceFill;
+}
 // The legends of the shown representations that colour by a value. A field's legend also edits the isolines of
 // its surfaces and sets the transient one (ColorScaleIsolines), so this is drawn before the frame is rendered.
 void draw_representation_legends(ApplicationState& app);

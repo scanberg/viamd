@@ -118,6 +118,7 @@ add_subdirectory(ext/stb)
 add_subdirectory(ext/enkiTS)
 add_subdirectory(ext/ImGuiColorTextEdit)
 add_subdirectory(ext/implot)
+add_subdirectory(ext/implot3d)
 add_subdirectory(ext/imgui_notify)
 add_subdirectory(ext/md4c)
 add_subdirectory(ext/imgui_md)
@@ -169,10 +170,17 @@ set(SRC_FILES
     src/color_scale.cpp
     src/color_utils.cpp
     src/density_map.cpp
+    src/density_cache.cpp
     src/layer_groups.cpp
     src/display_units.cpp
     src/display_units_settings.cpp
     src/surface_field.cpp
+    src/gpu_job.cpp
+    src/gostshyp.cpp
+    src/field.cpp
+    src/attribute_access.cpp
+    src/glyphs.cpp
+    src/qm_placement.cpp
     src/event.cpp
     src/file_list.cpp
     src/load_order.h
@@ -218,6 +226,8 @@ set(SRC_FILES
     src/color_utils.h
     src/display_units.h
     src/surface_field.h
+    src/density_cache.h
+    src/gpu_job.h
     src/iso_meshes.h
     src/event.h
     src/file_list.h
@@ -329,6 +339,8 @@ set(SHADER_FILES
     src/shaders/ssao/blur.frag
     src/shaders/ssao/upsample.frag
     src/shaders/shadows/screen_space.frag
+    src/shaders/glyphs/point_glyph.vert
+    src/shaders/glyphs/point_glyph.frag
 )
 
 # Bake shaders into a single header file
@@ -467,6 +479,7 @@ target_link_libraries(viamd
     enkiTS
     ImGuiColorTextEdit
     implot
+    implot3d
     imgui_notify
     imgui_md
     ${VIAMD_EXTRA_LIBS}

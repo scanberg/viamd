@@ -47,6 +47,7 @@
 #define TIMELINE_SERIES_DND     "TIMELINE_SERIES"
 #define DISTRIBUTION_SERIES_DND "DISTRIBUTION_SERIES"
 #define VOLUME_SERIES_DND       "VOLUME_SERIES"     // a script volume, for the density volume
+#define HEATMAP_SERIES_DND      "HEATMAP_SERIES"    // a script matrix (script::OUTPUT_MATRIX), for the Heatmaps window
 
 struct ApplicationState;
 struct SystemContext;
@@ -283,7 +284,7 @@ bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const Ser
 
 // Resolved for the frame it was resolved in: what a plot reads.
 struct SeriesTemporalView {
-    const float* x = nullptr;       // num_samples, in the timeline's time unit
+    const double* x = nullptr;      // num_samples, the time of each in the run's unit, as the timeline has it
     const float* y = nullptr;       // num_samples * stride, in the attribute's stored unit
     const float* y2 = nullptr;      // Sigma: the variance beside the mean in y
     int   num_samples = 0;
@@ -311,7 +312,7 @@ static inline ImPlotPoint series_temporal_point(const SeriesTemporalView& v, int
     return ImPlotPoint(v.x[i], v.y[(size_t)i * v.stride + k] * v.y_scale);
 }
 void   series_temporal_band(const SeriesTemporalView& v, int i, double* lo, double* hi);
-// Fractional sample index of x along the series' axis, clamped to its range
+// Fractional sample index of the time x along the series' axis, clamped to its range (frame_at_time)
 double series_temporal_index_at(const SeriesTemporalView& v, double x);
 // The value(s) at sample i as text, in the display unit (the unit itself is not appended)
 int    series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView& v, int i, int k);
