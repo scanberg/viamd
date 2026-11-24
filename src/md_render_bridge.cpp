@@ -25,6 +25,21 @@
 #include <md_render_mol.h>
 #include <core/md_gpu_gl.h>
 
+// Pairs of atoms drawn as sticks (md_render_mol_rep_t.pairs): by kind, each with its id (what a pick of it reports)
+struct PairSet {
+    md_gpu_addr_t pairs = 0, ids = 0;
+    uint32_t      cap = 0;
+    uint32_t      offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1] = {};
+};
+
+static uint32_t pair_count(const PairSet& p) { return p.offset[MD_RENDER_MOL_BOND_KIND_COUNT]; }
+
+static void free_pairs(md_gpu_stream_t s, PairSet* p) {
+    if (p->pairs) md_gpu_free(s, p->pairs);
+    if (p->ids)   md_gpu_free(s, p->ids);
+    *p = {};
+}
+
 // A representation's arrays on the GPU: its atoms' colours and which it shows, as md_gl has them (rep_colors), and the
 // profile of its cartoon
 struct BridgeRep {
@@ -36,18 +51,14 @@ struct BridgeRep {
     bool          seen = false;         // still a representation (render)
     md_gpu_addr_t profile = 0;          // Cartoon: md_render_mol_cartoon_profile's, of profile_key
     uint64_t      profile_key = 0;
-    // Bonds: its pairs (atoms), by kind, and each one's index in the representation's bond_pairs (its pick)
-    md_gpu_addr_t pairs = 0, pair_id = 0;
-    uint32_t      pair_cap = 0;
-    uint32_t      pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT + 1] = {};
+    PairSet       pairs;                // Bonds: its pairs, each one's id its index in the representation's bond_pairs
 };
 
 static void free_rep(md_gpu_stream_t s, BridgeRep* r) {
     if (r->color)   md_gpu_free(s, r->color);
     if (r->visible) md_gpu_free(s, r->visible);
     if (r->profile) md_gpu_free(s, r->profile);
-    if (r->pairs)   md_gpu_free(s, r->pairs);
-    if (r->pair_id) md_gpu_free(s, r->pair_id);
+    free_pairs(s, &r->pairs);
 }
 
 // A texture md_render's targets are exported into, and the GL texture of it
@@ -78,6 +89,12 @@ struct MdRenderBridge {
     bool                 updated = false;      // the per-frame block holds the positions
     int64_t              regroup_frame = -1;   // the trajectory frame of the last regroup
     double               time = 0.0;           // md_render's: one per update of the positions, the velocities' unit
+    // The bonds of the frame shown while they are tracked (md_bond_delta_t): a mask over the system's bonds and
+    // interactions, those broken clear (0: none tracked), and those formed (ids: their index among them)
+    md_gpu_addr_t        bond_mask = 0;
+    size_t               bond_mask_words = 0;
+    bool                 frame_bonds = false;
+    PairSet              formed;
     md_gpu_addr_t        secondary = 0;        // int32 per protein backbone segment
     uint32_t             secondary_count = 0;
     uint64_t             secondary_hash = 0;
@@ -353,12 +370,53 @@ static md_gpu_addr_t realloc_gpu(MdRenderBridge* b, md_gpu_addr_t old, size_t si
 
 static void free_parts(MdRenderBridge* b);
 
+// Pairs of atoms (atom_a[i], atom_b[i]) of the kinds of their flags (md_bond_flags_t; null: covalent) into p, by kind,
+// each with its index i as its id; those with an atom the system has not left out
+static void upload_pairs(MdRenderBridge* b, PairSet* p, const uint32_t* atom_a, const uint32_t* atom_b, const uint32_t* flags, size_t count,
+                         md_allocator_i* alloc) {
+    const uint32_t n_atoms = b->atom_count;
+    auto kind_of = [flags](size_t i) -> uint32_t { return flags ? MD_RENDER_MOL_BOND_KIND(md_bond_kind((md_bond_flags_t)flags[i])) : 0u; };
+    auto valid = [&](size_t i) { return atom_a[i] < n_atoms && atom_b[i] < n_atoms; };
+    uint32_t off[MD_RENDER_MOL_BOND_KIND_COUNT + 1] = {};
+    for (size_t i = 0; i < count; ++i) if (valid(i)) off[kind_of(i) + 1] += 1;
+    for (uint32_t k = 0; k < MD_RENDER_MOL_BOND_KIND_COUNT; ++k) off[k + 1] += off[k];
+    const uint32_t num = off[MD_RENDER_MOL_BOND_KIND_COUNT];
+    memset(p->offset, 0, sizeof(p->offset));
+    if (num > p->cap) {
+        p->pairs = realloc_gpu(b, p->pairs, (size_t)num * 8);
+        p->ids   = realloc_gpu(b, p->ids, (size_t)num * 4);
+        p->cap   = p->pairs && p->ids ? num : 0;
+    }
+    if (num == 0 || !p->cap) return;
+    md_temp_scope_t temp = md_temp_begin_in(alloc);
+    uint32_t* pairs = (uint32_t*)md_vm_arena_push(alloc, (size_t)num * 8);
+    uint32_t* ids   = (uint32_t*)md_vm_arena_push(alloc, (size_t)num * 4);
+    uint32_t at[MD_RENDER_MOL_BOND_KIND_COUNT];
+    memcpy(at, off, sizeof(at));
+    for (size_t i = 0; i < count; ++i) {
+        if (!valid(i)) continue;
+        const uint32_t j = at[kind_of(i)]++;
+        pairs[2 * j] = atom_a[i];
+        pairs[2 * j + 1] = atom_b[i];
+        ids[j] = (uint32_t)i;
+    }
+    md_gpu_upload(b->stream, p->pairs, pairs, (size_t)num * 8);
+    md_gpu_upload(b->stream, p->ids, ids, (size_t)num * 4);
+    md_temp_end(temp);
+    memcpy(p->offset, off, sizeof(off));
+}
+
 static void free_system(MdRenderBridge* b) {
     if (b->has_topo) md_gpu_free(b->stream, b->topo.base);
     if (b->dynamic)   md_gpu_free(b->stream, b->dynamic);
     if (b->positions) md_gpu_free(b->stream, b->positions);
     if (b->marks)     md_gpu_free(b->stream, b->marks);
     if (b->secondary) md_gpu_free(b->stream, b->secondary);
+    if (b->bond_mask) md_gpu_free(b->stream, b->bond_mask);
+    free_pairs(b->stream, &b->formed);
+    b->bond_mask = 0;
+    b->bond_mask_words = 0;
+    b->frame_bonds = false;
     for (size_t i = 0; i < md_array_size(b->reps); ++i) free_rep(b->stream, &b->reps[i]);
     md_array_shrink(b->reps, 0);
     free_parts(b);
@@ -423,7 +481,7 @@ static bool ensure_system(MdRenderBridge* b, ApplicationState* state) {
     }
     md_gpu_memset(b->stream, b->marks, 0, n);
     // All of it, then
-    b->pending |= MolBit_DirtyPosition | MolBit_DirtyFlags | MolBit_ResetBackboneHistory;
+    b->pending |= MolBit_DirtyPosition | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ResetBackboneHistory;
     // The representations' arrays are of the atoms: given again for the new system
     flag_all_representations_as_dirty(state);
     return true;
@@ -440,10 +498,48 @@ static md_render_mol_atoms_t atoms_of(const MdRenderBridge* b, const Application
     return a;
 }
 
-// What changed since the scene was last made: positions, the marks
+// The bonds of the frame shown while they are tracked (bond_tracking_delta), as md_gl gets them (update_md_buffers):
+// those of the system broken hidden, those formed drawn by the licorice and ball and stick representations
+static void update_frame_bonds(MdRenderBridge* b, ApplicationState* state) {
+    const md_system_t& sys = state->mold.sys;
+    const md_bond_delta_t* delta = bond_tracking_delta(state);
+    b->frame_bonds = delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken));
+    b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
+    if (!b->frame_bonds) return;
+    md_allocator_i* alloc = state->allocator.frame;
+    md_temp_scope_t temp = md_temp_begin_in(alloc);
+    // Over the bonds and the interactions (as picks report them), all set but the broken
+    const uint32_t nb = (uint32_t)(sys.bond.count + sys.bond.interaction_count);
+    const size_t words = MD_MAX(bitset_words32(nb), (size_t)2);
+    if (words > b->bond_mask_words) {
+        b->bond_mask = realloc_gpu(b, b->bond_mask, words * 4);
+        b->bond_mask_words = b->bond_mask ? words : 0;
+    }
+    uint32_t* mask = (uint32_t*)md_vm_arena_push(alloc, words * 4);
+    md_memset(mask, 0xFF, words * 4);
+    md_bitset_iter_t it = md_bitset_iter(delta->broken);
+    while (md_bitset_iter_next(&it)) {
+        if (it.idx < sys.bond.count) mask[it.idx >> 5] &= ~(1u << (it.idx & 31));
+    }
+    if (b->bond_mask) md_gpu_upload(b->stream, b->bond_mask, mask, words * 4);
+    // Those formed, covalent or coordinate: each picks as md_gl's, the system's bond count past its index among them
+    const size_t nf = delta->num_formed;
+    uint32_t* atom_a = (uint32_t*)md_vm_arena_push(alloc, MD_MAX(nf, (size_t)1) * 4);
+    uint32_t* atom_b = (uint32_t*)md_vm_arena_push(alloc, MD_MAX(nf, (size_t)1) * 4);
+    for (size_t i = 0; i < nf; ++i) {
+        atom_a[i] = (uint32_t)delta->formed_pair[i].idx[0];
+        atom_b[i] = (uint32_t)delta->formed_pair[i].idx[1];
+    }
+    static_assert(sizeof(md_bond_flags_t) == sizeof(uint32_t), "the flags as words");
+    upload_pairs(b, &b->formed, atom_a, atom_b, (const uint32_t*)delta->formed_flags, nf, alloc);
+    md_temp_end(temp);
+}
+
+// What changed since the scene was last made: positions, the marks, the bonds of the frame
 static bool take_up(MdRenderBridge* b, ApplicationState* state) {
     const uint32_t dirty = b->pending;
     b->pending = 0;
+    if (dirty & MolBit_DirtyBonds) update_frame_bonds(b, state);
     if (dirty & MolBit_DirtyFlags) {
         // The selection and the highlight, and the group of the highlight each atom is in (of the last group it is in,
         // as update_md_buffers has it): the colour it is marked in
@@ -529,8 +625,9 @@ bool md_render_bridge_active(const ApplicationState& state) { return active(stat
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
     if (!active(state)) return false;
     if (!type_drawn(rep.type) || !rep.type_is_valid || !representation_shown(state, rep)) return false;
-    // md_gl's for now: bonds formed and broken over the run
-    if (!rep.sphere_fallback && (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) && bond_tracking_delta(&state)) return false;
+    // md_gl's for now: the orders of the bonds of a frame whose bonds are tracked (their chemistry changes with them)
+    if (!rep.sphere_fallback && (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) && rep.bond_orders &&
+        bond_tracking_delta(&state)) return false;
     const BridgeRep* r = find_rep(state.md_render_bridge, rep.node.id);
     return r && r->color && r->visible && r->atom_count == state.md_render_bridge->atom_count;
 }
@@ -549,38 +646,8 @@ void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& r
     MdRenderBridge* b = state->md_render_bridge;
     if (!state->md_render.enabled || !b || !b->ok || !b->has_topo || rep.type != RepresentationType::Bonds) return;
     BridgeRep* r = find_or_add_rep(b, rep.node.id, state->allocator.persistent);
-    // By kind (md_render_mol draws a kind in its style), each pair's index the one it picks as (representation_weak_bond_draw_ops)
-    const uint32_t n_atoms = b->atom_count;
-    uint32_t off[MD_RENDER_MOL_BOND_KIND_COUNT + 1] = {};
-    auto kind_of = [flags](size_t i) -> uint32_t { return flags ? MD_RENDER_MOL_BOND_KIND(flags[i] & MD_BOND_FLAG_KIND_MASK) : 0u; };
-    auto valid = [&](size_t i) { return atom_a[i] < n_atoms && atom_b[i] < n_atoms; };
-    for (size_t i = 0; i < count; ++i) if (valid(i)) off[kind_of(i) + 1] += 1;
-    for (uint32_t k = 0; k < MD_RENDER_MOL_BOND_KIND_COUNT; ++k) off[k + 1] += off[k];
-    const uint32_t num = off[MD_RENDER_MOL_BOND_KIND_COUNT];
-    if (num > r->pair_cap) {
-        r->pairs   = realloc_gpu(b, r->pairs, (size_t)num * 8);
-        r->pair_id = realloc_gpu(b, r->pair_id, (size_t)num * 4);
-        r->pair_cap = r->pairs && r->pair_id ? num : 0;
-    }
-    memset(r->pair_offset, 0, sizeof(r->pair_offset));
-    if (num == 0 || !r->pair_cap) return;
-    md_allocator_i* alloc = state->allocator.frame;
-    md_temp_scope_t temp = md_temp_begin_in(alloc);
-    uint32_t* pairs = (uint32_t*)md_vm_arena_push(alloc, (size_t)num * 8);
-    uint32_t* ids   = (uint32_t*)md_vm_arena_push(alloc, (size_t)num * 4);
-    uint32_t at[MD_RENDER_MOL_BOND_KIND_COUNT];
-    memcpy(at, off, sizeof(at));
-    for (size_t i = 0; i < count; ++i) {
-        if (!valid(i)) continue;
-        const uint32_t j = at[kind_of(i)]++;
-        pairs[2 * j] = atom_a[i];
-        pairs[2 * j + 1] = atom_b[i];
-        ids[j] = (uint32_t)i;
-    }
-    md_gpu_upload(b->stream, r->pairs, pairs, (size_t)num * 8);
-    md_gpu_upload(b->stream, r->pair_id, ids, (size_t)num * 4);
-    md_temp_end(temp);
-    memcpy(r->pair_offset, off, sizeof(off));
+    // Each pair's index the one it picks as (representation_weak_bond_draw_ops)
+    upload_pairs(b, &r->pairs, atom_a, atom_b, flags, count, state->allocator.frame);
     b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
 }
 
@@ -889,12 +956,12 @@ void md_render_bridge_render(ApplicationState* state) {
         }
         case RepresentationType::Bonds:
             // The pairs its filter picks (md_render_bridge_rep_pairs), as thick as a licorice's sticks of the same scale
-            if (!r->pairs || r->pair_offset[MD_RENDER_MOL_BOND_KIND_COUNT] == 0) continue;
+            if (pair_count(r->pairs) == 0) continue;
             mr.type = MD_RENDER_MOL_REP_PAIRS;
             mr.params.pairs.radius = 0.2f * rep.scale.x;
-            mr.pairs = r->pairs;
-            mr.pair_id = r->pair_id;
-            mr.pair_offset = r->pair_offset;
+            mr.pairs = r->pairs.pairs;
+            mr.pair_id = r->pairs.ids;
+            mr.pair_offset = r->pairs.offset;
             break;
         default:
             continue;
@@ -906,6 +973,15 @@ void md_render_bridge_render(ApplicationState* state) {
             } else {
                 bond_styles(styles[num_styles], rep);
                 mr.bond_kinds = bond_kinds(rep);
+                // The bonds of the frame (update_frame_bonds): those broken hidden, those formed among the sticks
+                if (b->frame_bonds && b->bond_mask) {
+                    mr.bond_visible = b->bond_mask;
+                    if (pair_count(b->formed)) {
+                        mr.pairs = b->formed.pairs;
+                        mr.pair_id = b->formed.ids;
+                        mr.pair_offset = b->formed.offset;
+                    }
+                }
             }
             mr.bond_style = styles[num_styles++];
         }
@@ -1128,21 +1204,32 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
         break;
     }
     case MD_RENDER_MOL_HIT_PAIR: {
-        // A pair of a Bonds representation: as md_gl's weak bonds, the middle half the bond (of the representation's
-        // range, its index in bond_pairs), the quarters at its ends their atoms
+        // As md_gl's, the middle half the bond, the quarters at its ends their atoms. A pair of a Bonds representation
+        // is a weak bond of its range (its index in bond_pairs); one of a licorice or a ball and stick a bond the frame
+        // formed (the system's bond count past its index among them, update_frame_bonds)
         const uint32_t rep_id = (uint32_t)((mh.rep_key >> 16) - 1);
         const Representation* rep = nullptr;
         for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
             if (state->representation.reps[i].node.id == rep_id) rep = &state->representation.reps[i];
         }
-        if (!rep || mh.bond >= md_array_size(rep->bond_pairs)) {
+        const md_bond_delta_t* delta = bond_tracking_delta(state);
+        md_atom_pair_t pair = {};
+        uint64_t key = 0;
+        uint32_t local = mh.bond;
+        if (rep && rep->type == RepresentationType::Bonds && mh.bond < md_array_size(rep->bond_pairs)) {
+            pair = rep->bond_pairs[mh.bond];
+            key = rep_id;
+        } else if (rep && rep->type != RepresentationType::Bonds && delta && mh.bond < delta->num_formed) {
+            pair = delta->formed_pair[mh.bond];
+            local = (uint32_t)(sys.bond.count + mh.bond);
+        } else {
             set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
             break;
         }
-        if (!pair_middle(b, *state, mh, rep->bond_pairs[mh.bond])) {
-            set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
+        if (pair_middle(b, *state, mh, pair)) {
+            set_hit(*state, hit, PickingDomain_Bond, key, local);
         } else {
-            set_hit(*state, hit, PickingDomain_Bond, rep_id, mh.bond);
+            set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
         }
         break;
     }
