@@ -53,3 +53,8 @@ void md_render_bridge_render(ApplicationState* state);
 // Into the G-buffer bound, after md_gl's opaque draws: its colour, normal, velocity and picking targets drawn, its depth
 // tested and written
 void md_render_bridge_merge(ApplicationState* state);
+
+// The marks of the selection and the highlight (with its groups) of what md_render draws, into md_gl's marks pass
+// (after draw_representations_marks, which leaves those representations): md_render's masks, in view where its surface
+// is the scene's. When the marks changed without the scene being made, md_render makes its masks again first.
+void md_render_bridge_marks(ApplicationState* state);

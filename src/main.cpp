@@ -7801,6 +7801,7 @@ static void render(ApplicationState* state) {
             PUSH_GPU_SECTION("Marks")
             gbuffer_marks_begin(&state->gbuffer);
             draw_representations_marks(state);
+            md_render_bridge_marks(state);
             draw_glyph_marks(state);
             gbuffer_marks_end(&state->gbuffer);
             POP_GPU_SECTION()
@@ -8576,6 +8577,8 @@ static void draw_representations_marks(ApplicationState* data) {
         const Representation& rep = data->representation.reps[i];
 
         if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
+        // md_render's marks (md_render_bridge_marks)
+        if (md_render_bridge_draws(*data, rep)) continue;
         if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid && !rep.sphere_fallback) {
             const size_t beg = md_array_size(glyph_ops);
             representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
