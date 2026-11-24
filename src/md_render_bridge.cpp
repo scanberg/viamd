@@ -89,12 +89,12 @@ struct MdRenderBridge {
     bool                 updated = false;      // the per-frame block holds the positions
     int64_t              regroup_frame = -1;   // the trajectory frame of the last regroup
     double               time = 0.0;           // md_render's: one per update of the positions, the velocities' unit
-    // The bonds of the frame shown while they are tracked (md_bond_delta_t): a mask over the system's bonds and
-    // interactions, those broken clear (0: none tracked), and those formed (ids: their index among them)
-    md_gpu_addr_t        bond_mask = 0;
-    size_t               bond_mask_words = 0;
+    // The bonds of the frame shown while they are tracked (md_bond_delta_t, md_chem_delta_t): md_render_mol's block
+    // of them (md_render_mol_bonds_write), the system's that are not the frame's hidden, the frame's own drawn
+    md_gpu_addr_t        bonds_block = 0;
+    uint64_t             bonds_cap = 0;
+    md_render_mol_bonds_t bonds = {};
     bool                 frame_bonds = false;
-    PairSet              formed;
     md_gpu_addr_t        secondary = 0;        // int32 per protein backbone segment
     uint32_t             secondary_count = 0;
     uint64_t             secondary_hash = 0;
@@ -412,10 +412,9 @@ static void free_system(MdRenderBridge* b) {
     if (b->positions) md_gpu_free(b->stream, b->positions);
     if (b->marks)     md_gpu_free(b->stream, b->marks);
     if (b->secondary) md_gpu_free(b->stream, b->secondary);
-    if (b->bond_mask) md_gpu_free(b->stream, b->bond_mask);
-    free_pairs(b->stream, &b->formed);
-    b->bond_mask = 0;
-    b->bond_mask_words = 0;
+    if (b->bonds_block) md_gpu_free(b->stream, b->bonds_block);
+    b->bonds_block = 0;
+    b->bonds_cap = 0;
     b->frame_bonds = false;
     for (size_t i = 0; i < md_array_size(b->reps); ++i) free_rep(b->stream, &b->reps[i]);
     md_array_shrink(b->reps, 0);
@@ -495,43 +494,31 @@ static md_render_mol_atoms_t atoms_of(const MdRenderBridge* b, const Application
     // The velocities: the displacement since the last update at the minimum image, per update (time counts them),
     // so that what moved across the cell moves by what is left of it rather than streaking over the system
     a.velocity_dt = 1.0f;
+    a.bonds = b->frame_bonds ? &b->bonds : nullptr;
     return a;
 }
 
-// The bonds of the frame shown while they are tracked (bond_tracking_delta), as md_gl gets them (update_md_buffers):
-// those of the system broken hidden, those formed drawn by the licorice and ball and stick representations
+// The bonds of the frame shown while they are tracked (bond_tracking_delta, bond_tracking_chem), as md_gl gets them
+// (update_md_buffers, md_gl_mol_set_bond_orders): the system's broken and those of the region of the frame's chemistry
+// hidden, the region's and those formed drawn as the frame has them, with their orders. Picks report md_gl's: a bond
+// of the system by its index, one formed the system's bond count past its index in the delta; a ring of the region
+// the system's ring count past its index in the chemistry's.
 static void update_frame_bonds(MdRenderBridge* b, ApplicationState* state) {
-    const md_system_t& sys = state->mold.sys;
     const md_bond_delta_t* delta = bond_tracking_delta(state);
-    b->frame_bonds = delta && (delta->num_formed > 0 || !md_bitset_empty(delta->broken));
+    const md_chem_delta_t* chem = bond_tracking_chem(state);
+    b->frame_bonds = false;
     b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
-    if (!b->frame_bonds) return;
+    if (!delta || (delta->num_formed == 0 && md_bitset_empty(delta->broken))) return;
     md_allocator_i* alloc = state->allocator.frame;
     md_temp_scope_t temp = md_temp_begin_in(alloc);
-    // Over the bonds and the interactions (as picks report them), all set but the broken
-    const uint32_t nb = (uint32_t)(sys.bond.count + sys.bond.interaction_count);
-    const size_t words = MD_MAX(bitset_words32(nb), (size_t)2);
-    if (words > b->bond_mask_words) {
-        b->bond_mask = realloc_gpu(b, b->bond_mask, words * 4);
-        b->bond_mask_words = b->bond_mask ? words : 0;
+    md_render_mol_bonds_plan_t plan;
+    if (md_render_mol_bonds_plan(&plan, &state->mold.sys, nullptr, &state->mold.state, delta, chem, temp)) {
+        if (plan.size > b->bonds_cap) {
+            b->bonds_block = realloc_gpu(b, b->bonds_block, (size_t)plan.size);
+            b->bonds_cap = b->bonds_block ? plan.size : 0;
+        }
+        b->frame_bonds = b->bonds_block && md_render_mol_bonds_write(b->stream, &b->bonds, &plan, b->bonds_block, b->content);
     }
-    uint32_t* mask = (uint32_t*)md_vm_arena_push(alloc, words * 4);
-    md_memset(mask, 0xFF, words * 4);
-    md_bitset_iter_t it = md_bitset_iter(delta->broken);
-    while (md_bitset_iter_next(&it)) {
-        if (it.idx < sys.bond.count) mask[it.idx >> 5] &= ~(1u << (it.idx & 31));
-    }
-    if (b->bond_mask) md_gpu_upload(b->stream, b->bond_mask, mask, words * 4);
-    // Those formed, covalent or coordinate: each picks as md_gl's, the system's bond count past its index among them
-    const size_t nf = delta->num_formed;
-    uint32_t* atom_a = (uint32_t*)md_vm_arena_push(alloc, MD_MAX(nf, (size_t)1) * 4);
-    uint32_t* atom_b = (uint32_t*)md_vm_arena_push(alloc, MD_MAX(nf, (size_t)1) * 4);
-    for (size_t i = 0; i < nf; ++i) {
-        atom_a[i] = (uint32_t)delta->formed_pair[i].idx[0];
-        atom_b[i] = (uint32_t)delta->formed_pair[i].idx[1];
-    }
-    static_assert(sizeof(md_bond_flags_t) == sizeof(uint32_t), "the flags as words");
-    upload_pairs(b, &b->formed, atom_a, atom_b, (const uint32_t*)delta->formed_flags, nf, alloc);
     md_temp_end(temp);
 }
 
@@ -539,6 +526,7 @@ static void update_frame_bonds(MdRenderBridge* b, ApplicationState* state) {
 static bool take_up(MdRenderBridge* b, ApplicationState* state) {
     const uint32_t dirty = b->pending;
     b->pending = 0;
+    // The frame's bonds' sides are the update's: one follows
     if (dirty & MolBit_DirtyBonds) update_frame_bonds(b, state);
     if (dirty & MolBit_DirtyFlags) {
         // The selection and the highlight, and the group of the highlight each atom is in (of the last group it is in,
@@ -555,7 +543,7 @@ static bool take_up(MdRenderBridge* b, ApplicationState* state) {
         md_temp_end(temp);
         b->content[MD_RENDER_CONTENT_STATE] += 1;
     }
-    if ((dirty & (MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_ResetBackboneHistory)) || !b->updated) {
+    if ((dirty & (MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_ResetBackboneHistory | MolBit_DirtyBonds)) || !b->updated) {
         if (!md_render_mol_upload_state(b->stream, b->positions, &state->mold.state, b->content)) {
             set_status(b, "md_render_mol could not upload the positions (see the log)%s");
             return false;
@@ -625,9 +613,6 @@ bool md_render_bridge_active(const ApplicationState& state) { return active(stat
 bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
     if (!active(state)) return false;
     if (!type_drawn(rep.type) || !rep.type_is_valid || !representation_shown(state, rep)) return false;
-    // md_gl's for now: the orders of the bonds of a frame whose bonds are tracked (their chemistry changes with them)
-    if (!rep.sphere_fallback && (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) && rep.bond_orders &&
-        bond_tracking_delta(&state)) return false;
     const BridgeRep* r = find_rep(state.md_render_bridge, rep.node.id);
     return r && r->color && r->visible && r->atom_count == state.md_render_bridge->atom_count;
 }
@@ -973,15 +958,6 @@ void md_render_bridge_render(ApplicationState* state) {
             } else {
                 bond_styles(styles[num_styles], rep);
                 mr.bond_kinds = bond_kinds(rep);
-                // The bonds of the frame (update_frame_bonds): those broken hidden, those formed among the sticks
-                if (b->frame_bonds && b->bond_mask) {
-                    mr.bond_visible = b->bond_mask;
-                    if (pair_count(b->formed)) {
-                        mr.pairs = b->formed.pairs;
-                        mr.pair_id = b->formed.ids;
-                        mr.pair_offset = b->formed.offset;
-                    }
-                }
             }
             mr.bond_style = styles[num_styles++];
         }
@@ -1205,8 +1181,8 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
     }
     case MD_RENDER_MOL_HIT_PAIR: {
         // As md_gl's, the middle half the bond, the quarters at its ends their atoms. A pair of a Bonds representation
-        // is a weak bond of its range (its index in bond_pairs); one of a licorice or a ball and stick a bond the frame
-        // formed (the system's bond count past its index among them, update_frame_bonds)
+        // is a weak bond of its range (its index in bond_pairs); otherwise one of the frame's own bonds (its sticks,
+        // multiple sticks or partner): md_gl's index, of the system's or past it of one formed (update_frame_bonds)
         const uint32_t rep_id = (uint32_t)((mh.rep_key >> 16) - 1);
         const Representation* rep = nullptr;
         for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
@@ -1219,9 +1195,10 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
         if (rep && rep->type == RepresentationType::Bonds && mh.bond < md_array_size(rep->bond_pairs)) {
             pair = rep->bond_pairs[mh.bond];
             key = rep_id;
-        } else if (rep && rep->type != RepresentationType::Bonds && delta && mh.bond < delta->num_formed) {
-            pair = delta->formed_pair[mh.bond];
-            local = (uint32_t)(sys.bond.count + mh.bond);
+        } else if (rep && rep->type != RepresentationType::Bonds && mh.bond < sys.bond.count) {
+            pair = sys.bond.pairs[mh.bond];
+        } else if (rep && rep->type != RepresentationType::Bonds && delta && mh.bond - sys.bond.count < delta->num_formed) {
+            pair = delta->formed_pair[mh.bond - sys.bond.count];
         } else {
             set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
             break;
