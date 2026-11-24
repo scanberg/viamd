@@ -1498,10 +1498,44 @@ md_unit_t clock_unit(const ApplicationState* app) {
     return ref ? run_time_unit(*ref->sys, instance_run(*ref)) : md_unit_none();
 }
 
+// The run's index among the system's, which is its index among the runs of its files (RunFiles) too. -1 for none.
+static int run_index(const SystemContext& sys, const SystemRun* run) {
+    for (size_t i = 0; i < sys.num_runs; ++i) {
+        if (sys.runs[i] == run) return (int)i;
+    }
+    return -1;
+}
+
+double run_time_offset(const SystemContext& sys, const SystemRun* run) {
+    const int i = run_index(sys, run);
+    return i >= 0 && (size_t)i < md_array_size(sys.files.runs) ? sys.files.runs[i].time_offset : 0.0;
+}
+
+void run_set_time_offset(SystemContext& sys, const SystemRun* run, double offset) {
+    const int i = run_index(sys, run);
+    if (i < 0 || (size_t)i >= md_array_size(sys.files.runs) || sys.files.runs[i].time_offset == offset) return;
+    sys.files.runs[i].time_offset = offset;
+    for (size_t k = 0; k < sys.num_instances; ++k) {
+        if (instance_run(*sys.instances[k]) == run) sys.instances[k]->interpolate_system_state = true;
+    }
+}
+
+bool run_align_start(SystemContext& sys, const SystemRun* run) {
+    const ApplicationState* app = sys.app;
+    const SystemInstance* ref = clock_reference(app);
+    if (!ref || instance_run(*ref) == run) return false;
+    const ClockAxis a = run_clock_axis(app, sys, run);
+    if (!clock_axis_timed(a)) return false;
+    const double start = clock_axis_time(run_clock_axis(app, *ref->sys, instance_run(*ref)), 0.0);
+    run_set_time_offset(sys, run, clock_axis_offset_to_start_at(a, start));
+    return true;
+}
+
 ClockAxis run_clock_axis(const ApplicationState* app, const SystemContext& sys, const SystemRun* run) {
     ClockAxis a;
     a.times = run_frame_times(sys, run);
     a.count = a.times ? run_num_frames(sys, run) : 0;
+    a.offset = run_time_offset(sys, run);
     // Frames numbered beside frames numbered as they are, times taken into the clock's unit; the one beside the other
     // not by its times at all
     const md_unit_t from = run_time_unit(sys, run);
@@ -3637,8 +3671,9 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         if (list.atom_count == 0) {
             list.atom_count = plan.atom_count;
         }
-        for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(plan.frame_counts); ++r) {
-            if (list.runs[r].frame_count == 0) list.runs[r].frame_count = plan.frame_counts[r];
+        for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(plan.runs); ++r) {
+            if (list.runs[r].frame_count == 0) list.runs[r].frame_count = plan.runs[r].frame_count;
+            list.runs[r].time_offset = plan.runs[r].time_offset;
         }
 
         const size_t num_atoms  = sc.data.sys.atom.count;
@@ -3647,7 +3682,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         // The counts the workspace was saved with. When the files no longer have them, what it keeps by atom index
         // or by frame would land on other atoms and other frames, and is left out instead.
         const bool   atoms_as_saved  = plan.atom_count == 0 || plan.atom_count == num_atoms;
-        const size_t saved_frames    = md_array_size(plan.frame_counts) ? plan.frame_counts[0] : 0;
+        const size_t saved_frames    = md_array_size(plan.runs) ? plan.runs[0].frame_count : 0;
         const bool   frames_as_saved = saved_frames == 0 || saved_frames == num_frames;
         if (num_atoms > 0 && !atoms_as_saved) {
             VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections and bonds are left out", num_atoms, plan.atom_count);
@@ -8724,6 +8759,11 @@ static void system_rebuild(ApplicationState* app, SystemContext& sys, const File
         if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
     }
     md_memcpy(sys.name, name, sizeof(name));
+    // The runs' offsets along the clock: of list, whose runs are recorded again in its order, a file which did not load
+    // in its place
+    for (size_t r = 0; r < md_array_size(list.runs) && r < md_array_size(sys.files.runs); ++r) {
+        sys.files.runs[r].time_offset = list.runs[r].time_offset;
+    }
     sys.instances_held = false;
     for (size_t k = sys.num_instances; k-- > 0;) {
         int run = -1;

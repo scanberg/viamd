@@ -150,7 +150,7 @@ struct Read {
     }
     ~Read() {
         md_array_free(files.systems, alloc); md_array_free(files.runs, alloc); md_array_free(files.inputs, alloc);
-        md_array_free(plan.inputs, alloc);   md_array_free(plan.frame_counts, alloc);
+        md_array_free(plan.inputs, alloc);   md_array_free(plan.runs, alloc);
     }
     std::string str() const {
         std::string s;
@@ -203,6 +203,7 @@ UTEST(viamd_file_list, workspace_round_trip) {
     l.record(gone, FileRole_Series);
     l.list.atom_count = 1234;
     l.list.runs[0].frame_count = 56;
+    l.list.runs[0].time_offset = 100.5;
 
     const std::string workspace = at("viamd_test.via"), data = at("sub dir/system.data");
     Written w(workspace.c_str(), alloc);
@@ -211,7 +212,7 @@ UTEST(viamd_file_list, workspace_round_trip) {
 
     // Ids as given, owners by id, paths relative to the workspace, the loader only where it was chosen
     EXPECT_TRUE(contains(text, "[System]\nId=3\nAtomCount=1234\n"));
-    EXPECT_TRUE(contains(text, "[Run]\nId=7\nSystem=3\nFrameCount=56\n"));
+    EXPECT_TRUE(contains(text, "[Run]\nId=7\nSystem=3\nFrameCount=56\nTimeOffset=100.5\n"));
     EXPECT_TRUE(contains(text, "[Input]\nSystem=3\nPath=./catalyst.gro\n"));
     EXPECT_TRUE(contains(text, "[Input]\nRun=7\nPath=./catalyst.xtc\n"));
     EXPECT_TRUE(contains(text, "[Input]\nSystem=3\nPath=./sub dir/system.data\nLoader=data\nArgument=atom-ID atom-type x y z\n"));
@@ -222,8 +223,9 @@ UTEST(viamd_file_list, workspace_round_trip) {
     Read r(text, folder);
     { const std::string got_ = r.str(); EXPECT_STREQ("catalyst.gro:System:-1 system.data:Supplement:-1 catalyst.xtc:Trajectory:0 gone.edr:Series:0", got_.c_str()); }
     EXPECT_EQ(1234u, r.plan.atom_count);
-    ASSERT_EQ(1u, md_array_size(r.plan.frame_counts));
-    EXPECT_EQ(56u, r.plan.frame_counts[0]);
+    ASSERT_EQ(1u, md_array_size(r.plan.runs));
+    EXPECT_EQ(56u, r.plan.runs[0].frame_count);
+    EXPECT_EQ(100.5, r.plan.runs[0].time_offset);
     EXPECT_STREQ(data.c_str(), r.plan.inputs[1].entry.path);   // a file that is not there keeps its path
     EXPECT_TRUE(r.plan.inputs[1].entry.explicit_type);
     EXPECT_EQ(LoaderType_LAMMPSDATA, r.plan.inputs[1].entry.type);

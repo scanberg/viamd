@@ -685,6 +685,12 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     }
 }
 
+bool timeline_plot_extent(float* x0, float* x1) {
+    *x0 = ui.plot_x0;
+    *x1 = ui.plot_x1;
+    return ui.plot_x1 > ui.plot_x0;
+}
+
 void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double current_frame) {
     if (axis.num_frames <= 0 || !axis.frame_times) return;
 

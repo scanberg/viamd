@@ -67,6 +67,7 @@ struct FileEntry {
 
 struct RunFiles {
     size_t frame_count = 0;                     // Of the run, as loaded or as the workspace stored it
+    double time_offset = 0.0;                   // What it is moved by along the clock, in the unit of its times (clock.h)
 };
 
 struct FileList {
@@ -133,7 +134,7 @@ int file_list_serialize(viamd::serialization_state_t& state, const FileList* lis
 // What a workspace says about its systems and their files, read section by section and resolved once all is read
 struct WorkspaceFiles {
     struct System { int id; size_t atom_count; };
-    struct Run    { int id; int system; size_t frame_count; };
+    struct Run    { int id; int system; RunFiles run; };
     struct Input  {
         FileEntry entry;
         int       system;           // Ids as written, -1 where not given
@@ -161,7 +162,7 @@ struct SystemPlan {
     };
     md_array(Input)  inputs = 0;
     size_t           atom_count = 0;            // As stored, 0 when not
-    md_array(size_t) frame_counts = 0;          // Per run, as stored, 0 when not
+    md_array(RunFiles) runs = 0;                // Per run, as stored: its frame count (0 when not), its time offset
     size_t skipped_runs = 0;
     size_t skipped_inputs = 0;                  // Belonging to no system or run the workspace names
 };

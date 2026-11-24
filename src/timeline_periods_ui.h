@@ -45,6 +45,10 @@ void timeline_periods_menu(TimelinePeriods* rs);
 // While a period is created, moved or resized, or the lane pans: the plots should not pan meanwhile
 bool timeline_periods_dragging();
 
+// Where the plots' area was across the screen, as the first plot of the last frame drew it (timeline_periods_plot):
+// what another lane above the plots aligns with. False before the plots have been drawn.
+bool timeline_plot_extent(float* x0, float* x1);
+
 // ImGui drag and drop payload of a period pulled out of the lane: its id, a uint32_t
 #define TIMELINE_PERIOD_DND "TIMELINE_PERIOD"
 

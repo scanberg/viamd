@@ -649,6 +649,39 @@ bool instance_rows_shown(const SystemContext& sys) {
     return inst.name[0] || (inst.run >= 0 && inst.frame >= 0) || !md_float4x4_equal(inst.scene.placement, md_float4x4_ident()) || !inst.scene.visible;
 }
 
+void draw_run_time_offset(SystemContext& sys, const SystemRun* run) {
+    const ApplicationState* app = sys.app;
+    const ClockAxis a = run_clock_axis(app, sys, run);
+    if (!clock_axis_timed(a)) {
+        ImGui::TextDisabled("Its frames go with the first run's, frame by frame:\nits times cannot be placed beside the first run's");
+        return;
+    }
+    // In the display unit of its times; frames numbered show as they are
+    char unit[32];
+    const double scl = display_units::factor_print(unit, sizeof(unit), run_time_unit(sys, run));
+    char fmt[48];
+    snprintf(fmt, sizeof(fmt), unit[0] ? "%%+.6g %s" : "%%+.6g", unit);
+    double shown = run_time_offset(sys, run) * scl;
+    const double span = a.count > 1 ? (a.times[a.count - 1] - a.times[0]) * scl : 1.0;
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 10);
+    if (ImGui::DragScalar("##time_offset", ImGuiDataType_Double, &shown, (float)MD_MAX(span / 500.0, 1e-6), nullptr, nullptr, fmt)) {
+        run_set_time_offset(sys, run, shown / scl);
+    }
+    ImGui::SetItemTooltip("The run moved along the time shown: added to its times. Shared by every instance of the run.");
+    ImGui::SameLine();
+    const SystemInstance* ref = clock_reference(app);
+    ImGui::BeginDisabled(!ref || instance_run(*ref) == run);
+    if (ImGui::Button("Align start")) run_align_start(sys, run);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s", ref && instance_run(*ref) == run ? "It is the first run, which the others are aligned with"
+                                                                 : "Its first frame at the first frame of the first run: the two start together");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(run_time_offset(sys, run) == 0.0);
+    if (ImGui::Button("As in its file")) run_set_time_offset(sys, run, 0.0);
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Its times as its file has them");
+}
+
 // The menu of an instance, of its row's right click and of its ⋮ button
 static void draw_instance_menu(SystemInstance& inst, InstanceActions* act) {
     SystemContext& sys = *inst.sys;
@@ -688,6 +721,8 @@ static void draw_instance_menu(SystemInstance& inst, InstanceActions* act) {
                 instance_show(inst, inst.run, frame);
             }
         }
+        ImGui::TextDisabled("Its run on the time shown");
+        draw_run_time_offset(sys, run);
         ImGui::Unindent();
     }
 

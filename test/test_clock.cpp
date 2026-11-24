@@ -62,3 +62,23 @@ UTEST(clock, step) {
     EXPECT_NEAR(2000.0, clock_step_time(r, 1995.0, 1.0, 0.0, 2000.0), 1e-9);
     EXPECT_NEAR(0.0, clock_step_time(r, 0.0, -1.0, 0.0, 2000.0), 1e-9);
 }
+
+// A run moved along the clock: a continuation whose times read from 0, placed after the 100 ns it continues
+UTEST(clock, offset) {
+    double t[11];
+    for (int i = 0; i < 11; ++i) t[i] = 10.0 * i;          // 0 .. 100 ns
+    ClockAxis a = {t, 11, 1000.0, 100.0};                    // on a clock in ps, from 100 ns on
+    EXPECT_NEAR(100000.0, clock_axis_time(a, 0.0), 1e-6);
+    EXPECT_NEAR(200000.0, clock_axis_time(a, 10.0), 1e-6);
+    EXPECT_NEAR(5.0, clock_axis_frame(a, 150000.0), 1e-9);
+    // Before its start it is at its first frame
+    EXPECT_NEAR(0.0, clock_axis_frame(a, 50000.0), 1e-9);
+
+    // Its start aligned with another's first frame, at 20 ns on the clock
+    a.offset = clock_axis_offset_to_start_at(a, 20000.0);
+    EXPECT_NEAR(20.0, a.offset, 1e-9);
+    EXPECT_NEAR(20000.0, clock_axis_time(a, 0.0), 1e-6);
+    EXPECT_NEAR(1000.0 * (100.0 + 20.0), clock_axis_time(a, 10.0), 1e-6);
+    // A step goes by the frames as they are placed
+    EXPECT_NEAR(30000.0, clock_step_time(a, 20000.0, 1.0, 0.0, 1e9), 1e-6);
+}

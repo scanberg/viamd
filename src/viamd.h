@@ -3009,9 +3009,16 @@ double run_time_at_frame(const SystemContext& sys, double frame);
 const SystemInstance* clock_reference(const ApplicationState* app);
 // The unit of the clock: of the reference's run, none (frames numbered) without one
 md_unit_t clock_unit(const ApplicationState* app);
-// A run's frame axis as it is placed on the clock: its times and the factor into the clock's unit, which is 0 when they
-// cannot be taken into it (it is placed frame by frame as the reference then)
+// A run's frame axis as it is placed on the clock: its times, its offset and the factor into the clock's unit, which is 0
+// when they cannot be taken into it (it is placed frame by frame as the reference then)
 ClockAxis run_clock_axis(const ApplicationState* app, const SystemContext& sys, const SystemRun* run);
+// The offset a run is moved by along the clock, in the unit of its times: kept with its files (RunFiles), in the
+// workspace with its [Run]. Setting it, every instance of the run shows its frame of the time again.
+double run_time_offset(const SystemContext& sys, const SystemRun* run);
+void   run_set_time_offset(SystemContext& sys, const SystemRun* run, double offset);
+// The run's offset set so that its first frame is at the reference's first frame on the clock: the two start together.
+// False, and nothing changed, for the reference's own run or a run not placed by its times.
+bool   run_align_start(SystemContext& sys, const SystemRun* run);
 // The fractional frame of a run at a time on the clock, clamped to its frames; and the time on the clock of a frame of it
 double run_frame_at_clock(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double time);
 double run_clock_time(const ApplicationState* app, const SystemContext& sys, const SystemRun* run, double frame);

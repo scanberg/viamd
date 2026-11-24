@@ -266,6 +266,9 @@ int file_list_serialize(viamd::serialization_state_t& state, const FileList* lis
         if (list->runs[r].frame_count > 0) {
             viamd::write_int(state, MD_STR_LIT("FrameCount"), (int64_t)list->runs[r].frame_count);
         }
+        if (list->runs[r].time_offset != 0.0) {
+            viamd::write_dbl(state, MD_STR_LIT("TimeOffset"), list->runs[r].time_offset);
+        }
     }
 
     for (size_t i = 0; i < md_array_size(list->entries); ++i) {
@@ -343,7 +346,7 @@ static void read_legacy(WorkspaceFiles* files, viamd::deserialization_state_t& s
     files->legacy = true;
     WorkspaceFiles::System sys = { LEGACY_ID, 0 };
     md_array_push(files->systems, sys, alloc);
-    WorkspaceFiles::Run run = { LEGACY_ID, LEGACY_ID, 0 };
+    WorkspaceFiles::Run run = { LEGACY_ID, LEGACY_ID, {} };
     md_array_push(files->runs, run, alloc);
 
     auto add = [&](md_str_t a, bool of_run, FileRole role, bool opens_own_run) {
@@ -384,11 +387,12 @@ bool workspace_files_read(WorkspaceFiles* files, viamd::deserialization_state_t&
         return true;
     }
     if (md_str_eq_cstr(section, "Run")) {
-        WorkspaceFiles::Run run = { NO_ID, NO_ID, 0 };
+        WorkspaceFiles::Run run = { NO_ID, NO_ID, {} };
         while (viamd::next_entry(ident, arg, state)) {
             if      (md_str_eq_cstr(ident, "Id"))         viamd::extract_int(run.id, arg);
             else if (md_str_eq_cstr(ident, "System"))     viamd::extract_int(run.system, arg);
-            else if (md_str_eq_cstr(ident, "FrameCount")) extract_count(run.frame_count, arg);
+            else if (md_str_eq_cstr(ident, "FrameCount")) extract_count(run.run.frame_count, arg);
+            else if (md_str_eq_cstr(ident, "TimeOffset")) viamd::extract_dbl(run.run.time_offset, arg);
         }
         if (run.id < 0 || run.system < 0) {
             MD_LOG_INFO("Workspace: a [Run] without an Id or a System is left out");
@@ -478,7 +482,7 @@ void workspace_files_plan(SystemPlan* plan, const WorkspaceFiles* files, int sys
         if (files->runs[r].system != sys.id) continue;
         if (md_array_size(run_ids) < max_runs) {
             md_array_push(run_ids, files->runs[r].id, md_temp_allocator(temp));
-            md_array_push(plan->frame_counts, files->runs[r].frame_count, alloc);
+            md_array_push(plan->runs, files->runs[r].run, alloc);
         } else {
             plan->skipped_runs += 1;
         }

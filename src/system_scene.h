@@ -91,6 +91,10 @@ bool instance_rows_shown(const SystemContext& sys);
 // it is
 void draw_instance_copies_row(SystemInstance& inst);
 
+// Where a run is on the clock (clock.h): its offset along it, aligning its start with the first run's, its times as in
+// its file again. One row, for a menu.
+void draw_run_time_offset(SystemContext& sys, const struct SystemRun* run);
+
 // The files of the system, one line each: what it is, its name and what it holds in short. The System window has them
 // in full (its Files), and this links to it. A file is dragged (SYSTEM_FILE_DND), or moved from its menu, into another
 // system or a new one (ApplicationState::file_move).

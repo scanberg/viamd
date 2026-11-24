@@ -4077,6 +4077,183 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
     plot_system_series_menu(data, TIMELINE_SERIES_DND, first);
 }
 
+// THE INSTANCES' LANE of the timeline, under the periods': a row for each instance which shows a run, of every system, its
+// run's bar where the run is on the clock (clock.h), and a marker at the frame it keeps to. Drawn when there is more
+// than one, or one keeps to a frame: a single run following the time is all of the timeline already.
+//   drag a bar       moves the run along the time (run_set_time_offset), for every instance of it
+//   drag a marker    the frame the instance keeps to
+//   right-click      following the time or keeping to a frame, the run's offset, aligning its start with the first's
+static void draw_timeline_instances_lane(ApplicationState* data, double view_beg, double view_end, double x_scale, const char* x_unit) {
+    SystemInstance* rows[SYSTEM_MAX * INSTANCE_MAX];
+    size_t n = 0;
+    bool any_fixed = false;
+    for (size_t i = 0; i < data->num_systems; ++i) {
+        SystemContext& sc = *data->systems[i];
+        for (size_t k = 0; k < sc.num_instances; ++k) {
+            SystemInstance* inst = sc.instances[k];
+            if (run_num_frames(sc, instance_run(*inst)) == 0) continue;
+            rows[n++] = inst;
+            any_fixed |= inst->frame >= 0;
+        }
+    }
+    if (n < 2 && !any_fixed) return;
+
+    // A row's run on the screen: its bar and, of an instance which keeps to a frame, the marker's x
+    const ImVec2 pos   = ImGui::GetCursorScreenPos();
+    const float  width = MD_MAX(ImGui::GetContentRegionAvail().x, 1.0f);
+    float x0, x1;
+    if (!timeline_plot_extent(&x0, &x1)) {
+        x0 = pos.x;
+        x1 = pos.x + width;
+    }
+    const float row_h = ImGui::GetTextLineHeight() + 2.0f;
+    const float gap   = 1.0f;
+    const float height = (float)n * (row_h + gap);
+    auto time_x = [&](double t) {
+        const double span = view_end - view_beg;
+        return span > 0 ? x0 + (float)((t - view_beg) / span) * (x1 - x0) : x0;
+    };
+    auto x_time = [&](float x) { return view_beg + (double)(x - x0) / MD_MAX(x1 - x0, 1.0f) * (view_end - view_beg); };
+    struct Geometry { float y0, y1, bx0, bx1, mx; double tb, te; };
+    auto geometry = [&](size_t i) {
+        const SystemInstance& inst = *rows[i];
+        const SystemContext& sc = *inst.sys;
+        const SystemRun* run = instance_run(inst);
+        const size_t nf = run_num_frames(sc, run);
+        Geometry g;
+        g.y0  = pos.y + (float)i * (row_h + gap);
+        g.y1  = g.y0 + row_h;
+        g.tb  = run_clock_time(data, sc, run, 0.0);
+        g.te  = run_clock_time(data, sc, run, (double)(nf - 1));
+        g.bx0 = time_x(g.tb);
+        g.bx1 = MD_MAX(time_x(g.te), g.bx0 + 2.0f);
+        g.mx  = inst.frame >= 0 ? time_x(run_clock_time(data, sc, run, (double)inst.frame)) : -FLT_MAX;
+        return g;
+    };
+    auto label_of = [&](char* buf, size_t cap, const SystemInstance& inst) {
+        char inst_label[96];
+        instance_label(inst_label, sizeof(inst_label), inst);
+        if (system_count(*data) > 1) {
+            char sys_label[64];
+            system_label(sys_label, sizeof(sys_label), *inst.sys);
+            snprintf(buf, cap, "%s" TOOLTIP_SEP "%s", sys_label, inst_label);
+        } else {
+            snprintf(buf, cap, "%s", inst_label);
+        }
+    };
+
+    ImGui::InvisibleButton("##timeline_instances", ImVec2(width, height), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const int hover_row = hovered ? (int)((mouse.y - pos.y) / (row_h + gap)) : -1;
+
+    // What the pointer holds, as long as the button is down: a run's bar or an instance's marker. By pointer, checked
+    // against the rows every frame: an instance removed meanwhile lets go.
+    enum { Drag_None, Drag_Bar, Drag_Marker };
+    static struct { int kind = Drag_None; SystemInstance* inst = nullptr; float x = 0; double offset = 0; } drag;
+    static SystemInstance* menu_inst = nullptr;
+    auto listed = [&](const SystemInstance* p) {
+        for (size_t i = 0; i < n; ++i) if (rows[i] == p) return true;
+        return false;
+    };
+    if (drag.kind != Drag_None && !listed(drag.inst)) drag.kind = Drag_None;
+
+    if (ImGui::IsItemActivated() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && hover_row >= 0 && hover_row < (int)n) {
+        SystemInstance& inst = *rows[hover_row];
+        const Geometry g = geometry((size_t)hover_row);
+        if (inst.frame >= 0 && fabsf(mouse.x - g.mx) <= row_h * 0.6f) {
+            drag = {Drag_Marker, &inst, mouse.x, 0.0};
+        } else if (mouse.x >= g.bx0 - 2.0f && mouse.x <= g.bx1 + 2.0f && clock_axis_timed(run_clock_axis(data, *inst.sys, instance_run(inst)))) {
+            drag = {Drag_Bar, &inst, mouse.x, run_time_offset(*inst.sys, instance_run(inst))};
+        }
+    }
+    if (drag.kind != Drag_None && ImGui::IsItemActive()) {
+        SystemInstance& inst = *drag.inst;
+        SystemContext& sc = *inst.sys;
+        const SystemRun* run = instance_run(inst);
+        if (drag.kind == Drag_Marker) {
+            const int64_t nf = (int64_t)run_num_frames(sc, run);
+            const int64_t f = MD_CLAMP((int64_t)(run_frame_at_clock(data, sc, run, x_time(mouse.x)) + 0.5), (int64_t)0, nf - 1);
+            if (f != inst.frame) instance_show(inst, inst.run, f);
+        } else if (ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+            const ClockAxis a = run_clock_axis(data, sc, run);
+            if (clock_axis_timed(a)) run_set_time_offset(sc, run, drag.offset + (x_time(mouse.x) - x_time(drag.x)) / a.scale);
+        }
+    }
+    if (!ImGui::IsItemActive()) drag.kind = Drag_None;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->PushClipRect({x0, pos.y}, {x1, pos.y + height}, true);
+    for (size_t i = 0; i < n; ++i) {
+        const SystemInstance& inst = *rows[i];
+        const Geometry g = geometry(i);
+        const bool hot   = (int)i == hover_row || (drag.kind != Drag_None && drag.inst == &inst);
+        const bool shown = inst.sys->visible && inst.scene.visible;
+        const ImU32 fill = ImGui::GetColorU32(hot ? ImGuiCol_ButtonHovered : ImGuiCol_Button, shown ? 1.0f : 0.4f);
+        dl->AddRectFilled({g.bx0, g.y0}, {g.bx1, g.y1}, fill, 2.0f);
+        // The marker under the name, which stays readable over it
+        if (inst.frame >= 0) {
+            const float r = row_h * 0.45f;
+            const float cy = (g.y0 + g.y1) * 0.5f;
+            const ImU32 col = hot ? IM_COL32(255, 200, 80, 255) : IM_COL32(255, 160, 40, 255);
+            dl->AddQuadFilled({g.mx, cy - r}, {g.mx + r, cy}, {g.mx, cy + r}, {g.mx - r, cy}, col);
+            dl->AddQuad({g.mx, cy - r}, {g.mx + r, cy}, {g.mx, cy + r}, {g.mx - r, cy}, IM_COL32(0, 0, 0, 160));
+        }
+        char label[192];
+        label_of(label, sizeof(label), inst);
+        dl->PushClipRect({MD_MAX(g.bx0, x0), g.y0}, {MD_MIN(g.bx1, x1), g.y1}, true);
+        dl->AddText({MD_MAX(g.bx0, x0) + 4.0f, g.y0 + 1.0f}, ImGui::GetColorU32(shown ? ImGuiCol_Text : ImGuiCol_TextDisabled), label);
+        dl->PopClipRect();
+    }
+    // The time shown, through the lane as through the plots
+    const float tx = time_x(data->animation.time);
+    dl->AddLine({tx, pos.y}, {tx, pos.y + height}, IM_COL32(255, 255, 0, 255), 1.0f);
+    dl->PopClipRect();
+
+    if (hovered && hover_row >= 0 && hover_row < (int)n && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
+        menu_inst = rows[hover_row];
+        ImGui::OpenPopup("##timeline_instance_menu");
+    }
+    if (ImGui::BeginPopup("##timeline_instance_menu")) {
+        if (!listed(menu_inst)) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            SystemInstance& inst = *menu_inst;
+            SystemContext& sc = *inst.sys;
+            const SystemRun* run = instance_run(inst);
+            char label[192];
+            label_of(label, sizeof(label), inst);
+            ImGui::TextUnformatted(label);
+            ImGui::Separator();
+            if (ImGui::RadioButton("Follows the time shown", inst.frame < 0)) instance_show(inst, inst.run, -1);
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Keeps to a frame", inst.frame >= 0) && inst.frame < 0) {
+                instance_show(inst, inst.run, (int64_t)(instance_current_frame(inst) + 0.5));
+            }
+            ImGui::TextDisabled("Its run on the time shown");
+            draw_run_time_offset(sc, run);
+        }
+        ImGui::EndPopup();
+    }
+
+    if (hovered && drag.kind == Drag_None && hover_row >= 0 && hover_row < (int)n && !ImGui::IsPopupOpen("##timeline_instance_menu")) {
+        const SystemInstance& inst = *rows[hover_row];
+        const SystemContext& sc = *inst.sys;
+        const SystemRun* run = instance_run(inst);
+        const Geometry g = geometry((size_t)hover_row);
+        char label[192];
+        label_of(label, sizeof(label), inst);
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(label);
+        ImGui::TextDisabled("frames 0 to %zu, at %.6g to %.6g %s", run_num_frames(sc, run) - 1, g.tb * x_scale, g.te * x_scale, x_unit);
+        if (inst.frame >= 0) ImGui::TextDisabled("keeps to frame %lld", (long long)inst.frame);
+        else                 ImGui::TextDisabled("follows the time shown");
+        ImGui::TextDisabled("Drag the bar to move the run along the time, the marker to change the frame;\n"
+                            "right-click to align its start with the first run's");
+        ImGui::EndTooltip();
+    }
+}
+
 // A tick label of the timeline's time axis: the run's time, in its own unit, shown in the display unit (user_data, the factor)
 static int format_scaled(double value, char* buf, int size, void* user_data) {
     return snprintf(buf, size, "%g", value * *(const double*)user_data);
@@ -4190,6 +4367,9 @@ static void draw_timeline_window(ApplicationState* data) {
                 timeline_periods_lane(&data->timeline.periods, range_axis, &moved);
                 if (moved != frame) clock_set_frame(data, moved);
             }
+
+            // Where each instance's run is on the clock
+            draw_timeline_instances_lane(data, data->timeline.view_range.beg_x, data->timeline.view_range.end_x, x_scale, x_unit_str);
 
             double time = data->animation.time;
             bool   time_moved = false;
