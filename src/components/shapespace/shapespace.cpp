@@ -426,6 +426,7 @@ struct Shapespace : viamd::EventHandler {
         bool   panning = false;         // Right-drag, along time
         bool   dollying = false;        // Middle-drag: zooming in time, about the time where it began (dolly_u of the axis)
         bool   scrubbing = false;       // Ctrl + left-drag: the frame shown is the one at the pointer's time
+        bool   over_box = false;        // The pointer, last frame: over one of the box's planes
         float  dolly_u = 0.5f;
         int    preset = -1;             // A view to turn to: 0 along the time axis, 1 from the side, 2 the default
         bool   drawn = false;           // This frame
@@ -1791,6 +1792,11 @@ struct Shapespace : viamd::EventHandler {
         uint32_t step = 1;
         bool     current = false;
         const md_bitset_t* structures = nullptr; // Of the points, when not the layer's (smoothed, of the frame before)
+        // Of a window narrower than the layer's frames: the frames the paths would join next past its ends (the ones
+        // drawn were the window wider), UINT32_MAX when none. Their points are not of the source: the paths are cut at
+        // the window's ends towards them.
+        uint32_t before = UINT32_MAX;
+        uint32_t after = UINT32_MAX;
 
         uint32_t frame(size_t k) const { return frames[k]; }
         uint32_t next(size_t k) const { return k + 1 < num_frames ? frames[k + 1] : frames_end; }
@@ -1857,7 +1863,9 @@ struct Shapespace : viamd::EventHandler {
         // Frames skipped are counted from the first of the layer's, not of the window's: as the window moves (following
         // the frame shown) the frames drawn stay the same ones
         uint64_t rank = 0;
-        if (frame_beg > 0 || frame_end < nf) {
+        const md_bitset_t all = set;
+        const bool windowed = frame_beg > 0 || frame_end < nf;
+        if (windowed) {
             const uint32_t e = MD_MIN(frame_end, nf);
             if (frame_beg >= e) return false;
             rank = frame_beg > 0 ? md_bitset_count_range(set, 0, frame_beg) : 0;
@@ -1888,6 +1896,20 @@ struct Shapespace : viamd::EventHandler {
         ps->set = set;
         ps->step = step;
         ps->current = false;
+        if (windowed && n > 0) {
+            // Drawn are the frames of a rank a multiple of step, in all of the layer's: the one before the first drawn,
+            // and the one after the last
+            const uint64_t r_first = rank + (step - rank % step) % step;
+            const uint64_t r_before = r_first >= step ? r_first - step : UINT64_MAX;
+            const uint64_t r_after = r_first + (uint64_t)(n - 1) * step + step;
+            uint64_t r = 0;
+            md_bitset_iter_t ia = md_bitset_iter_range(all, 0, nf);
+            while (md_bitset_iter_next(&ia) && r <= r_after) {
+                if (r == r_before) ps->before = ia.idx;
+                if (r == r_after) ps->after = ia.idx;
+                ++r;
+            }
+        }
         return n > 0;
     }
 
@@ -2617,6 +2639,9 @@ struct Shapespace : viamd::EventHandler {
         input_map.Pan = -1;
         input_map.Fit = -1;
         input_map.Menu = -1;
+        // A double-click on a plane of the box turns to face it (ImPlot3D); off them it is ours alone, of time: the box
+        // is not turned back. Of the last frame, as ImPlot3D takes it before the box is known: a double-click is still.
+        if (!v3.over_box) input_map.ResetRotation = -1;
 
         ImPlot3D::PushStyleColor(ImPlot3DCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         ImPlot3D::PushStyleColor(ImPlot3DCol_FrameBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
@@ -2815,6 +2840,30 @@ struct Shapespace : viamd::EventHandler {
             }
         }
 
+        // f(structure, k, a, b) for the paths out of the window, to the points past its ends: from the point k inside, a,
+        // to where the path to the point outside crosses the window's end, b ({ time, x, y }), as joined() joins points
+        auto for_each_edge = [&](const PointSource& ps, auto&& f) {
+            if (ps.current || ps.num_frames == 0) return;
+            for (int end = 0; end < 2; ++end) {
+                const uint32_t out = end == 0 ? ps.before : ps.after;
+                if (out == UINT32_MAX) continue;
+                const size_t k = end == 0 ? 0 : ps.num_frames - 1;
+                const uint32_t in = ps.frames[k];
+                if ((end == 0 ? in - out : out - in) > ps.step) continue;
+                const double ti = frame_time(in), to = frame_time(out);
+                const double te = end == 0 ? t0 : t1;
+                if (!(to != ti)) continue;
+                const double u = MD_CLAMP((te - ti) / (to - ti), 0.0, 1.0);
+                for (size_t st = 0; st < ps.num_structures; ++st) {
+                    const md_float2_t pi = ps.coords[st * ps.stride + in], po = ps.coords[st * ps.stride + out];
+                    if (!coord_valid(pi) || !coord_valid(po)) continue;
+                    const float a[3] = { (float)ti, pi.x, pi.y };
+                    const float b[3] = { (float)(ti + (to - ti) * u), pi.x + (po.x - pi.x) * (float)u, pi.y + (po.y - pi.y) * (float)u };
+                    f((uint32_t)st, k, a, b);
+                }
+            }
+        };
+
         // The layers of points: over frames a line (or points) for each structure, of the frame shown points on its slice
         PointSource sources[MAX_LAYERS];
         bool has_source[MAX_LAYERS] = {};
@@ -2863,6 +2912,26 @@ struct Shapespace : viamd::EventHandler {
                     xs[2 * ns + 1] = b.x; ys[2 * ns + 1] = b.y; zs[2 * ns + 1] = b.z;
                     cols[ns] = color_u32(point_color(l, ps, a.s, a.k), alpha_of(a.s));
                     ++ns;
+                }
+                // Out to the points past the window, cut at its ends: in the colour of the point inside
+                float* exs = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                float* eys = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                float* ezs = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                ImU32* ecols = (ImU32*)md_alloc(fa, sizeof(ImU32) * 2 * ps.num_structures);
+                int ne = 0;
+                for_each_edge(ps, [&](uint32_t s, size_t k, const float* a, const float* b) {
+                    exs[2 * ne] = a[0]; eys[2 * ne] = a[1]; ezs[2 * ne] = a[2];
+                    exs[2 * ne + 1] = b[0]; eys[2 * ne + 1] = b[1]; ezs[2 * ne + 1] = b[2];
+                    ecols[ne] = color_u32(point_color(l, ps, s, k), alpha_of(s));
+                    ++ne;
+                });
+                if (ne > 0) {
+                    ImPlot3DSpec spec;
+                    spec.LineColors = ecols;
+                    spec.LineWeight = l.trajectory_width;
+                    spec.Flags = item_flags | ImPlot3DLineFlags_Segments;
+                    snprintf(id, sizeof(id), "##edges%u", l.id);
+                    ImPlot3D::PlotLine(id, exs, eys, ezs, 2 * ne, spec);
                 }
                 if (ns > 0) {
                     ImPlot3DSpec spec;
@@ -2966,10 +3035,19 @@ struct Shapespace : viamd::EventHandler {
                 };
                 char id[32];
                 if (any_hl && !ps.current) {
-                    float* xs = (float*)md_alloc(fa, sizeof(float) * 2 * np);
-                    float* ys = (float*)md_alloc(fa, sizeof(float) * 2 * np);
-                    float* zs = (float*)md_alloc(fa, sizeof(float) * 2 * np);
+                    const size_t cap = 2 * (np + 2 * ps.num_structures);
+                    float* xs = (float*)md_alloc(fa, sizeof(float) * cap);
+                    float* ys = (float*)md_alloc(fa, sizeof(float) * cap);
+                    float* zs = (float*)md_alloc(fa, sizeof(float) * cap);
                     int ns = 0;
+                    if (l.trajectory != Trajectory_Points) {
+                        for_each_edge(ps, [&](uint32_t s, size_t, const float* a, const float* b) {
+                            if (!structure_highlighted(s)) return;
+                            xs[2 * ns] = a[0]; ys[2 * ns] = a[1]; zs[2 * ns] = a[2];
+                            xs[2 * ns + 1] = b[0]; ys[2 * ns + 1] = b[1]; zs[2 * ns + 1] = b[2];
+                            ++ns;
+                        });
+                    }
                     uint32_t last_s = UINT32_MAX;
                     bool last_hl = false;
                     for (size_t j = 0; j + 1 < np; ++j) {
@@ -3063,8 +3141,11 @@ struct Shapespace : viamd::EventHandler {
         // where the pointer is on a wall of the box along time, behind what is in it (where the ray through the pointer
         // leaves the box: the walls ImPlot3D grids), or else on the time axis, by its ticks. None through an end of the
         // box (looking along time), or off the box and its axis.
-        auto pointer_time = [&]() -> double {
-            const ImPlot3DRay ray = ImPlot3D::PixelsToPlotRay(mouse);
+        // Where the ray through the pointer leaves the box (its parameter), and through which of its faces (the axis
+        // across it, -1 when it misses): one of the planes ImPlot3D draws behind what is in the box, as it is turned
+        const ImPlot3DRay ray = ImPlot3D::PixelsToPlotRay(mouse);
+        int exit_face = -1;
+        const double exit_t = [&] {
             const double lo[3] = { t0, -0.04, -0.04 }, hi[3] = { t1, 1.04, tri_iso.y + 0.04 };
             const double o[3] = { ray.Origin.x, ray.Origin.y, ray.Origin.z };
             const double d[3] = { ray.Direction.x, ray.Direction.y, ray.Direction.z };
@@ -3080,7 +3161,16 @@ struct Shapespace : viamd::EventHandler {
                 t_in = MD_MAX(t_in, a);
                 if (b < t_out) { t_out = b; out = k; }
             }
-            if (t_in <= t_out && out > 0) return o[0] + d[0] * t_out;
+            if (!(t_in <= t_out)) return (double)NAN;
+            exit_face = out;
+            return t_out;
+        }();
+        v3.over_box = hovered && exit_face >= 0;
+        // Off the box, a double-click zooms out fully: the whole run. On one of its planes ImPlot3D turns to face it, and
+        // the time shown stays.
+        if (hovered && !shift && !ctrl && !v3.active && exit_face < 0 && nf > 1 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
+        auto pointer_time = [&]() -> double {
+            if (exit_face > 0) return ray.Origin.x + ray.Direction.x * exit_t;
             ImPlot3DPoint ea, eb;
             if (!ImPlot3D::GetAxisEdge(ImAxis3D_X, &ea, &eb)) return NAN;
             const ImVec2 a = ImPlot3D::PlotToPixels(ea), b = ImPlot3D::PlotToPixels(eb);
@@ -3148,7 +3238,6 @@ struct Shapespace : viamd::EventHandler {
                     v3.dollying = true;
                     v3.dolly_u = along ? time_u(mouse) : 0.5f;
                 }
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
             }
             // Middle-drag, as the viewport dollies: up zooms in
             if (v3.dollying) {
@@ -3357,7 +3446,7 @@ struct Shapespace : viamd::EventHandler {
             fit_view = true;
             if (view_mode != ViewMode_2D) time_window_fit();
         }
-        ImGui::SetItemTooltip(view_mode == ViewMode_2D ? "Fit the view (or double-click the plot)" : "Fit the view, in 3D all of the run (or double-click the plot)");
+        ImGui::SetItemTooltip(view_mode == ViewMode_2D ? "Fit the view (or double-click the plot)" : "Fit the view, in 3D all of the run (or double-click off the box)");
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
@@ -3377,8 +3466,9 @@ struct Shapespace : viamd::EventHandler {
             ImGui::TextDisabled("Click a point of a frame to go there.");
             ImGui::TextDisabled("Shift-drag to select the structures and frames of the points, with the right button to deselect them.");
             ImGui::TextDisabled("Drop a period from the timeline on the plot to add its density.");
-            ImGui::TextDisabled("In 3D: drag turns; in time, right-drag pans, the wheel zooms, double-click shows the whole run;\n"
-                               "ctrl-click or drag on the walls or the time axis goes to the frame there.");
+            ImGui::TextDisabled("In 3D: drag turns; in time, right-drag pans and the wheel zooms; double-click off the box shows the\n"
+                               "whole run, on a plane turns to face it; ctrl-click or drag on the walls\n"
+                               "or the time axis goes to the frame there.");
             ImGui::TextDisabled("The time shown in 3D is the timeline's (" ICON_FA_LINK "), its own (" ICON_FA_THUMBTACK ") or a tail following the frame shown (" ICON_FA_PERSON_RUNNING ").");
             ImGui::Checkbox("Periods along time in 3D", &time_win.show_periods);
             ImGui::EndPopup();

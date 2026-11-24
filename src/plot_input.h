@@ -15,7 +15,8 @@
 //                           in the Shapespace's 3D view)
 //   click                   pick
 //   right-click             without a drag: the context menu
-//   double-click            zoom out fully: all of it. In time, the whole run, not where a plot's values are.
+//   double-click            zoom out fully: all of it. In time, the whole run, not where a plot's values are. In 3D on
+//                           a plane of the box: turn to face that plane.
 //
 // Nothing is hovered while a view is navigated (turned, panned, dollied: plot_input_navigating), in any view: what
 // passes under the pointer then is not what it points at. The viewport has it from interaction_surface.
@@ -57,15 +58,16 @@ static inline void plot_input_house(ImPlotInputMap* map) {
     map->OverrideMod = ImGuiMod_Shift;
 }
 
-// ImPlot3D: left-drag turns, right-drag pans, middle-drag and the wheel zoom (its own), double-click fits, a right click
-// opens the menu. It turns as fast as the viewport: its trackball (camera_utils.cpp, 0.8 in NDC) turns about 2.5 radians
+// ImPlot3D: left-drag turns, right-drag pans, middle-drag and the wheel zoom (its own), a right click opens the menu.
+// Double-click zooms out fully; on one of the box's planes it turns to face that plane, as a 2D plot shows it (off the
+// planes ImPlot3D turns back to the view it began with: a view may leave that out, as the Shapespace does). It turns as fast as the viewport: its trackball (camera_utils.cpp, 0.8 in NDC) turns about 2.5 radians
 // for a drag across all of the view, near its middle.
 static inline void plot_input_house(ImPlot3DInputMap* map) {
     *map = ImPlot3DInputMap();
     map->Rotate        = ImGuiMouseButton_Left;
     map->Pan           = ImGuiMouseButton_Right;
     map->Fit           = ImGuiMouseButton_Left;
-    map->ResetRotation = -1;
+    map->ResetRotation = ImGuiMouseButton_Left;
     map->Menu          = ImGuiMouseButton_Right;
     map->RotateRate    = 2.5f;
 }
