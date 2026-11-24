@@ -1787,6 +1787,7 @@ struct Shapespace : viamd::EventHandler {
         md_bitset_t set = {};                    // The layer's frames (for this frame); empty for the frame shown
         uint32_t step = 1;
         bool     current = false;
+        bool     smoothed = false;               // The shapes are smoothed over time (smoothing)
         const md_bitset_t* structures = nullptr; // Of the points, when not the layer's (smoothed, of the frame before)
         // Of a window narrower than the layer's frames: the frames the paths would join next past its ends (the ones
         // drawn were the window wider), UINT32_MAX when none. Their points are not of the source: the paths are cut at
@@ -1819,6 +1820,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             ps->structures = l.window_structs;
             return true;
         }
@@ -1842,6 +1844,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             return true;
         }
         if (l.frames == LayerFrames_Current || run_num_frames(app) < 2) {
@@ -1888,6 +1891,7 @@ struct Shapespace : viamd::EventHandler {
         }
         *ps = PointSource{};
         ps->coords = eval_shapes(*l.eval);
+        ps->smoothed = ps->coords != l.eval->coords;
         ps->stride = nf;
         ps->num_structures = l.eval->num_structures;
         ps->frames = list;
@@ -2060,6 +2064,7 @@ struct Shapespace : viamd::EventHandler {
             else          ImGui::TextDisabled("frame %u  \xc2\xb7  click to go there", h.frame);
             if (h.next > h.frame + 1) ImGui::TextDisabled("standing for the frames to %u, which are not drawn", h.next - 1);
         }
+        if (ps.smoothed) ImGui::TextDisabled(ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
         char label[128];
         layer_label(label, sizeof(label), l);
         ImGui::TextDisabled("%s", label);
@@ -2362,6 +2367,11 @@ struct Shapespace : viamd::EventHandler {
             density_map_plot_canvas(render_densities());
             // Nothing hovered while it is panned (plot_input.h)
             draw_points(plot_input_hovered());
+            {
+                ImPlot::PushPlotClipRect();
+                draw_smoothing_badge(ImPlot::GetPlotDrawList(), ImPlot::GetPlotPos());
+                ImPlot::PopPlotClipRect();
+            }
 
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
@@ -2598,6 +2608,47 @@ struct Shapespace : viamd::EventHandler {
         time_window_frames(&fb, &fe);
         if (fe > fb) ImGui::SetItemTooltip("Frames %u to %u, %u frames. Drag the ends or ctrl-click to type; right-click for all of it.", fb, fe - 1, fe - fb);
         else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click for all of it.");
+    }
+
+    // In a corner of a plot, while what it shows is smoothed over time: said with the data, so that no view of it (a
+    // screenshot of the plot alone) passes for the shapes of the frames
+    void draw_smoothing_badge(ImDrawList* dl, ImVec2 corner) const {
+        if (smoothing <= 1 || run_num_frames(app) < 2) return;
+        char text[64];
+        snprintf(text, sizeof(text), ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
+        const ImVec2 pad(5.0f, 2.0f);
+        const ImVec2 p0 = corner + ImVec2(6.0f, 6.0f);
+        const ImVec2 p1 = p0 + ImGui::CalcTextSize(text) + pad * 2.0f;
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 3.0f);
+        dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_ButtonActive), 3.0f);
+        dl->AddText(p0 + pad, ImGui::GetColorU32(ImGuiCol_Text), text);
+    }
+
+    // The smoothing over time, in the toolbar: in sight, as it changes what every point is. Marked while it is on.
+    void draw_smoothing_control() {
+        const bool on = smoothing > 1;
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        }
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+        if (ImGui::SliderInt("##smoothing", &smoothing, 1, MAX_SMOOTHING, on ? ICON_FA_WAVE_SQUARE " %d" : ICON_FA_WAVE_SQUARE " off",
+                             ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
+            smoothing |= 1;     // Centred: odd
+            // Made now, before the points are drawn this frame: not at the next update
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].eval) update_smoothed(*layers[i].eval);
+            }
+        }
+        if (on) ImGui::PopStyleColor(2);
+        if (ImGui::BeginPopupContextItem("##smoothing_menu")) {
+            if (ImGui::MenuItem("Off", nullptr, false, on)) smoothing = 1;
+            ImGui::EndPopup();
+        }
+        ImGui::SetItemTooltip("Smoothing over time: a moving average of the shapes over this many frames, centred.\n"
+                              "Of every layer and view alike: the points and densities in 2D, the paths in 3D, the points\n"
+                              "of the frame shown, what is selected and what is exported. As smooth(shape_weights(...), n)\n"
+                              "in a script. Ctrl-click to type; right-click to turn it off.");
     }
 
     void draw_plot3d() {
@@ -3271,6 +3322,7 @@ struct Shapespace : viamd::EventHandler {
         // Over the plot: the point under the pointer, the box
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->PushClipRect(plot_rect.Min, plot_rect.Max, true);
+        draw_smoothing_badge(dl, plot_rect.Min);
         const md_float4_t sel_c = app->selection.color.selection.outline;
         const md_float4_t hl_c = app->selection.color.highlight.outline;
         if (hover.layer >= 0) {
@@ -3365,10 +3417,14 @@ struct Shapespace : viamd::EventHandler {
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
         const md_float2_t* shapes = eval_shapes(*eval);     // As shown: smoothed, when they are
+        // Said in every column's label, so that a file of smoothed shapes cannot be taken for the shapes of the frames
+        char sm[48] = "";
+        if (shapes != eval->coords) snprintf(sm, sizeof(sm), " (smoothed over %d frames)", smoothing);
         for (size_t s = 0; s < ns; ++s) {
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
+            static const char* const kinds[3] = { "linear", "planar", "isotropic" };
+            for (int k = 0; k < 3; ++k) {
+                md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "%s %zu%s", kinds[k], s + 1, sm) : md_alloc_printf(temp, "%s%s", kinds[k], sm), temp);
+            }
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
         const double* time = run_frame_times(app);
@@ -3441,6 +3497,10 @@ struct Shapespace : viamd::EventHandler {
             ImGui::SameLine();
             draw_time_window_controls();
         }
+        if (run_num_frames(app) >= 2) {
+            ImGui::SameLine();
+            draw_smoothing_control();
+        }
 
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
@@ -3454,17 +3514,6 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Grid of equal weights", &show_grid);
-            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-            if (ImGui::SliderInt("Smoothing", &smoothing, 1, MAX_SMOOTHING, smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
-                smoothing |= 1;     // Centred: odd
-                // Made now, before the points are drawn this frame: not at the next update
-                for (int i = 0; i < num_layers; ++i) {
-                    if (layers[i].eval) update_smoothed(*layers[i].eval);
-                }
-            }
-            ImGui::SetItemTooltip("A moving average of the shapes over this many frames, centred, of every layer and view alike:\n"
-                                  "the points and densities in 2D, the paths in 3D, the points of the frame shown, what is selected\n"
-                                  "and what is exported. As smooth(shape_weights(...), n) in a script.");
             ImGui::SeparatorText("A selection selects");
             for (int k = 0; k < SelectTarget_Count; ++k) {
                 if (ImGui::RadioButton(select_target_names[k], select_target == k)) select_target = (SelectTarget)k;
