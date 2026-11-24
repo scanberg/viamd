@@ -729,6 +729,9 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     switch (key.variant) {
     case SeriesVariant_Values:
         out->dim = (int)MD_MIN(stride, (size_t)PLOT_MAX_POPULATION);
+        // A script publishes its bools, and nothing else, as bytes (md_vial.h): over the frames, masks of them. Not their
+        // mean over a population beside them, the fraction true: a number.
+        out->truth = is_script(key.source) && src->format.type == MD_ATTRIBUTE_TYPE_U8;
         break;
     case SeriesVariant_Mean:
         out->dim = 1;
@@ -777,6 +780,7 @@ int series_temporal_print_value(char* buf, size_t cap, const SeriesTemporalView&
         }
         return snprintf(buf, cap, "%.4g .. %.4g", lo, hi);
     }
+    if (v.truth) return snprintf(buf, cap, "%s", v.y[(size_t)i * v.stride + k] > 0.5f ? "true" : "false");
     return snprintf(buf, cap, "%.4g", series_temporal_point(v, i, k).y);
 }
 

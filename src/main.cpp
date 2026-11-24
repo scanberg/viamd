@@ -4424,6 +4424,27 @@ static void draw_timeline_window(ApplicationState* data) {
                         }
                     }
 
+                    // The truths (a script's bools) are drawn as masks over the frames, each with a band of its own along the
+                    // top edge: its lane, in the order of the series and their members shown (of the plot's items: within it)
+                    int truth_lane[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                    {
+                        int lanes = 0;
+                        for (int j = 0; j < sp.count; ++j) {
+                            truth_lane[j] = lanes;
+                            if (!resolved[j] || !views[j].truth) continue;
+                            const ImPlotItem* item = ImPlot::GetItem(views[j].plot_id);
+                            if (item && !item->Show) continue;
+                            const int dim = MD_CLAMP(views[j].dim, 1, PLOT_MAX_POPULATION);
+                            for (int k = 0; k < dim; ++k) lanes += (dim == 1 || sp.series[j].population_mask.test(k)) ? 1 : 0;
+                        }
+                    }
+                    // The lane of member k of series j
+                    auto lane_of = [&](int j, int k) {
+                        int lane = truth_lane[j];
+                        for (int m = 0; m < k; ++m) lane += sp.series[j].population_mask.test(m) ? 1 : 0;
+                        return lane;
+                    };
+
                     if (axis_view && periodic_axis_popup(ImAxis_Y1, axis_view)) {
                         timeline_cut_least_populated(data, sp, axis_view);
                     }
@@ -4484,7 +4505,15 @@ static void draw_timeline_window(ApplicationState* data) {
                                 TemporalGetterPayload payload = { &v, k, mouse_pos.y, pviews[j] ? periodic_view_length(*pviews[j]) : 0.0, true };
                                 double d = DBL_MAX;
 
-                                if (v.band) {
+                                if (v.truth) {
+                                    // On its band, true or not; over the frames it is true in, as over an area
+                                    float b0 = 0.0f, b1 = 0.0f;
+                                    if (timeline_truth_band(lane_of(j, k), &b0, &b1) && mouse_coord.y >= b0 - 2.0f && mouse_coord.y < b1 + 2.0f) {
+                                        d = 0.0;
+                                    } else if (v.y[(size_t)fn * v.stride + k] > 0.5f) {
+                                        d = area_dist;
+                                    }
+                                } else if (v.band) {
                                     const ImVec2 p_min[4] = {
                                         ImPlot::PlotToPixels(temporal_getter_band_lo(f[0], &payload)),
                                         ImPlot::PlotToPixels(temporal_getter_band_lo(f[1], &payload)),
@@ -4605,7 +4634,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                 ImGui::CloseCurrentPopup();
                             }
 
-                            if (resolved[j] && !v.band) {
+                            if (resolved[j] && !v.band && !v.truth) {
                                 const char* plot_type_names[] = {"Line", "Scatter"};
                                 int plot_type = s.plot_type == PlotType_Scatter ? 1 : 0;
                                 if (ImGui::Combo("Plot Type", &plot_type, plot_type_names, IM_ARRAYSIZE(plot_type_names))) {
@@ -4659,6 +4688,17 @@ static void draw_timeline_window(ApplicationState* data) {
                                     if (hovered_pop_idx == k) {
                                         weight = 2.0f;
                                     }
+                                }
+
+                                if (v.truth) {
+                                    // The frames it is true in, as the frames selected are shown: in its colour, in the legend
+                                    ImPlot::SetNextFillStyle(color);
+                                    if (ImPlot::BeginItem(v.plot_id, ImPlotItemFlags_NoFit, ImPlotCol_Fill)) {
+                                        const bool hl = hovered_idx == j && (hovered_pop_idx == -1 || hovered_pop_idx == k);
+                                        timeline_truth_plot(v.y, v.stride, k, range_axis, ImGui::ColorConvertFloat4ToU32(color), lane_of(j, k), hl);
+                                        ImPlot::EndItem();
+                                    }
+                                    return;
                                 }
 
                                 if (v.band) {
