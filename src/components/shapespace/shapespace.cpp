@@ -1797,6 +1797,10 @@ struct Shapespace : viamd::EventHandler {
         // the window's ends towards them.
         uint32_t before = UINT32_MAX;
         uint32_t after = UINT32_MAX;
+        // The first and the last of all of the layer's frames, not only the window's: what the colours of time span, so
+        // that a point is in the same colour however much of time is shown, and in 2D and 3D alike
+        uint32_t time_beg = 0;
+        uint32_t time_last = 0;
 
         uint32_t frame(size_t k) const { return frames[k]; }
         uint32_t next(size_t k) const { return k + 1 < num_frames ? frames[k + 1] : frames_end; }
@@ -1896,6 +1900,8 @@ struct Shapespace : viamd::EventHandler {
         ps->set = set;
         ps->step = step;
         ps->current = false;
+        ps->time_beg = md_bitset_first(all);
+        ps->time_last = MD_MAX(md_bitset_last_end(all), 1u) - 1;
         if (windowed && n > 0) {
             // Drawn are the frames of a rank a multiple of step, in all of the layer's: the one before the first drawn,
             // and the one after the last
@@ -1954,8 +1960,9 @@ struct Shapespace : viamd::EventHandler {
             return ImPlot::SampleColormap(ps.num_structures > 1 ? (float)s / (float)(ps.num_structures - 1) : 0.5f, cm);
         }
         case PointColoring_Time: {
-            if (ps.current || ps.num_frames <= 1) return l.color;
-            const uint32_t f0 = ps.frames[0], f1 = ps.frames[ps.num_frames - 1];
+            if (ps.current) return l.color;
+            // Over all of the layer's frames: not of the window of time shown (PointSource::time_beg)
+            const uint32_t f0 = ps.time_beg, f1 = ps.time_last;
             if (f1 <= f0) return l.color;
             return ImPlot::SampleColormap((float)(ps.frames[k] - f0) / (float)(f1 - f0), l.colormap);
         }
