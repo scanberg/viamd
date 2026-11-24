@@ -237,6 +237,8 @@ bool plot_layout_deserialize(viamd::deserialization_state_t& state, md_str_t sec
 // "source" string beside its members ("<run>/edr", "<run>/xvg/energy"). Paths are views into the
 // system's table.
 
+// Along the run (its path), or along the run shown
+size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys, md_str_t run);
 size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys);
 md_str_t  system_series_group_source(const SystemContext& sys, md_str_t group);
 // "edr  (md.edr)": the group below the run and the name of the file

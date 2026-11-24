@@ -750,11 +750,13 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
         break;
     }
     case FileRole_Trajectory: {
-        const size_t num_frames = run_num_frames(sys);
-        const double* times = run_frame_times(sys);
-        if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(sys))) {
+        // Of its own run: run i of the list is run i of the system
+        const SystemRun* run = (e->run >= 0 && (size_t)e->run < sys.num_runs) ? sys.runs[e->run] : nullptr;
+        const size_t num_frames = run_num_frames(sys, run);
+        const double* times = run_frame_times(sys, run);
+        if (num_frames > 0 && times && !md_unit_is_none(run_time_unit(sys, run))) {
             char unit_buf[32];
-            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(sys));
+            const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(sys, run));
             snprintf(buf, cap, "%zu frames, %.4g - %.4g %s", num_frames, times[0] * scl, times[num_frames - 1] * scl, unit_buf);
         } else {
             snprintf(buf, cap, "%zu frames", num_frames);
@@ -762,9 +764,10 @@ void system_file_details(char* buf, size_t cap, const SystemContext& sys, size_t
         break;
     }
     case FileRole_Series: {
-        // The group the file published, which names its source. The series are of the one system loaded.
+        // The group the file published along its run, which names its source
+        const SystemRun* run = (e->run >= 0 && (size_t)e->run < sys.num_runs) ? sys.runs[e->run] : nullptr;
         md_str_t groups[64];
-        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), sys), MD_COUNTOF(groups));
+        const size_t num_groups = run ? MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), sys, md_str_from_cstr(run->path)), MD_COUNTOF(groups)) : 0;
         const md_str_t path = md_str_from_cstr(e->path);
         for (size_t g = 0; g < num_groups; ++g) {
             if (md_str_eq(system_series_group_source(sys, groups[g]), path)) {
@@ -891,6 +894,14 @@ void draw_system_files(SystemContext& sc) {
             if (ImGui::BeginPopupContextItem("##file")) {
                 if (ImGui::MenuItem("Copy path")) ImGui::SetClipboardText(e.path);
                 if (!e.missing) draw_file_move_menu(sc, i);
+                if (role == FileRole_Trajectory && e.run >= 0 && (size_t)e.run < sc.num_runs) {
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Show this run", nullptr, e.run == (int)sc.shown_run, !e.missing && e.run != (int)sc.shown_run)) {
+                        system_show_run(sc, (size_t)e.run);
+                    }
+                    if (ImGui::MenuItem("Close this run")) sc.app->run_close = { sc.id, (size_t)e.run };
+                    ImGui::SetItemTooltip("Its file and the series along it are unloaded");
+                }
                 ImGui::EndPopup();
             }
             char details[128];
@@ -898,6 +909,11 @@ void draw_system_files(SystemContext& sc) {
             if (details[0]) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("%s", details);
+            }
+            // Of several runs, the one the system is drawn at
+            if (role == FileRole_Trajectory && sc.num_runs > 1 && e.run == (int)sc.shown_run) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark), ICON_FA_EYE " shown");
             }
 
             if (of_run && role != FileRole_Trajectory) ImGui::Unindent();
@@ -912,7 +928,7 @@ void system_remove(SystemContext& sys) {
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
     // Its data, when it has any: an empty system (the first, before anything is loaded) has nothing to free
-    if (system_loaded(sys) || sys.run.path[0]) {
+    if (system_loaded(sys) || sys.num_runs > 0) {
         interrupt_async_tasks(app);
         free_trajectory_data(app, sys);
         free_system_data(app, sys);

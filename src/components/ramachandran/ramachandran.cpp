@@ -864,7 +864,7 @@ struct Ramachandran : viamd::EventHandler {
     // Where the samples fall in the reference is counted along, by chunk.
     void launch_job(Layer& l, uint64_t hash, uint32_t frame_beg, uint32_t frame_end) {
         MD_ASSERT(!l.job);
-        const md_backbone_angles_t* angles = app->trajectory_data.backbone_angles.data;
+        const md_backbone_angles_t* angles = run_angles().data;
         MD_ASSERT(angles && frame_end > frame_beg);
 
         struct Input {
@@ -877,7 +877,7 @@ struct Ramachandran : viamd::EventHandler {
         };
         std::shared_ptr<Input> in = std::make_shared<Input>();
         in->angles = angles;
-        in->stride = app->trajectory_data.backbone_angles.stride;
+        in->stride = run_angles().stride;
         in->frame_beg = frame_beg;
         in->frame_end = frame_end;
         uint64_t num_samples = 0;
@@ -1084,9 +1084,16 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
+    // The angles over the frames of the first system's run shown, empty without one
+    decltype(SystemTrajectoryData::backbone_angles) run_angles() const {
+        const SystemRun* run = system_run(app->system_context);
+        return run ? run->trajectory_data.backbone_angles : decltype(SystemTrajectoryData::backbone_angles){};
+    }
+
     bool angles_available() const {
         const md_system_t& sys = app->mold.sys;
-        return app->trajectory_data.backbone_angles.data && app->trajectory_data.backbone_angles.stride == sys.protein_backbone.segment.count &&
+        const auto angles = run_angles();
+        return angles.data && angles.stride == sys.protein_backbone.segment.count &&
                md_array_size(seg_type) == sys.protein_backbone.segment.count;
     }
 
@@ -1556,8 +1563,8 @@ struct Ramachandran : viamd::EventHandler {
         if (!angles_available()) return false;
         uint32_t beg = 0, end = 0;
         if (!layer_frame_range(l, &beg, &end)) return false;
-        ps->base = app->trajectory_data.backbone_angles.data;
-        ps->stride = app->trajectory_data.backbone_angles.stride;
+        ps->base = run_angles().data;
+        ps->stride = run_angles().stride;
         ps->frame_beg = beg;
         ps->frame_end = end;
         const uint64_t total = (uint64_t)num_segs * (end - beg);

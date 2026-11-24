@@ -1994,7 +1994,7 @@ struct Dataset : viamd::EventHandler {
         const md_attribute_t* axis = run_time_axis(data.system_context);
         const md_attribute_t* cell = run_attribute(data.system_context, MD_STR_LIT("unitcell"));
         const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
-        return md_hash64(v, sizeof(v), md_hash64_str(md_str_from_cstr(data.run.path), 0));
+        return md_hash64(v, sizeof(v), md_hash64_str(run_path(data.system_context), 0));
     }
 
     void compute_trajectory(ApplicationState& data) {

@@ -90,7 +90,7 @@ bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocat
         break;
     case FileRole_Series:
         if (md_array_size(list->runs) == 0) return false;
-        entry.run = (int)md_array_size(list->runs) - 1;
+        if (entry.run < 0 || (size_t)entry.run >= md_array_size(list->runs)) entry.run = (int)md_array_size(list->runs) - 1;
         break;
     default:
         return false;
@@ -109,6 +109,21 @@ bool file_list_record(FileList* list, FileEntry entry, FileRole role, md_allocat
 
     md_array_push(list->entries, entry, alloc);
     return true;
+}
+
+void file_list_remove_run(FileList* list, size_t r) {
+    MD_ASSERT(list);
+    if (r >= md_array_size(list->runs)) return;
+    size_t n = 0;
+    for (size_t i = 0; i < md_array_size(list->entries); ++i) {
+        FileEntry e = list->entries[i];
+        if (e.run == (int)r) continue;
+        if (e.run > (int)r) e.run -= 1;
+        list->entries[n++] = e;
+    }
+    md_array_shrink(list->entries, n);
+    for (size_t i = r; i + 1 < md_array_size(list->runs); ++i) list->runs[i] = list->runs[i + 1];
+    md_array_pop(list->runs);
 }
 
 void file_list_drop_runs(FileList* list) {
@@ -174,6 +189,24 @@ size_t file_list_split(FileList* rest, FileList* moved, const FileList* list, si
     md_array_free(run_to_rest, alloc);
     md_array_free(run_to_moved, alloc);
     return num_moved;
+}
+
+int file_list_run_of(const FileList* list, md_str_t path) {
+    MD_ASSERT(list);
+    int run = -1;
+    for (size_t i = 0; i < md_array_size(list->entries); ++i) {
+        const FileEntry& e = list->entries[i];
+        if (e.run >= 0 && md_str_eq_cstr(path, e.path) && file_list_role(list, i) == FileRole_Trajectory) run = e.run;
+    }
+    return run;
+}
+
+const FileEntry* file_list_run_file_of(const FileList* list, size_t r) {
+    MD_ASSERT(list);
+    for (size_t i = 0; i < md_array_size(list->entries); ++i) {
+        if (list->entries[i].run == (int)r) return &list->entries[i];
+    }
+    return NULL;
 }
 
 const FileEntry* file_list_system_file(const FileList* list) {

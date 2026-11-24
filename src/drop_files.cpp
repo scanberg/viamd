@@ -83,9 +83,8 @@ PlacementMatch drop_files_match(DropFiles* drop, size_t file, PlacementRef onto)
         dst = s->sys;
         dst_state = s->state;
         if (f.kind == PlacementKind_Series) {
-            // One run of a system so far: its first
-            if (onto.run != 0 || md_str_empty(s->run)) return PlacementMatch_No;
-            run = s->run;
+            if (onto.run < 0 || (size_t)onto.run >= s->num_runs) return PlacementMatch_No;
+            run = s->runs[onto.run];
         }
     }
 
@@ -124,7 +123,7 @@ void drop_files_plan(PlacementPlan* plan, DropFiles* drop, size_t max_systems) {
     const size_t num_loaded = MD_MIN(drop->num_loaded, MD_COUNTOF(loaded));
     for (size_t i = 0; i < num_loaded; ++i) {
         loaded[i].id = drop->loaded[i].id;
-        loaded[i].num_runs = md_str_empty(drop->loaded[i].run) ? 0 : 1;
+        loaded[i].num_runs = drop->loaded[i].num_runs;
     }
     const PlacementQuery query = { drop, query_match };
     file_placement_plan(plan, files, drop->num_files, loaded, num_loaded, max_systems, query);

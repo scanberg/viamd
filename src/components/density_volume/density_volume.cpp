@@ -827,7 +827,7 @@ struct DensityVolume : viamd::EventHandler {
                         .sys = &state->mold.sys,
                         .state = &state->mold.state,
                         .eval = state->script.eval,
-                        .run = md_str_from_cstr(state->run.path),
+                        .run = run_path(state->system_context),
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
                     result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
@@ -994,7 +994,7 @@ struct DensityVolume : viamd::EventHandler {
                 .sys = &state->mold.sys,
                 .state = &st0,
                 .eval = state->script.eval,
-                .run = md_str_from_cstr(state->run.path),
+                .run = run_path(state->system_context),
             };
             if (script::draw_ref(&vis, v.vis_ref, (int)v.member, ctx, script::DRAW_SDF) && md_array_size(vis.sdf.structures) > 0 &&
                 md_array_size(vis.sdf.matrices) > 0) {

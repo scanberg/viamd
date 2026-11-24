@@ -92,19 +92,29 @@ bool file_list_has(const FileList* list, md_str_t path);
 FileRole file_list_role(const FileList* list, size_t i);
 
 // A file was loaded in this role, or was named by a workspace and could not be (entry.missing). Building
-// starts the list over. A trajectory opens a new run, which the file then belongs to. A series joins the last
-// run, and is not recorded without one. A supplement or a series identical to one already in its place (path,
-// loader and argument) is not added twice. Returns false when nothing was recorded.
+// starts the list over. A trajectory opens a new run, which the file then belongs to. A series joins the run of its
+// entry (entry.run), the last where that is none of them, and is not recorded without one. A supplement or a series
+// identical to one already in its place (path, loader and argument) is not added twice. Returns false when nothing was
+// recorded.
 bool file_list_record(FileList* list, FileEntry entry, FileRole role, struct md_allocator_i* alloc);
 
 // The runs were closed: their files go with them
 void file_list_drop_runs(FileList* list);
+
+// Run r was closed: its files go with it, and the runs after it take the places before
+void file_list_remove_run(FileList* list, size_t r);
 
 // The list split as entry i goes out of it (to another system): what goes into moved, what stays into rest, each in its
 // order and with its runs. What goes along with the file: its other entries (a structure of several frames is the file
 // of its system and of the run it opens), and every file of a run one of them opens (a trajectory takes its series).
 // A file of a run which does not go is no file of a run in moved. Returns how many entries went.
 size_t file_list_split(FileList* rest, FileList* moved, const FileList* list, size_t i, struct md_allocator_i* alloc);
+
+// The run the file opened (its trajectory, or a structure of several frames), -1 for none: the last such
+int file_list_run_of(const FileList* list, md_str_t path);
+
+// The file that opened run r, NULL when there is none
+const FileEntry* file_list_run_file_of(const FileList* list, size_t r);
 
 // The file that built the system, NULL when there is none
 const FileEntry* file_list_system_file(const FileList* list);

@@ -1177,7 +1177,7 @@ struct Shapespace : viamd::EventHandler {
             }
             // One context for the range, so the run's files stay open across its frames
             const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
-            md_system_extract_t* ex = md_system_extract_begin(&sys, md_str_from_cstr(sc->run.path), paths, MD_COUNTOF(paths), md_get_heap_allocator());
+            md_system_extract_t* ex = md_system_extract_begin(&sys, run_path(*sc), paths, MD_COUNTOF(paths), md_get_heap_allocator());
             if (!ex) {
                 // Nothing to read them from: done, without shapes
                 ev->frames_done.fetch_add(end - beg);

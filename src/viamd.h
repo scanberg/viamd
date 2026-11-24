@@ -1743,7 +1743,7 @@ struct SystemTrajectoryData {
         size_t count = 0;                           // == its element count
         md_secondary_structure_t* data = nullptr;   // VIEW into sys.attributes, not owned
     } secondary_structure;
-    struct {
+    struct Render {
         size_t stride = 0; // = mol.backbone.count. Multiply frame idx with this to get the data
         size_t count = 0;  // = mol.backbone.count * num_frames. Defines the end of the data for assertions
         md_secondary_structure_t* data = nullptr;   // owned here: a presentation smoothing, not a quantity
@@ -1757,9 +1757,8 @@ struct SystemTrajectoryData {
 };
 
 // A RUN OF A SYSTEM: a trajectory opened on it, and what is read and derived along its frames. Several runs of one
-// system (an ensemble, a continuation) share its topology and its attribute table, each under a prefix of its own.
-// viamd opens one run per system so far (SystemContext::run); time and what is sampled along it belong here, not to
-// the system, so that several runs need nothing moved again.
+// system (replicas, a continuation, the candidates of a fit) share its topology and its attribute table, each under a
+// prefix of its own (SystemContext::runs).
 struct SystemRun {
     // "run/<name>": where the trajectory, and everything sampled along it, lives in the system's
     // sys.attributes (see RUNS in md_system.h). Empty while no trajectory is loaded. The run's
@@ -1817,6 +1816,7 @@ struct SystemPicking {
 // The most systems held at once. A hard limit, so that what is kept per system and atom (picking, selection) has a
 // fixed budget.
 constexpr size_t SYSTEM_MAX = 8;
+constexpr size_t RUN_MAX = 8;        // Of one system
 
 // A SYSTEM, as viamd holds it: what is had of each one loaded, apart from what the application has once.
 //
@@ -1857,7 +1857,13 @@ struct SystemContext {
     // workspace stores this list and loads it again in the same order.
     FileList              files;
     SystemData            data;
-    SystemRun             run;      // The one run so far: its path is empty without a trajectory
+    // The runs opened on it, in the order they were opened, which is that of the file list's (FileList::runs): run i
+    // of the one is run i of the other. Allocated when opened (open_run) and freed when closed (close_run), so that
+    // what captures one (a task) can hold its address. The one shown is the run it is drawn at, and the timeline's
+    // (system_run).
+    SystemRun*            runs[RUN_MAX] = {};
+    size_t                num_runs = 0;
+    size_t                shown_run = 0;
     SystemScene           scene;
     SystemRepresentations representation;
     SystemSelection       selection;
@@ -1953,6 +1959,12 @@ struct ApplicationState {
         bool           answered = false;
     } placement_prompt;
 
+    // A run of a system to be closed (the Scene window): closed by file_queue_process
+    struct {
+        uint32_t system = SYSTEM_ID_NONE;               // None asked while SYSTEM_ID_NONE
+        size_t   run = 0;
+    } run_close;
+
     // A file of a system to go into another system, or into a new one (the Scene window): moved by file_queue_process
     struct {
         uint32_t from = SYSTEM_ID_NONE;                 // None asked while SYSTEM_ID_NONE
@@ -2002,8 +2014,6 @@ struct ApplicationState {
     SystemData&            mold            = system_context.data;
     SystemScene&           system          = system_context.scene;
     SystemRepresentations& representation  = system_context.representation;
-    SystemRun&             run             = system_context.run;
-    SystemTrajectoryData&  trajectory_data = system_context.run.trajectory_data;
     FileList&              file_list       = system_context.files;
 
     // Every system, in the order the Scene window lists them, the first being system_context. Not owned past the
@@ -2822,12 +2832,12 @@ void interrupt_async_tasks(ApplicationState* state);
 //                                                              (md_system_merge), and fails when they are not its
 //   a trajectory                                               opens the run (sys alone: a system of points first)
 //   data of a system's atoms (an index file, QM data of them)  adds to sys
-//   a series (role FileRole_Series)                            joins the run of sys
+//   a series (role FileRole_Series)                            joins run 'along' of sys, the one shown for -1
 // opens_own_run: a system file of several frames opens them as the run too. A file that loads is recorded in the
 // system's files. loaded: the system the file is, loaded already (to match it: DropFiles), which is taken rather than
 // read again; NULL to read it.
 LoadResult load_data(ApplicationState* app, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run = false,
-                     const md_system_t* loaded = nullptr, const md_system_state_t* loaded_state = nullptr);
+                     const md_system_t* loaded = nullptr, const md_system_state_t* loaded_state = nullptr, int along = -1);
 
 // What follows a system just loaded into sys (load_data), and what goes with it before another replaces it. The
 // application's part of it that is not yet per system (the script's evaluation) is of the first system.
@@ -2865,27 +2875,43 @@ size_t system_count(const ApplicationState& app);
 // The system a hit is of (PickingHit::system), NULL for a hit of none or of a system since removed
 SystemContext* picking_hit_system(ApplicationState* app, const PickingHit& hit);
 const SystemContext* picking_hit_system(const ApplicationState& app, const PickingHit& hit);
-// Publishes the trajectory in run_file as the loaded run and sets up everything that follows it.
-// run_file is the trajectory, or the structure file itself when that holds several frames. traj_flags
-// takes MD_RUN_FLAG_DISABLE_CACHE_WRITE to leave no index beside the file.
-void init_trajectory_data(ApplicationState* app, SystemContext& sys, md_str_t run_file, uint32_t traj_flags = 0);
+// Every run of the system closed: its files, what was read and derived along them, the series loaded along them
 void free_trajectory_data(ApplicationState* app, SystemContext& sys);
 
-// The loaded run's frame axis ("<run>/time"): its frame count, its times (resident, F64, never
-// decreasing) and their unit, which is none when the file does not know time and the values are
-// frame ordinals. NULL, zero and empty without a trajectory.
-const md_attribute_t* run_time_axis(const SystemContext& sys);
-size_t                run_num_frames(const SystemContext& sys);
-const double*         run_frame_times(const SystemContext& sys);
-md_unit_t             run_time_unit(const SystemContext& sys);
+// The run shown of the system: what it is drawn at, and the timeline's. NULL without one.
+SystemRun*       system_run(SystemContext& sys);
+const SystemRun* system_run(const SystemContext& sys);
+
+// Run i shown, and drawn at from now on
+void system_show_run(SystemContext& sys, size_t i);
+
+// Run i closed: its file and the series along it go out of the file list (file_list_remove_run), and what was read
+// and derived along it with them
+void close_run(ApplicationState* app, SystemContext& sys, size_t i);
+
+// A run's frame axis ("<run>/time"): its frame count, its times (resident, F64, never decreasing) and their unit,
+// which is none when the file does not know time and the values are frame ordinals. NULL, zero and empty for none.
+// Without the run, of the run shown.
+const md_attribute_t* run_time_axis(const SystemContext& sys, const SystemRun* run);
+size_t                run_num_frames(const SystemContext& sys, const SystemRun* run);
+const double*         run_frame_times(const SystemContext& sys, const SystemRun* run);
+md_unit_t             run_time_unit(const SystemContext& sys, const SystemRun* run);
+static inline const md_attribute_t* run_time_axis(const SystemContext& sys)  { return run_time_axis(sys, system_run(sys)); }
+static inline size_t                run_num_frames(const SystemContext& sys) { return run_num_frames(sys, system_run(sys)); }
+static inline const double*         run_frame_times(const SystemContext& sys){ return run_frame_times(sys, system_run(sys)); }
+static inline md_unit_t             run_time_unit(const SystemContext& sys)  { return run_time_unit(sys, system_run(sys)); }
+
+// "run/<name>" of the run shown, empty without one: what the script and the series are read along
+md_str_t run_path(const SystemContext& sys);
 
 // The time at a fractional frame along the run's frame axis, in its unit (frame_axis.h). Zero without a trajectory.
 double run_time_at_frame(const SystemContext& sys, double frame);
 
-// One frame of the loaded run into out: coordinates when out has storage for them, and the cell.
-// For a single frame now and then; anything that walks many frames keeps an extraction context of
-// its own (md_system_extract_begin) so the files stay open across them.
-bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out);
+// One frame of a run (the one shown, without it) into out: coordinates when out has storage for them, and the cell.
+// For a single frame now and then; anything that walks many frames keeps an extraction context of its own
+// (md_system_extract_begin) so the files stay open across them.
+bool extract_frame(const SystemContext& sys, const SystemRun* run, int64_t frame, md_system_state_t* out);
+static inline bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out) { return extract_frame(sys, system_run(sys), frame, out); }
 
 // Infers the system again (in the background, system_inference_start) from the given whole frame of the run, or from
 // the coordinates shown when there is no run: the bonds inferred are found anew, those of a file, a topology or a user
@@ -2962,11 +2988,13 @@ bool picked_bond(const ApplicationState& app, const PickingHit& hit, md_atom_pai
 // selects (the atoms of a bond, the residue of a cartoon segment, ...)
 void picking_hit_mask_set(md_bitmask_t* mask, const SystemContext& sys, const PickingHit& hit, SelectionGranularity granularity);
 
-// "<run>/<leaf>" in the loaded trajectory's run, e.g. "run/md/backbone/angle" for "backbone/angle".
-// Empty when no trajectory is loaded, or when it does not fit in buf.
-md_str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, md_str_t leaf);
-// The attribute at "<run>/<leaf>" of the current run; NULL without a run or without such an attribute.
-const md_attribute_t* run_attribute(const SystemContext& sys, md_str_t leaf);
+// "<run>/<leaf>" in a run, e.g. "run/md/backbone/angle" for "backbone/angle". Empty without the run, or when it does
+// not fit in buf. Without the run, of the run shown.
+md_str_t run_attribute_path(char* buf, size_t cap, const SystemRun* run, md_str_t leaf);
+static inline md_str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, md_str_t leaf) { return run_attribute_path(buf, cap, system_run(sys), leaf); }
+// The attribute at "<run>/<leaf>" of a run; NULL without the run or without such an attribute
+const md_attribute_t* run_attribute(const SystemContext& sys, const SystemRun* run, md_str_t leaf);
+static inline const md_attribute_t* run_attribute(const SystemContext& sys, md_str_t leaf) { return run_attribute(sys, system_run(sys), leaf); }
 
 // The secondary structure to show for the displayed state, one per segment of sys.protein_backbone: the denoised copy
 // of the run at the displayed frame (secondary_structure_render), else the state's own assignment

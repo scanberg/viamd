@@ -24,7 +24,8 @@ struct DropSystem {
     uint32_t                 id = PLACEMENT_NONE;
     const md_system_t*       sys = nullptr;
     const md_system_state_t* state = nullptr;
-    md_str_t                 run = {};          // "run/<name>" of its run, empty for none
+    const md_str_t*          runs = nullptr;    // "run/<name>" of each of its runs
+    size_t                   num_runs = 0;
 };
 
 struct DropFile {

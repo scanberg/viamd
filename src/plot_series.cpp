@@ -1564,10 +1564,9 @@ void plot_resolve_legacy_periods(const ApplicationState* app, PlotSubplot* subpl
 
 // ## Series loaded along the run
 
-size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys) {
-    if (sys.run.path[0] == '\0') return 0;
+size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys, md_str_t run) {
+    if (md_str_empty(run)) return 0;
     const md_attributes_t* table = &sys.data.sys.attributes;
-    const md_str_t run = md_str_from_cstr(sys.run.path);
 
     size_t count = 0;
     for (md_attribute_iter_t it = md_attributes_iter(table, run); md_attributes_next(&it);) {
@@ -1582,6 +1581,10 @@ size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemConte
     return count;
 }
 
+size_t system_series_groups(md_str_t out_groups[], size_t cap, const SystemContext& sys) {
+    return system_series_groups(out_groups, cap, sys, run_path(sys));
+}
+
 md_str_t system_series_group_source(const SystemContext& sys, md_str_t group) {
     const md_attributes_t* table = &sys.data.sys.attributes;
     const md_attribute_t* src = md_attributes_find_in(table, group, MD_STR_LIT("source"));
@@ -1592,7 +1595,7 @@ md_str_t system_series_group_source(const SystemContext& sys, md_str_t group) {
 void system_series_group_label(char* buf, size_t cap, const ApplicationState* app, md_str_t group) {
     MD_ASSERT(buf && cap > 0);
     md_str_t rel = group;
-    const md_str_t run = md_str_from_cstr(app->run.path);
+    const md_str_t run = run_path(app->system_context);
     if (!md_str_empty(run) && md_str_begins_with(group, run) && group.len > run.len + 1) {
         rel = md_str_substr(group, run.len + 1);
     }

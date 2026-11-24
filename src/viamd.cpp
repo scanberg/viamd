@@ -1268,7 +1268,7 @@ static inline void set_mru_cache_slot(FrameCache* cache, int slot_idx) {
 }
 
 void clear_system_frame_cache(SystemContext& sys) {
-    clear_frame_cache(&sys.run.frame_cache);
+    for (size_t i = 0; i < sys.num_runs; ++i) clear_frame_cache(&sys.runs[i]->frame_cache);
 }
 
 enum class SecondaryStructureRenderClass : uint8_t {
@@ -1415,13 +1415,26 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
 
 // #trajectorydata
 
-md_str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, md_str_t leaf) {
+SystemRun* system_run(SystemContext& sys) {
+    return sys.shown_run < sys.num_runs ? sys.runs[sys.shown_run] : nullptr;
+}
+
+const SystemRun* system_run(const SystemContext& sys) {
+    return sys.shown_run < sys.num_runs ? sys.runs[sys.shown_run] : nullptr;
+}
+
+md_str_t run_path(const SystemContext& sys) {
+    const SystemRun* run = system_run(sys);
+    return run ? md_str_from_cstr(run->path) : md_str_t{};
+}
+
+md_str_t run_attribute_path(char* buf, size_t cap, const SystemRun* run, md_str_t leaf) {
     MD_ASSERT(buf && cap > 0);
     buf[0] = '\0';
-    if (sys.run.path[0] == '\0') {
+    if (!run || run->path[0] == '\0') {
         return {};
     }
-    const int len = snprintf(buf, cap, "%s/" MD_STR_FMT, sys.run.path, MD_STR_ARG(leaf));
+    const int len = snprintf(buf, cap, "%s/" MD_STR_FMT, run->path, MD_STR_ARG(leaf));
     if (len <= 0 || (size_t)len >= cap) {
         buf[0] = '\0';
         return {};
@@ -1429,31 +1442,29 @@ md_str_t run_attribute_path(char* buf, size_t cap, const SystemContext& sys, md_
     return {buf, (size_t)len};
 }
 
-const md_attribute_t* run_attribute(const SystemContext& sys, md_str_t leaf) {
-    if (sys.run.path[0] == '\0') return nullptr;
-    return md_attributes_find_in(&sys.data.sys.attributes, md_str_from_cstr(sys.run.path), leaf);
+const md_attribute_t* run_attribute(const SystemContext& sys, const SystemRun* run, md_str_t leaf) {
+    if (!run || run->path[0] == '\0') return nullptr;
+    return md_attributes_find_in(&sys.data.sys.attributes, md_str_from_cstr(run->path), leaf);
 }
 
-const md_attribute_t* run_time_axis(const SystemContext& sys) {
-    const md_attribute_t* axis = run_attribute(sys, MD_STR_LIT("time"));
+const md_attribute_t* run_time_axis(const SystemContext& sys, const SystemRun* run) {
+    const md_attribute_t* axis = run_attribute(sys, run, MD_STR_LIT("time"));
     return md_attribute_view(axis, MD_ATTRIBUTE_TYPE_F64, 1, 1) ? axis : nullptr;
 }
 
-size_t run_num_frames(const SystemContext& sys) {
-    const md_attribute_t* axis = run_time_axis(sys);
+size_t run_num_frames(const SystemContext& sys, const SystemRun* run) {
+    const md_attribute_t* axis = run_time_axis(sys, run);
     return axis ? axis->format.shape[0] : 0;
 }
 
-const double* run_frame_times(const SystemContext& sys) {
-    return (const double*)md_attribute_view(run_time_axis(sys), MD_ATTRIBUTE_TYPE_F64, 1, 1);
+const double* run_frame_times(const SystemContext& sys, const SystemRun* run) {
+    return (const double*)md_attribute_view(run_time_axis(sys, run), MD_ATTRIBUTE_TYPE_F64, 1, 1);
 }
 
-md_unit_t run_time_unit(const SystemContext& sys) {
-    const md_attribute_t* axis = run_time_axis(sys);
+md_unit_t run_time_unit(const SystemContext& sys, const SystemRun* run) {
+    const md_attribute_t* axis = run_time_axis(sys, run);
     return axis ? axis->unit : md_unit_none();
 }
-
-// Of the one system loaded (see SystemContext)
 
 double run_time_at_frame(const SystemContext& sys, double frame) {
     return time_at_frame(run_frame_times(sys), run_num_frames(sys), frame);
@@ -1461,7 +1472,9 @@ double run_time_at_frame(const SystemContext& sys, double frame) {
 
 const md_secondary_structure_t* displayed_secondary_structure(const SystemContext& sys) {
     const md_system_state_t* state = &sys.data.state;
-    const auto& render = sys.run.trajectory_data.secondary_structure_render;
+    const SystemRun* run = system_run(sys);
+    const SystemTrajectoryData::Render empty = {};
+    const auto& render = run ? run->trajectory_data.secondary_structure_render : empty;
     if (render.data && render.stride == sys.data.sys.protein_backbone.segment.count && md_state_has_frame(state)) {
         const size_t frame = (size_t)md_state_frame_nearest(state);
         if ((frame + 1) * render.stride <= render.count) {
@@ -1473,9 +1486,10 @@ const md_secondary_structure_t* displayed_secondary_structure(const SystemContex
 
 static const md_str_t frame_extract_paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
 
-bool extract_frame(const SystemContext& sys, int64_t frame, md_system_state_t* out) {
+bool extract_frame(const SystemContext& sys, const SystemRun* run, int64_t frame, md_system_state_t* out) {
     MD_ASSERT(out);
-    md_system_extract_t* ex = md_system_extract_begin(&sys.data.sys, md_str_from_cstr(sys.run.path),
+    if (!run) return false;
+    md_system_extract_t* ex = md_system_extract_begin(&sys.data.sys, md_str_from_cstr(run->path),
         frame_extract_paths, MD_COUNTOF(frame_extract_paths), md_get_heap_allocator());
     if (!ex) {
         return false;
@@ -1519,67 +1533,106 @@ static void run_path_make_unique(char* buf, size_t cap, const md_attributes_t& a
     }
 }
 
+// What a run holds, released: its task stopped, its readers ended (they hold its files open), what was derived along it
+// and its attributes (its frame axis, the quantities per frame, the series loaded along it). What reads it was stopped
+// by the caller; its files in the list are the caller's.
+static void free_run(ApplicationState* state, SystemContext& sys, SystemRun& run) {
+    run.backbone_computations.cancel_and_wait();
+    end_frame_extracts(run);
+
+    // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and are not md_arrays - freeing
+    // them here would hand the wrong pointer to the array allocator. The table owns them; dropping the views is all
+    // that is owed. The denoised render copy is an ordinary array owned here.
+    run.trajectory_data.backbone_angles = {};
+    run.trajectory_data.secondary_structure = {};
+    md_array_free(run.trajectory_data.secondary_structure_render.data, state->allocator.persistent);
+    run.trajectory_data.secondary_structure_render = {};
+
+    if (run.path[0]) {
+        md_attributes_remove_prefix(&sys.data.sys.attributes, md_str_from_cstr(run.path));
+        run.path[0] = '\0';
+    }
+    free_frame_cache(&run.frame_cache, state->allocator.persistent);
+}
+
+// What was derived of the runs of the system, by whoever holds on to it, goes: before the runs it is of change
+static void runs_changing(ApplicationState* state, SystemContext& sys) {
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryFree, viamd::EventPayloadType_System, &sys);
+    // The orientation reference was read from the first frame of the run shown
+    sys.scene.operations.initial_frame.valid = false;
+    // Converted axes and histograms, and the evaluation of the script, of what is about to go or no longer be shown.
+    // The attribute versions they are keyed on only mean something within one table, and the next run may be
+    // allocated where this was; taking over from an evaluation of another run (script::eval_create) would carry its
+    // values over to this one. The tasks which use them were stopped by the caller.
+    series_cache_free(state);
+    script_eval_free(state);
+}
+
 void free_trajectory_data(ApplicationState* state, SystemContext& sys) {
     MD_ASSERT(state);
-
-    // Before anything of it goes, so that what holds on to it lets go
-    if (sys.run.path[0]) {
-        viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryFree, viamd::EventPayloadType_System, &sys);
+    if (sys.num_runs > 0) runs_changing(state, sys);
+    for (size_t i = 0; i < sys.num_runs; ++i) {
+        free_run(state, sys, *sys.runs[i]);
+        delete sys.runs[i];
+        sys.runs[i] = nullptr;
     }
-
-    // The orientation reference was read from this run's first frame. A run loaded in its place, on the
-    // same topology, has a first frame of its own.
-    sys.scene.operations.initial_frame.valid = false;
-
-    // Before anything they read goes: the contexts hold the run's files open.
-    end_frame_extracts(sys.run);
-
-    // The run, and with it the files it was opened from and the series loaded along it
+    sys.num_runs = 0;
+    sys.shown_run = 0;
+    // The runs, and with them the files they were opened from and the series loaded along them
     file_list_drop_runs(&sys.files);
+}
 
-    // Converted axes and histograms of what is about to go. The attribute versions they are keyed
-    // on only mean something within one table, and the next one may be allocated where this was.
-    series_cache_free(state);
+void system_show_run(SystemContext& sys, size_t i) {
+    ApplicationState* app = sys.app;
+    if (i >= sys.num_runs) return;
+    if (i != sys.shown_run) runs_changing(app, sys);
+    sys.shown_run = i;
+    SystemRun& run = *sys.runs[i];
+    run.last_interpolated_nearest_frame = -1;
+    run.last_interpolated_frame = -1.0;
 
-    // The evaluation is of this run. Another run may have as many frames, and taking over from an evaluation of
-    // this one (script::eval_create) would carry its values over to the other: the next one starts afresh.
-    // The tasks which use it were stopped by the caller.
-    script_eval_free(state);
-
-    // backbone_angles.data and secondary_structure.data are VIEWS into sys.attributes and
-    // are not md_arrays - freeing them here would hand the wrong pointer to the array allocator. The
-    // table owns them and releases them with the system; dropping the views is all that is owed.
-    sys.run.trajectory_data.backbone_angles.data       = nullptr;
-    sys.run.trajectory_data.backbone_angles.stride     = 0;
-    sys.run.trajectory_data.backbone_angles.count      = 0;
-    sys.run.trajectory_data.secondary_structure.data   = nullptr;
-    sys.run.trajectory_data.secondary_structure.stride = 0;
-    sys.run.trajectory_data.secondary_structure.count  = 0;
-
-    // The denoised render copy is still an ordinary array owned here.
-    md_array_free(sys.run.trajectory_data.secondary_structure_render.data,    state->allocator.persistent);
-
-    // A stale match here would make interpolate_system_state silently skip pushing the new run's
-    // first frame to the renderer whenever it happens to resolve to the same nearest frame index
-    // as whatever was last displayed (frame 0 is the common case).
-    sys.run.last_interpolated_nearest_frame = -1;
-    sys.run.last_interpolated_frame = -1.0;
-
-    // The views above are dropped first; now the storage they pointed at goes with the run - its
-    // frame axis, the quantities derived per frame, and whatever was loaded against it.
-    if (sys.run.path[0]) {
-        md_attributes_remove_prefix(&sys.data.sys.attributes, md_str_from_cstr(sys.run.path));
-        sys.run.path[0] = '\0';
+    // The timeline is of the first system's run shown. The run's own time, in its own unit: the display unit only
+    // changes how a time is printed (frame_axis.h)
+    const size_t num_frames = run_num_frames(sys, &run);
+    const double* times = run_frame_times(sys, &run);
+    if (&sys == &app->system_context && num_frames > 0 && times) {
+        app->timeline.view_range = {times[0], times[num_frames - 1]};
+        app->animation.frame = MD_CLAMP(app->animation.frame, 0.0, (double)(num_frames - 1));
     }
+    // The script reads along the run shown, and what it measured was of the one before
+    app->script.compile_ir = true;
+    sys.data.interpolate_system_state = true;
+    sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+    viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryInit, viamd::EventPayloadType_System, &sys);
+}
 
-    free_frame_cache(&sys.run.frame_cache, state->allocator.persistent);
+void close_run(ApplicationState* app, SystemContext& sys, size_t i) {
+    MD_ASSERT(app);
+    if (i >= sys.num_runs) return;
+    interrupt_async_tasks(app);
+    runs_changing(app, sys);
+    free_run(app, sys, *sys.runs[i]);
+    delete sys.runs[i];
+    for (size_t j = i; j + 1 < sys.num_runs; ++j) sys.runs[j] = sys.runs[j + 1];
+    sys.runs[--sys.num_runs] = nullptr;
+    file_list_remove_run(&sys.files, i);
+
+    // The one shown where it stays; the one before it, or the first, in place of one closed
+    if (sys.shown_run > i) {
+        sys.shown_run -= 1;
+    } else if (sys.shown_run == i) {
+        sys.shown_run = SIZE_MAX;
+        if (sys.num_runs > 0) system_show_run(sys, i > 0 ? i - 1 : 0);
+        else sys.shown_run = 0;
+    }
+    sys.data.interpolate_system_state = true;
 }
 
 // The backbone angles and secondary structure of every frame of the run, computed on the pool. Started when the run is
 // opened, and again once the backbones are inferred (they are not there before: SystemInference)
-static void trajectory_backbone_start(SystemContext& sys) {
+static void trajectory_backbone_start(SystemContext& sys, SystemRun& run) {
     ApplicationState* data = sys.app;
-    const size_t num_frames = run_num_frames(sys);
+    const size_t num_frames = run_num_frames(sys, &run);
     if (num_frames == 0) return;
     char path_buf[256];
     if (sys.data.sys.protein_backbone.segment.count > 0) {
@@ -1599,7 +1652,7 @@ static void trajectory_backbone_start(SystemContext& sys) {
         md_attributes_t* attributes = &sys.data.sys.attributes;
 
         // One still under way writes through the pointers replaced below: stopped first
-        sys.run.backbone_computations.cancel_and_wait();
+        run.backbone_computations.cancel_and_wait();
 
         // Both are checked against "<run>/time", published above, so a declaration whose
         // outermost extent disagrees is refused at the point the mistake is made rather than
@@ -1609,7 +1662,7 @@ static void trajectory_backbone_start(SystemContext& sys) {
         // tells a consumer these are labels rather than numbers to average - which is the rule
         // md_system.h already states for integral attributes.
         const md_attribute_desc_t ss_desc = {
-            .path   = run_attribute_path(path_buf, sizeof(path_buf), sys, MD_STR_LIT("backbone/secondary_structure")),
+            .path   = run_attribute_path(path_buf, sizeof(path_buf), &run, MD_STR_LIT("backbone/secondary_structure")),
             .format = {
                 .type = MD_ATTRIBUTE_TYPE_I32, .components = 1,
                 .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
@@ -1620,16 +1673,16 @@ static void trajectory_backbone_start(SystemContext& sys) {
         };
         md_attribute_id_t ss_id = md_attributes_replace(attributes, &ss_desc);
 
-        sys.run.trajectory_data.secondary_structure.data   = (md_secondary_structure_t*)md_attributes_data(attributes, ss_id, MD_ATTRIBUTE_TYPE_I32);
-        sys.run.trajectory_data.secondary_structure.stride = num_segments;
-        sys.run.trajectory_data.secondary_structure.count  = num_segments * num_frames;
+        run.trajectory_data.secondary_structure.data   = (md_secondary_structure_t*)md_attributes_data(attributes, ss_id, MD_ATTRIBUTE_TYPE_I32);
+        run.trajectory_data.secondary_structure.stride = num_segments;
+        run.trajectory_data.secondary_structure.count  = num_segments * num_frames;
 
         const md_attribute_format_t angle_format = {
             .type = MD_ATTRIBUTE_TYPE_F32, .components = 2,   // phi, psi - one value, two parts
             .rank = 2, .shape = { (uint32_t)num_frames, (uint32_t)num_segments },
         };
         const md_attribute_desc_t angle_desc = {
-            .path   = run_attribute_path(path_buf, sizeof(path_buf), sys, MD_STR_LIT("backbone/angle")),
+            .path   = run_attribute_path(path_buf, sizeof(path_buf), &run, MD_STR_LIT("backbone/angle")),
             .format = angle_format,
             .flags  = MD_ATTRIBUTE_FLAG_TEMPORAL,
             .unit   = md_unit_radian(),
@@ -1639,21 +1692,21 @@ static void trajectory_backbone_start(SystemContext& sys) {
 
         // md_backbone_angles_t is exactly {float phi; float psi;}, so the table's storage IS a
         // md_backbone_angles_t array - no repacking, and the existing consumers keep their type.
-        sys.run.trajectory_data.backbone_angles.data   = (md_backbone_angles_t*)md_attributes_data(attributes, angle_id, MD_ATTRIBUTE_TYPE_F32);
-        sys.run.trajectory_data.backbone_angles.stride = num_segments;
-        sys.run.trajectory_data.backbone_angles.count  = num_segments * num_frames;
+        run.trajectory_data.backbone_angles.data   = (md_backbone_angles_t*)md_attributes_data(attributes, angle_id, MD_ATTRIBUTE_TYPE_F32);
+        run.trajectory_data.backbone_angles.stride = num_segments;
+        run.trajectory_data.backbone_angles.count  = num_segments * num_frames;
 
         // The denoised copy stays an ordinary array: it is a PRESENTATION smoothing of the one
         // above, read only by the renderer, and publishing it would put two answers to "what is
         // the secondary structure at frame f" in the same table.
-        sys.run.trajectory_data.secondary_structure_render.stride = sys.data.sys.protein_backbone.segment.count;
-        sys.run.trajectory_data.secondary_structure_render.count = sys.data.sys.protein_backbone.segment.count * num_frames;
-        md_array_resize(sys.run.trajectory_data.secondary_structure_render.data, sys.data.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
-        md_memset(sys.run.trajectory_data.secondary_structure_render.data, 0, md_array_bytes(sys.run.trajectory_data.secondary_structure_render.data));
+        run.trajectory_data.secondary_structure_render.stride = sys.data.sys.protein_backbone.segment.count;
+        run.trajectory_data.secondary_structure_render.count = sys.data.sys.protein_backbone.segment.count * num_frames;
+        md_array_resize(run.trajectory_data.secondary_structure_render.data, sys.data.sys.protein_backbone.segment.count * num_frames, data->allocator.persistent);
+        md_memset(run.trajectory_data.secondary_structure_render.data, 0, md_array_bytes(run.trajectory_data.secondary_structure_render.data));
 
         // Launch work to compute the values
         uint64_t time = (uint64_t)md_tick_now();
-        sys.run.backbone_computations.start_for(MD_STR_LIT("Backbone Operations"), (uint32_t)num_frames, 1, [s = &sys](uint32_t range_beg, uint32_t range_end) {
+        run.backbone_computations.start_for(MD_STR_LIT("Backbone Operations"), (uint32_t)num_frames, 1, [s = &sys, r = &run](uint32_t range_beg, uint32_t range_end) {
             const md_system_t* sys = &s->data.sys;
 
             md_temp_scope_t temp = md_temp_begin();
@@ -1663,30 +1716,30 @@ static void trajectory_backbone_start(SystemContext& sys) {
 				md_system_state_init(&frame_state, sys->atom.count);
 
             // One context for the range, so the run's files stay open across its frames.
-            md_system_extract_t* ex = md_system_extract_begin(sys, md_str_from_cstr(s->run.path),
+            md_system_extract_t* ex = md_system_extract_begin(sys, md_str_from_cstr(r->path),
                 frame_extract_paths, MD_COUNTOF(frame_extract_paths), md_get_heap_allocator());
             if (!ex) {
                 return;
             }
             for (uint32_t frame_idx = range_beg; frame_idx < range_end && !task_system::cancelled(); ++frame_idx) {
-                md_backbone_angles_t* bb_dst = s->run.trajectory_data.backbone_angles.data + s->run.trajectory_data.backbone_angles.stride * frame_idx;
-                md_secondary_structure_t* ss_dst = s->run.trajectory_data.secondary_structure.data + s->run.trajectory_data.secondary_structure.stride * frame_idx;
+                md_backbone_angles_t* bb_dst = r->trajectory_data.backbone_angles.data + r->trajectory_data.backbone_angles.stride * frame_idx;
+                md_secondary_structure_t* ss_dst = r->trajectory_data.secondary_structure.data + r->trajectory_data.secondary_structure.stride * frame_idx;
 
                 if (!md_system_extract_frame(ex, frame_idx, &frame_state)) {
                     continue;
                 }
-                md_backbone_angles_compute(bb_dst, s->run.trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
-                md_dssp_compute(ss_dst, s->run.trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                md_backbone_angles_compute(bb_dst, r->trajectory_data.backbone_angles.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
+                md_dssp_compute(ss_dst, r->trajectory_data.secondary_structure.stride, frame_state.xyz, &frame_state.unitcell, &sys->protein_backbone);
             }
             md_system_extract_end(ex);
-        }, [s = &sys, t0 = time, num_frames](task_system::Status status) {
+        }, [s = &sys, r = &run, t0 = time, num_frames](task_system::Status status) {
             // Stopped part of the way (a load, or the next trajectory): the data is not for this one, or not all there
             if (status != task_system::Status::Completed) return;
             secondary_structure_render_denoise(
-                s->run.trajectory_data.secondary_structure_render.data,
-                s->run.trajectory_data.secondary_structure.data,
+                r->trajectory_data.secondary_structure_render.data,
+                r->trajectory_data.secondary_structure.data,
                 num_frames,
-                s->run.trajectory_data.secondary_structure.stride);
+                r->trajectory_data.secondary_structure.stride);
 
             uint64_t t1 = (uint64_t)md_tick_now();
             double elapsed = md_tick_to_seconds(t1 - t0);
@@ -1698,67 +1751,18 @@ static void trajectory_backbone_start(SystemContext& sys) {
             // waiting to disagree with it.
             md_attributes_t* attributes = &s->data.sys.attributes;
             char buf[256];
-            md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), *s, MD_STR_LIT("backbone/angle"))));
-            md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), *s, MD_STR_LIT("backbone/secondary_structure"))));
-            s->run.trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
+            md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), r, MD_STR_LIT("backbone/angle"))));
+            md_attributes_touch(attributes, md_attributes_id_from_path(run_attribute_path(buf, sizeof(buf), r, MD_STR_LIT("backbone/secondary_structure"))));
+            r->trajectory_data.secondary_structure_render.fingerprint = generate_fingerprint();
 
 				// The data just went from placeholder to real values for every frame - force the
 				// next interpolate_system_state to actually push it, even if playback is paused on
 				// the same nearest frame it was on before this task started.
-				s->run.last_interpolated_nearest_frame = -1;
+				r->last_interpolated_nearest_frame = -1;
 				s->data.interpolate_system_state = true;
             s->data.dirty_gpu_buffers |= MolBit_ClearVelocity;
             flag_all_representations_as_dirty(*s);
         });
-    }
-}
-
-void init_trajectory_data(ApplicationState* data, SystemContext& sys, md_str_t run_file, uint32_t traj_flags) {
-    // The trajectory is a RUN in the attribute table: "<run>/time" is its frame axis, and everything
-    // sampled along it lives below the same prefix - the positions streamed from the file, the per
-    // frame backbone data below, an energy file loaded later - so that freeing the trajectory is
-    // removing the prefix. A trajectory that came inside the structure file (a multi model PDB) is
-    // named after that; a structure of one frame publishes nothing and has no run.
-    {
-        run_path_from_file(sys.run.path, sizeof(sys.run.path), run_file);
-        run_path_make_unique(sys.run.path, sizeof(sys.run.path), sys.data.sys.attributes);
-        const md_str_t run = md_str_from_cstr(sys.run.path);
-        if (!loader::publish_run(&sys.data.sys, run_file, run, traj_flags)) {
-            md_attributes_remove_prefix(&sys.data.sys.attributes, run);
-            sys.run.path[0] = '\0';
-        }
-    }
-
-    size_t num_frames = run_num_frames(sys);
-    if (num_frames > 0) {
-        size_t min_frame = 0;
-        size_t max_frame = num_frames - 1;
-        const double* frame_times = run_frame_times(sys);
-
-        init_frame_cache(&sys.run.frame_cache, sys.data.sys.atom.count, data->allocator.persistent);
-
-        MD_ASSERT(frame_times);
-
-        // The timeline is of the first system's run, until there is one time for every run: another's leaves it, and
-        // the time shown, as they are. The run's own time, in its own unit: the display unit only changes how a time
-        // is printed (frame_axis.h)
-        if (&sys == &data->system_context) {
-            data->timeline.view_range = {frame_times[0], frame_times[num_frames - 1]};
-            data->animation.frame = MD_CLAMP(data->animation.frame, (double)min_frame, (double)max_frame);
-        }
-        int64_t frame_idx = MD_CLAMP((int64_t)(data->animation.frame + 0.5), 0, (int64_t)max_frame);
-
-        extract_frame(sys, frame_idx, &sys.data.state);
-
-        trajectory_backbone_start(sys);
-
-        sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition;
-        sys.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
-
-        // Prefetch frames
-        //launch_prefetch_job(data);
-
-        viamd::event_system_broadcast_event(viamd::EventType_ViamdTrajectoryInit, viamd::EventPayloadType_System, &sys);
     }
 }
 
@@ -1972,8 +1976,6 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
     file_list_clear(&sys.files);
 
 
-    md_memset(sys.run.frame_cache.states, 0, sizeof(sys.run.frame_cache.states));
-    clear_frame_cache(&sys.run.frame_cache);
 
     md_bitmask_clear(&sys.selection.selection_mask);
     md_bitmask_clear(&sys.selection.highlight_mask);
@@ -2119,12 +2121,14 @@ const SystemContext* picking_hit_system(const ApplicationState& app, const Picki
     return system_find(app, hit.system);
 }
 
-// Opens the run in path for the loaded system, replacing the one it has (one run per system for now).
-// False when the file holds no frames to make a run of, which is not an error for a structure file.
+// Opens the run in path for the loaded system, beside those it has, and shows it. False when the file holds no frames to
+// make a run of, which is not an error for a structure file, or the system has as many runs as it can.
 static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path, const loader::LoaderState& load_state) {
+    if (sys.num_runs >= RUN_MAX) {
+        VIAMD_LOG_ERROR("'" MD_STR_FMT "' is not opened: at most %zu runs of a system are opened at once", MD_STR_ARG(path), RUN_MAX);
+        return false;
+    }
     interrupt_async_tasks(state);
-    free_trajectory_data(state, sys);
-    state->animation.frame = 0;
     // A system without coordinates (a topology alone) shows those of the frames: room for them
     const bool coordinate_less = !md_system_state_has_coords(&sys.data.state);
     if (coordinate_less) {
@@ -2133,19 +2137,31 @@ static bool open_run(ApplicationState* state, SystemContext& sys, md_str_t path,
         sys.data.state.unitcell = cell;
     }
 
-    // Publishing the run IS opening the trajectory: the run is named after the file, and its
-    // positions are read from it frame by frame from here on.
-    init_trajectory_data(state, sys, path, (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0);
-    const size_t num_frames = run_num_frames(sys);
-    if (num_frames == 0) {
+    // Publishing the run IS opening the trajectory: the run is named after the file, and its positions are read from it
+    // frame by frame from here on. Everything sampled along it lives below the same prefix - the positions, the per
+    // frame backbone data, an energy file loaded later - so that closing it is removing the prefix.
+    SystemRun* run = new SystemRun();
+    run_path_from_file(run->path, sizeof(run->path), path);
+    run_path_make_unique(run->path, sizeof(run->path), sys.data.sys.attributes);
+    const uint32_t flags = (load_state.flags & LoaderFlag_DisableCacheWrite) ? MD_RUN_FLAG_DISABLE_CACHE_WRITE : 0;
+    if (!loader::publish_run(&sys.data.sys, path, md_str_from_cstr(run->path), flags) || run_num_frames(sys, run) == 0) {
+        md_attributes_remove_prefix(&sys.data.sys.attributes, md_str_from_cstr(run->path));
+        delete run;
         return false;
     }
-    // Those of its first frame now: what the system is inferred of when it is (system_inference_defer), and framed by
-    if (coordinate_less) {
-        extract_frame(sys, 0, &sys.data.state);
-    }
+    const size_t num_frames = run_num_frames(sys, run);
+    sys.runs[sys.num_runs++] = run;
     file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Trajectory, state->allocator.persistent);
     md_array_last(sys.files.runs)->frame_count = num_frames;
+
+    init_frame_cache(&run->frame_cache, sys.data.sys.atom.count, state->allocator.persistent);
+    trajectory_backbone_start(sys, *run);
+    system_show_run(sys, sys.num_runs - 1);
+
+    // Its frame shown now: what the system is inferred of when it has no coordinates of its own (system_inference_defer),
+    // and framed by
+    const int64_t frame = MD_CLAMP((int64_t)(state->animation.frame + 0.5), 0, (int64_t)num_frames - 1);
+    extract_frame(sys, run, coordinate_less ? 0 : frame, &sys.data.state);
     return true;
 }
 
@@ -2249,7 +2265,7 @@ static void system_inferred_refresh(SystemContext& sys) {
     }
     sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
     sys.data.interpolate_system_state = true;
-    sys.run.last_interpolated_nearest_frame = -1;
+    if (SystemRun* run = system_run(sys)) run->last_interpolated_nearest_frame = -1;
     sys.data.gpu_buffers_version += 1;
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_System, &sys);
@@ -2295,7 +2311,7 @@ static bool inference_publish(SystemContext& sc) {
 
     system_inferred_refresh(sc);
     // The run's backbones, which there were none of before
-    if (sc.run.path[0]) trajectory_backbone_start(sc);
+    for (size_t i = 0; i < sc.num_runs; ++i) trajectory_backbone_start(sc, *sc.runs[i]);
 
     inference_defaults(sc);
     md_temp_trim();
@@ -2424,7 +2440,7 @@ static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_st
     file_list_record(&sys.files, file_entry_from(path, load_state), FileRole_Supplement, state->allocator.persistent);
     sys.data.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
     sys.data.interpolate_system_state = true;
-    sys.run.last_interpolated_nearest_frame = -1;
+    if (SystemRun* run = system_run(sys)) run->last_interpolated_nearest_frame = -1;
     state->script.compile_ir = true;
     if (!had_coords && md_system_state_has_coords(&sys.data.state)) {
         // Shown now that it has coordinates: framed as a system loaded is
@@ -2487,7 +2503,7 @@ static LoadResult build_system(ApplicationState* state, SystemContext& sys, md_s
 }
 
 LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filepath, const loader::LoaderState& load_state, FileRole role, bool opens_own_run,
-                     const md_system_t* loaded, const md_system_state_t* loaded_state) {
+                     const md_system_t* loaded, const md_system_state_t* loaded_state, int along) {
     MD_ASSERT(state);
 
     LoadResult result = LoadResult_Failed;
@@ -2507,7 +2523,10 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
 
         if (series || adds) {
             const FileRole data_role = series ? FileRole_Series : FileRole_Supplement;
-            const md_str_t run = md_str_from_cstr(sys.run.path);
+            // A series is along the run asked for, else along the one shown
+            const size_t run_index = (along >= 0 && (size_t)along < sys.num_runs) ? (size_t)along : sys.shown_run;
+            const SystemRun* run_along = run_index < sys.num_runs ? sys.runs[run_index] : nullptr;
+            const md_str_t run = run_along ? md_str_from_cstr(run_along->path) : md_str_t{};
             if (!has_atoms) {
                 VIAMD_LOG_ERROR("'" MD_STR_FMT "' adds to a system; load the system first", MD_STR_ARG(path_to_file));
                 return LoadResult_Failed;
@@ -2541,7 +2560,9 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
                     VIAMD_LOG_ERROR("'" MD_STR_FMT "' changed the number of atoms from %zu to %zu; what is kept by atom index no longer applies", MD_STR_ARG(path_to_file), num_atoms, sys.data.sys.atom.count);
                 }
                 result = LoadResult_Supplement;
-                file_list_record(&sys.files, file_entry_from(path_to_file, load_state), data_role, state->allocator.persistent);
+                FileEntry entry = file_entry_from(path_to_file, load_state);
+                entry.run = series ? (int)run_index : -1;
+                file_list_record(&sys.files, entry, data_role, state->allocator.persistent);
 
                 // A topology replaces bonds (and with them structures), which the GPU holds a copy of: the core
                 // changed, and the system is inferred again of it in the background (a load never infers)
@@ -3205,16 +3226,16 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         VIAMD_LOG_ERROR("Workspace: names %zu systems; at most %zu are loaded at once, the rest are left out", pending.num_systems + pending.skipped_systems, SYSTEM_MAX);
     }
 
-    // Each system: its own files in order, then those of its run, a run being opened on the complete system. This
-    // build loads one run per system; what the workspace names beyond that is reported and left out.
+    // Each system: its own files in order, then those of each of its runs, a run being opened on the complete system.
+    // This build loads RUN_MAX runs per system; what the workspace names beyond that is reported and left out.
     for (size_t k = 0; k < pending.num_systems; ++k) {
         WorkspacePending::System& ws = pending.systems[k];
         SystemContext& sc = *ws.sys;
         const bool first = k == 0;
 
         SystemPlan plan;
-        workspace_files_plan(&plan, &pending.files, ws.id, 1, temp_alloc);
-        if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of a system; this build of viamd loads the first", plan.skipped_runs + 1);
+        workspace_files_plan(&plan, &pending.files, ws.id, RUN_MAX, temp_alloc);
+        if (plan.skipped_runs)    VIAMD_LOG_ERROR("Workspace: names %zu runs of a system; at most %zu are opened at once, the rest are left out", plan.skipped_runs + RUN_MAX, RUN_MAX);
         if (plan.skipped_inputs)  VIAMD_LOG_ERROR("Workspace: %zu files belong to no system or run it names, and are left out", plan.skipped_inputs);
 
         for (size_t i = 0; i < md_array_size(plan.inputs); ++i) {
@@ -3231,7 +3252,9 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 // What the dialog would have asked (the LAMMPS atom format) is not stored with the file
                 VIAMD_LOG_ERROR("Workspace: '%s' has to be loaded through File > Open File..., the workspace does not say how to read it", in.entry.path);
             } else {
-                result = load_data(data, sc, path, loader_state, in.role, in.opens_own_run);
+                // A series along its own run, which was opened before it (or is held in its place, below)
+                const int along = in.role == FileRole_Series ? in.run : -1;
+                result = load_data(data, sc, path, loader_state, in.role, in.opens_own_run, nullptr, nullptr, along);
             }
 
             if (result == LoadResult_Failed) {
@@ -3240,6 +3263,13 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 FileEntry missing = in.entry;
                 missing.type    = loader_state.type;
                 missing.missing = true;
+                missing.run     = in.run;
+                // A run not opened holds its place among the system's runs, without frames: run i of the list stays run
+                // i of the system
+                if (in.role == FileRole_Trajectory) {
+                    if (sc.num_runs >= RUN_MAX) continue;
+                    sc.runs[sc.num_runs++] = new SystemRun();
+                }
                 file_list_record(&sc.files, missing, in.role, data->allocator.persistent);
             }
         }
@@ -3577,7 +3607,7 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
 script::FilterCtx filter_context(const SystemContext& sys) {
     const ApplicationState* app = sys.app;
     const bool names = app && &sys == &app->system_context;
-    return script::FilterCtx{&sys.data.sys, &sys.data.state, names ? app->script.ir : nullptr, nullptr, md_str_from_cstr(sys.run.path)};
+    return script::FilterCtx{&sys.data.sys, &sys.data.state, names ? app->script.ir : nullptr, nullptr, run_path(sys)};
 }
 
 // --- SELECTION ---
@@ -6381,14 +6411,18 @@ void interpolate_system_state(SystemContext& sc) {
     ApplicationState* app = sc.app;
     MD_ASSERT(app);
 
+    // The run shown is what the system is drawn at
+    SystemRun* run = system_run(sc);
+    if (!run) return;
+
     // Recorded before anything can return early, so that a change of stride is acted on once (see main)
     const int64_t stride = playback_stride(app);
-    sc.run.last_interpolated_stride = (int)stride;
+    run->last_interpolated_stride = (int)stride;
 
 	const auto& sys  = sc.data.sys;
 
 	size_t num_atoms = sc.data.state.num_atoms;
-    const size_t num_frames = run_num_frames(sc);
+    const size_t num_frames = run_num_frames(sc, run);
     if (num_atoms == 0 || num_frames == 0) return;
 
     const int64_t last_frame = MD_MAX(0LL, (int64_t)num_frames - 1);
@@ -6418,23 +6452,23 @@ void interpolate_system_state(SystemContext& sc) {
     const int64_t nearest_frame = (t < 0.5) ? frames[1] : frames[2];
 
     if (app->animation.interpolation == InterpolationMode::Nearest) {
-        if (sc.run.last_interpolated_nearest_frame == nearest_frame) {
+        if (run->last_interpolated_nearest_frame == nearest_frame) {
             return;
         }
         sc.data.dirty_gpu_buffers |= MolBit_ClearVelocity;
     }
-    sc.run.last_interpolated_nearest_frame = nearest_frame;
+    run->last_interpolated_nearest_frame = nearest_frame;
 
     // The backbone keeps the orientation of its cross sections coherent from one displayed state to the next. That
     // continuity only means something while the structure moves continuously, so a jump (seeking, skipping frames,
     // a new run) starts it over. Playback keeps it whatever the speed.
     {
-        const double last = sc.run.last_interpolated_frame;
+        const double last = run->last_interpolated_frame;
         const bool playing = app->animation.mode == PlaybackMode::Playing;
         if (last < 0.0 || (!playing && fabs(time - last) > 1.5)) {
             sc.data.dirty_gpu_buffers |= MolBit_ResetBackboneHistory;
         }
-        sc.run.last_interpolated_frame = time;
+        run->last_interpolated_frame = time;
     }
 
     // The number of atoms to be processed per thread when divided into chunks
@@ -6446,6 +6480,7 @@ void interpolate_system_state(SystemContext& sc) {
 
     struct Payload {
         SystemContext* sys;
+        SystemRun*     run;
         float t;
         float w[4];     // The weights of the four frames, for the cubic modes
         InterpolationMode mode;
@@ -6468,6 +6503,7 @@ void interpolate_system_state(SystemContext& sc) {
 
     Payload payload = {
         .sys = &sc,
+        .run = run,
         .t = (float)t,
         .mode = mode,
         .nearest_frame = nearest_frame,
@@ -6495,10 +6531,10 @@ void interpolate_system_state(SystemContext& sc) {
     // The backbone of the displayed state is the run's at the frames around it: the angles and the secondary structure
     // go into the state's attributes, the cartoon's weights into temporary memory, which is uploaded at the end.
     const size_t num_segments = sc.data.sys.protein_backbone.segment.count;
-    if (num_segments > 0 && sc.run.trajectory_data.backbone_angles.data) {
+    if (num_segments > 0 && run->trajectory_data.backbone_angles.data) {
         payload.dst_angle = md_system_state_backbone_angles_write(&sc.data.state, &sc.data.sys);
     }
-    if (num_segments > 0 && sc.run.trajectory_data.secondary_structure.data) {
+    if (num_segments > 0 && run->trajectory_data.secondary_structure.data) {
         payload.dst_ss = md_system_state_secondary_structure_write(&sc.data.state, &sc.data.sys);
         payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
     }
@@ -6545,18 +6581,18 @@ void interpolate_system_state(SystemContext& sc) {
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = -1;
-        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &sc.run.frame_cache)) {
-            slot_idx = find_lru_cache_slot(&sc.run.frame_cache);
+        if (!find_frame_in_cache(&slot_idx, requested_frames[i], &run->frame_cache)) {
+            slot_idx = find_lru_cache_slot(&run->frame_cache);
             frame_cache_load_slot[num_frames_to_load++] = slot_idx;
         }
-        set_mru_cache_slot(&sc.run.frame_cache, slot_idx);
-        sc.run.frame_cache.frame_idx[slot_idx] = requested_frames[i];
+        set_mru_cache_slot(&run->frame_cache, slot_idx);
+        run->frame_cache.frame_idx[slot_idx] = requested_frames[i];
         frame_cache_slot_idx[i] = slot_idx;
     }
 
     for (int i = 0; i < num_requested_frames; ++i) {
         int slot_idx = frame_cache_slot_idx[i];
-        payload.src_states[i] = &sc.run.frame_cache.states[slot_idx];
+        payload.src_states[i] = &run->frame_cache.states[slot_idx];
     }
 
     // The steps in order, each spread over the pool where it is a range; the frame waits for them all (frame priority:
@@ -6568,19 +6604,19 @@ void interpolate_system_state(SystemContext& sc) {
             const uint32_t thread_num = task_system::thread_index();
             for (uint32_t i = range_beg; i < range_end; ++i) {
                 int slot_idx = frame_cache_load_slot[i];
-                int frame_idx = data->sys->run.frame_cache.frame_idx[slot_idx];
-                md_system_state_t* state = &data->sys->run.frame_cache.states[slot_idx];
+                int frame_idx = data->run->frame_cache.frame_idx[slot_idx];
+                md_system_state_t* state = &data->run->frame_cache.states[slot_idx];
                 // This thread's own context, kept for as long as the trajectory, so playback opens
                 // the run's files once rather than once per frame.
-                md_system_extract_t** ex = (thread_num < MD_COUNTOF(data->sys->run.frame_extract)) ? &data->sys->run.frame_extract[thread_num] : nullptr;
+                md_system_extract_t** ex = (thread_num < MD_COUNTOF(data->run->frame_extract)) ? &data->run->frame_extract[thread_num] : nullptr;
                 if (ex && !*ex) {
-                    *ex = md_system_extract_begin(&data->sys->data.sys, md_str_from_cstr(data->sys->run.path),
+                    *ex = md_system_extract_begin(&data->sys->data.sys, md_str_from_cstr(data->run->path),
                         frame_extract_paths, MD_COUNTOF(frame_extract_paths), md_get_heap_allocator());
                 }
                 if (ex && *ex) {
                     md_system_extract_frame(*ex, frame_idx, state);
                 } else {
-                    extract_frame(*data->sys, frame_idx, state);
+                    extract_frame(*data->sys, data->run, frame_idx, state);
                 }
             }
         }
@@ -6652,8 +6688,8 @@ void interpolate_system_state(SystemContext& sc) {
             case InterpolationMode::Nearest: {
                 {
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     const md_backbone_angles_t* src_angle = data->t < 0.5f ? src_angles[0] : src_angles[1];
                     md_memcpy(data->dst_angle, src_angle, data->sys->data.sys.protein_backbone.segment.count * sizeof(md_backbone_angles_t));
@@ -6664,8 +6700,8 @@ void interpolate_system_state(SystemContext& sc) {
             case InterpolationMode::Linear: {
                 task_system::parallel_for((uint32_t)sys.protein_backbone.segment.count, 1, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                     const md_backbone_angles_t* src_angles[2] = {
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[2],
                     };
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[2] = {src_angles[0][i].phi, src_angles[1][i].phi};
@@ -6686,10 +6722,10 @@ void interpolate_system_state(SystemContext& sc) {
             case InterpolationMode::BSpline: {
                 task_system::parallel_for((uint32_t)sys.protein_backbone.segment.count, 1, [data = &payload](uint32_t range_beg, uint32_t range_end) {
                     const md_backbone_angles_t* src_angles[4] = {
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[0],
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[1],
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[2],
-                        data->sys->run.trajectory_data.backbone_angles.data + data->sys->run.trajectory_data.backbone_angles.stride * data->frames[3],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[0],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[1],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[2],
+                        data->run->trajectory_data.backbone_angles.data + data->run->trajectory_data.backbone_angles.stride * data->frames[3],
                     };
                     for (size_t i = range_beg; i < range_end; ++i) {
                         float phi[4] = {src_angles[0][i].phi, src_angles[1][i].phi, src_angles[2][i].phi, src_angles[3][i].phi};
@@ -6722,14 +6758,14 @@ void interpolate_system_state(SystemContext& sc) {
         task_system::parallel_for((uint32_t)num_segments, 1, [data = &payload, mode](uint32_t range_beg, uint32_t range_end) {
             // The state carries the secondary structure of the nearest frame as it was assigned. The cartoon blends the
             // denoised copy (a presentation smoothing, see secondary_structure_render) where it exists.
-            const md_secondary_structure_t* label_nearest = data->sys->run.trajectory_data.secondary_structure.data +
-                data->sys->run.trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
-            const md_secondary_structure_t* ss_data = data->sys->run.trajectory_data.secondary_structure_render.data ?
-                data->sys->run.trajectory_data.secondary_structure_render.data :
-                data->sys->run.trajectory_data.secondary_structure.data;
-            const size_t ss_stride = data->sys->run.trajectory_data.secondary_structure_render.data ?
-                data->sys->run.trajectory_data.secondary_structure_render.stride :
-                data->sys->run.trajectory_data.secondary_structure.stride;
+            const md_secondary_structure_t* label_nearest = data->run->trajectory_data.secondary_structure.data +
+                data->run->trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
+            const md_secondary_structure_t* ss_data = data->run->trajectory_data.secondary_structure_render.data ?
+                data->run->trajectory_data.secondary_structure_render.data :
+                data->run->trajectory_data.secondary_structure.data;
+            const size_t ss_stride = data->run->trajectory_data.secondary_structure_render.data ?
+                data->run->trajectory_data.secondary_structure_render.stride :
+                data->run->trajectory_data.secondary_structure.stride;
             const md_secondary_structure_t* src_ss[4] = {
                 ss_data + ss_stride * data->frames[0],
                 ss_data + ss_stride * data->frames[1],
@@ -7998,6 +8034,19 @@ static LoadResult load_system_copy(ApplicationState* app, const SystemContext& o
     return any ? LoadResult_System : LoadResult_Failed;
 }
 
+// The systems loaded, as a drop sees them: their runs' paths in run_paths
+static size_t drop_systems(DropSystem* out, md_str_t (*run_paths)[RUN_MAX], const ApplicationState& app) {
+    size_t n = 0;
+    for (size_t i = 0; i < app.num_systems; ++i) {
+        const SystemContext& sc = *app.systems[i];
+        if (!system_loaded(sc)) continue;
+        for (size_t r = 0; r < sc.num_runs; ++r) run_paths[n][r] = md_str_from_cstr(sc.runs[r]->path);
+        out[n] = { sc.id, &sc.data.sys, &sc.data.state, run_paths[n], sc.num_runs };
+        n += 1;
+    }
+    return n;
+}
+
 // The files a system of the plan loads, into sys (fresh: added for them, and shown what was loaded into it before them,
 // a copy), in its order
 static void load_placed(ApplicationState* app, DropFiles* drop, const PlacementSystem& ps, SystemContext* sys, bool fresh, LoadResult shown = LoadResult_Failed) {
@@ -8012,7 +8061,15 @@ static void load_placed(ApplicationState* app, DropFiles* drop, const PlacementS
         const DropFile* loaded = f.loaded > 0 ? &f : nullptr;
         const FileRole role = f.kind == PlacementKind_Series ? FileRole_Series : FileRole_None;
         const bool own_run = (f.ls.flags & LoaderFlag_System) && (f.ls.flags & LoaderFlag_Trajectory);
-        const LoadResult r = load_data(app, *sys, path, f.ls, role, own_run, loaded ? &loaded->sys : nullptr, loaded ? &loaded->state : nullptr);
+        // A series along the run it was matched along: one loaded, or the one a trajectory of the drop opened
+        const PlacementRef along = ps.entries[i].run;
+        int run = -1;
+        if (along.file >= 0 && (size_t)along.file < drop->num_files) {
+            run = file_list_run_of(&sys->files, md_str_from_cstr(drop->files[along.file].entry.path));
+        } else if (along.run >= 0 && along.system == sys->id) {
+            run = along.run;
+        }
+        const LoadResult r = load_data(app, *sys, path, f.ls, role, own_run, loaded ? &loaded->sys : nullptr, loaded ? &loaded->state : nullptr, run);
         if (r != LoadResult_Failed) f.into = sys->id;
         if (r == LoadResult_System || (r == LoadResult_Trajectory && shown != LoadResult_System)) shown = r;
     }
@@ -8149,10 +8206,16 @@ static void placement_ref_label(char* buf, size_t cap, ApplicationState* app, co
     }
     char label[128];
     system_label(label, sizeof(label), *sys);
-    const bool of_run = ref.run >= 0 || (ref.file >= 0 && drop->files[ref.file].kind == PlacementKind_Trajectory);
-    const FileEntry* run_file = of_run ? file_list_run_file(&sys->files) : nullptr;
+    // A run: the file that opened it
+    const char* run_file = nullptr;
+    if (ref.run >= 0) {
+        const FileEntry* e = file_list_run_file_of(&sys->files, (size_t)ref.run);
+        run_file = e ? e->path : nullptr;
+    } else if (ref.file >= 0 && drop->files[ref.file].kind == PlacementKind_Trajectory) {
+        run_file = drop->files[ref.file].entry.path;
+    }
     if (run_file) {
-        snprintf(buf, cap, "%s, along " MD_STR_FMT, label, MD_STR_ARG(md_path_filename(md_str_from_cstr(run_file->path))));
+        snprintf(buf, cap, "%s, along " MD_STR_FMT, label, MD_STR_ARG(md_path_filename(md_str_from_cstr(run_file))));
     } else {
         snprintf(buf, cap, "%s", label);
     }
@@ -8288,11 +8351,8 @@ bool system_move_file(ApplicationState* app, uint32_t from_id, size_t i, uint32_
 
     // The file where it fits, as a file dropped onto the system (or below the systems, for a new one) is
     DropSystem loaded[SYSTEM_MAX];
-    size_t num_loaded = 0;
-    for (size_t k = 0; k < app->num_systems; ++k) {
-        const SystemContext& sc = *app->systems[k];
-        if (system_loaded(sc)) loaded[num_loaded++] = { sc.id, &sc.data.sys, &sc.data.state, md_str_from_cstr(sc.run.path) };
-    }
+    md_str_t run_paths[SYSTEM_MAX][RUN_MAX];
+    const size_t num_loaded = drop_systems(loaded, run_paths, *app);
     DropFiles* drop = new DropFiles();
     drop_files_init(drop, loaded, num_loaded);
     drop_files_add(drop, md_str_from_cstr(file.path), file_entry_loader_state(file), to ? to->id : PLACEMENT_NEW);
@@ -8325,7 +8385,24 @@ bool system_move_file(ApplicationState* app, uint32_t from_id, size_t i, uint32_
     delete drop;
     delete plan;
 
-    if (ok) {
+    // Runs of it, and nothing else of it (a trajectory, the series along it): closed, rather than the system built again
+    size_t runs_moved[RUN_MAX];
+    size_t num_runs_moved = 0;
+    bool only_runs = true;
+    for (size_t j = 0; j < file_list_count(&from->files); ++j) {
+        const FileEntry& e = *file_list_get(&from->files, j);
+        if (strcmp(e.path, file.path) != 0) continue;
+        if (e.run < 0 || file_list_role(&from->files, j) != FileRole_Trajectory || num_runs_moved == RUN_MAX) only_runs = false;
+        else runs_moved[num_runs_moved++] = (size_t)e.run;
+    }
+    if (ok && only_runs) {
+        for (size_t k = num_runs_moved; k-- > 0;) close_run(app, *from, runs_moved[k]);
+        // A trajectory which was the system (points): nothing of it is left
+        if (file_list_count(&from->files) == 0) {
+            system_remove(*from);
+            system_release(app, from);
+        }
+    } else if (ok) {
         // What is left is a system while a file of it stands alone; what only adds to one goes with it
         bool stands = false;
         for (size_t j = 0; j < file_list_count(&rest); ++j) {
@@ -8354,6 +8431,12 @@ void file_queue_process(ApplicationState* state) {
     if (state->placement_prompt.drop) {
         if (!state->placement_prompt.answered) return;
         placement_prompt_load(state);
+        return;
+    }
+    if (state->run_close.system != SYSTEM_ID_NONE) {
+        const auto close = state->run_close;
+        state->run_close = {};
+        if (SystemContext* sys = system_find(state, close.system)) close_run(state, *sys, close.run);
         return;
     }
     if (state->file_move.from != SYSTEM_ID_NONE) {
@@ -8398,12 +8481,8 @@ void file_queue_process(ApplicationState* state) {
 
     // What is queued together up to the next of those: one drop, placed as a whole (drop_files.h)
     DropSystem loaded[SYSTEM_MAX];
-    size_t num_loaded = 0;
-    for (size_t i = 0; i < state->num_systems; ++i) {
-        const SystemContext& sc = *state->systems[i];
-        if (!system_loaded(sc)) continue;
-        loaded[num_loaded++] = { sc.id, &sc.data.sys, &sc.data.state, md_str_from_cstr(sc.run.path) };
-    }
+    md_str_t run_paths[SYSTEM_MAX][RUN_MAX];
+    const size_t num_loaded = drop_systems(loaded, run_paths, *state);
     DropFiles* drop = new DropFiles();
     drop_files_init(drop, loaded, num_loaded);
     while (!file_queue_empty(&state->file_queue)) {
@@ -9050,7 +9129,7 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->ir = ir;
     script::program_retain(ir);
     job->sys = &state->mold.sys;
-    job->run = md_alloc_str(job->arena, md_str_from_cstr(state->run.path));
+    job->run = md_alloc_str(job->arena, run_path(state->system_context));
     job->state.alloc = job->arena;
     md_system_state_copy(&job->state, &state->mold.state);
     script::drawing_init(&job->vis, job->arena);
@@ -9251,7 +9330,7 @@ const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
             .sys   = &state->mold.sys,
             .state = &state->mold.state,
             .eval  = eval,
-            .run   = md_str_from_cstr(state->run.path),
+            .run   = run_path(state->system_context),
         };
         script::value_plot(&sc.trajectory_plot, sc.vis_target.ref, sc.vis_target.subidx, ctx, sc.trajectory_plot_arena);
     }

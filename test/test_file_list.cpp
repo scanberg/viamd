@@ -379,3 +379,26 @@ UTEST(viamd_file_list, a_structure_of_several_frames_moved_out_takes_its_run) {
     { const std::string got_ = rest.str();  EXPECT_STREQ("a.ndx:System:-1", got_.c_str()); }
     { const std::string got_ = moved.str(); EXPECT_STREQ("a.pdb:System:-1 a.pdb:Trajectory:0 a.xvg:Series:0", got_.c_str()); }
 }
+
+UTEST(viamd_file_list, runs_close_one_at_a_time) {
+    List l;
+    l.record(file("a.gro"), FileRole_System);
+    l.record(file("r1.xtc"), FileRole_Trajectory);
+    l.record(file("r1.edr"), FileRole_Series);
+    l.record(file("r2.xtc"), FileRole_Trajectory);
+    l.record(file("r2.edr"), FileRole_Series);
+    // A series along a run named, the first, after the second was opened
+    FileEntry along_first = file("r1.xvg");
+    along_first.run = 0;
+    l.record(along_first, FileRole_Series);
+    { const std::string got_ = l.str(); EXPECT_STREQ("a.gro:System:-1 r1.xtc:Trajectory:0 r1.edr:Series:0 r2.xtc:Trajectory:1 r2.edr:Series:1 r1.xvg:Series:0", got_.c_str()); }
+    EXPECT_EQ(0, file_list_run_of(&l.list, MD_STR_LIT("r1.xtc")));
+    EXPECT_EQ(1, file_list_run_of(&l.list, MD_STR_LIT("r2.xtc")));
+    EXPECT_EQ(-1, file_list_run_of(&l.list, MD_STR_LIT("r1.edr")));
+    EXPECT_STREQ("r2.xtc", file_list_run_file_of(&l.list, 1)->path);
+
+    // The first closed: its files go, and the second takes its place
+    file_list_remove_run(&l.list, 0);
+    { const std::string got_ = l.str(); EXPECT_STREQ("a.gro:System:-1 r2.xtc:Trajectory:0 r2.edr:Series:0", got_.c_str()); }
+    EXPECT_EQ(1u, md_array_size(l.list.runs));
+}
