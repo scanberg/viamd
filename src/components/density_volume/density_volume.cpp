@@ -11,6 +11,7 @@
 #include <color_scale.h>
 #include <property_grid.h>
 #include <filter_input.h>
+#include <system_scene.h>
 
 #include <gfx/gl_utils.h>
 #include <gfx/volumerender_utils.h>
@@ -75,6 +76,10 @@ struct DensityVolume : viamd::EventHandler {
     // The volume property shown, by path; empty for none. One at a time. Of an array of volumes, one of them: v[member + 1].
     SeriesKey volume_key = {};
     uint32_t  volume_member = 0;
+    // Of the evaluation of the run of which instance of the first system (by id, instance_resolve): the volume, and the
+    // reference structures in its coordinates. The script is of the first system.
+    uint32_t  instance_id = 0;
+    uint32_t  shown_instance = 0;   // The one what is made was of (its id), to know when it is another
     ApplicationState* app = nullptr;
 
     md_allocator_i* arena = nullptr;
@@ -328,6 +333,35 @@ struct DensityVolume : viamd::EventHandler {
         return show_reference_ensemble ? n : MD_MIN(n, (size_t)1);
     }
 
+    const SystemInstance& inst() const { return instance_resolve(app->system_context, instance_id); }
+    SystemInstance& inst_mut() { return instance_resolve(app->system_context, instance_id); }
+
+    // The volume shown as a series: of the evaluation of its instance's run
+    SeriesKey shown_key() const {
+        SeriesKey k = volume_key;
+        const SystemRun* run = instance_run(inst());
+        snprintf(k.run, sizeof(k.run), "%s", run ? run->path : "");
+        return k;
+    }
+
+    // Of a key dragged here or picked: the instance of the run it names, the one it has otherwise. The key is kept of no
+    // run (of the instance's).
+    void take_key(const SeriesKey& key) {
+        volume_key = key;
+        if (key.run[0]) {
+            const SystemContext& sc = app->system_context;
+            for (size_t k = 0; k < sc.num_instances; ++k) {
+                const SystemRun* r = instance_run(*sc.instances[k]);
+                if (r && strcmp(r->path, key.run) == 0) {
+                    instance_id = k == 0 ? 0 : sc.instances[k]->id;
+                    break;
+                }
+            }
+        }
+        volume_key.run[0] = '\0';
+        volume_member = 0;
+    }
+
     // The subsets of a representation: what its filter picks within each structure shown
     void build_subsets(ApplicationState* state, DensityVolumeRep& r, size_t shown) {
         md_allocator_i* heap = md_get_heap_allocator();
@@ -341,7 +375,7 @@ struct DensityVolume : viamd::EventHandler {
         // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
         // id 0 would draw all of the molecule.
         while (md_array_size(r.subsets) < shown) {
-            const md_gl_subset_t subset = md_gl_subset_create(system_instance(state->system_context).gl_mol);
+            const md_gl_subset_t subset = md_gl_subset_create(inst().gl_mol);
             if (!subset.id) break;
             md_array_push(r.subsets, subset, heap);
         }
@@ -360,7 +394,7 @@ struct DensityVolume : viamd::EventHandler {
         for (size_t i = 0; i < made; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
-                script::FilterCtx ctx = filter_context(state->system_context);
+                script::FilterCtx ctx = filter_context(inst());
                 ctx.atoms = &structures[i];
                 md_bitset_t out = md_bitset_empty_set();
                 filter_evaluate(&rep.filter, &out, state->script.language, ctx, frame);
@@ -383,7 +417,7 @@ struct DensityVolume : viamd::EventHandler {
         }
 
         // Of a Cartoon, the glyphs of the lipids and nucleic acids of each subset
-        const CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
+        const CartoonGlyphs& glyphs = inst().cartoon_glyphs;
         if (rep.type == RepresentationType::Cartoon && cartoon_glyphs_valid(glyphs)) {
             while (md_array_size(r.glyph_subsets) < made) {
                 const md_gl_subset_t subset = md_gl_subset_create(glyphs.gl_mol);
@@ -406,7 +440,7 @@ struct DensityVolume : viamd::EventHandler {
         } else if (made == 0) {
             // No structure to evaluate it within: whether it is valid at all, within the whole system
             md_bitset_t out = md_bitset_empty_set();
-            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state->system_context), frame);
+            filter_evaluate(&rep.filter, &out, state->script.language, filter_context(inst()), frame);
         } else if (failed) {
             rep.filter.result = failure;
             rep.filter.result.is_dynamic = dynamic;
@@ -431,7 +465,7 @@ struct DensityVolume : viamd::EventHandler {
 
         const size_t num_atoms = md_system_atom_count(&state->mold.sys);
         Representation& rep = r.rep;
-        if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(system_instance(state->system_context).gl_mol);
+        if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(inst().gl_mol);
 
         // Opaque: what is drawn is what the subsets hold
         uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MD_MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
@@ -442,7 +476,7 @@ struct DensityVolume : viamd::EventHandler {
         md_gl_rep_set_atom_colors(rep.md_rep, 0, (uint32_t)num_atoms, colors, 0);
 
         // Of a Cartoon, its glyphs in the colours of their atoms
-        const CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
+        const CartoonGlyphs& glyphs = inst().cartoon_glyphs;
         const bool with_glyphs = md_array_size(r.glyph_subsets) > 0;
         rep.glyphs_shown = false;
         if (with_glyphs) {
@@ -452,7 +486,7 @@ struct DensityVolume : viamd::EventHandler {
 
         // The other structures of an ensemble, towards the background
         if (shown > 1 && fade > 0.0f) {
-            if (!r.members.id) r.members = md_gl_rep_create(system_instance(state->system_context).gl_mol);
+            if (!r.members.id) r.members = md_gl_rep_create(inst().gl_mol);
             const md_float3_t bg = state->visuals.background.color;
             const float t = MD_CLAMP(fade, 0.0f, 1.0f);
             for (size_t i = 0; i < num_atoms; ++i) {
@@ -475,7 +509,7 @@ struct DensityVolume : viamd::EventHandler {
 
     // Those that need it, of those shown
     void update_reps(ApplicationState* state, bool frame_changed) {
-        if (!system_instance(state->system_context).gl_mol.id || !show_reference_structures) return;
+        if (!inst().gl_mol.id || !show_reference_structures) return;
         const size_t shown = shown_structures();
         const float fade = shown > 1 ? ensemble_fade : 0.0f;
         for (size_t i = 0; i < md_array_size(reps); ++i) {
@@ -498,6 +532,7 @@ struct DensityVolume : viamd::EventHandler {
     void reset_workspace_settings() {
         volume_key = {};
         volume_member = 0;
+        instance_id = 0;
         dvr.enabled = true;
         dvr.tf.alpha_scale = 1.0f;
         dvr.tf.colormap = DEFAULT_COLORMAP;
@@ -538,6 +573,8 @@ struct DensityVolume : viamd::EventHandler {
     // The settings of [DensityVolume], by path (serialization_utils.h)
     void write_settings(viamd::serialization_state_t& s) {
         viamd::PathPrefix p;
+        // Of another instance than the first
+        if (&inst() != &system_instance(app->system_context)) viamd::write_int(s, p("Instance"), (int)inst().id);
         // The volume shown, by the series it is of
         if (volume_key.path[0] != '\0') {
             viamd::PathPrefix q = p.sub("Property");
@@ -593,6 +630,8 @@ struct DensityVolume : viamd::EventHandler {
 
     void read_settings(viamd::Entries& e) {
         viamd::PathPrefix p;
+        int inst_id = 0;
+        if (viamd::get(e, p("Instance"), inst_id)) instance_id = (uint32_t)MD_MAX(inst_id, 0);
         viamd::PathPrefix q = p.sub("Property");
         md_str_t path = {};
         if (viamd::get(e, q("Path"), path)) {
@@ -761,7 +800,17 @@ struct DensityVolume : viamd::EventHandler {
         // Resolved by path every frame: the evaluation's table is rebuilt when the script recompiles
         const bool selected = volume_key.path[0] != '\0';
         SeriesVolumeView vol_view = {};
-        const bool resolved = selected && series_resolve_volume(&vol_view, state, volume_key, volume_member);
+        // Of another instance: what was made of the one before goes, the reference structures of its molecule too
+        const uint32_t shown = inst().id;
+        if (shown != shown_instance) {
+            shown_instance = shown;
+            release_all_rep_resources();
+            clear_structures();
+            dirty_vol = true;
+            dirty_rep = true;
+        }
+        const SeriesKey key = shown_key();
+        const bool resolved = selected && series_resolve_volume(&vol_view, state, key, volume_member);
         if (resolved) {
             // Of an array which became shorter, the last of it
             volume_member = vol_view.member;
@@ -777,13 +826,13 @@ struct DensityVolume : viamd::EventHandler {
 
         static SeriesKey s_volume_key = {};
         static bool s_first = true;
-        if (s_first || !series_key_equal(s_volume_key, volume_key)) {
+        if (s_first || !series_key_equal(s_volume_key, key)) {
             // Another volume, or the first: looked at whole when its extent is known, wherever the view was
             if (selected) {
                 view_pending = true;
             }
             s_first = false;
-            s_volume_key = volume_key;
+            s_volume_key = key;
             dirty_vol = true;
             dirty_rep = true;
         }
@@ -822,12 +871,13 @@ struct DensityVolume : viamd::EventHandler {
                 if (script::valid(state->script.eval_ir)) {
                     script::drawing_init(&vis, state->allocator.frame);
                     // The run: v2 places an sdf's structures by fitting them onto its reference, frame 0 of the run
+                    const SeriesKey key = shown_key();
                     script::DrawCtx ctx = {
                         .prog = state->script.eval_ir,
                         .sys = &state->mold.sys,
-                        .state = &system_instance(state->system_context).state,
-                        .eval = state->script.eval,
-                        .run = run_path(state->system_context),
+                        .state = &inst().state,
+                        .eval = series_eval(state, key),
+                        .run = md_str_from_cstr(key.run),
                     };
                     // The structures of the member shown: subidx i is the i-th volume of an array, 0 the one volume
                     result = script::draw_ref(&vis, vis_ref, (int)vol_view.member, ctx, script::DRAW_SDF);
@@ -960,7 +1010,8 @@ struct DensityVolume : viamd::EventHandler {
 
     // What placing and sampling the other depends on: this volume (which, its data, its grid) and the cube
     uint64_t compare_key(const ApplicationState* state, const SeriesVolumeView& v) {
-        uint64_t h = md_hash64(&volume_key, sizeof(volume_key), cmp.generation + 1);
+        const SeriesKey key = shown_key();
+        uint64_t h = md_hash64(&key, sizeof(key), cmp.generation + 1);
         h = md_hash64(&v.member, sizeof(v.member), h);
         h = md_hash64(&v.version, sizeof(v.version), h);
         h = md_hash64(v.dim, sizeof(v.dim), h);
@@ -986,15 +1037,16 @@ struct DensityVolume : viamd::EventHandler {
         md_system_state_init(&st0, state->mold.sys.atom.count);
         md_array(int32_t) atoms = nullptr;
         md_float3_t* xyz = nullptr;
-        if (script::valid(state->script.eval_ir) && extract_frame(state->system_context, 0, &st0)) {
+        const SeriesKey key = shown_key();
+        if (script::valid(state->script.eval_ir) && extract_frame(state->system_context, instance_run(inst()), 0, &st0)) {
             script::Drawing vis = {};
             script::drawing_init(&vis, temp);
             script::DrawCtx ctx = {
                 .prog = state->script.eval_ir,
                 .sys = &state->mold.sys,
                 .state = &st0,
-                .eval = state->script.eval,
-                .run = run_path(state->system_context),
+                .eval = series_eval(state, key),
+                .run = md_str_from_cstr(key.run),
             };
             if (script::draw_ref(&vis, v.vis_ref, (int)v.member, ctx, script::DRAW_SDF) && md_array_size(vis.sdf.structures) > 0 &&
                 md_array_size(vis.sdf.matrices) > 0) {
@@ -1098,7 +1150,8 @@ struct DensityVolume : viamd::EventHandler {
                 ImGui::PushID((int)period);
                 ImPlot::ItemIcon(series_default_color(state, key)); ImGui::SameLine();
                 if (ImGui::Selectable(label, is_selected)) {
-                    volume_key = is_selected ? SeriesKey{} : key;
+                    if (is_selected) volume_key = SeriesKey{};
+                    else take_key(key);
                     volume_member = 0;
                 }
                 if (ImGui::IsItemHovered()) {
@@ -1142,7 +1195,13 @@ struct DensityVolume : viamd::EventHandler {
         if (!prop::section("Volume")) return;
         char preview[96] = "none";
         if (volume_key.path[0] != '\0') {
-            series_label(preview, sizeof(preview), state, volume_key);
+            const SeriesKey key = shown_key();
+            series_label(preview, sizeof(preview), state, key);
+        }
+        // Of which instance's run, where the first system has several
+        if (state->system_context.num_instances > 1) {
+            prop::row("instance", "Of the evaluation of its run: the volume, and the reference structures in its coordinates");
+            instance_combo("##instance", &instance_id, state->system_context);
         }
         prop::row("property", "A volume of the script (sdf(...) and the like), which can also be dragged here from its mark in the script editor");
         if (ImGui::BeginCombo("##property", preview, ImGuiComboFlags_HeightLarge)) {
@@ -1337,7 +1396,7 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             // Completed within the first structure, as each is evaluated within its own
-            script::FilterCtx ctx = filter_context(state->system_context);
+            script::FilterCtx ctx = filter_context(inst());
             if (md_array_size(structures) > 0) ctx.atoms = &structures[0];
             prop::row("filter", "Evaluated within each reference structure: all is the structure, residue(1) its first residue.\n"
                                 "'out' reaches outside of it, as in a script: within(5, out resname(\"LIG\")).");
@@ -1515,8 +1574,7 @@ struct DensityVolume : viamd::EventHandler {
             // A volume dragged here (from its mark in the script editor) is the one shown
             if (ImGui::BeginDragDropTarget()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(VOLUME_SERIES_DND)) {
-                    volume_key = ((const SeriesDragPayload*)payload->Data)->key;
-                    volume_member = 0;
+                    take_key(((const SeriesDragPayload*)payload->Data)->key);
                 }
                 ImGui::EndDragDropTarget();
             }
@@ -1679,13 +1737,13 @@ struct DensityVolume : viamd::EventHandler {
                 const bool has_backbone = state->mold.sys.protein_backbone.range.count > 0;
                 md_array(md_gl_draw_op_t) draw_ops = nullptr;
                 md_array(md_gl_draw_op_t) glyph_ops = nullptr;
-                CartoonGlyphs& glyphs = system_instance(state->system_context).cartoon_glyphs;
+                CartoonGlyphs& glyphs = inst_mut().cartoon_glyphs;
                 for (size_t i = 0; i < md_array_size(reps); ++i) {
                     const DensityVolumeRep& r = reps[i];
                     if (!r.rep.enabled || !r.rep.type_is_valid || r.dirty || !r.rep.md_rep.id) continue;
                     if (r.rep.glyphs_shown && md_array_size(r.glyph_subsets) > 0) {
                         // Derived from the positions of the atoms when a cartoon of the main view has not
-                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, system_instance(state->system_context).state);
+                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, inst().state);
                         md_array(md_gl_draw_op_t) ops = nullptr;
                         representation_glyph_draw_ops(&ops, state->system_context, r.rep, temp_arena);
                         const size_t n = MD_MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
@@ -1725,7 +1783,7 @@ struct DensityVolume : viamd::EventHandler {
                         .view_matrix = &world_to_view.elem[0][0],
                         .proj_matrix = &view_to_clip.elem[0][0],
                     },
-                    .picking_offset = gl_picking_offset(system_instance(state->system_context)),
+                    .picking_offset = gl_picking_offset(inst()),
                 };
                 if (md_array_size(draw_ops) > 0) {
                     md_gl_draw(&draw_args);
@@ -1733,7 +1791,7 @@ struct DensityVolume : viamd::EventHandler {
                 // The glyphs, picked as those of the main view are
                 if (md_array_size(glyph_ops) > 0) {
                     draw_args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-                    draw_args.picking_offset = gl_picking_offset_glyphs(system_instance(state->system_context));
+                    draw_args.picking_offset = gl_picking_offset_glyphs(inst());
                     md_gl_draw(&draw_args);
                 }
 
