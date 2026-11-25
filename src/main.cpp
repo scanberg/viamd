@@ -596,7 +596,8 @@ static void draw_main_menu(ApplicationState* state);
 static void draw_context_popup(SystemContext& sys, const PickingHit& hit);
 static void draw_selection_query_window(ApplicationState* state);
 static void draw_selection_grow_window(ApplicationState* state);
-static void draw_animation_window(ApplicationState* state);
+static void draw_playback_menu(ApplicationState* state);
+static void draw_transport(ApplicationState* state);
 static void draw_timeline_window(ApplicationState* state);
 static void draw_distribution_window(ApplicationState* state);
 static void draw_async_task_window(ApplicationState* state);
@@ -946,7 +947,6 @@ int main(int argc, char** argv) {
     // The Scene window, under the name it had before (Representations): what a workspace calls it
     workspace_register_window("Representations", &state.show_representation_window);
     workspace_register_window("ScriptEditor",    &state.show_script_window);
-    workspace_register_window("Animation",       &state.animation.show_window);
 
     viamd::event_system_broadcast_event(viamd::EventType_ViamdInitialize, viamd::EventPayloadType_ApplicationState, &state);
 
@@ -1056,7 +1056,6 @@ int main(int argc, char** argv) {
         if (state.structure_export.show_window) draw_structure_export_window(&state);
         if (state.show_debug_window) draw_debug_window(&state);
         if (state.show_profiler_window) draw_profiler_window(&state);
-        if (state.animation.show_window) draw_animation_window(&state);
 
         draw_async_task_window(&state);
         draw_main_menu(&state);
@@ -1065,6 +1064,7 @@ int main(int argc, char** argv) {
         //ImGui::ShowDemoWindow();
 
         draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
+        draw_transport(&state);
         draw_representation_legends(state);
         POP_GPU_SECTION();
 
@@ -1218,25 +1218,7 @@ int main(int argc, char** argv) {
         // being typed, by a window or an item that routes it to itself (ImGui's shortcut routing, of which this is the
         // global, last, route), or by keyboard navigation (with its cursor shown, space presses the item it is on).
         if (!ImGui::GetIO().WantTextInput && !ImGui::GetIO().NavVisible && ImGui::Shortcut(KEY_PLAY_PAUSE, ImGuiInputFlags_RouteGlobal)) {
-            switch (state.animation.mode) {
-                case PlaybackMode::Playing:
-                    state.animation.mode = PlaybackMode::Stopped;
-                    for (size_t i = 0; i < state.num_systems; ++i) system_instances_flag(*state.systems[i], MolBit_ClearVelocity);
-                    break;
-                case PlaybackMode::Stopped: {
-                    // From the beginning again when it stopped at the end (at the end when it plays backwards)
-                    state.animation.mode = PlaybackMode::Playing;
-                    double beg, end;
-                    clock_span(&state, &beg, &end);
-                    if (state.animation.time >= end && state.animation.fps > 0) {
-                        state.animation.time = beg;
-                    } else if (state.animation.time <= beg && state.animation.fps < 0) {
-                        state.animation.time = end;
-                    }
-                } break;
-                default:
-                    MD_ASSERT(false);
-            }
+            playback_toggle(&state);
         }
 
         // Capture non-window specific keyboard events
@@ -1271,16 +1253,7 @@ int main(int argc, char** argv) {
         // Not while a screenshot is pending: it is of the frame shown, made until it has settled. At fps frames of the
         // reference a second: past its frames, at its mean time per frame.
         if (state.animation.mode == PlaybackMode::Playing && !screenshot_pending(&state)) {
-            double beg, end;
-            clock_span(&state, &beg, &end);
-            state.animation.time += state.app.timing.delta_s * state.animation.fps * clock_frame_duration(&state);
-            if (state.animation.time >= end) {
-                state.animation.mode = PlaybackMode::Stopped;
-                state.animation.time = end;
-            } else if (state.animation.time <= beg) {
-                state.animation.mode = PlaybackMode::Stopped;
-                state.animation.time = beg;
-            }
+            playback_update(&state, state.app.timing.delta_s);
         }
 
         {
@@ -2504,7 +2477,6 @@ static void draw_main_menu(ApplicationState* data) {
             // application are added here, those of the components in answer to the request
             viamd::WindowMenuRequest windows;
             viamd::window_menu_add(&windows, "View/Scene",                 &data->show_representation_window,   {.order = 10});
-            viamd::window_menu_add(&windows, "View/Animation",             &data->animation.show_window,        {.order = 20});
             viamd::window_menu_add(&windows, "Analysis/Timelines",         &data->timeline.show_window,         {.order = 10});
             viamd::window_menu_add(&windows, "Analysis/Distributions",     &data->distributions.show_window,    {.order = 20});
             viamd::window_menu_add(&windows, "Scripting/Script Editor",    &data->show_script_window,           {.order = 10});
@@ -3600,102 +3572,225 @@ static void draw_selection_query_window(ApplicationState* data) {
     ImGui::End();
 }
 
-static void draw_animation_window(ApplicationState* data) {
+// The Timelines' Playback menu: playing, and how; and the motion between the frames shown
+static void draw_playback_menu(ApplicationState* data) {
     MD_ASSERT(data);
-    // The controls of the clock (clock.h): of its reference's frames
     const SystemInstance* ref = clock_reference(data);
-    if (!ref) return;
-    const size_t num_frames = run_num_frames(*ref->sys, instance_run(*ref));
+    const size_t num_frames = ref ? run_num_frames(*ref->sys, instance_run(*ref)) : 0;
+    char unit_buf[32];
+    const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), clock_unit(data));
+    const float font = ImGui::GetFontSize();
 
-    ImGui::SetNextWindowSize({300,200}, ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Animation", &data->animation.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
-        ImGui::Text("Num Frames: %zu", num_frames);
-        // The slider picks a time on the clock, of every run shown, and shows the reference's frame at it with the time
-        // in the display unit beside it. A clock without time of its own prints no unit, and its frames' numbers are
-        // all there is to show.
-        char unit_buf[32];
-        const double scl = display_units::factor_print(unit_buf, sizeof(unit_buf), clock_unit(data));
-        char time_fmt[64];
-        if (unit_buf[0] != '\0') snprintf(time_fmt, sizeof(time_fmt), "%.0f  (%.6g %s)", clock_frame(data), data->animation.time * scl, unit_buf);
-        else                      snprintf(time_fmt, sizeof(time_fmt), "%.0f", clock_frame(data));
-        double beg, end;
-        clock_span(data, &beg, &end);
-        const float w = ImGui::CalcTextSize("Time (ps)").x;
-        const float item_width = MD_MAX(ImGui::GetContentRegionAvail().x - w, 100.f);
-        ImGui::PushItemWidth(item_width);
-        if (ImGui::BeginCombo("Interp.", interpolation_mode_str[(int)data->animation.interpolation])) {
-            static const char* mode_tooltip[(int)InterpolationMode::Count] = {
-                "The nearest frame, as it is",
-                "Straight from frame to frame, through each of them",
-                "Smooth (C1) from frame to frame, through each of them",
-                "Smoother (C2), and damps the jitter from frame to frame,\n"
-                "but passes through none of the frames but the first and the last:\n"
-                "the coordinates shown are never a frame's own, not even when stopped on one",
-            };
-            for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
-                if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
-                    data->animation.interpolation = (InterpolationMode)i;
-                    for (size_t s = 0; s < data->num_systems; ++s) system_instances_update(*data->systems[s], MolBit_ClearVelocity);
-                }
-                ImGui::SetItemTooltip("%s", mode_tooltip[i]);
+    const bool playing = data->animation.mode == PlaybackMode::Playing;
+    if (ImGui::MenuItem(playing ? ICON_FA_PAUSE "  Pause" : ICON_FA_PLAY "  Play", "Space", false, ref != nullptr)) {
+        playback_toggle(data);
+    }
+
+    ImGui::SeparatorText("At the end");
+    {
+        int loop = (int)data->animation.loop;
+        ImGui::RadioButton("Stop", &loop, PlaybackLoop_Once);
+        ImGui::SetItemTooltip("Play to the end, and stop there");
+        ImGui::SameLine();
+        ImGui::RadioButton("Loop", &loop, PlaybackLoop_Loop);
+        ImGui::SetItemTooltip("Go on from the beginning");
+        ImGui::SameLine();
+        ImGui::RadioButton("Bounce", &loop, PlaybackLoop_Bounce);
+        ImGui::SetItemTooltip("Turn back at either end");
+        data->animation.loop = (PlaybackLoop)loop;
+    }
+    {
+        // Over all of the time, or a fixed period of the timeline: an event played again and again
+        const TimelinePeriods& ps = data->timeline.periods;
+        const TimelinePeriod* cur = timeline_periods_find(&ps, data->animation.loop_period);
+        if (cur && cur->follow) cur = nullptr;
+        ImGui::SetNextItemWidth(font * 14.0f);
+        if (ImGui::BeginCombo("Over", cur ? cur->name : "All of the time")) {
+            if (ImGui::Selectable("All of the time", !cur)) data->animation.loop_period = 0;
+            for (int i = 0; i < ps.count; ++i) {
+                const TimelinePeriod& p = ps.items[i];
+                if (p.follow) continue;
+                ImGui::PushID((int)p.id);
+                if (ImGui::Selectable(p.name, cur && cur->id == p.id)) data->animation.loop_period = p.id;
+                if (ImGui::IsItemHovered()) timeline_periods_highlight(p.id);
+                ImGui::PopID();
             }
             ImGui::EndCombo();
         }
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Interpolation Mode for Atom Positions");
+        ImGui::SetItemTooltip("What playing goes over: every run shown, or a period of the timeline (one that follows the\n"
+                              "current time moves with it, and is not one to play over)");
+    }
+
+    ImGui::SeparatorText("Speed");
+    ImGui::SetNextItemWidth(font * 14.0f);
+    ImGui::SliderFloat("Frames/s", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    if (ImGui::IsItemHovered()) {
+        if (ref && unit_buf[0]) {
+            const double per_s = (double)data->animation.fps * clock_frame_duration(data) * scl;
+            const char* name = instance_run(*ref)->path;
+            if (strncmp(name, "run/", 4) == 0) name += 4;
+            ImGui::SetTooltip("Frames per second of the first run shown (%s): %.4g %s of time a second.\nNegative plays backwards.", name, per_s, unit_buf);
+        } else {
+            ImGui::SetTooltip("Frames per second of the first run shown. Negative plays backwards.");
         }
-        ImGui::SliderScalar("Frame", ImGuiDataType_Double, &data->animation.time, &beg, &end, time_fmt, ImGuiSliderFlags_NoInput);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("The time shown, and the frame of the first run at it: every run shown is at its frame of the same time");
-        }
-        ImGui::SliderFloat("Speed", &data->animation.fps, -200.0f, 200.f, "%.2f", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Animation Speed in Frames Per Second, of the first run");
-        }
-        {
-            // animation.stride: while playing, only every Nth frame is kept and the motion between them is interpolated.
-            // Not called keyframes: that name is kept for the keyframes of animations to come.
-            // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
-            // typed in (Ctrl+click): only the lower bound is enforced.
-            const int max_stride = (int)MD_CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
-            const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
-            ImGui::SliderInt("Stride", &data->animation.stride, 1, max_stride, fmt);
-            data->animation.stride = MD_MAX(1, data->animation.stride);
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
-                                  "at the expense of the frames in between (and the usual interpolation artifacts).\n"
-                                  "The speed is unchanged. A stopped animation shows the trajectory's own frames.\n"
-                                  "Ctrl+click to type a value beyond the slider's range.");
+    }
+
+    ImGui::SeparatorText("Motion");
+    ImGui::SetNextItemWidth(font * 14.0f);
+    if (ImGui::BeginCombo("Interpolation", interpolation_mode_str[(int)data->animation.interpolation])) {
+        static const char* mode_tooltip[(int)InterpolationMode::Count] = {
+            "The nearest frame, as it is",
+            "Straight from frame to frame, through each of them",
+            "Smooth (C1) from frame to frame, through each of them",
+            "Smoother (C2), and damps the jitter from frame to frame,\n"
+            "but passes through none of the frames but the first and the last:\n"
+            "the coordinates shown are never a frame's own, not even when stopped on one",
+        };
+        for (int i = 0; i < (int)InterpolationMode::Count; ++i) {
+            if (ImGui::Selectable(interpolation_mode_str[i], (int)data->animation.interpolation == i)) {
+                data->animation.interpolation = (InterpolationMode)i;
+                for (size_t s = 0; s < data->num_systems; ++s) system_instances_update(*data->systems[s], MolBit_ClearVelocity);
             }
+            ImGui::SetItemTooltip("%s", mode_tooltip[i]);
         }
-        if (data->animation.interpolation == InterpolationMode::CubicSpline) {
-            ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Tension of the Cubic Spline (0 = Catmull-Rom, 1 = ease in and out of every frame)");
-            }
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("How the positions between two frames are made");
+    {
+        // animation.stride: while playing, only every Nth frame is kept and the motion between them is interpolated.
+        // Not called keyframes: that name is kept for the keyframes of animations to come.
+        // The slider covers up to 10 (or the last frame, beyond which a larger stride changes nothing), a larger one is
+        // typed in (Ctrl+click): only the lower bound is enforced.
+        const int max_stride = (int)MD_CLAMP((int64_t)num_frames - 1, (int64_t)2, (int64_t)10);
+        const char* fmt = data->animation.stride == 1 ? "every frame" : "every %d frames";
+        ImGui::SetNextItemWidth(font * 14.0f);
+        ImGui::SliderInt("Stride", &data->animation.stride, 1, max_stride, fmt);
+        data->animation.stride = MD_MAX(1, data->animation.stride);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("While playing, interpolate between every Nth frame only: smoother motion\n"
+                              "at the expense of the frames in between (and the usual interpolation artifacts).\n"
+                              "The speed is unchanged. A stopped animation shows the trajectory's own frames.\n"
+                              "Ctrl+click to type a value beyond the slider's range.");
         }
-        switch (data->animation.mode) {
-            case PlaybackMode::Playing:
-                if (ImGui::Button((const char*)ICON_FA_PAUSE)) {
-                    data->animation.mode = PlaybackMode::Stopped;
-                }
-                break;
-            case PlaybackMode::Stopped:
-                if (ImGui::Button((const char*)ICON_FA_PLAY)) {
-                    data->animation.mode = PlaybackMode::Playing;
-                }
-                break;
-            default:
-                MD_ASSERT(false);
+    }
+    if (data->animation.interpolation == InterpolationMode::CubicSpline) {
+        ImGui::SetNextItemWidth(font * 14.0f);
+        ImGui::SliderFloat("Tension", &data->animation.tension, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Tension of the Cubic Spline (0 = Catmull-Rom, 1 = ease in and out of every frame)");
+        }
+    }
+
+    ImGui::SeparatorText("Transport");
+    {
+        int anchor = (int)data->animation.transport;
+        ImGui::RadioButton("Top", &anchor, TransportAnchor_Top);
+        ImGui::SameLine();
+        ImGui::RadioButton("Bottom", &anchor, TransportAnchor_Bottom);
+        ImGui::SameLine();
+        ImGui::RadioButton("Hidden", &anchor, TransportAnchor_Hidden);
+        data->animation.transport = (TransportAnchor)anchor;
+        ImGui::TextDisabled("The bar of the time over the view: play, the loop, scrub");
+    }
+}
+
+// The transport (animation.transport): the clock over the view, slim and see-through. Play and pause, the loop, and the
+// time, scrubbed along every run shown with the span played over marked; everything else of it is in the Timelines'
+// Playback menu. At the top or the bottom of the part of the view no window covers, in its middle; behind every window
+// over the view, as the coordinate widget is.
+static void draw_transport(ApplicationState* data) {
+    if (data->animation.transport == TransportAnchor_Hidden) return;
+    if (!clock_reference(data)) return;
+    double span_beg, span_end;
+    clock_span(data, &span_beg, &span_end);
+    if (!(span_end > span_beg)) return;     // A single frame: no time to go over
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImRect bounds(vp->WorkPos, vp->WorkPos + vp->WorkSize);
+    ImRect free = ImGui::LargestUncoveredRect(bounds, ImGui::FindWindowByName("Main interaction window"));
+    const float font = ImGui::GetFontSize();
+    if (free.GetWidth() < font * 12.0f || free.GetHeight() < font * 3.0f) free = bounds;
+    const float margin = font * 0.6f;
+    const float width  = MD_MIN(free.GetWidth() - 2.0f * margin, font * 40.0f);
+    const bool  top    = data->animation.transport == TransportAnchor_Top;
+    ImGui::SetNextWindowPos(ImVec2(free.GetCenter().x, top ? free.Min.y + margin : free.Max.y - margin), ImGuiCond_Always, ImVec2(0.5f, top ? 0.0f : 1.0f));
+    ImGui::SetNextWindowSize(ImVec2(width, 0.0f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+        ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(font * 0.4f, font * 0.15f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(font * 0.3f, font * 0.1f));
+    if (ImGui::Begin("##transport", nullptr, flags)) {
+        // Of the 3D view, under every window over it (draw_coordinate_system_widget_window)
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        ImGuiWindow* host = ImGui::FindWindowByName("DockspaceWindow");
+        if (host && host != window && ImGui::FindWindowDisplayIndex(window) > ImGui::FindWindowDisplayIndex(host)) {
+            ImGui::BringWindowToDisplayBehind(window, host);
+        }
+        const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(window->Pos, window->Pos + window->Size, ImGui::GetColorU32(ImGuiCol_WindowBg, hovered ? 0.85f : 0.35f), font * 0.4f);
+
+        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(0, 0, 0, 0));
+        const bool playing = data->animation.mode == PlaybackMode::Playing;
+        if (ImGui::Button(playing ? ICON_FA_PAUSE : ICON_FA_PLAY)) playback_toggle(data);
+        ImGui::SetItemTooltip(playing ? "Pause (Space)" : "Play (Space)");
+        ImGui::SameLine(0.0f, font * 0.2f);
+        static const char* loop_icon[PlaybackLoop_Count] = { ICON_FA_ARROW_RIGHT_TO_BRACKET, ICON_FA_REPEAT, ICON_FA_RIGHT_LEFT };
+        static const char* loop_text[PlaybackLoop_Count] = { "Stops at the end", "Loops", "Bounces" };
+        const int loop = MD_CLAMP((int)data->animation.loop, 0, PlaybackLoop_Count - 1);
+        if (ImGui::Button(loop_icon[loop])) data->animation.loop = (PlaybackLoop)((loop + 1) % PlaybackLoop_Count);
+        ImGui::SetItemTooltip("%s; click for the next. Timelines > Playback for the rest", loop_text[loop]);
+        ImGui::PopStyleColor();
+        ImGui::SameLine(0.0f, font * 0.4f);
+
+        // The time, in the display unit; the frame of the first run shown when the clock counts frames
+        char unit[32];
+        const double scl = display_units::factor_print(unit, sizeof(unit), clock_unit(data));
+        char label[64], widest[64];
+        if (unit[0]) {
+            snprintf(label,  sizeof(label),  "%.6g %s", data->animation.time * scl, unit);
+            snprintf(widest, sizeof(widest), "%.6g %s", -fabs(span_end * scl) - 0.123456, unit);
+        } else {
+            snprintf(label,  sizeof(label),  "frame %.0f", clock_frame(data));
+            snprintf(widest, sizeof(widest), "frame %.0f", span_end * 10.0);
+        }
+        const float label_w = ImGui::CalcTextSize(widest).x;
+        const float bar_w = MD_MAX(ImGui::GetContentRegionAvail().x - label_w - ImGui::GetStyle().ItemSpacing.x, font * 4.0f);
+        const float bar_h = ImGui::GetFrameHeight();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##scrub", ImVec2(bar_w, bar_h));
+        const float x0 = p0.x + font * 0.3f, x1 = p0.x + bar_w - font * 0.3f;
+        auto x_of = [&](double t) { return x0 + (float)((t - span_beg) / (span_end - span_beg)) * (x1 - x0); };
+        if (ImGui::IsItemActive()) {
+            const double u = MD_CLAMP((ImGui::GetIO().MousePos.x - x0) / MD_MAX(x1 - x0, 1.0f), 0.0f, 1.0f);
+            data->animation.time = span_beg + u * (span_end - span_beg);
+        }
+        const bool bar_hovered = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        const float cy = p0.y + bar_h * 0.5f;
+        // The track, and the span played over, when a period
+        dl->AddLine(ImVec2(x0, cy), ImVec2(x1, cy), ImGui::GetColorU32(ImGuiCol_Text, bar_hovered ? 0.6f : 0.35f), bar_hovered ? 3.0f : 2.0f);
+        double play_beg, play_end;
+        playback_range(data, &play_beg, &play_end);
+        if (const TimelinePeriod* p = timeline_periods_find(&data->timeline.periods, data->animation.loop_period); p && !p->follow) {
+            const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(p->color.x, p->color.y, p->color.z, 0.9f));
+            dl->AddLine(ImVec2(x_of(play_beg), cy), ImVec2(MD_MAX(x_of(play_end), x_of(play_beg) + 1.0f), cy), col, 4.0f);
+        }
+        // The time, as the timeline marks it
+        const float xt = x_of(MD_CLAMP(data->animation.time, span_beg, span_end));
+        dl->AddLine(ImVec2(xt, cy - bar_h * 0.35f), ImVec2(xt, cy + bar_h * 0.35f), IM_COL32(255, 255, 0, 220), 2.0f);
+        if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) {
+            const double u = MD_CLAMP((ImGui::GetIO().MousePos.x - x0) / MD_MAX(x1 - x0, 1.0f), 0.0f, 1.0f);
+            const double t = span_beg + u * (span_end - span_beg);
+            if (unit[0]) ImGui::SetTooltip("Drag to move the time: %.6g %s", t * scl, unit);
+            else         ImGui::SetTooltip("Drag to move the time");
         }
         ImGui::SameLine();
-        if (ImGui::Button((const char*)ICON_FA_STOP)) {
-            data->animation.mode = PlaybackMode::Stopped;
-            data->animation.time = beg;
-        }
-        ImGui::PopItemWidth();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(label);
     }
     ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 static void draw_async_task_window(ApplicationState* data) {
@@ -4410,6 +4505,11 @@ static void draw_timeline_window(ApplicationState* data) {
             }
             if (ImGui::BeginMenu("Periods")) {
                 timeline_periods_menu(&data->timeline.periods);
+                ImGui::EndMenu();
+            }
+            // The clock: the timeline is where time is handled, the transport over the view its slim stand-in
+            if (ImGui::BeginMenu("Playback")) {
+                draw_playback_menu(data);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Subplots")) {

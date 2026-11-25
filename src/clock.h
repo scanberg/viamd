@@ -13,6 +13,7 @@
 
 #include <frame_axis.h>
 
+#include <math.h>
 #include <stddef.h>
 
 // A run's frame axis as placed on the clock: its times, in its own unit and never decreasing, the offset it is moved by
@@ -62,4 +63,49 @@ static inline double clock_step_time(const ClockAxis& ref, double time, double f
         if (time >= first && time <= last && to >= 0.0 && to <= (double)(ref.count - 1)) t = clock_axis_time(ref, to);
     }
     return t < beg ? beg : t > end ? end : t;
+}
+
+// What playback does at the ends of the span it goes over (playback_range): stops there, goes on from the other end, or
+// turns back. The values are those a workspace stores ([Animation] Loop), so a new one goes last.
+enum PlaybackLoop : int {
+    PlaybackLoop_Once = 0,
+    PlaybackLoop_Loop,
+    PlaybackLoop_Bounce,
+    PlaybackLoop_Count
+};
+
+// The time moved by delta (negative backwards) in the direction it is played in (+1, -1), within [beg, end] as the loop
+// has it at the ends: once, to the end it reaches, which ends the playing (false); looping, on from the other end; and
+// bouncing, back from it, the direction turned. A span of nothing ends it at once.
+static inline bool clock_advance(double* time, double delta, double beg, double end, PlaybackLoop loop, int* direction) {
+    const double len = end - beg;
+    const double t = *time + delta * (double)*direction;
+    if (!(len > 0.0)) {
+        *time = beg;
+        return false;
+    }
+    if (t >= beg && t <= end) {
+        *time = t;
+        return true;
+    }
+    switch (loop) {
+    case PlaybackLoop_Loop: {
+        double u = fmod(t - beg, len);
+        if (u < 0.0) u += len;
+        *time = beg + u;
+        return true;
+    }
+    case PlaybackLoop_Bounce: {
+        // Reflected off the ends as many times as it went past one: an odd number turns it
+        double u = fmod(t - beg, 2.0 * len);
+        if (u < 0.0) u += 2.0 * len;
+        *time = u <= len ? beg + u : beg + 2.0 * len - u;
+        const double k = floor((t - beg) / len);
+        if (fmod(fabs(k), 2.0) == 1.0) *direction = -*direction;
+        return true;
+    }
+    default:
+        *time = t < beg ? beg : end;
+        return false;
+    }
 }

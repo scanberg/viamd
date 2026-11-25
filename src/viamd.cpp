@@ -1646,6 +1646,53 @@ void clock_update(ApplicationState* app) {
     app->animation.time = MD_CLAMP(app->animation.time, beg, end);
 }
 
+void playback_range(const ApplicationState* app, double* beg, double* end) {
+    clock_span(app, beg, end);
+    const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, app->animation.loop_period);
+    if (!p || p->follow) return;
+    double pb, pe;
+    timeline_period_span(&pb, &pe, *p, app->animation.time);
+    pb = MD_MAX(pb, *beg);
+    pe = MD_MIN(pe, *end);
+    if (pe > pb) {
+        *beg = pb;
+        *end = pe;
+    }
+}
+
+void playback_toggle(ApplicationState* app) {
+    if (app->animation.mode == PlaybackMode::Playing) {
+        app->animation.mode = PlaybackMode::Stopped;
+        for (size_t i = 0; i < app->num_systems; ++i) system_instances_flag(*app->systems[i], MolBit_ClearVelocity);
+        return;
+    }
+    app->animation.mode = PlaybackMode::Playing;
+    // A bounce's turn back lasts as long as it bounces
+    if (app->animation.loop != PlaybackLoop_Bounce) app->animation.direction = 1;
+    // From where it begins in the direction played: when it stopped at the end, or is outside the span it goes over
+    double beg, end;
+    playback_range(app, &beg, &end);
+    const bool forward = app->animation.fps * (float)app->animation.direction >= 0.0f;
+    double& t = app->animation.time;
+    if (forward && (t >= end || t < beg)) t = beg;
+    else if (!forward && (t <= beg || t > end)) t = end;
+}
+
+void playback_update(ApplicationState* app, double dt) {
+    double beg, end;
+    playback_range(app, &beg, &end);
+    const double delta = dt * (double)app->animation.fps * clock_frame_duration(app);
+    if (app->animation.direction != 1 && app->animation.direction != -1) app->animation.direction = 1;
+    if (app->animation.loop != PlaybackLoop_Bounce) app->animation.direction = 1;
+    // Outside the span it goes over (another period chosen to loop over while playing): from where that begins
+    const bool forward = delta * (double)app->animation.direction >= 0.0;
+    double& t = app->animation.time;
+    if (t < beg || t > end) t = forward ? beg : end;
+    if (!clock_advance(&app->animation.time, delta, beg, end, app->animation.loop, &app->animation.direction)) {
+        app->animation.mode = PlaybackMode::Stopped;
+    }
+}
+
 bool run_period_frames(int* beg, int* end, const ApplicationState* app, const SystemContext& sys, const SystemRun* run, const TimelinePeriod& period) {
     const int n = (int)run_num_frames(sys, run);
     if (n == 0) return false;
@@ -3190,6 +3237,9 @@ static void workspace_reset(ApplicationState* data) {
     data->animation.stride = 1;
     data->animation.interpolation = InterpolationMode::CubicSpline;
     data->animation.mode = PlaybackMode::Stopped;
+    data->animation.loop = PlaybackLoop_Once;
+    data->animation.loop_period = 0;
+    data->animation.direction = 1;
 
     plot_clear(data->timeline.subplots, PLOT_MAX_SUBPLOTS);
     plot_clear(data->distributions.subplots, PLOT_MAX_SUBPLOTS);
@@ -3331,6 +3381,13 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     }
                 } else if (md_str_eq(ident, MD_STR_LIT("Interpolation"))) {
                     viamd::extract_enum(data->animation.interpolation, arg, (int)InterpolationMode::Count);
+                } else if (md_str_eq(ident, MD_STR_LIT("Loop"))) {
+                    viamd::extract_enum(data->animation.loop, arg, (int)PlaybackLoop_Count);
+                } else if (md_str_eq(ident, MD_STR_LIT("LoopPeriod"))) {
+                    int id = 0;
+                    if (viamd::extract_int(id, arg)) data->animation.loop_period = (uint32_t)MD_MAX(id, 0);
+                } else if (md_str_eq(ident, MD_STR_LIT("Transport"))) {
+                    viamd::extract_enum(data->animation.transport, arg, (int)TransportAnchor_Count);
                 }
             }
         } else if (md_str_eq(section, MD_STR_LIT("TimelineView"))) {
@@ -3951,6 +4008,11 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
     viamd::write_flt(state, MD_STR_LIT("Tension"), app_state->animation.tension);
     viamd::write_int(state, MD_STR_LIT("Stride"), app_state->animation.stride);
     viamd::write_int(state, MD_STR_LIT("Interpolation"), (int)app_state->animation.interpolation);
+    viamd::write_int(state, MD_STR_LIT("Loop"), (int)app_state->animation.loop);
+    if (timeline_periods_find(&app_state->timeline.periods, app_state->animation.loop_period)) {
+        viamd::write_int(state, MD_STR_LIT("LoopPeriod"), (int)app_state->animation.loop_period);
+    }
+    viamd::write_int(state, MD_STR_LIT("Transport"), (int)app_state->animation.transport);
 
     plot_layout_serialize(state, MD_STR_LIT("Timeline"), MD_STR_LIT("TimelineSeries"), app_state->timeline.subplots, app_state->timeline.num_subplots);
     plot_layout_serialize(state, MD_STR_LIT("Distributions"), MD_STR_LIT("DistributionSeries"), app_state->distributions.subplots, app_state->distributions.num_subplots);

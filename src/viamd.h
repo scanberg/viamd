@@ -141,6 +141,9 @@ static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
 
 enum class PlaybackMode { Stopped, Playing, Count };
+// Where the transport is over the view: at its top or its bottom, in the middle of the part of the view uncovered by
+// windows, or not shown. The values are those a workspace stores ([Animation] Transport), so a new one goes last.
+enum TransportAnchor : int { TransportAnchor_Top = 0, TransportAnchor_Bottom, TransportAnchor_Hidden, TransportAnchor_Count };
 // Part: the part of the atom (md_part_data_t), a covalent piece of its molecule: a strand of a polymer with its caps, a
 // glycan, a ligand. Chain: the chain of the atom (md_chain_data_t), or its part for one in no chain (the data gives no
 // chain ids: the strand it is of). Molecule: the molecule of the atom (md_molecule_data_t), atoms joined by bonds with
@@ -2218,7 +2221,14 @@ struct ApplicationState {
         InterpolationMode interpolation = InterpolationMode::CubicSpline;
         PlaybackMode mode = PlaybackMode::Stopped;
 
-        bool show_window = true;
+        // What playing does at the ends (clock_advance), of the span it goes over: the clock's, or of a fixed timeline
+        // period (by id, 0 for none: playback_range). direction is that of a bounce, +1 or -1, times the speed's sign.
+        PlaybackLoop loop = PlaybackLoop_Once;
+        uint32_t loop_period = 0;
+        int direction = 1;
+
+        // The transport, the slim bar of the time over the view (draw_transport, main.cpp): where it is
+        TransportAnchor transport = TransportAnchor_Top;
     } animation;
 
     // --- TIMELINE---
@@ -3043,6 +3053,17 @@ void   clock_span(const ApplicationState* app, double* beg, double* end);
 void   clock_step(ApplicationState* app, double frames);
 // The mean time from frame to frame of the reference, on the clock: what one frame per second plays at
 double clock_frame_duration(const ApplicationState* app);
+// PLAYBACK, of the clock
+// The span playing goes over: of the fixed period it loops over (animation.loop_period), within the clock's span, else
+// the clock's span
+void   playback_range(const ApplicationState* app, double* beg, double* end);
+// Plays, or pauses where it is. Played from an end it stopped at (or from outside the span it goes over), from where
+// it begins in the direction played.
+void   playback_toggle(ApplicationState* app);
+// Once a frame, while playing: the clock moved on by dt seconds of fps frames of the reference each, as the loop has
+// it at the ends (clock_advance)
+void   playback_update(ApplicationState* app, double dt);
+
 // Once a frame: the time kept in the unit of the clock when the reference changes to a run in another (converted, or to
 // the clock's first time where it cannot be), and within the clock's span. The view of the timeline and the periods,
 // which are on the clock too, are converted with it.
