@@ -24,6 +24,7 @@
 #include <viamd.h>
 #include <event.h>
 #include <serialization_utils.h>
+#include <system_scene.h>
 
 #include <imgui.h>
 #include <implot.h>
@@ -132,6 +133,10 @@ struct Pucker : viamd::EventHandler {
     bool show_window = false;
     ApplicationState* app_state = nullptr;
 
+    // Of which system (by id, system_or_first), at the coordinates of which of its instances (by id, instance_resolve)
+    uint32_t system_id = 0;
+    uint32_t instance_id = 0;
+
     // Settings
     int  kind = Kind_NotAromatic;
     int  size = Size_Any;
@@ -139,8 +144,9 @@ struct Pucker : viamd::EventHandler {
 
     // The rings at the frame shown
     std::vector<Row> rows;
-    bool   dirty = true;
-    size_t num_rings = 0;           // Of the system when rows were computed: the topology can change
+    bool     dirty = true;
+    size_t   num_rings = 0;         // Of the system when rows were computed: the topology can change
+    uint64_t rows_key = 0;          // The system, the instance and its coordinates' version they were computed of
 
     // The rows shown, and what they were filtered with
     std::vector<int> shown;
@@ -151,6 +157,7 @@ struct Pucker : viamd::EventHandler {
 
     int  hovered = -1;              // Row hovered in the table or on a map, this frame
     bool highlighting = false;      // The highlight is ours, to clear when nothing is hovered
+    uint32_t highlight_system = 0;  // Of the system it is ours in
 
     md_pucker_canonical_t canon5[20] = {};
     md_pucker_canonical_t canon6[38] = {};
@@ -171,6 +178,8 @@ struct Pucker : viamd::EventHandler {
                 init_tables();
                 break;
             case viamd::EventType_ViamdDeserializeBegin:
+                system_id = 0;
+                instance_id = 0;
                 kind = Kind_NotAromatic;
                 size = Size_Any;
                 only_selected = false;
@@ -183,7 +192,7 @@ struct Pucker : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdSystemInit:
             case viamd::EventType_ViamdSystemFree:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 rows.clear();
                 shown.clear();
                 names.clear();
@@ -191,13 +200,12 @@ struct Pucker : viamd::EventHandler {
                 highlighting = false;
                 dirty = true;
                 break;
-            case viamd::EventType_ViamdSystemStateChanged:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
-                dirty = true;
-                break;
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, MD_STR_LIT("RingPucker"));
+                // Of another system than the first, another instance than its first: by their ids
+                if (&system() != &app_state->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+                if (&instance() != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)instance().id);
                 viamd::write_int(state, MD_STR_LIT("Kind"), kind);
                 viamd::write_int(state, MD_STR_LIT("Size"), size);
                 viamd::write_bool(state, MD_STR_LIT("OnlySelected"), only_selected);
@@ -208,7 +216,15 @@ struct Pucker : viamd::EventHandler {
                 if (md_str_eq(viamd::section_header(state), MD_STR_LIT("RingPucker"))) {
                     md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (md_str_eq(ident, MD_STR_LIT("Kind"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("System"))) {
+                            // The first in place of one the workspace does not load
+                            int id = 0;
+                            const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
+                            system_id = sc ? sc->id : 0;
+                        } else if (md_str_eq(ident, MD_STR_LIT("Instance"))) {
+                            int id = 0;
+                            if (viamd::extract_int(id, arg)) instance_id = (uint32_t)MD_MAX(id, 0);
+                        } else if (md_str_eq(ident, MD_STR_LIT("Kind"))) {
                             viamd::extract_enum(kind, arg, Kind_Count);
                         } else if (md_str_eq(ident, MD_STR_LIT("Size"))) {
                             viamd::extract_enum(size, arg, Size_Count);
@@ -243,9 +259,19 @@ struct Pucker : viamd::EventHandler {
         }
     }
 
+    SystemContext& system() const { return system_or_first(app_state, system_id); }
+    const SystemInstance& instance() const { return instance_resolve(system(), instance_id); }
+
+    // Of the system, the instance and the version of its coordinates
+    uint64_t compute_key() const {
+        const SystemInstance& inst = instance();
+        return md_hash64_combine(((uint64_t)system().id << 32) | inst.id, inst.state_version);
+    }
+
     void compute() {
-        const md_system_t& sys = app_state->mold.sys;
-        const md_system_state_t& state = system_instance(app_state->system_context).state;
+        const md_system_t& sys = system().data.sys;
+        const md_system_state_t& state = instance().state;
+        rows_key = compute_key();
         num_rings = md_ring_data_count(&sys.ring);
         rows.clear();
         if (!state.xyz) return;
@@ -270,7 +296,7 @@ struct Pucker : viamd::EventHandler {
         if (size != Size_Any && row.r.size != 4 + size) return false;
         if (only_selected) {
             for (int k = 0; k < row.r.size; ++k) {
-                if (!md_bitmask_test_bit(&app_state->system_context.selection.selection_mask, (uint32_t)row.r.atoms[k])) return false;
+                if (!md_bitmask_test_bit(&system().selection.selection_mask, (uint32_t)row.r.atoms[k])) return false;
             }
         }
         return true;
@@ -278,7 +304,7 @@ struct Pucker : viamd::EventHandler {
 
     void update_shown() {
         uint64_t key = (uint64_t)kind | ((uint64_t)size << 4) | ((uint64_t)only_selected << 8);
-        if (only_selected) key ^= md_bitset_hash64(md_bitmask_view(&app_state->system_context.selection.selection_mask), 0) << 9;
+        if (only_selected) key ^= md_bitset_hash64(md_bitmask_view(&system().selection.selection_mask), 0) << 9;
         if (!shown_dirty && key == shown_key) return;
         shown_key = key;
         shown_dirty = false;
@@ -298,7 +324,7 @@ struct Pucker : viamd::EventHandler {
     }
 
     bool is_highlighted(const Row& row) const {
-        const md_bitmask_t* mask = &app_state->system_context.selection.highlight_mask;
+        const md_bitmask_t* mask = &system().selection.highlight_mask;
         for (int k = 0; k < row.r.size; ++k) {
             if (md_bitmask_test_bit(mask, (uint32_t)row.r.atoms[k])) return true;
         }
@@ -306,7 +332,7 @@ struct Pucker : viamd::EventHandler {
     }
 
     void residue_label(char* buf, size_t cap, const Row& row) const {
-        const md_system_t& sys = app_state->mold.sys;
+        const md_system_t& sys = system().data.sys;
         buf[0] = '\0';
         if (row.res_idx < 0) return;
         const md_str_t name = md_system_residue_name(&sys, row.res_idx);
@@ -319,7 +345,7 @@ struct Pucker : viamd::EventHandler {
     }
 
     void atoms_label(char* buf, size_t cap, const Row& row) const {
-        const md_system_t& sys = app_state->mold.sys;
+        const md_system_t& sys = system().data.sys;
         size_t len = 0;
         buf[0] = '\0';
         for (int k = 0; k < row.r.size && len < cap; ++k) {
@@ -345,16 +371,20 @@ struct Pucker : viamd::EventHandler {
         ImGui::EndTooltip();
     }
 
+    // The highlight ours no longer, of the system it was ours in
+    void clear_highlight() {
+        if (!highlighting) return;
+        md_bitmask_clear(&system_or_first(app_state, highlight_system).selection.highlight_mask);
+        highlighting = false;
+    }
+
     void draw_window() {
         if (!show_window || !app_state) {
-            if (highlighting && app_state) {
-                md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
-                highlighting = false;
-            }
+            if (app_state) clear_highlight();
             return;
         }
-        const md_system_t& sys = app_state->mold.sys;
-        if (md_ring_data_count(&sys.ring) != num_rings) dirty = true;
+        const md_system_t& sys = system().data.sys;
+        if (md_ring_data_count(&sys.ring) != num_rings || compute_key() != rows_key) dirty = true;
         if (dirty) compute();
         update_shown();
 
@@ -371,6 +401,23 @@ struct Pucker : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::Checkbox("Only selected", &only_selected);
             ImGui::SetItemTooltip("Only rings with every atom selected");
+            // Of which system and instance, where there are several
+            if (system_count(*app_state) > 1) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(150);
+                if (system_combo("##system", &system_id, *app_state)) {
+                    clear_highlight();
+                    instance_id = 0;
+                }
+                ImGui::SetItemTooltip("The system whose rings are shown");
+            }
+            if (system().num_instances > 1) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(150);
+                instance_combo("##instance", &instance_id, system());
+                ImGui::SetItemTooltip("The instance whose coordinates they are of: its run, at the frame it shows");
+            }
+            if (compute_key() != rows_key) compute();
             update_shown();
 
             ImGui::TextDisabled("%zu of %zu rings (5 to 7 atoms), at the frame shown", shown.size(), rows.size());
@@ -399,12 +446,13 @@ struct Pucker : viamd::EventHandler {
 
         if (hovered >= 0 && hovered < (int)rows.size()) {
             const Row& row = rows[hovered];
-            md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
-            for (int k = 0; k < row.r.size; ++k) md_bitmask_set_bit(&app_state->system_context.selection.highlight_mask, (uint32_t)row.r.atoms[k]);
+            md_bitmask_t* mask = &system().selection.highlight_mask;
+            md_bitmask_clear(mask);
+            for (int k = 0; k < row.r.size; ++k) md_bitmask_set_bit(mask, (uint32_t)row.r.atoms[k]);
             highlighting = true;
-        } else if (highlighting) {
-            md_bitmask_clear(&app_state->system_context.selection.highlight_mask);
-            highlighting = false;
+            highlight_system = system().id;
+        } else {
+            clear_highlight();
         }
     }
 

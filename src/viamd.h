@@ -1818,6 +1818,8 @@ struct SystemInstance {
     // carry the backbone angles and secondary structure of the frame (md_system_state_backbone_angles,
     // md_system_state_secondary_structure).
     md_system_state_t   state = {};
+    // Moves whenever state is made again (interpolate_system_state): what is computed of its coordinates is of a version
+    uint64_t            state_version = 0;
     // The turn (about the cell centre) that the coordinates in state carry relative to the lattice of state.unitcell.
     // Identity unless keeping the orientation (or alignment_mat) turned the system. md_unitcell_t is lower triangular
     // and cannot describe a turned lattice, so this is the only record of it: wrapping and making whole only work in

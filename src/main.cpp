@@ -1310,6 +1310,7 @@ int main(int argc, char** argv) {
                 if (sc.data.sys.atom.count == 0) continue;
                 PUSH_CPU_SECTION("Interpolate System State")
                 interpolate_system_state(inst);
+                inst.state_version += 1;
                 POP_CPU_SECTION()
                 if (k == 0) {
                     viamd::event_system_enqueue_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &sc);
