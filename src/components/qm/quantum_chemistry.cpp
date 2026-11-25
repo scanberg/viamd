@@ -1422,10 +1422,10 @@ struct QuantumChemistry : viamd::EventHandler {
         uint32_t sys_atom = 0;      // and that atom in the system
         float area = 0;             // Å^2
         float lambda = 0;           // decay length, Å
-        float density = 0;          // <rho|g> = P a lambda / p: e/bohr^3
+        float density = 0;          // g~ = <rho|G~> = p_inp a lambda / p: e/bohr^3
         float amp = 0;              // p: Eh bohr^3
         float amp_area = 0;         // p / a: Eh bohr
-        float zeta = 0;             // exponent of its Gaussian, Å^-2
+        float zeta = 0;             // the exponent omega of its Gaussian, Å^-2
         bool  inside = false;       // inside the sphere of another atom than its own
     };
     bool has_gostshyp = false;      // the system has a GOSTSHYP cavity: its window is offered (set each frame)
@@ -6142,6 +6142,7 @@ struct QuantumChemistry : viamd::EventHandler {
         const double P = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/pressure"), md_unit_none(), 0.0);
         const double n_leb = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/num_lebedev_points"), md_unit_none(), 0.0);
         const double scale = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/radius_scale"), md_unit_none(), 0.0);
+        const double r_ext = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/r_ext"), md_unit_none(), 0.0);
         const double area = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/area"), md_unit_none(), 0.0);
         const double skin = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/effective_volume"), md_unit_none(), 0.0);
         const double energy_kj = attribute_scalar(sys, MD_STR_LIT("vlx/scf/gostshyp/wall_energy"), md_unit_none(), 0.0);
@@ -6151,7 +6152,12 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::Text("Pressure:               %.4g GPa", P);
         if (!md_str_empty(disc)) ImGui::Text("Discretization:         %.*s", (int)disc.len, disc.ptr);
         if (n_leb > 0)  ImGui::Text("Lebedev points:         %.0f per sphere", n_leb);
-        if (scale > 0)  ImGui::Text("Sphere radius:          %.3g x vdW", scale);
+        if (scale > 0)  ImGui::Text("Sphere scaling factor:  %.3g x vdW radius", scale);
+        if (r_ext > 0)  ImGui::Text("Extension radius (OCC): %.3g Å", r_ext);
+        if (r_ext > 0 && ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("The outer cavity correction: the switching of the tesserae is that of the spheres grown by r_ext,\n"
+                              "which screens the points in the crevices between them; the tesserae stay on the scaled spheres");
+        }
         if (n_leb > 0 && g.num_spheres > 0) {
             ImGui::Text("Tesserae:               %zu of %.0f kept", g.tess.size(), n_leb * (double)g.num_spheres);
         } else {
@@ -6162,19 +6168,20 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::SetTooltip("Tesserae inside the sphere of another atom than their own: the switching keeps points where\n"
                               "the spheres overlap, so the cavity of the calculation is a smoothed union of the spheres");
         }
-        ImGui::Text("Cavity area:            %.2f Å²  (sum a)", area);
+        ImGui::Text("Cavity area:            %.2f Å²  (Σ a)", area);
         if (skin > 0) {
-            ImGui::Text("Skin volume:            %.2f Å³  (sum a lambda)", skin);
+            ImGui::Text("Effective volume:       %.2f Å³  (V^eff = Σ a λ)", skin);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("The volume of density outside the cavity the wall holds against the pressure: each tessera's\n"
-                                  "area times the decay length of the density there, <rho|g> / (-d/dn <rho|g>)");
+                ImGui::SetTooltip("V^eff = Σ_j a_j g~_j / f~_j (eq 13): each tessera's area times its decay length λ_j = g~_j / f~_j,\n"
+                                  "the density under its Gaussian over how fast that falls as the Gaussian moves out.\n"
+                                  "As the V of a pV term (E^GOST = p_inp V^eff); not the volume of the cavity");
             }
             if (area > 0) ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", skin / area, g.lambda_min, g.lambda_max);
-            ImGui::Text("Wall energy:            %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
+            ImGui::Text("GOSTSHYP energy:        %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("sum p_j <rho|g_j> = P sum a_j lambda_j: the amplitudes hold the pressure, p_j (-d/dn <rho|g_j>) = P a_j");
+                ImGui::SetTooltip("E^GOST = Σ_j p_j g~_j = p_inp V^eff (eq 5): the amplitudes hold the input pressure, p_j = p_inp a_j / f~_j (eq 6)");
             }
-            if (area > 0) ImGui::Text("Wall energy per area:   %.4f kJ/mol/Å² mean (P lambda)", energy_kj / area);
+            if (area > 0) ImGui::Text("Energy per area:        %.4f kJ/mol/Å² mean (p_inp λ)", energy_kj / area);
         }
     }
 
@@ -6251,10 +6258,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 ImGui::TableSetupColumn("Atom",        0, 0, GostshypColumn_Atom);
                 ImGui::TableSetupColumn("Area Å²",     0, 0, GostshypColumn_Area);
                 ImGui::TableSetupColumn("λ Å",         0, 0, GostshypColumn_Lambda);
-                ImGui::TableSetupColumn("⟨ρ|g⟩ e/bohr³",0, 0, GostshypColumn_Density);
+                ImGui::TableSetupColumn("g~ e/bohr³",  0, 0, GostshypColumn_Density);
                 ImGui::TableSetupColumn("p a.u.",      0, 0, GostshypColumn_Amp);
                 ImGui::TableSetupColumn("p/a Eh bohr", 0, 0, GostshypColumn_AmpArea);
-                ImGui::TableSetupColumn("ζ Å⁻²",       ImGuiTableColumnFlags_DefaultHide, 0, GostshypColumn_Zeta);
+                ImGui::TableSetupColumn("ω Å⁻²",       ImGuiTableColumnFlags_DefaultHide, 0, GostshypColumn_Zeta);
                 ImGui::TableSetupColumn("Inside",      0, 0, GostshypColumn_Inside);
                 ImGui::TableHeadersRow();
 

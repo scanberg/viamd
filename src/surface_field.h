@@ -100,14 +100,15 @@ enum class SurfaceFieldKind {
     // double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
     DensityScaleLength,
 
-    // The GOSTSHYP wall of a run under pressure (gostshyp.h): the potential of its Gaussians, V1 = sum_j p_j g_j,
-    // whose expectation value is the wall's energy; and the potential the electrons feel, the Fock operator's
-    // V1 - V2, sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j.(r - c_j)). Hartree. Analytic sums of the tesserae's
-    // Gaussians, placed rigidly on the QM atoms as they are; zero beyond the cavity's reach.
-    GostshypWallPotential,
-    GostshypEffectivePotential,
+    // The GOSTSHYP cavity of a run under pressure (gostshyp.h, in the paper's terms): the model potential
+    // sum_j G_j = sum_j p_j G~_j, whose expectation value is the GOSTSHYP energy; and the Fock contribution V^GOST, the
+    // potential the electrons feel, sum_j p_j G~_j (1 + 2 omega_j lambda_j n_j.(r - r_j)). Hartree. Analytic sums of the
+    // tesserae's Gaussians, placed rigidly on the QM atoms as they are; zero beyond the cavity's reach. (The names of
+    // the values are older than the terms, and workspaces store them.)
+    GostshypWallPotential,          // the model potential
+    GostshypEffectivePotential,     // the Fock contribution
 
-    // rho(r) V1(r): where the energy of the GOSTSHYP wall is, integrating to it. Hartree / bohr^3. The density made of
+    // rho(r) sum_j G_j(r): where the GOSTSHYP energy is, integrating to it. Hartree / bohr^3. The density made of
     // the total density's orbitals (md_qm_density_orbitals), evaluated only where the wall reaches: zero elsewhere.
     GostshypEnergyDensity,
 

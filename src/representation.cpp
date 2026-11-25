@@ -4400,7 +4400,7 @@ static bool draw_representation_vdw_surface(ApplicationState* state, Representat
             }
             prop::row("smoothing", "Experimental. The values diffused over the surface, along the points next to each other, for this\n"
                                    "diffusion length (the width of the heat kernel). What adds up over the surface is kept: the integral\n"
-                                   "of a density (the wall energy of the wall energy per area) is the same however smooth. 0: as they are.");
+                                   "of a density (the GOSTSHYP energy of its energy per area) is the same however smooth. 0: as they are.");
             update_rep |= ImGui::SliderFloat("##vdw_smoothing", &v.smoothing, 0.0f, 5.0f, v.smoothing > 0.0f ? "%.2f Å" : "none", ImGuiSliderFlags_AlwaysClamp);
             update_rep |= color_scale_draw_controls(&v.color_scale, vdw_surface_span(v), display ? a->unit : md_unit_none(), "surface", "Over the points on the surface: the 1st to 99th percentile");
         } else {

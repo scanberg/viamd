@@ -69,10 +69,10 @@ static const SurfaceFieldKindInfo* kind_table() {
         { "Local Electron Attachment Energy", md_unit_hartree(),                                  SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_PLASMA,  -0.01 },
         // DensityScaleLength: short (stiff) dark, long (soft) bright
         { "Density Scale Length",    md_unit_bohr_radius(),                                       SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 1.0 },
-        // GostshypWallPotential: >= 0, nothing special but zero
-        { "GOSTSHYP Wall Potential", md_unit_hartree(),                                           SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.1 },
-        // GostshypEffectivePotential: repulsive outward, attractive inward of the tesserae: its sign is the physics
-        { "GOSTSHYP Effective Potential", md_unit_hartree(),                                      SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.1 },
+        // GostshypWallPotential, the model potential: >= 0, nothing special but zero
+        { "GOSTSHYP Model Potential", md_unit_hartree(),                                          SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 0.1 },
+        // GostshypEffectivePotential, the Fock contribution: repulsive outward, attractive inward of the tesserae: its sign is the physics
+        { "GOSTSHYP Fock Contribution", md_unit_hartree(),                                       SurfaceFieldScale::Diverging,  COLOR_SCALE_COLORMAP_RDBU,    0.1 },
         // GostshypEnergyDensity: >= 0
         { "GOSTSHYP Energy Density", md_unit_div(md_unit_hartree(), md_unit_pow(md_unit_bohr_radius(), 3)), SurfaceFieldScale::Sequential, COLOR_SCALE_COLORMAP_VIRIDIS, 1.0e-4 },
         // ElectronDensity: >= 0, largest at the nuclei
@@ -811,7 +811,7 @@ struct FieldData {
     OrbitalRatio*         ratio = nullptr;
     GostshypWall*         wall = nullptr;       // the GOSTSHYP potentials: analytic, on the CPU
     GostshypField         wall_field = GostshypField::WallPotential;
-    md_gto_iso_field_t*   rho = nullptr;        // the electron density; with the wall, the energy density rho V1
+    md_gto_iso_field_t*   rho = nullptr;        // the electron density; with the wall, the energy density rho sum_j G_j
     md_gto_basis_t*       rho_basis = nullptr;  // its basis, owned
     LocalizationFields*   loc = nullptr;        // ELF or LOL
 };

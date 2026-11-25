@@ -346,8 +346,8 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Local Ionization Energy (ALIE)",
     "Local Electron Attachment Energy",
     "Density Scale Length",
-    "GOSTSHYP Wall Potential",
-    "GOSTSHYP Effective Potential",
+    "GOSTSHYP Model Potential",
+    "GOSTSHYP Fock Contribution",
     "GOSTSHYP Energy Density",
 };
 

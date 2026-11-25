@@ -11,24 +11,28 @@
 struct md_system_t;
 
 // GOSTSHYP: the cavity of a VeloxChem run under pressure, as mdlib publishes it (vlx/scf/gostshyp/*, md_vlx.h), and
-// the fields over R^3 it makes.
+// the fields over R^3 it makes. The terms and symbols are those of the reference VeloxChem implements, Pausch, Zeller
+// and Neudecker, J. Chem. Theory Comput. 2025, 21, 747 (its equation numbers); the code's names (wall, zeta, lambda)
+// are older and stand for them as below.
 //
-// The cavity is a set of tesserae: points c_j on the scaled van der Waals sphere of one QM atom each, with an outward
+// The cavity is a set of tesserae: points r_j on the scaled van der Waals sphere of one QM atom each, with an outward
 // normal n_j, an area a_j = w_j R^2 F_j (its Lebedev weight, the sphere's radius squared, its switching), and a
-// normalized Gaussian g_j(r) = (zeta_j / pi)^(3/2) exp(-zeta_j |r - c_j|^2) of amplitude p_j, zeta_j a_j = pi ln 2.
-// The amplitudes hold the pressure, p_j f_j = P a_j with f_j = -<rho | 2 zeta_j n_j.(r - c_j) g_j> the decrease of
-// the Gaussian's overlap with the density as it moves outward, and the decay length is lambda_j = <rho|g_j> / f_j.
+// Gaussian potential G_j = p_j G~_j of amplitude p_j (eq 1), G~_j(r) = (omega_j / pi)^(3/2) exp(-omega_j |r - r_j|^2)
+// the normalized Gaussian, omega_j a_j = pi ln 2 (eqs 2-4; the code's zeta_j). The amplitudes hold the input
+// pressure, p_j = p_inp a_j / f~_j (eq 6), of the auxiliary vectors g~_j = <rho|G~_j> and f~_j = -<rho| 2 omega_j
+// n_j.(r - r_j) G~_j>, how fast g~_j falls as the Gaussian moves outward (eqs 7-10). VeloxChem's decay length is
+// lambda_j = g~_j / f~_j: the effective volume per area, V^eff = sum_j a_j lambda_j (eq 13).
 //
 // THE FIELDS (VeloxChem's gostshypdriver.py, checked against its source)
-//   WallPotential       V1(r) = sum_j p_j g_j(r): the Gaussians as a potential. The energy of the wall is its
-//                       expectation value, E = <rho|V1> = sum_j p_j <rho|g_j>. Hartree, >= 0
-//   EffectivePotential  v(r) = sum_j p_j g_j(r) (1 + 2 zeta_j lambda_j n_j.(r - c_j)): what the electrons feel. The
-//                       amplitudes depend on the density, and the Fock matrix is V1 - V2, V2 the derivative of that
-//                       dependence: a p-type term of prefactor p_j lambda_j. To first order each Gaussian moved
-//                       outward by its decay length; negative more than 1 / (2 zeta_j lambda_j) inward of a
-//                       tessera. Hartree
-// and rho(r) V1(r), where the energy of the wall is (integrating to E, Hartree / bohr^3), which takes the density too:
-// a surface field of its own (surface_field.h, GostshypEnergyDensity), V1 times the density where the wall reaches.
+//   WallPotential       the model potential sum_j G_j(r) (VeloxChem's V1 is its matrix). The GOSTSHYP energy is its
+//                       expectation value, E^GOST = sum_j p_j g~_j (eq 5). Hartree, >= 0
+//   EffectivePotential  the Fock contribution V^GOST(r) = sum_j p_j G~_j(r) (1 + 2 omega_j lambda_j n_j.(r - r_j)) (eq
+//                       16; VeloxChem's V1 - V2): what the electrons feel. The second term comes of the amplitudes
+//                       depending on the density: a p-type term of prefactor p_j lambda_j. To first order each
+//                       Gaussian moved outward by its decay length; negative more than 1 / (2 omega_j lambda_j) inward
+//                       of a tessera. Hartree
+// and rho(r) sum_j G_j(r), where the GOSTSHYP energy is (integrating to E^GOST, Hartree / bohr^3), which takes the
+// density too: a surface field of its own (surface_field.h, GostshypEnergyDensity), nonzero where the Gaussians reach.
 //
 // UNITS: the tesserae as published, in Angstrom; the fields over positions in bohr, as the grids of the volumes.
 
@@ -69,16 +73,16 @@ struct GostshypWall;
 GostshypWall* gostshyp_wall_create(const GostshypTesserae& t, const GostshypPlacement& bohr_placement);
 void          gostshyp_wall_destroy(GostshypWall* w);
 
-// V1 or v at n points (bohr, packed float3) into out (Hartree). Thread safe.
+// The model potential or the Fock contribution at n points (bohr, packed float3) into out (Hartree). Thread safe.
 void gostshyp_wall_evaluate(const GostshypWall* w, GostshypField field, const float* xyz, size_t n, double* out);
 
-// Whether V1 is zero at the point to the cutoff of the Gaussians: nothing of the wall reaches it
+// Whether the model potential is zero at the point to the cutoff of the Gaussians: nothing of the wall reaches it
 bool gostshyp_wall_reaches(const GostshypWall* w, const float xyz[3]);
 
 // A field of the wall as what it exactly is, an orbital over a basis of its own (md_gto.h): a shell on each tessera of
-// one primitive, its exponent zeta_j and coefficient 1 (an s or p Cartesian function is not normalized further, so
-// the AO is exp(-zeta_j |r - c_j|^2) times 1 or a component of r - c_j). V1 is the s shells with coefficients
-// p_j (zeta_j / pi)^(3/2); v adds the p shells with that times 2 zeta_j lambda_j n_j. Exact, no cutoff: what the
+// one primitive, its exponent omega_j and coefficient 1 (an s or p Cartesian function is not normalized further, so
+// the AO is exp(-omega_j |r - r_j|^2) times 1 or a component of r - r_j). The model potential is the s shells with coefficients
+// p_j (omega_j / pi)^(3/2); the Fock contribution adds the p shells with that times 2 omega_j lambda_j n_j. Exact, no cutoff: what the
 // isosurfaces of the field are meshed from (iso_meshes.h). Tesserae of no amplitude (buried) are left out.
 // The arrays the basis points into are the struct's own: not to be copied.
 struct GostshypOrbital {

@@ -22,15 +22,15 @@ struct VdwSurfaceData;
 // of the QM atoms (a cavity's G/sphere_radius, vdw_surface_radii_sets), in which case only the QM atoms that have one.
 //
 // COLOUR: the atoms' colours (the representation's colouring), or a QUANTITY of a point set on the surface (glyphs.h:
-// a cavity's tesserae, with their decay length, wall energy per area, surface charge, ...), in two steps:
+// a cavity's tesserae, with their decay length, GOSTSHYP energy per area, surface charge, ...), in two steps:
 //   SMOOTHING, on the surface: the values diffused over the points for a diffusion length l (the width of the heat
 //     kernel, sqrt(2 D t)), along a graph of the points next to each other (each with those within twice its spacing),
-//     the fluxes weighted by the areas: sum_j a_j v_j is kept, to rounding. The integral of a density (the wall energy
-//     of the wall energy per area) is the same however smooth; nothing leaks across a gap. 0: the values as they are.
+//     the fluxes weighted by the areas: sum_j a_j v_j is kept, to rounding. The integral of a density (the GOSTSHYP
+//     energy of its energy per area) is the same however smooth; nothing leaks across a gap. 0: the values as they are.
 //   DISPLAY, at a pixel x: the values under the points' own Gaussians, as the solvation model smears its tesserae,
-//         f(x) = sum_j a_j v_j exp(-zeta_j |x - c_j|^2) / sum_j a_j exp(-zeta_j |x - c_j|^2)
-//     a_j the point's area (G/area, 1 without), zeta_j its exponent (G/exponent; without, 1 / (2 h^2) of its spacing h:
-//     the square root of its area, else the mean distance to the nearest point). It reaches about a point and no
+//         f(x) = sum_j a_j v_j exp(-w_j |x - r_j|^2) / sum_j a_j exp(-w_j |x - r_j|^2)
+//     a_j the point's area (G/area, 1 without), w_j its exponent (G/exponent, a GOSTSHYP tessera's omega_j; without,
+//     1 / (2 h^2) of its spacing h: the square root of its area, else the mean distance to the nearest point). It reaches about a point and no
 //     further: continuous, conservative (within its neighbours' values), seamless across the spheres.
 // Points of no area (a tessera its switching buried) take part in neither. What a point set marks as a total of its
 // point rather than a density (MD_ATTRIBUTE_FLAG_EXTENSIVE: an energy, a charge) is not offered: on the surface its
