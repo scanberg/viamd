@@ -2605,9 +2605,12 @@ bool system_inference_pending(const SystemContext& sys) {
 
 // What the system shown is built of, made again of the inferred one: the molecule on the GPU (its bonds, backbones and
 // chain gaps), the glyphs of the cartoon, the secondary structure of the coordinates shown, the representations of
-// them, and what the components derived from the system (ViamdSystemInit)
+// them, the backbone angles and secondary structure of the runs' frames, and what the components derived from the
+// system (ViamdSystemInit). However inference ended: published, or done on the main thread (system_inference_finish).
 static void system_inferred_refresh(SystemContext& sys) {
     ApplicationState* app = sys.app;
+    // The runs' backbones, which there were none of before
+    for (size_t i = 0; i < sys.num_runs; ++i) trajectory_backbone_start(sys, *sys.runs[i]);
     for (size_t i = 0; i < md_array_size(sys.representation.reps); ++i) {
         md_gl_rep_destroy(sys.representation.reps[i].md_rep);
         sys.representation.reps[i].md_rep = {};
@@ -2674,8 +2677,6 @@ static bool inference_publish(SystemContext& sc) {
     inf.restart = false;
 
     system_inferred_refresh(sc);
-    // The run's backbones, which there were none of before
-    for (size_t i = 0; i < sc.num_runs; ++i) trajectory_backbone_start(sc, *sc.runs[i]);
 
     inference_defaults(sc);
     md_temp_trim();
