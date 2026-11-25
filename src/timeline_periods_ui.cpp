@@ -444,8 +444,15 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
                 ui.drag.view_end = *axis.view_end;
             }
         }
-        if (hit && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-            request_rename(*hit);
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            if (hit) {
+                request_rename(*hit);
+            } else if (io.KeyMods == ImGuiMod_None && axis.span_end > axis.span_beg) {
+                // Off the periods, as in the plots below: zoom out fully, to the clock's span
+                ui.drag = {};
+                *axis.view_beg = axis.span_beg;
+                *axis.view_end = axis.span_end;
+            }
         }
         if (hit && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             ui.edit_id = hit->id;
@@ -780,19 +787,16 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     }
 }
 
-// The runs of a set of frames, as spans of x in pixels: from halfway to the frame before to halfway to the one after, at
-// least a pixel wide, merged when they touch
-template <typename F>
-static void for_each_frame_span(md_bitset_t frames, const TimelinePeriodAxis& axis, float x_min, float x_max, F&& f) {
-    if (md_bitset_empty(frames) || axis.num_frames <= 0) return;
+// Runs of frames, as spans of x in pixels: from halfway to the frame before to halfway to the one after, at least a pixel
+// wide, merged when they touch. runs(emit) calls emit(beg, end) for each run [beg, end), in order.
+template <typename Runs, typename F>
+static void for_each_run_span(const TimelinePeriodAxis& axis, float x_min, float x_max, Runs&& runs, F&& f) {
+    if (axis.num_frames <= 0) return;
     auto px = [&](double frame) { return ImPlot::PlotToPixels(frame_time(axis, frame), 0.0).x; };
     const uint32_t nf = (uint32_t)axis.num_frames;
     float span_a = 0.0f, span_b = -1.0f;
     bool open = false;
-    md_bitset_iter_t it = md_bitset_iter_range(frames, 0, nf);
-    uint32_t run_beg = 0, run_end = 0;      // [run_beg, run_end)
-    bool in_run = false;
-    auto flush = [&](uint32_t b, uint32_t e) {
+    runs([&](uint32_t b, uint32_t e) {
         float xa = px(b > 0 ? b - 0.5 : 0.0);
         float xb = px(e < nf ? e - 0.5 : (double)(nf - 1));
         if (xb - xa < 1.0f) xb = xa + 1.0f;
@@ -805,20 +809,74 @@ static void for_each_frame_span(md_bitset_t frames, const TimelinePeriodAxis& ax
         span_a = xa;
         span_b = xb;
         open = true;
-    };
-    while (md_bitset_iter_next(&it)) {
-        const uint32_t i = it.idx;
-        if (in_run && i == run_end) {
-            run_end += 1;
-            continue;
-        }
-        if (in_run) flush(run_beg, run_end);
-        run_beg = i;
-        run_end = i + 1;
-        in_run = true;
-    }
-    if (in_run) flush(run_beg, run_end);
+    });
     if (open) f(span_a, span_b);
+}
+
+// The runs of a set of frames, as spans (for_each_run_span)
+template <typename F>
+static void for_each_frame_span(md_bitset_t frames, const TimelinePeriodAxis& axis, float x_min, float x_max, F&& f) {
+    if (md_bitset_empty(frames)) return;
+    const uint32_t nf = (uint32_t)MD_MAX(axis.num_frames, 0);
+    for_each_run_span(axis, x_min, x_max, [&](auto&& emit) {
+        md_bitset_iter_t it = md_bitset_iter_range(frames, 0, nf);
+        uint32_t run_beg = 0, run_end = 0;      // [run_beg, run_end)
+        bool in_run = false;
+        while (md_bitset_iter_next(&it)) {
+            const uint32_t i = it.idx;
+            if (in_run && i == run_end) {
+                run_end += 1;
+                continue;
+            }
+            if (in_run) emit(run_beg, run_end);
+            run_beg = i;
+            run_end = i + 1;
+            in_run = true;
+        }
+        if (in_run) emit(run_beg, run_end);
+    }, f);
+}
+
+void timeline_truth_plot(const float* values, int stride, int k, const TimelinePeriodAxis& axis, uint32_t color, int lane, bool hovered) {
+    if (!values || axis.num_frames <= 0 || !axis.frame_times) return;
+    const ImVec2 plot_pos  = ImPlot::GetPlotPos();
+    const ImVec2 plot_size = ImPlot::GetPlotSize();
+    const float x0 = plot_pos.x, x1 = plot_pos.x + plot_size.x;
+    const float y0 = plot_pos.y, y1 = plot_pos.y + plot_size.y;
+    float b0 = 0.0f, b1 = 0.0f;
+    const bool has_band = timeline_truth_band(lane, &b0, &b1);
+
+    auto with_alpha = [](ImU32 c, float a) {
+        ImVec4 v = ImGui::ColorConvertU32ToFloat4(c);
+        v.w *= a;
+        return ImGui::ColorConvertFloat4ToU32(v);
+    };
+    const ImU32 fill = with_alpha(color, hovered ? 0.18f : 0.10f);
+    const ImU32 edge = with_alpha(color, hovered ? 1.0f : 0.85f);
+    const uint32_t nf = (uint32_t)axis.num_frames;
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    for_each_run_span(axis, x0, x1, [&](auto&& emit) {
+        uint32_t beg = 0;
+        bool in_run = false;
+        for (uint32_t f = 0; f < nf; ++f) {
+            const bool t = values[(size_t)f * stride + k] > 0.5f;
+            if (t && !in_run) { beg = f; in_run = true; }
+            if (!t && in_run) { emit(beg, f); in_run = false; }
+        }
+        if (in_run) emit(beg, nf);
+    }, [&](float xa, float xb) {
+        dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), fill);
+        if (has_band) dl->AddRectFilled(ImVec2(xa, b0), ImVec2(xb, b1), edge);
+    });
+}
+
+bool timeline_truth_band(int lane, float* out_y0, float* out_y1) {
+    const ImVec2 plot_pos  = ImPlot::GetPlotPos();
+    const ImVec2 plot_size = ImPlot::GetPlotSize();
+    const float band = MD_MIN(4.0f, plot_size.y * 0.25f);
+    *out_y0 = plot_pos.y + 1.0f + lane * (band + 1.0f);
+    *out_y1 = *out_y0 + band;
+    return *out_y1 <= plot_pos.y + plot_size.y - band;     // Above the selection's, at the bottom
 }
 
 void timeline_frames_plot(const md_bitmask_t* selected, const md_bitmask_t* highlighted, const TimelinePeriodAxis& axis, uint32_t selected_color, uint32_t highlight_color) {

@@ -301,6 +301,7 @@ struct SeriesTemporalView {
     int   stride = 1;               // values per sample in y
     int   dim = 1;                  // population members drawn (1 for the summaries)
     bool  band = false;             // drawn as an area between series_temporal_band's lo and hi
+    bool  truth = false;            // truths, 0 or 1 (a script's bools): drawn as the frames each is true in, not a line
     float y_scale = 1.0f;           // stored unit -> display unit
     SeriesPeriodic periodic = {};   // of periodic values, in the display unit. The bands of a periodic series (Sigma, Extent)
                                     // are about their centre: the upper side may lie past periodic.end

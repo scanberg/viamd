@@ -646,11 +646,6 @@ struct SingleSelectionSequence {
     uint32_t system = SYSTEM_ID_NONE;   // The id of the system the atoms are of: a pick in another starts it over
 };
 
-struct Selection {
-    char name[64] = "sel";
-    md_bitset_t atom_mask {};
-};
-
 // One dipole group the producer published, as two attributes sharing an index space:
 //     dipole/<group>/vector    the moment, in `unit`
 //     dipole/<group>/origin    where to draw it from, Angstrom
@@ -1503,6 +1498,10 @@ struct SystemData {
     md_system_t         sys = {};
     SystemInference     inference;
 
+    // The version of the system's groups last seen (md_group_data_t::version): a change of them, a file of groups loaded
+    // or the user's edited, is broadcast once (EventType_ViamdGroupsChanged), in the frame loop
+    uint64_t            group_version = 0;
+
     // The system's own coordinates: what its files gave (a structure, a restart; the first frame of its first run when
     // they gave none), which it is inferred of and its instances without a run show. What is drawn is each instance's
     // (SystemInstance::state), made from these or from a run's frames.
@@ -2096,16 +2095,14 @@ struct ApplicationState {
         SelectionGranularity granularity = SelectionGranularity::Atom;
         SingleSelectionSequence single_selection_sequence;
 
-        // The masks of what is selected and highlighted are each system's (SystemContext::selection). Everything here
-        // holds sets, replaced whole, but for the masks of the windows (query, grow), edited in place.
-        Selection* stored_selections = NULL;
+        // The masks of what is selected and highlighted are each system's (SystemContext::selection), and the sets kept of
+        // it are groups of the user's of each system (store_selection_as_group). Everything here holds sets, replaced
+        // whole, but for the masks of the windows (query, grow), edited in place.
 
         // The same over the frames of the run: the frames selected (a temporal selection, made in the Shapespace and
-        // shown in the timeline) and those highlighted, which whoever sets clears again. Whoever changes frame_mask
-        // bumps frame_generation, which is what the views over it key on (frame_selection_modify does both).
+        // shown in the timeline) and those highlighted, which whoever sets clears again
         md_bitmask_t frame_mask {};
         md_bitmask_t frame_highlight_mask {};
-        uint64_t     frame_generation = 1;
 
         // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
         // tint where they are in view, a fainter fill where they are behind something else, and the outline of their
@@ -2612,16 +2609,13 @@ static inline void modify_field(md_bitmask_t* m, md_urange_t range, SelectionOpe
     modify_field(m, md_bitset_range(range.beg, range.end), op);
 }
 
-// Applies op to the frames selected (ApplicationState::selection.frame_mask), and says it changed
+// Applies op to the frames selected (ApplicationState::selection.frame_mask)
 static inline void frame_selection_modify(ApplicationState* app, md_bitset_t frames, SelectionOperator op) {
     modify_field(&app->selection.frame_mask, frames, op);
-    app->selection.frame_generation += 1;
 }
 
 static inline void frame_selection_clear(ApplicationState* app) {
-    if (md_bitmask_empty(&app->selection.frame_mask)) return;
     md_bitmask_clear(&app->selection.frame_mask);
-    app->selection.frame_generation += 1;
 }
 
 static inline void mask_set_molecule(md_bitmask_t* mask, size_t mol_idx, const md_system_t& sys) {
@@ -3194,10 +3188,14 @@ bool* workspace_window_flag(const char* name);
 // is per system, so its names are of that one: another system's filters see none of them.
 script::FilterCtx filter_context(const SystemContext& sys);
 
-// The selection keeps its own copy of atom_mask
-Selection* create_selection(ApplicationState* app, md_str_t name, md_bitset_t atom_mask = {});
-void remove_selection(ApplicationState* app, size_t idx);
-void remove_all_selections(ApplicationState* app);
+// The user's groups (MD_GROUP_ORIGIN_USER), what were stored selections: named sets of atoms of the system, kept in
+// the workspace, which VIAL selects as group('name') and v1 names as identifiers. The System window lists, renames and
+// removes them. A name is the user's handle on a set, so no two groups of the system share one of a user's.
+//
+// The system's selection as a new group of the user's, named sel1, sel2, ...: its index, or -1 for an empty selection
+int store_selection_as_group(SystemContext& sys);
+// Whether a user's group may be named so: not empty, and no other group of the system's name (self: the group renamed)
+bool user_group_name_free(const md_system_t& sys, md_str_t name, size_t self = SIZE_MAX);
 
 // Representations and their groups: representation.h
 

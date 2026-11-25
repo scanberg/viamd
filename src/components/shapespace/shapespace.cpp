@@ -190,7 +190,6 @@ enum LayerFrames : int {
     LayerFrames_Current = 0,
     LayerFrames_All,
     LayerFrames_Period,
-    LayerFrames_Selection,      // The frames selected (ApplicationState::selection.frame_mask), as they change
     LayerFrames_Count,
 };
 
@@ -268,7 +267,8 @@ struct Layer {
     float    levels[MAX_LEVELS] = { 0.5f, 0.8f, 0.95f };
     float    bandwidth = 0.0f;      // Of the gaussian the density is smoothed with, of the triangle's side. 0: automatic.
 
-    ImPlotColormap colormap = ImPlotColormap_Viridis;
+    ImPlotColormap colormap = ImPlotColormap_Spectral;     // Of time: bright against the plots' dark background
+    ImPlotColormap density_colormap = ImPlotColormap_Viridis;  // Of a heatmap: sequential, as a density is
     ImPlotColormap structure_colormap = ImPlotColormap_Deep;    // Of points coloured by structure: in turn, by default
     bool     log_scale = false;
 
@@ -425,6 +425,8 @@ struct Shapespace : viamd::EventHandler {
         float  view_scale = 1.0f;       // Of the box on the screen (ImPlot3D's ViewScaleFactor): to fill the plot
         bool   panning = false;         // Right-drag, along time
         bool   dollying = false;        // Middle-drag: zooming in time, about the time where it began (dolly_u of the axis)
+        bool   scrubbing = false;       // Ctrl + left-drag: the frame shown is the one at the pointer's time
+        bool   over_box = false;        // The pointer, last frame: over one of the box's planes
         float  dolly_u = 0.5f;
         int    preset = -1;             // A view to turn to: 0 along the time axis, 1 from the side, 2 the default
         bool   drawn = false;           // This frame
@@ -762,6 +764,7 @@ struct Shapespace : viamd::EventHandler {
         md_memcpy(l->levels, src.levels, sizeof(l->levels));
         l->bandwidth = src.bandwidth;
         l->colormap = src.colormap;
+        l->density_colormap = src.density_colormap;
         l->structure_colormap = src.structure_colormap;
         l->log_scale = src.log_scale;
         l->point_coloring = src.point_coloring;
@@ -936,7 +939,7 @@ struct Shapespace : viamd::EventHandler {
             snprintf(g->name, sizeof(g->name), "System");
             // Everything, as one structure, in the language of the workspace
             const bool v2 = app && app->script.language == script::Language::V2;
-            snprintf(g->filter.text, sizeof(g->filter.text), "%s", v2 ? "particles" : "all");
+            snprintf(g->filter.text, sizeof(g->filter.text), "%s", v2 ? "particle" : "all");
             group = g->node.id;
         }
         if (Layer* cur = add_layer(LayerFrames_Current, LayerStyle_Points, -1, group)) {
@@ -1117,9 +1120,11 @@ struct Shapespace : viamd::EventHandler {
         e.smoothed_window = smoothing;
     }
 
-    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own
+    // The shapes of an evaluation as they are shown: smoothed, when they are and the smoothing is ready; else its own.
+    // Of the window last smoothed over until this one's are made (update_smoothed): not its own shapes meanwhile, which
+    // would flicker in and out of the smoothed ones as the window is changed.
     const md_float2_t* eval_shapes(const Evaluation& e) const {
-        if (smoothing > 1 && e.smoothed && e.smoothed_window == smoothing) return e.smoothed->data();
+        if (smoothing > 1 && e.smoothed) return e.smoothed->data();
         return e.coords;
     }
 
@@ -1311,29 +1316,13 @@ struct Shapespace : viamd::EventHandler {
             *end = (uint32_t)e + 1;
             return true;
         }
-        case LayerFrames_Selection: {
-            md_bitset_t sel = {};
-            if (!layer_frames(l, &sel)) return false;
-            *beg = md_bitset_first(sel);
-            *end = md_bitset_last_end(sel);
-            return true;
-        }
         default:
             return false;
         }
     }
 
-    // The frames of the layer as a set: a run of them, or of the frames selected those of the run (in the frame
-    // allocator: for this frame). False when it covers none.
+    // The frames of the layer as a set: a run of them. False when it covers none.
     bool layer_frames(const Layer& l, md_bitset_t* out) const {
-        const uint32_t num_frames = (uint32_t)run_num_frames(app->system_context);
-        if (num_frames == 0) return false;
-        if (l.frames == LayerFrames_Selection) {
-            const md_bitset_t sel = md_bitmask_view(&app->selection.frame_mask);
-            if (md_bitset_empty(sel)) return false;
-            *out = md_bitset_and(sel, md_bitset_range(0, num_frames), app->allocator.frame);
-            return !md_bitset_empty(*out);
-        }
         uint32_t beg = 0, end = 0;
         if (!layer_frame_range(l, &beg, &end)) return false;
         *out = md_bitset_range(beg, end);
@@ -1342,7 +1331,6 @@ struct Shapespace : viamd::EventHandler {
 
     // What the frames of the layer are, as far as what is found over them goes
     uint64_t layer_frames_hash(const Layer& l, md_bitset_t frames) const {
-        if (l.frames == LayerFrames_Selection) return md_hash64_combine(app->selection.frame_generation, 0x5e1ec7ull);
         const uint32_t span[2] = { md_bitset_first(frames), md_bitset_last_end(frames) };
         return md_hash64(span, sizeof(span), 0);
     }
@@ -1464,7 +1452,7 @@ struct Shapespace : viamd::EventHandler {
             viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
             if (l.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(l.filter.text));
             viamd::write_bool(state, MD_STR_LIT("UseMass"), l.use_mass);
-            static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period"), MD_STR_LIT("selection") };
+            static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
             viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
             if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
             static const md_str_t styles[LayerStyle_Count] = { MD_STR_LIT("points"), MD_STR_LIT("contours"), MD_STR_LIT("heatmap") };
@@ -1478,6 +1466,7 @@ struct Shapespace : viamd::EventHandler {
             if (l.bandwidth > 0.0f) viamd::write_flt(state, MD_STR_LIT("Bandwidth"), l.bandwidth);
             else                    viamd::write_str(state, MD_STR_LIT("Bandwidth"), MD_STR_LIT("auto"));
             viamd::write_str(state, MD_STR_LIT("Colormap"), md_str_from_cstr(ImPlot::GetColormapName(l.colormap)));
+            viamd::write_str(state, MD_STR_LIT("DensityColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.density_colormap)));
             viamd::write_str(state, MD_STR_LIT("StructureColormap"), md_str_from_cstr(ImPlot::GetColormapName(l.structure_colormap)));
             viamd::write_bool(state, MD_STR_LIT("LogScale"), l.log_scale);
             static const md_str_t colorings[PointColoring_Count] = { MD_STR_LIT("layer"), MD_STR_LIT("structure"), MD_STR_LIT("time") };
@@ -1579,6 +1568,7 @@ struct Shapespace : viamd::EventHandler {
             while (viamd::next_entry(ident, arg, state)) {}
             return;
         }
+        bool has_colormap = false, has_density_colormap = false;
         while (viamd::next_entry(ident, arg, state)) {
             md_str_t s = {};
             if (md_str_eq_cstr(ident, "Name")) {
@@ -1600,8 +1590,8 @@ struct Shapespace : viamd::EventHandler {
             } else if (md_str_eq_cstr(ident, "UseMass")) {
                 viamd::extract_bool(l->use_mass, arg);
             } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
-                l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period :
-                            md_str_eq_cstr(s, "selection") ? LayerFrames_Selection : LayerFrames_All;
+                // (A layer of the frames selected, "selection", as there was: of all of them)
+                l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
             } else if (md_str_eq_cstr(ident, "Period")) {
                 int id = 0;
                 if (viamd::extract_int(id, arg)) l->period = (uint32_t)MD_MAX(id, 0);
@@ -1634,6 +1624,13 @@ struct Shapespace : viamd::EventHandler {
                 md_str_copy_to_char_buf(name, sizeof(name), s);
                 const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
                 if (cm >= 0) l->colormap = cm;
+                has_colormap = cm >= 0;
+            } else if (md_str_eq_cstr(ident, "DensityColormap") && viamd::extract_str(s, arg)) {
+                char name[64];
+                md_str_copy_to_char_buf(name, sizeof(name), s);
+                const ImPlotColormap cm = ImPlot::GetColormapIndex(name);
+                if (cm >= 0) l->density_colormap = cm;
+                has_density_colormap = true;
             } else if (md_str_eq_cstr(ident, "StructureColormap") && viamd::extract_str(s, arg)) {
                 char name[64];
                 md_str_copy_to_char_buf(name, sizeof(name), s);
@@ -1651,6 +1648,8 @@ struct Shapespace : viamd::EventHandler {
                 viamd::extract_flt(l->trajectory_width, arg);
             }
         }
+        // Of a workspace from when a heatmap was in the colours of time: as it was
+        if (has_colormap && !has_density_colormap) l->density_colormap = l->colormap;
         sanitize_layer(*l);
         if (!selected_layer) selected_layer = l->id;
     }
@@ -1666,7 +1665,8 @@ struct Shapespace : viamd::EventHandler {
         l.trajectory_width = MD_CLAMP(l.trajectory_width, 0.5f, 6.0f);
         l.num_levels = MD_CLAMP(l.num_levels, 1, MAX_LEVELS);
         for (int i = 0; i < l.num_levels; ++i) l.levels[i] = MD_CLAMP(l.levels[i], 0.01f, 0.999f);
-        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Viridis;
+        if (l.colormap < 0 || l.colormap >= ImPlot::GetColormapCount()) l.colormap = ImPlotColormap_Spectral;
+        if (l.density_colormap < 0 || l.density_colormap >= ImPlot::GetColormapCount()) l.density_colormap = ImPlotColormap_Viridis;
         if (l.structure_colormap < 0 || l.structure_colormap >= ImPlot::GetColormapCount()) l.structure_colormap = ImPlotColormap_Deep;
     }
 
@@ -1703,8 +1703,6 @@ struct Shapespace : viamd::EventHandler {
         char period_name[TIMELINE_PERIOD_NAME_CAP + 8];
         if (l.frames == LayerFrames_All) {
             frames = "All frames";
-        } else if (l.frames == LayerFrames_Selection) {
-            frames = "Selected frames";
         } else if (l.frames == LayerFrames_Period) {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             snprintf(period_name, sizeof(period_name), "%s", p ? p->name : "No period");
@@ -1753,7 +1751,7 @@ struct Shapespace : viamd::EventHandler {
         d->mode = l.style == LayerStyle_Heatmap ? 1 : 0;
         d->fill = l.fill;
         d->lines = l.lines;
-        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.colormap, l.log_scale);
+        if (l.style == LayerStyle_Heatmap) density_map_draw_colormap(d, l.density_colormap, l.log_scale);
         density_map_draw_levels(d, l.result, 0, l.levels, l.num_levels);
         density_map_draw_fills_from(d, l.color);
         d->content = l.shown_hash;
@@ -1795,7 +1793,17 @@ struct Shapespace : viamd::EventHandler {
         md_bitset_t set = {};                    // The layer's frames (for this frame); empty for the frame shown
         uint32_t step = 1;
         bool     current = false;
+        bool     smoothed = false;               // The shapes are smoothed over time (smoothing)
         const md_bitset_t* structures = nullptr; // Of the points, when not the layer's (smoothed, of the frame before)
+        // Of a window narrower than the layer's frames: the frames the paths would join next past its ends (the ones
+        // drawn were the window wider), UINT32_MAX when none. Their points are not of the source: the paths are cut at
+        // the window's ends towards them.
+        uint32_t before = UINT32_MAX;
+        uint32_t after = UINT32_MAX;
+        // The first and the last of all of the layer's frames, not only the window's: what the colours of time span, so
+        // that a point is in the same colour however much of time is shown, and in 2D and 3D alike
+        uint32_t time_beg = 0;
+        uint32_t time_last = 0;
 
         uint32_t frame(size_t k) const { return frames[k]; }
         uint32_t next(size_t k) const { return k + 1 < num_frames ? frames[k + 1] : frames_end; }
@@ -1818,6 +1826,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             ps->structures = l.window_structs;
             return true;
         }
@@ -1841,6 +1850,7 @@ struct Shapespace : viamd::EventHandler {
             ps->num_frames = 1;
             ps->frames_end = 1;
             ps->current = true;
+            ps->smoothed = true;
             return true;
         }
         if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
@@ -1862,7 +1872,9 @@ struct Shapespace : viamd::EventHandler {
         // Frames skipped are counted from the first of the layer's, not of the window's: as the window moves (following
         // the frame shown) the frames drawn stay the same ones
         uint64_t rank = 0;
-        if (frame_beg > 0 || frame_end < nf) {
+        const md_bitset_t all = set;
+        const bool windowed = frame_beg > 0 || frame_end < nf;
+        if (windowed) {
             const uint32_t e = MD_MIN(frame_end, nf);
             if (frame_beg >= e) return false;
             rank = frame_beg > 0 ? md_bitset_count_range(set, 0, frame_beg) : 0;
@@ -1885,6 +1897,7 @@ struct Shapespace : viamd::EventHandler {
         }
         *ps = PointSource{};
         ps->coords = eval_shapes(*l.eval);
+        ps->smoothed = ps->coords != l.eval->coords;
         ps->stride = nf;
         ps->num_structures = l.eval->num_structures;
         ps->frames = list;
@@ -1893,6 +1906,22 @@ struct Shapespace : viamd::EventHandler {
         ps->set = set;
         ps->step = step;
         ps->current = false;
+        ps->time_beg = md_bitset_first(all);
+        ps->time_last = MD_MAX(md_bitset_last_end(all), 1u) - 1;
+        if (windowed && n > 0) {
+            // Drawn are the frames of a rank a multiple of step, in all of the layer's: the one before the first drawn,
+            // and the one after the last
+            const uint64_t r_first = rank + (step - rank % step) % step;
+            const uint64_t r_before = r_first >= step ? r_first - step : UINT64_MAX;
+            const uint64_t r_after = r_first + (uint64_t)(n - 1) * step + step;
+            uint64_t r = 0;
+            md_bitset_iter_t ia = md_bitset_iter_range(all, 0, nf);
+            while (md_bitset_iter_next(&ia) && r <= r_after) {
+                if (r == r_before) ps->before = ia.idx;
+                if (r == r_after) ps->after = ia.idx;
+                ++r;
+            }
+        }
         return n > 0;
     }
 
@@ -1937,8 +1966,9 @@ struct Shapespace : viamd::EventHandler {
             return ImPlot::SampleColormap(ps.num_structures > 1 ? (float)s / (float)(ps.num_structures - 1) : 0.5f, cm);
         }
         case PointColoring_Time: {
-            if (ps.current || ps.num_frames <= 1) return l.color;
-            const uint32_t f0 = ps.frames[0], f1 = ps.frames[ps.num_frames - 1];
+            if (ps.current) return l.color;
+            // Over all of the layer's frames: not of the window of time shown (PointSource::time_beg)
+            const uint32_t f0 = ps.time_beg, f1 = ps.time_last;
             if (f1 <= f0) return l.color;
             return ImPlot::SampleColormap((float)(ps.frames[k] - f0) / (float)(f1 - f0), l.colormap);
         }
@@ -2040,6 +2070,7 @@ struct Shapespace : viamd::EventHandler {
             else          ImGui::TextDisabled("frame %u  \xc2\xb7  click to go there", h.frame);
             if (h.next > h.frame + 1) ImGui::TextDisabled("standing for the frames to %u, which are not drawn", h.next - 1);
         }
+        if (ps.smoothed) ImGui::TextDisabled(ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
         char label[128];
         layer_label(label, sizeof(label), l);
         ImGui::TextDisabled("%s", label);
@@ -2342,6 +2373,11 @@ struct Shapespace : viamd::EventHandler {
             density_map_plot_canvas(render_densities());
             // Nothing hovered while it is panned (plot_input.h)
             draw_points(plot_input_hovered());
+            {
+                ImPlot::PushPlotClipRect();
+                draw_smoothing_badge(ImPlot::GetPlotDrawList(), ImPlot::GetPlotPos());
+                ImPlot::PopPlotClipRect();
+            }
 
             if (ImPlot::BeginDragDropTargetPlot()) {
                 if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(TIMELINE_PERIOD_DND)) {
@@ -2580,6 +2616,47 @@ struct Shapespace : viamd::EventHandler {
         else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click for all of it.");
     }
 
+    // In a corner of a plot, while what it shows is smoothed over time: said with the data, so that no view of it (a
+    // screenshot of the plot alone) passes for the shapes of the frames
+    void draw_smoothing_badge(ImDrawList* dl, ImVec2 corner) const {
+        if (smoothing <= 1 || run_num_frames(app->system_context) < 2) return;
+        char text[64];
+        snprintf(text, sizeof(text), ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
+        const ImVec2 pad(5.0f, 2.0f);
+        const ImVec2 p0 = corner + ImVec2(6.0f, 6.0f);
+        const ImVec2 p1 = p0 + ImGui::CalcTextSize(text) + pad * 2.0f;
+        dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 3.0f);
+        dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_ButtonActive), 3.0f);
+        dl->AddText(p0 + pad, ImGui::GetColorU32(ImGuiCol_Text), text);
+    }
+
+    // The smoothing over time, in the toolbar: in sight, as it changes what every point is. Marked while it is on.
+    void draw_smoothing_control() {
+        const bool on = smoothing > 1;
+        if (on) {
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+            ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        }
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6.0f);
+        if (ImGui::SliderInt("##smoothing", &smoothing, 1, MAX_SMOOTHING, on ? ICON_FA_WAVE_SQUARE " %d" : ICON_FA_WAVE_SQUARE " off",
+                             ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
+            smoothing |= 1;     // Centred: odd
+            // Made now, before the points are drawn this frame: not at the next update
+            for (int i = 0; i < num_layers; ++i) {
+                if (layers[i].eval) update_smoothed(*layers[i].eval);
+            }
+        }
+        if (on) ImGui::PopStyleColor(2);
+        if (ImGui::BeginPopupContextItem("##smoothing_menu")) {
+            if (ImGui::MenuItem("Off", nullptr, false, on)) smoothing = 1;
+            ImGui::EndPopup();
+        }
+        ImGui::SetItemTooltip("Smoothing over time: a moving average of the shapes over this many frames, centred.\n"
+                              "Of every layer and view alike: the points and densities in 2D, the paths in 3D, the points\n"
+                              "of the frame shown, what is selected and what is exported. As smooth(shape_weights(...), n)\n"
+                              "in a script. Ctrl-click to type; right-click to turn it off.");
+    }
+
     void draw_plot3d() {
         v3.drawn = true;
         if (ImGui::GetContentRegionAvail().x < 32.0f || ImGui::GetContentRegionAvail().y < 32.0f) return;
@@ -2610,10 +2687,11 @@ struct Shapespace : viamd::EventHandler {
 
         const ImGuiIO& io = ImGui::GetIO();
         const bool shift = io.KeyShift;
+        const bool ctrl = io.KeyCtrl && !shift;
         // ImPlot3D only turns the box, with the left button as the viewport does; zooming and panning (in time, of the time
         // filter's window) are ours. Shift is for selecting: the box does not turn meanwhile.
         ImPlot3DFlags flags = ImPlot3DFlags_CanvasOnly | ImPlot3DFlags_NoMenus | ImPlot3DFlags_NoPan | ImPlot3DFlags_NoZoom;
-        if (shift || v3.active || v3.panning || v3.dollying) flags |= ImPlot3DFlags_NoRotate;
+        if (shift || ctrl || v3.active || v3.panning || v3.dollying || v3.scrubbing) flags |= ImPlot3DFlags_NoRotate;
         // Turning is ImPlot3D's, as every 3D view's (plot_input.h); panning, fitting and zooming in time are ours, of the
         // window, and there is no menu
         ImPlot3DInputMap& input_map = ImPlot3D::GetInputMap();
@@ -2621,6 +2699,9 @@ struct Shapespace : viamd::EventHandler {
         input_map.Pan = -1;
         input_map.Fit = -1;
         input_map.Menu = -1;
+        // A double-click on a plane of the box turns to face it (ImPlot3D); off them it is ours alone, of time: the box
+        // is not turned back. Of the last frame, as ImPlot3D takes it before the box is known: a double-click is still.
+        if (!v3.over_box) input_map.ResetRotation = -1;
 
         ImPlot3D::PushStyleColor(ImPlot3DCol_PlotBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
         ImPlot3D::PushStyleColor(ImPlot3DCol_FrameBg, ImVec4(0.11f, 0.11f, 0.12f, 1.0f));
@@ -2821,6 +2902,30 @@ struct Shapespace : viamd::EventHandler {
             }
         }
 
+        // f(structure, k, a, b) for the paths out of the window, to the points past its ends: from the point k inside, a,
+        // to where the path to the point outside crosses the window's end, b ({ time, x, y }), as joined() joins points
+        auto for_each_edge = [&](const PointSource& ps, auto&& f) {
+            if (ps.current || ps.num_frames == 0) return;
+            for (int end = 0; end < 2; ++end) {
+                const uint32_t out = end == 0 ? ps.before : ps.after;
+                if (out == UINT32_MAX) continue;
+                const size_t k = end == 0 ? 0 : ps.num_frames - 1;
+                const uint32_t in = ps.frames[k];
+                if ((end == 0 ? in - out : out - in) > ps.step) continue;
+                const double ti = frame_time(in), to = frame_time(out);
+                const double te = end == 0 ? t0 : t1;
+                if (!(to != ti)) continue;
+                const double u = MD_CLAMP((te - ti) / (to - ti), 0.0, 1.0);
+                for (size_t st = 0; st < ps.num_structures; ++st) {
+                    const md_float2_t pi = ps.coords[st * ps.stride + in], po = ps.coords[st * ps.stride + out];
+                    if (!coord_valid(pi) || !coord_valid(po)) continue;
+                    const float a[3] = { (float)ti, pi.x, pi.y };
+                    const float b[3] = { (float)(ti + (to - ti) * u), pi.x + (po.x - pi.x) * (float)u, pi.y + (po.y - pi.y) * (float)u };
+                    f((uint32_t)st, k, a, b);
+                }
+            }
+        };
+
         // The layers of points: over frames a line (or points) for each structure, of the frame shown points on its slice
         PointSource sources[MAX_LAYERS];
         bool has_source[MAX_LAYERS] = {};
@@ -2870,6 +2975,26 @@ struct Shapespace : viamd::EventHandler {
                     cols[ns] = color_u32(point_color(l, ps, a.s, a.k), alpha_of(a.s));
                     ++ns;
                 }
+                // Out to the points past the window, cut at its ends: in the colour of the point inside
+                float* exs = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                float* eys = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                float* ezs = (float*)md_alloc(fa, sizeof(float) * 4 * ps.num_structures);
+                ImU32* ecols = (ImU32*)md_alloc(fa, sizeof(ImU32) * 2 * ps.num_structures);
+                int ne = 0;
+                for_each_edge(ps, [&](uint32_t s, size_t k, const float* a, const float* b) {
+                    exs[2 * ne] = a[0]; eys[2 * ne] = a[1]; ezs[2 * ne] = a[2];
+                    exs[2 * ne + 1] = b[0]; eys[2 * ne + 1] = b[1]; ezs[2 * ne + 1] = b[2];
+                    ecols[ne] = color_u32(point_color(l, ps, s, k), alpha_of(s));
+                    ++ne;
+                });
+                if (ne > 0) {
+                    ImPlot3DSpec spec;
+                    spec.LineColors = ecols;
+                    spec.LineWeight = l.trajectory_width;
+                    spec.Flags = item_flags | ImPlot3DLineFlags_Segments;
+                    snprintf(id, sizeof(id), "##edges%u", l.id);
+                    ImPlot3D::PlotLine(id, exs, eys, ezs, 2 * ne, spec);
+                }
                 if (ns > 0) {
                     ImPlot3DSpec spec;
                     spec.LineColors = cols;
@@ -2903,7 +3028,7 @@ struct Shapespace : viamd::EventHandler {
         // Where the points are on the screen, for what the pointer is on and what a box covers
         Hover hover;
         // Nothing hovered while it is turned, panned or zoomed by a drag (plot_input.h); the box still covers what it covers
-        const bool hover_points = hovered && !plot_input_navigating();
+        const bool hover_points = hovered && !plot_input_navigating() && !v3.scrubbing;
         if (hover_points || v3.active) {
             float best = 0.0f;
             for (int i = 0; i < num_layers; ++i) {
@@ -2972,10 +3097,19 @@ struct Shapespace : viamd::EventHandler {
                 };
                 char id[32];
                 if (any_hl && !ps.current) {
-                    float* xs = (float*)md_alloc(fa, sizeof(float) * 2 * np);
-                    float* ys = (float*)md_alloc(fa, sizeof(float) * 2 * np);
-                    float* zs = (float*)md_alloc(fa, sizeof(float) * 2 * np);
+                    const size_t cap = 2 * (np + 2 * ps.num_structures);
+                    float* xs = (float*)md_alloc(fa, sizeof(float) * cap);
+                    float* ys = (float*)md_alloc(fa, sizeof(float) * cap);
+                    float* zs = (float*)md_alloc(fa, sizeof(float) * cap);
                     int ns = 0;
+                    if (l.trajectory != Trajectory_Points) {
+                        for_each_edge(ps, [&](uint32_t s, size_t, const float* a, const float* b) {
+                            if (!structure_highlighted(s)) return;
+                            xs[2 * ns] = a[0]; ys[2 * ns] = a[1]; zs[2 * ns] = a[2];
+                            xs[2 * ns + 1] = b[0]; ys[2 * ns + 1] = b[1]; zs[2 * ns + 1] = b[2];
+                            ++ns;
+                        });
+                    }
                     uint32_t last_s = UINT32_MAX;
                     bool last_hl = false;
                     for (size_t j = 0; j + 1 < np; ++j) {
@@ -3064,6 +3198,71 @@ struct Shapespace : viamd::EventHandler {
             const ImVec2 c = ImPlot3D::PlotToPixels(k & 1 ? t1 : t0, k & 2 ? 1.04 : -0.04, k & 4 ? tri_iso.y + 0.04 : -0.04);
             box_px.Add(c);
         }
+
+        // Ctrl + left-click or drag: to the frame at the pointer's time, as in the timeline (plot_input.h). The time is
+        // where the pointer is on a wall of the box along time, behind what is in it (where the ray through the pointer
+        // leaves the box: the walls ImPlot3D grids), or else on the time axis, by its ticks. None through an end of the
+        // box (looking along time), or off the box and its axis.
+        // Where the ray through the pointer leaves the box (its parameter), and through which of its faces (the axis
+        // across it, -1 when it misses): one of the planes ImPlot3D draws behind what is in the box, as it is turned
+        const ImPlot3DRay ray = ImPlot3D::PixelsToPlotRay(mouse);
+        int exit_face = -1;
+        const double exit_t = [&] {
+            const double lo[3] = { t0, -0.04, -0.04 }, hi[3] = { t1, 1.04, tri_iso.y + 0.04 };
+            const double o[3] = { ray.Origin.x, ray.Origin.y, ray.Origin.z };
+            const double d[3] = { ray.Direction.x, ray.Direction.y, ray.Direction.z };
+            double t_in = -DBL_MAX, t_out = DBL_MAX;
+            int out = -1;
+            for (int k = 0; k < 3; ++k) {
+                if (fabs(d[k]) < 1e-12) {
+                    if (o[k] < lo[k] || o[k] > hi[k]) t_in = DBL_MAX;    // Beside the box, along it: a miss
+                    continue;
+                }
+                double a = (lo[k] - o[k]) / d[k], b = (hi[k] - o[k]) / d[k];
+                if (a > b) { const double tmp = a; a = b; b = tmp; }
+                t_in = MD_MAX(t_in, a);
+                if (b < t_out) { t_out = b; out = k; }
+            }
+            if (!(t_in <= t_out)) return (double)NAN;
+            exit_face = out;
+            return t_out;
+        }();
+        v3.over_box = hovered && exit_face >= 0;
+        // Off the box, a double-click zooms out fully: the whole run. On one of its planes ImPlot3D turns to face it, and
+        // the time shown stays.
+        if (hovered && !shift && !ctrl && !v3.active && exit_face < 0 && nf > 1 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
+        auto pointer_time = [&]() -> double {
+            if (exit_face > 0) return ray.Origin.x + ray.Direction.x * exit_t;
+            ImPlot3DPoint ea, eb;
+            if (!ImPlot3D::GetAxisEdge(ImAxis3D_X, &ea, &eb)) return NAN;
+            const ImVec2 a = ImPlot3D::PlotToPixels(ea), b = ImPlot3D::PlotToPixels(eb);
+            const ImVec2 m = ImPlot3D::PlotToPixels((ea + eb) * 0.5);
+            const ImVec2 ab = b - a;
+            const float len2 = ImLengthSqr(ab);
+            if (len2 < 400.0f) return NAN;
+            const float l = ImDot(mouse - a, ab) / len2;
+            const float reach = 3.0f * ImGui::GetFontSize();    // Over the ticks and their labels
+            if (l < 0.0f || l > 1.0f || ImLengthSqr(mouse - (a + ab * l)) > reach * reach) return NAN;
+            // Foreshortened in perspective, as the time axis is for zooming
+            const float lm = ImDot(m - a, ab) / len2;
+            const float r = lm > 0.01f && lm < 0.99f ? 1.0f / lm - 1.0f : 1.0f;
+            const double u = l * r / (1.0f - l + l * r);
+            return ea.x + (eb.x - ea.x) * u;
+        };
+        if (nf > 1 && ctrl && hovered && !v3.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && isfinite(pointer_time())) {
+            v3.scrubbing = true;
+            v3.pressed = false;
+        }
+        if (v3.scrubbing && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || !io.KeyCtrl)) v3.scrubbing = false;
+        if (v3.scrubbing) {
+            const double t = pointer_time();
+            if (isfinite(t)) {
+                const double* times = run_frame_times(app->system_context);
+                const double rt = MD_CLAMP(t, r0, r1) / time_scale;
+                const double f = times ? frame_at_time(times, nf, rt) : rt;
+                clock_set_frame(app, MD_CLAMP(f, 0.0, (double)(nf - 1)));
+            }
+        }
         ImPlot3D::EndPlot();
 
         // The box fills the plot, with room for the time axis' labels. Not while it is turned by hand: it settles after.
@@ -3101,7 +3300,6 @@ struct Shapespace : viamd::EventHandler {
                     v3.dollying = true;
                     v3.dolly_u = along ? time_u(mouse) : 0.5f;
                 }
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
             }
             // Middle-drag, as the viewport dollies: up zooms in
             if (v3.dollying) {
@@ -3132,6 +3330,7 @@ struct Shapespace : viamd::EventHandler {
         // Over the plot: the point under the pointer, the box
         ImDrawList* dl = ImGui::GetWindowDrawList();
         dl->PushClipRect(plot_rect.Min, plot_rect.Max, true);
+        draw_smoothing_badge(dl, plot_rect.Min);
         const md_float4_t sel_c = app->selection.color.selection.outline;
         const md_float4_t hl_c = app->selection.color.highlight.outline;
         if (hover.layer >= 0) {
@@ -3160,7 +3359,7 @@ struct Shapespace : viamd::EventHandler {
         if (hover.layer >= 0 && !v3.active) {
             draw_tooltip(hover, sources[hover.layer]);
             // Pressed on a point of a frame and let go there: that frame (a drag pans)
-            if (!hover.current && !shift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            if (!hover.current && !shift && !ctrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 v3.pressed = true;
                 v3.press_pos = mouse;
                 v3.click_frame = hover.frame;
@@ -3226,10 +3425,14 @@ struct Shapespace : viamd::EventHandler {
         const size_t ns = eval->num_structures;
         const size_t nf = eval->num_frames;
         const md_float2_t* shapes = eval_shapes(*eval);     // As shown: smoothed, when they are
+        // Said in every column's label, so that a file of smoothed shapes cannot be taken for the shapes of the frames
+        char sm[48] = "";
+        if (shapes != eval->coords) snprintf(sm, sizeof(sm), " (smoothed over %d frames)", smoothing);
         for (size_t s = 0; s < ns; ++s) {
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "linear %zu", s + 1)    : MD_STR_LIT("linear"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "planar %zu", s + 1)    : MD_STR_LIT("planar"),    temp);
-            md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "isotropic %zu", s + 1) : MD_STR_LIT("isotropic"), temp);
+            static const char* const kinds[3] = { "linear", "planar", "isotropic" };
+            for (int k = 0; k < 3; ++k) {
+                md_array_push(labels, ns > 1 ? md_alloc_printf(temp, "%s %zu%s", kinds[k], s + 1, sm) : md_alloc_printf(temp, "%s%s", kinds[k], sm), temp);
+            }
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
         const double* time = run_frame_times(app->system_context);
@@ -3302,6 +3505,10 @@ struct Shapespace : viamd::EventHandler {
             ImGui::SameLine();
             draw_time_window_controls();
         }
+        if (run_num_frames(app->system_context) >= 2) {
+            ImGui::SameLine();
+            draw_smoothing_control();
+        }
 
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
@@ -3310,18 +3517,11 @@ struct Shapespace : viamd::EventHandler {
             fit_view = true;
             if (view_mode != ViewMode_2D) time_window_fit();
         }
-        ImGui::SetItemTooltip(view_mode == ViewMode_2D ? "Fit the view (or double-click the plot)" : "Fit the view, in 3D all of the run (or double-click the plot)");
+        ImGui::SetItemTooltip(view_mode == ViewMode_2D ? "Fit the view (or double-click the plot)" : "Fit the view, in 3D all of the run (or double-click off the box)");
         ImGui::SameLine();
         if (ImGui::Button(ICON_FA_GEAR)) ImGui::OpenPopup("##settings");
         if (ImGui::BeginPopup("##settings")) {
             ImGui::Checkbox("Grid of equal weights", &show_grid);
-            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
-            if (ImGui::SliderInt("Smoothing", &smoothing, 1, MAX_SMOOTHING, smoothing <= 1 ? "none" : "%d frames", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic)) {
-                smoothing |= 1;     // Centred: odd
-            }
-            ImGui::SetItemTooltip("A moving average of the shapes over this many frames, centred, of every layer and view alike:\n"
-                                  "the points and densities in 2D, the paths in 3D, the points of the frame shown, what is selected\n"
-                                  "and what is exported. As smooth(shape_weights(...), n) in a script.");
             ImGui::SeparatorText("A selection selects");
             for (int k = 0; k < SelectTarget_Count; ++k) {
                 if (ImGui::RadioButton(select_target_names[k], select_target == k)) select_target = (SelectTarget)k;
@@ -3330,7 +3530,9 @@ struct Shapespace : viamd::EventHandler {
             ImGui::TextDisabled("Click a point of a frame to go there.");
             ImGui::TextDisabled("Shift-drag to select the structures and frames of the points, with the right button to deselect them.");
             ImGui::TextDisabled("Drop a period from the timeline on the plot to add its density.");
-            ImGui::TextDisabled("In 3D: right-drag turns, drag pans, the wheel zooms, double-click fits.");
+            ImGui::TextDisabled("In 3D: drag turns; in time, right-drag pans and the wheel zooms; double-click off the box shows the\n"
+                               "whole run, on a plane turns to face it; ctrl-click or drag on the walls\n"
+                               "or the time axis goes to the frame there.");
             ImGui::TextDisabled("The time shown in 3D is the timeline's (" ICON_FA_LINK "), its own (" ICON_FA_THUMBTACK ") or a tail following the frame shown (" ICON_FA_PERSON_RUNNING ").");
             ImGui::Checkbox("Periods along time in 3D", &time_win.show_periods);
             ImGui::EndPopup();
@@ -3444,7 +3646,8 @@ struct Shapespace : viamd::EventHandler {
         const ImVec2 sw_max = ImVec2(sw_min.x + line_h, sw_min.y + line_h);
         const DensityMapSwatch kind = l.style == LayerStyle_Points ? DensityMapSwatch_Points : l.style == LayerStyle_Contours ? DensityMapSwatch_Contours : DensityMapSwatch_Heatmap;
         const bool by_map = l.style == LayerStyle_Points && l.point_coloring != PointColoring_Layer;
-        const ImPlotColormap sw_map = l.style == LayerStyle_Points && l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
+        const ImPlotColormap sw_map = l.style != LayerStyle_Points ? l.density_colormap
+                                    : l.point_coloring == PointColoring_Structure ? l.structure_colormap : l.colormap;
         density_map_swatch(dl, sw_min, sw_max, by_map ? DensityMapSwatch_Heatmap : kind, l.color, l.fill, sw_map, l.visible ? 1.0f : 0.35f);
 
         const ImVec2 text_min = ImVec2(sw_max.x + 6, row_min.y + 4);
@@ -3568,10 +3771,6 @@ struct Shapespace : viamd::EventHandler {
             if (Layer* l = add_like(LayerFrames_Current, LayerStyle_Points, group)) l->point_size = 7.0f;
         }
         if (ImGui::MenuItem("All frames", nullptr, false, room)) add_like(LayerFrames_All, LayerStyle_Contours, group);
-        if (ImGui::MenuItem("Selected frames", nullptr, false, room)) {
-            if (Layer* l = add_like(LayerFrames_Selection, LayerStyle_Points, group)) l->point_coloring = PointColoring_Time;
-        }
-        ImGui::SetItemTooltip("Points over the frames selected, as they change");
         const TimelinePeriods& ps = app->timeline.periods;
         if (ImGui::BeginMenu("Period", ps.count > 0 && room)) {
             for (int i = 0; i < ps.count; ++i) {
@@ -3644,13 +3843,10 @@ struct Shapespace : viamd::EventHandler {
             const TimelinePeriod* cur = timeline_periods_find(&ps, l.period);
             if (l.frames == LayerFrames_Current)  snprintf(preview, sizeof(preview), "Current frame");
             else if (l.frames == LayerFrames_All) snprintf(preview, sizeof(preview), "All frames");
-            else if (l.frames == LayerFrames_Selection) snprintf(preview, sizeof(preview), "Selected frames");
             else snprintf(preview, sizeof(preview), "%s", cur ? cur->name : "Period (missing)");
             if (ImGui::BeginCombo("##frames", preview)) {
                 if (ImGui::Selectable("Current frame", l.frames == LayerFrames_Current)) l.frames = LayerFrames_Current;
                 if (ImGui::Selectable("All frames", l.frames == LayerFrames_All)) l.frames = LayerFrames_All;
-                if (ImGui::Selectable("Selected frames", l.frames == LayerFrames_Selection)) l.frames = LayerFrames_Selection;
-                ImGui::SetItemTooltip("The frames selected, as they change: shift-drag over points over frames, or the timeline's Frames menu");
                 if (ps.count > 0) ImGui::SeparatorText("Periods");
                 for (int i = 0; i < ps.count; ++i) {
                     char label[TIMELINE_PERIOD_NAME_CAP + 16];
@@ -3665,8 +3861,6 @@ struct Shapespace : viamd::EventHandler {
             }
             if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) {
                 prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
-            } else if (l.frames == LayerFrames_Selection && md_bitmask_empty(&app->selection.frame_mask)) {
-                prop::hint("No frames are selected");
             }
         }
 
@@ -3696,8 +3890,11 @@ struct Shapespace : viamd::EventHandler {
             prop::row("levels", "The contours enclose these fractions of the samples (highest density regions)");
             density_map_levels_editor(l.levels, &l.num_levels);
         }
-        if (l.style == LayerStyle_Heatmap || (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time)) {
-            prop::row("colormap");
+        if (l.style == LayerStyle_Heatmap) {
+            prop::row("colormap", "Of the density");
+            ImPlot::ColormapSelection("##dcmap", &l.density_colormap);
+        } else if (l.style == LayerStyle_Points && l.point_coloring == PointColoring_Time) {
+            prop::row("colormap", "Of time: over all of the layer's frames");
             ImPlot::ColormapSelection("##cmap", &l.colormap);
         }
         if (l.style == LayerStyle_Heatmap) {

@@ -1349,6 +1349,24 @@ int main(int argc, char** argv) {
             }
         }
 
+        // The groups of a system changed (a file of groups loaded, the user's edited): told once, here, whatever changed
+        // them. The script selects the first system's groups by name, VIAL as group('name') and v1 the user's as
+        // identifiers: compiled again in this frame when they are the ones.
+        {
+            bool changed = false;
+            for (size_t k = 0; k < state.num_systems; ++k) {
+                SystemData& d = state.systems[k]->data;
+                if (d.sys.group.version == d.group_version) continue;
+                d.group_version = d.sys.group.version;
+                changed = true;
+                if (k == 0) {
+                    state.script.compile_ir = true;
+                    state.script.time_since_last_change = 1.0e9;
+                }
+            }
+            if (changed) viamd::event_system_broadcast_event(viamd::EventType_ViamdGroupsChanged, viamd::EventPayloadType_ApplicationState, &state);
+        }
+
         {
             // The script is compiled again whatever changed its text. Typing is reported by the editor (its Render,
             // above in the frame, which asks for a compilation once typing pauses), but an edit through the editor's
@@ -1419,16 +1437,21 @@ int main(int argc, char** argv) {
                         md_path_set_cwd(cwd);
                     }
 
-                    const size_t num_stored_selections = md_array_size(state.selection.stored_selections);                       
-                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(num_stored_selections, 1) * sizeof(script::NamedSet));
-                    for (size_t i = 0; i < num_stored_selections; ++i) {
-                        sets[i].name  = md_str_from_cstr(state.selection.stored_selections[i].name);
-                        sets[i].atoms = state.selection.stored_selections[i].atom_mask;
+                    // The user's groups, which v1 names as identifiers, as it named the stored selections they were. VIAL
+                    // selects them as every group, group('name'), and is given none.
+                    const md_group_data_t& groups = state.mold.sys.group;
+                    script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(groups.count, 1) * sizeof(script::NamedSet));
+                    size_t num_sets = 0;
+                    if (state.script.language == script::Language::V1) {
+                        for (size_t i = 0; i < groups.count; ++i) {
+                            if (groups.origin[i] != MD_GROUP_ORIGIN_USER || !script::name_valid(script::Language::V1, groups.name[i])) continue;
+                            sets[num_sets++] = script::NamedSet{groups.name[i], groups.atoms[i]};
+                        }
                     }
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
-                    // the IR holds the stored selections only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_stored_selections, run_path(state.system_context)});
+                    // the IR holds the named sets only.
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_sets, run_path(state.system_context)});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -2494,6 +2517,8 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Selection")) {
+            // Highlighted while the menu is open: what an item hovered shows, else nothing
+            for (size_t k = 0; k < data->num_systems; ++k) md_bitmask_clear(&data->systems[k]->selection.highlight_mask);
             if (ImGui::BeginCombo("Select by", selection_granularity_str[(int)data->selection.granularity])) {
                 for (SelectionGranularity g : selection_granularity_order) {
                     const bool current = g == data->selection.granularity;
@@ -2530,64 +2555,20 @@ static void draw_main_menu(ApplicationState* data) {
             ImGui::Spacing();
             ImGui::Separator();
 
-            // STORED SELECTIONS: names of the script, of the first system (the script is not per system yet)
-            {
-                md_bitmask_clear(&data->system_context.selection.highlight_mask);
-                // @NOTE(Robin): This ImGui ItemFlag can be used to force the menu to remain open after buttons are pressed.
-                // Leave it here as a comment if we feel that it is needed in the future
-                //ImGui::PushItemFlag(ImGuiItemFlags_SelectableDontClosePopup, true);
-
-                ImGui::Text("Stored Selections");
-                for (int i = 0; i < (int)md_array_size(data->selection.stored_selections); i++) {
-                    auto& sel = data->selection.stored_selections[i];
-                    const md_str_t name_str = md_str_from_cstr(sel.name);
-                    bool is_valid = script::name_valid(data->script.language, name_str);
-                    char error[64] = "";
-                    if (!is_valid) {
-                        snprintf(error, sizeof(error), "'%s' is not a valid identifier.", sel.name);
-                    }
-
-                    for (int j = 0; j < i; ++j) {
-                        if (md_str_eq_cstr(name_str, data->selection.stored_selections[j].name)) {
-                            is_valid = false;
-                            snprintf(error, sizeof(error), "identifier '%s' is already taken.", sel.name);
-                            break;
-                        }
-                    }
-
-                    ImGui::PushID(i);
-                    ImGui::InputQuery("##label", sel.name, sizeof(sel.name), is_valid, error);
-                    ImGui::SameLine();
-                    if (ImGui::Button("Load")) {
-                        md_bitmask_assign(&data->system_context.selection.selection_mask, sel.atom_mask);
-                        flag_all_representations_as_dirty(data);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Load the stored selection as the active selection");
-                        md_bitmask_assign(&data->system_context.selection.highlight_mask, sel.atom_mask);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Store")) {
-                        ImGui::SetTooltip("Store the active selection into this selection");
-                        md_bitset_assign(&sel.atom_mask, md_bitmask_view(&data->system_context.selection.selection_mask), persistent_alloc);
-                        data->script.compile_ir = true;
-                        flag_all_representations_as_dirty(data);
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::DeleteButton("Remove")) {
-                        ImGui::SetTooltip("Remove this selection");
-                        remove_selection(data, i);
-                    }
-                    ImGui::PopID();
+            // The selection kept, as a group of the user's of each system it is of: System > Groups lists, renames and
+            // removes them
+            if (num_selected_atoms == 0) ImGui::PushDisabled();
+            if (ImGui::MenuItem("Store as Group")) {
+                for (size_t k = 0; k < data->num_systems; ++k) store_selection_as_group(*data->systems[k]);
+            }
+            if (num_selected_atoms == 0) ImGui::PopDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                for (size_t k = 0; k < data->num_systems; ++k) {
+                    SystemSelection& sel = data->systems[k]->selection;
+                    md_bitmask_assign(&sel.highlight_mask, md_bitmask_view(&sel.selection_mask));
                 }
-
-                if (ImGui::Button("Create New")) {
-                    char name_buf[64];
-                    snprintf(name_buf, sizeof(name_buf), "sel%i", (int)md_array_size(data->selection.stored_selections) + 1);
-                    create_selection(data, md_str_from_cstr(name_buf), md_bitmask_view(&data->system_context.selection.selection_mask));
-                }
-
-                //ImGui::PopItemFlag();
+                ImGui::SetTooltip("Keep the selection as a group of the system, named sel1, sel2, ...: System > Groups lists,\n"
+                                  "renames and removes them, and VIAL selects one as group('sel1')");
             }
             ImGui::EndMenu();
         }
@@ -3458,6 +3439,14 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
                     // What is selected in every system
                     for (size_t k = 0; k < state->num_systems; ++k) md_bitmask_clear(&state->systems[k]->selection.selection_mask);
                     single_selection_sequence_clear(&state->selection.single_selection_sequence);
+                }
+                if (ImGui::MenuItem("Store as Group", nullptr, false, !md_bitmask_empty(&sc.selection.selection_mask))) {
+                    store_selection_as_group(sc);
+                    ImGui::CloseCurrentPopup();
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    md_bitmask_assign(&sc.selection.highlight_mask, md_bitmask_view(&sc.selection.selection_mask));
+                    ImGui::SetTooltip("Keep this system's selection as a group of it (System > Groups), group('sel1') in VIAL");
                 }
             }
             ImGui::EndMenu();
@@ -4423,27 +4412,6 @@ static void draw_timeline_window(ApplicationState* data) {
                 timeline_periods_menu(&data->timeline.periods);
                 ImGui::EndMenu();
             }
-            if (ImGui::BeginMenu("Frames")) {
-                // The frames selected: a temporal selection, made where a view selects frames (the Shapespace)
-                const uint64_t num_selected = md_bitmask_count(&data->selection.frame_mask);
-                const uint32_t num_frames = (uint32_t)run_num_frames(data->system_context);
-                if (num_selected > 0) ImGui::TextDisabled("%llu of %u frames selected", (unsigned long long)num_selected, num_frames);
-                else                  ImGui::TextDisabled("No frames selected");
-                if (ImGui::MenuItem("Clear selection", nullptr, false, num_selected > 0)) {
-                    frame_selection_clear(data);
-                }
-                if (ImGui::MenuItem("Invert selection", nullptr, false, num_frames > 0)) {
-                    md_bitmask_invert_range(&data->selection.frame_mask, 0, num_frames);
-                    data->selection.frame_generation += 1;
-                }
-                if (ImGui::MenuItem("Select current frame", nullptr, false, num_frames > 0)) {
-                    const uint32_t f = (uint32_t)MD_CLAMP((int)(clock_frame(data) + 0.5), 0, (int)num_frames - 1);
-                    frame_selection_modify(data, md_bitset_range(f, f + 1), SelectionOperator::Or);
-                }
-                ImGui::Separator();
-                ImGui::TextDisabled("Select frames in the Shapespace: shift-drag over\nits points selects the frames they are of.");
-                ImGui::EndMenu();
-            }
             if (ImGui::BeginMenu("Subplots")) {
                 ImGui::SliderInt("Num Subplots", &num_subplots, 1, PLOT_MAX_SUBPLOTS);
                 if (ImGui::Button("Add Subplot")) {
@@ -4584,6 +4552,37 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
                     ImPlot::SetupFinish();
 
+                    // A double click (plot_input.h) zooms out fully: to the clock's span, every run shown, not to where its series have values.
+                    // The y axis is fitted as before.
+                    {
+                        ImPlotAxis& x_axis = ImPlot::GetCurrentPlot()->Axes[ImAxis_X1];
+                        if (x_axis.FitThisFrame) {
+                            x_axis.FitThisFrame = false;
+                            x_axis.SetRange(min_time, max_time);
+                        }
+                    }
+
+                    // The truths (a script's bools) are drawn as masks over the frames, each with a band of its own along the
+                    // top edge: its lane, in the order of the series and their members shown (of the plot's items: within it)
+                    int truth_lane[PLOT_MAX_SERIES_PER_SUBPLOT] = {};
+                    {
+                        int lanes = 0;
+                        for (int j = 0; j < sp.count; ++j) {
+                            truth_lane[j] = lanes;
+                            if (!resolved[j] || !views[j].truth) continue;
+                            const ImPlotItem* item = ImPlot::GetItem(views[j].plot_id);
+                            if (item && !item->Show) continue;
+                            const int dim = MD_CLAMP(views[j].dim, 1, PLOT_MAX_POPULATION);
+                            for (int k = 0; k < dim; ++k) lanes += (dim == 1 || sp.series[j].population_mask.test(k)) ? 1 : 0;
+                        }
+                    }
+                    // The lane of member k of series j
+                    auto lane_of = [&](int j, int k) {
+                        int lane = truth_lane[j];
+                        for (int m = 0; m < k; ++m) lane += sp.series[j].population_mask.test(m) ? 1 : 0;
+                        return lane;
+                    };
+
                     if (axis_view && periodic_axis_popup(ImAxis_Y1, axis_view)) {
                         timeline_cut_least_populated(data, sp, axis_view);
                     }
@@ -4644,7 +4643,15 @@ static void draw_timeline_window(ApplicationState* data) {
                                 TemporalGetterPayload payload = { &v, k, mouse_pos.y, pviews[j] ? periodic_view_length(*pviews[j]) : 0.0, true };
                                 double d = DBL_MAX;
 
-                                if (v.band) {
+                                if (v.truth) {
+                                    // On its band, true or not; over the frames it is true in, as over an area
+                                    float b0 = 0.0f, b1 = 0.0f;
+                                    if (timeline_truth_band(lane_of(j, k), &b0, &b1) && mouse_coord.y >= b0 - 2.0f && mouse_coord.y < b1 + 2.0f) {
+                                        d = 0.0;
+                                    } else if (v.y[(size_t)fn * v.stride + k] > 0.5f) {
+                                        d = area_dist;
+                                    }
+                                } else if (v.band) {
                                     const ImVec2 p_min[4] = {
                                         ImPlot::PlotToPixels(temporal_getter_band_lo(f[0], &payload)),
                                         ImPlot::PlotToPixels(temporal_getter_band_lo(f[1], &payload)),
@@ -4765,7 +4772,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                 ImGui::CloseCurrentPopup();
                             }
 
-                            if (resolved[j] && !v.band) {
+                            if (resolved[j] && !v.band && !v.truth) {
                                 const char* plot_type_names[] = {"Line", "Scatter"};
                                 int plot_type = s.plot_type == PlotType_Scatter ? 1 : 0;
                                 if (ImGui::Combo("Plot Type", &plot_type, plot_type_names, IM_ARRAYSIZE(plot_type_names))) {
@@ -4819,6 +4826,21 @@ static void draw_timeline_window(ApplicationState* data) {
                                     if (hovered_pop_idx == k) {
                                         weight = 2.0f;
                                     }
+                                }
+
+                                if (v.truth) {
+                                    // The frames it is true in, as the frames selected are shown: in its colour, in the legend
+                                    ImPlot::SetNextFillStyle(color);
+                                    if (ImPlot::BeginItem(v.plot_id, ImPlotItemFlags_NoFit, ImPlotCol_Fill)) {
+                                        const bool hl = hovered_idx == j && (hovered_pop_idx == -1 || hovered_pop_idx == k);
+                                        // On the frames of its own run, where they are on the clock
+                                        TimelinePeriodAxis own = range_axis;
+                                        own.frame_times = v.x;
+                                        own.num_frames  = v.num_samples;
+                                        timeline_truth_plot(v.y, v.stride, k, own, ImGui::ColorConvertFloat4ToU32(color), lane_of(j, k), hl);
+                                        ImPlot::EndItem();
+                                    }
+                                    return;
                                 }
 
                                 if (v.band) {
@@ -7562,12 +7584,20 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
 
-    int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse;
+    int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus;
     if (!editable) {
         window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
     }
 
     if (ImGui::Begin("Coordinate Widget", nullptr, window_flags)) {
+        // Of the 3D view, under every window over it: directly behind the dockspace's host, whose docked windows are
+        // drawn with it, and before the view's canvas (CreateDockspace, BeginCanvas: both at the back), which would take
+        // the mouse over it. The host lets the mouse through its middle, where the view shows.
+        ImGuiWindow* window = ImGui::GetCurrentWindow();
+        ImGuiWindow* host = ImGui::FindWindowByName("DockspaceWindow");
+        if (host && host != window && ImGui::FindWindowDisplayIndex(window) > ImGui::FindWindowDisplayIndex(host)) {
+            ImGui::BringWindowToDisplayBehind(window, host);
+        }
         md_quat_t out_orientation = target->orientation;
         if (ImGui::CoordinateSystemWidget(&out_orientation, current.orientation, ImGui::GetContentRegionAvail())) {
             const md_float3_t look_at = camera_get_look_at(*target);

@@ -3102,6 +3102,14 @@ struct WorkspacePending {
         bool has_selection_mask;
         md_bitset_t selection_mask;
 
+        // The user's groups ([Selection], as the stored selections they were): of the system, which loading its files
+        // makes
+        struct UserGroup {
+            md_str_t    name;
+            md_bitset_t atoms;
+        };
+        md_array(UserGroup) user_groups;
+
         bool has_recenter_target;
         md_bitset_t recenter_target;
 
@@ -3157,7 +3165,6 @@ struct WorkspacePending {
 };
 
 static void workspace_reset(ApplicationState* data) {
-    remove_all_selections(data);
     data->editor.SetText("");
     data->script.other_text.clear();
     data->files.workspace[0] = '\0';
@@ -3561,18 +3568,23 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             }
             script_set_language(data, lang);
         } else if (md_str_eq(section, MD_STR_LIT("Selection"))) {
+            // A group of the user's of the system it names (System=), the first when it names none
             md_str_t label = {};
             md_bitset_t mask = {};
             bool has_mask = false;
+            int id = -1;
             while (viamd::next_entry(ident, arg, state)) {
                 if (md_str_eq(ident, MD_STR_LIT("Label"))) {
                     viamd::extract_str(label, arg);
                 } else if (md_str_eq(ident, MD_STR_LIT("Mask"))) {
                     has_mask = deserialize_mask(&mask, arg, temp_alloc);
+                } else if (md_str_eq(ident, MD_STR_LIT("System"))) {
+                    viamd::extract_int(id, arg);
                 }
             }
-            if (!md_str_empty(label) && has_mask) {
-                create_selection(data, label, mask);
+            WorkspacePending::System* ws = workspace_system(&pending, id);
+            if (ws && !md_str_empty(label) && has_mask) {
+                md_array_push(ws->user_groups, (WorkspacePending::System::UserGroup{label, mask}), temp_alloc);
             }
         } else if (md_str_eq(section, MD_STR_LIT("ActiveSelection"))) {
             // How it is selected, and what is selected of the system it names (System=), the first when it names none
@@ -3726,9 +3738,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         const size_t saved_frames    = md_array_size(plan.runs) ? plan.runs[0].frame_count : 0;
         const bool   frames_as_saved = saved_frames == 0 || saved_frames == num_frames;
         if (num_atoms > 0 && !atoms_as_saved) {
-            VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections and bonds are left out", num_atoms, plan.atom_count);
-            // The stored selections are of the first system's atoms (names of the script)
-            if (first) remove_all_selections(data);
+            VIAMD_LOG_ERROR("Workspace: the system has %zu atoms, but had %zu when the workspace was saved; its selections, groups and bonds are left out", num_atoms, plan.atom_count);
         }
         if (num_frames > 0 && !frames_as_saved) {
             VIAMD_LOG_ERROR("Workspace: the trajectory has %zu frames, but had %zu when the workspace was saved; its frame and timeline ranges are left out", num_frames, saved_frames);
@@ -3766,6 +3776,22 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         };
         if (ws.has_selection_mask && mask_fits(&ws.selection_mask)) {
             md_bitmask_assign(&sc.selection.selection_mask, ws.selection_mask);
+        }
+        // The user's groups, after those the files gave. One of a name a group of the files has (a stored selection named
+        // SOL, from before they were groups) is given a name of its own rather than merged with that group by group('SOL').
+        for (size_t i = 0; i < md_array_size(ws.user_groups); ++i) {
+            const WorkspacePending::System::UserGroup& g = ws.user_groups[i];
+            if (!mask_fits(&g.atoms)) continue;
+            md_str_t name = g.name;
+            char buf[96];
+            for (int k = 2; !user_group_name_free(sc.data.sys, name); ++k) {
+                snprintf(buf, sizeof(buf), MD_STR_FMT "%d", MD_STR_ARG(g.name), k);
+                name = md_str_from_cstr(buf);
+            }
+            if (!md_str_eq(name, g.name)) {
+                VIAMD_LOG_INFO("Workspace: the system has a group '" MD_STR_FMT "' of its own; the workspace's is named '" MD_STR_FMT "'", MD_STR_ARG(g.name), MD_STR_ARG(name));
+            }
+            md_system_group_add(&sc.data.sys, name, g.atoms, MD_GROUP_ORIGIN_USER);
         }
         // Frames that are not there (another run, or a shorter one) are dropped likewise
         if (first && pending.has_frame_mask && frames_as_saved && (md_bitset_empty(pending.frame_mask) || pending.frame_mask.end <= (uint32_t)num_frames)) {
@@ -3994,11 +4020,19 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         if (!other.empty()) viamd::write_str(state, MD_STR_LIT("OtherText"), md_str_t{other.c_str(), other.size()});
     }
 
-    for (size_t i = 0; i < md_array_size(app_state->selection.stored_selections); ++i) {
-        const Selection& sel = app_state->selection.stored_selections[i];
-        viamd::write_section_header(state, MD_STR_LIT("Selection"));
-        viamd::write_str(state, MD_STR_LIT("Label"), md_str_from_cstr(sel.name));
-        viamd::write_bitset(state, MD_STR_LIT("Mask"), &sel.atom_mask);
+    // The user's groups of each system, in the section the stored selections were written in, which they were: of the
+    // system named (System=), the first's naming none, as they were. The files give the others.
+    for (size_t k = 0; k < app_state->num_systems; ++k) {
+        const SystemContext& sc = *app_state->systems[k];
+        if (!system_loaded(sc)) continue;
+        const md_group_data_t& groups = sc.data.sys.group;
+        for (size_t i = 0; i < groups.count; ++i) {
+            if (groups.origin[i] != MD_GROUP_ORIGIN_USER) continue;
+            viamd::write_section_header(state, MD_STR_LIT("Selection"));
+            if (k > 0) viamd::write_int(state, MD_STR_LIT("System"), (int)sc.id);
+            viamd::write_str(state, MD_STR_LIT("Label"), groups.name[i]);
+            viamd::write_bitset(state, MD_STR_LIT("Mask"), &groups.atoms[i]);
+        }
     }
 
     // How it is selected, then what is selected of each system, and the frames selected of the first system's run
@@ -4081,33 +4115,26 @@ script::FilterCtx filter_context(const SystemContext& sys) {
     return script::FilterCtx{&sys.data.sys, &system_instance(sys).state, names ? app->script.ir : nullptr, nullptr, run_path(sys)};
 }
 
-// --- SELECTION ---
-Selection* create_selection(ApplicationState* state, md_str_t name, md_bitset_t atom_mask) {
-    MD_ASSERT(state);
-    Selection sel;
-    md_str_copy_to_char_buf(sel.name, sizeof(sel.name), name);
-    sel.atom_mask = md_bitset_copy(atom_mask, state->allocator.persistent);
-    md_array_push(state->selection.stored_selections, sel, state->allocator.persistent);
-    return md_array_last(state->selection.stored_selections);
+// --- THE USER'S GROUPS ---
+bool user_group_name_free(const md_system_t& sys, md_str_t name, size_t self) {
+    if (md_str_empty(name)) return false;
+    for (size_t i = 0; i < sys.group.count; ++i) {
+        if (i != self && md_str_eq(sys.group.name[i], name)) return false;
+    }
+    return true;
 }
 
-void remove_all_selections(ApplicationState* state) {
-    for (size_t i = 0; i < md_array_size(state->selection.stored_selections); ++i) {
-        md_bitset_free(&state->selection.stored_selections[i].atom_mask, state->allocator.persistent);
+int store_selection_as_group(SystemContext& sys) {
+    const md_bitset_t atoms = md_bitmask_view(&sys.selection.selection_mask);
+    if (md_bitset_empty(atoms)) return -1;
+    char name[32];
+    for (int k = 1;; ++k) {
+        snprintf(name, sizeof(name), "sel%d", k);
+        if (user_group_name_free(sys.data.sys, md_str_from_cstr(name))) break;
     }
-    md_array_shrink(state->selection.stored_selections, 0);
-}
-
-void remove_selection(ApplicationState* state, size_t idx) {
-    MD_ASSERT(state);
-    if (md_array_size(state->selection.stored_selections) <= idx) {
-        VIAMD_LOG_ERROR("Index [%zu] out of range when trying to remove selection", idx);
-    }
-    auto item = &state->selection.stored_selections[idx];
-    md_bitset_free(&item->atom_mask, state->allocator.persistent);
-
-    state->selection.stored_selections[idx] = *md_array_last(state->selection.stored_selections);
-    md_array_pop(state->selection.stored_selections);
+    const size_t idx = md_system_group_add(&sys.data.sys, md_str_from_cstr(name), atoms, MD_GROUP_ORIGIN_USER);
+    VIAMD_LOG_INFO("The selection of '%s' is the group '%s' (System > Groups), group('%s') in VIAL", sys.name, name, name);
+    return (int)idx;
 }
 
 // "ground_state" reads as "Ground State" in a menu. The path segment is the identity; this is
@@ -9831,7 +9858,8 @@ bool highlight_energy_term_groups(ApplicationState* state, const md_attribute_t*
     md_bitmask_assign(&state->system_context.selection.highlight_mask, sets[0]);
     if (count == 2) md_bitmask_or(&state->system_context.selection.highlight_mask, sets[1]);
     if (count == 2) {
-        uint64_t key = md_hash64(tg.group, sizeof(tg.group), state->mold.sys.topology_version);
+        // Indices of groups: of the topology and of the groups as they are now
+        uint64_t key = md_hash64(tg.group, sizeof(tg.group), state->mold.sys.topology_version ^ (state->mold.sys.group.version * 0x9E3779B97F4A7C15ull));
         state->selection.highlight_groups = {sets, count, key ? key : 1};
     }
     state->selection.term_groups_highlighted = true;

@@ -44,6 +44,14 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
 // highlight over that, brighter. Runs of frames closer than a pixel are drawn as one. Either may be NULL.
 void timeline_frames_plot(const md_bitmask_t* selected, const md_bitmask_t* highlighted, const TimelinePeriodAxis& axis, uint32_t selected_color, uint32_t highlight_color);
 
+// Call inside a plot of the timeline, between ImPlot's BeginItem and EndItem of the series: a series of truths over the
+// frames (values[frame * stride + k], true above 0.5: a script's bools) as the frames it is true in, shaded over the plot
+// as timeline_frames_plot shades a selection, in color, with a band of it along the top edge: the lane-th one down, so
+// that the truths of a plot are each seen apart. Brighter when hovered.
+void timeline_truth_plot(const float* values, int stride, int k, const TimelinePeriodAxis& axis, uint32_t color, int lane, bool hovered);
+// Where the band of lane is, in pixels [*y0, *y1): false when the plot has no room for it
+bool timeline_truth_band(int lane, float* y0, float* y1);
+
 // The contents of the timeline's Periods menu: the layout of the lanes, the shading
 void timeline_periods_menu(TimelinePeriods* rs);
 
