@@ -10,9 +10,9 @@
 #include <density_cache.h>
 #include <color_utils.h>
 
-#include <gfx/volumerender_utils.h>
-#include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
+#include <md_render_bridge.h>
+#include <gpu_volume.h>
 #include <gfx/gl_utils.h>
 
 #include <md_gto.h>
@@ -540,22 +540,19 @@ enum OrbitalColumn {
 };
 
 // The panels' isosurfaces as meshes (IsosurfaceRendering_Mesh): a field per panel, all extracted together
-// (iso_meshes.h), and the running mean of each panel's image
+// (iso_meshes.h) into one mesh on md_gpu, which the panels draw (md_render_bridge.h)
 struct PanelMeshes {
     static constexpr int MAX = (int)ISO_MESHES_MAX_SLOTS;
     md_gto_iso_field_t* field[MAX] = {};
     uint64_t  field_key[MAX] = {};
     int       slot[MAX] = {};       // the panel's slot in 'meshes', -1 for none
     IsoMeshes meshes = {};
-    isomesh::Target target[MAX] = {};
-    bool      converged = true;     // every panel's image is final: the panels need not be redrawn
 };
 
 static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
     iso_meshes_free(&pm->meshes, state);
     for (int i = 0; i < PanelMeshes::MAX; ++i) {
         iso_field_release(pm->field[i]);
-        isomesh::target_free(&pm->target[i]);
     }
     *pm = {};
 }
@@ -590,23 +587,24 @@ static void panel_meshes_update(PanelMeshes* pm, ApplicationState* state, int co
             key = md_hash64(&pm->field_key[i], sizeof(pm->field_key[i]), key);
         }
     }
+    // on md_gpu, where the panels draw them
+    if (!pm->meshes.gpu_mesh) {
+        iso_meshes_free(&pm->meshes, state);
+        pm->meshes.gpu_mesh = true;
+    }
     iso_meshes_update(&pm->meshes, state, slots, n, iso_meshes_cell_size(VolumeResolution::Mid), key);
 }
 
-// Panel i's surfaces: the positive sheet in colors[0], the negative one in colors[1]
-static size_t panel_meshes_surfaces(isomesh::Surface out[2], const PanelMeshes& pm, int i, const md_float4_t colors[2]) {
-    const int k = pm.slot[i];
-    if (k < 0 || !pm.meshes.ok) return 0;
-    size_t n = 0;
+// The sheets of slot k of meshes as a panel shows them: the positive one in colors[0], the negative one in colors[1]
+static uint32_t mesh_sheets(PanelSheet out[2], const IsoMeshes& m, int k, const md_float4_t colors[2]) {
+    if (k < 0 || !m.ok || (uint32_t)k >= m.num_slots) return 0;
+    uint32_t n = 0;
     for (int s = 0; s < 2; ++s) {
-        if (pm.meshes.index_count[k][s] == 0) continue;
-        isomesh::Surface& surf = out[n++];
-        surf = {};
-        surf.mesh = &pm.meshes.mesh;
-        surf.index_offset = pm.meshes.index_offset[k][s];
-        surf.index_count  = pm.meshes.index_count[k][s];
-        surf.model = iso_meshes_model_matrix();
-        surf.color = colors[s];
+        if (m.index_count[k][s] == 0) continue;
+        out[n].index_offset = m.index_offset[k][s];
+        out[n].index_count  = m.index_count[k][s];
+        out[n].color = colors[s];
+        n += 1;
     }
     return n;
 }
@@ -1364,9 +1362,6 @@ struct QuantumChemistry : viamd::EventHandler {
     // the scratch volume. It reads state.gpu_* at the point of use, for the same reason.
 #endif
 
-    // GL representations
-    md_gl_rep_t gl_rep = {};
-
     int homo_idx[2] = {};
     int lumo_idx[2] = {};
 
@@ -1509,13 +1504,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
     struct Orb {
         bool show_window = false;
-        Volume   vol[16] = {};
+        Volume   vol[16] = {};          // on md_gpu (gpu_volume.h)
         int      vol_mo_idx[16] = {-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1};
         SpinChannel vol_mo_type[16] = {};
-        uint32_t iso_tex[16] = {};      // RGBA16F: the panel's isosurfaces, premultiplied HDR
-        uint32_t out_tex[16] = {};      // RGBA8: the finished panel
-        uint32_t out_fbo = 0;
-        uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
+        MdRenderPanels* panels = nullptr;           // md_render_bridge.h
+        md_array(uint32_t) atom_colors = nullptr;   // the molecule's, per atom of the system (arena)
         int num_x  = 3;
         int num_y  = 3;
         int mo_idx = -1;
@@ -1534,8 +1527,6 @@ struct QuantumChemistry : viamd::EventHandler {
             .colors = {{0.f, 75.f/255.f, 135.f/255.f, 0.75f}, {1.0f, 205.f/255.f, 0.f, 0.75f}},
         };
 
-        GBuffer gbuf = {};
-        PickingSurface picking_surface = {};
         Camera camera = {};
         ViewTransform target;
 
@@ -1545,11 +1536,9 @@ struct QuantumChemistry : viamd::EventHandler {
 
     struct Nto {
         bool show_window = false;
-        Volume   vol[2] = {};
-        uint32_t iso_tex[2] = {};       // RGBA16F: the panel's isosurfaces, premultiplied HDR
-        uint32_t out_tex[2] = {};       // RGBA8: the finished panel
-        uint32_t out_fbo = 0;
-        uint64_t render_hash = 0;       // of everything the panels were last rendered from: they are redrawn when it changes
+        Volume   vol[2] = {};           // on md_gpu (gpu_volume.h)
+        MdRenderPanels* panels = nullptr;           // md_render_bridge.h
+        md_array(uint32_t) atom_colors = nullptr;   // the molecule's in its groups' colours, per atom of the system (arena)
         PanelMeshes mesh = {};
 
         int sel_nto_idx = -1;
@@ -1557,8 +1546,6 @@ struct QuantumChemistry : viamd::EventHandler {
         md_grid_t grid = {0};
 
         md_array(uint32_t) atom_group_idx = nullptr;
-
-        md_gl_rep_t gl_rep = {0};
 
         size_t transition_matrix_dim = 0;
         float* transition_matrix = nullptr;
@@ -1590,8 +1577,6 @@ struct QuantumChemistry : viamd::EventHandler {
             bool show_angle = false;
         } dipole;
 
-        GBuffer gbuf = {};
-        PickingSurface picking_surface = {};
         Camera camera = {};
 		ViewTransform target = {};
 
@@ -1672,17 +1657,10 @@ struct QuantumChemistry : viamd::EventHandler {
             int32_t  nto = -1;                  // the NTO pair (orbital route)
         } pin;
 
-        GBuffer  gbuf = {};
-        uint32_t iso_tex[2] = {};
-        uint32_t out_tex[2] = {};
-        uint32_t out_fbo = 0;
-        isomesh::Target mesh_target[2] = {};
-        bool     converged = true;      // both images final: no redraw until something changes
-        uint64_t render_hash = 0;
-        PickingSurface picking_surface = {};
+        MdRenderPanels* panels = nullptr;           // md_render_bridge.h
+        md_array(uint32_t) atom_colors = nullptr;   // the molecule's, per atom of the system (heap)
         Camera camera = {};
         ViewTransform target = {};
-        md_gl_rep_t gl_rep = {};
     } ctv;
 
     void ctv_entry_free(CtViews::Entry* e) {
@@ -1711,14 +1689,8 @@ struct QuantumChemistry : viamd::EventHandler {
     void ctv_free() {
         ctv_cache_clear();
         md_array_free(ctv.cache, md_get_heap_allocator());
-        for (int i = 0; i < 2; ++i) {
-            if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
-            if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
-            isomesh::target_free(&ctv.mesh_target[i]);
-        }
-        if (ctv.out_fbo) glDeleteFramebuffers(1, &ctv.out_fbo);
-        if (ctv.gbuf.fbo) gbuffer_free(&ctv.gbuf);
-        md_gl_rep_destroy(ctv.gl_rep);
+        md_array_free(ctv.atom_colors, md_get_heap_allocator());
+        if (app) md_render_bridge_panels_destroy(app, &ctv.panels);
         const bool   show = ctv.show;           // preferences, not data
         const float  width_frac = ctv.width_frac;
         const double iso_val = ctv.iso_val;
@@ -1728,6 +1700,66 @@ struct QuantumChemistry : viamd::EventHandler {
         ctv.width_frac    = width_frac;
         ctv.iso_val       = iso_val;
         ctv.cache_entries = cache_entries;
+    }
+
+    // A window's panels (md_render_bridge.h): of a camera (world to view, view to clip), width x height pixels each,
+    // the molecule in atom_colors (per atom of the system: md_array) as balls and sticks under each panel's surfaces,
+    // shaded and tone mapped as the main view is, over a background, with the marks of the selection and the highlight
+    static void draw_panels(ApplicationState& state, MdRenderPanels** panels, const md_float4x4_t& view, const md_float4x4_t& proj,
+                            uint32_t width, uint32_t height, uint32_t count, uint32_t columns, const PanelSurfaces* surfaces,
+                            const uint32_t* atom_colors, md_float3_t background) {
+        if (!atom_colors || md_array_size(atom_colors) != state.mold.sys.atom.count) return;
+        postprocess_pipeline::Settings settings = {};
+        settings.background_color     = background;
+        settings.shading.mode         = state.visuals.shading.mode;
+        settings.shading.ambient      = state.visuals.shading.ambient;
+        settings.shading.specular     = state.visuals.shading.specular;
+        settings.shading.colors       = state.visuals.shading.colors;
+        settings.shading.light        = state.visuals.shading.light;
+        settings.shading.environment  = state.visuals.shading.environment;
+        settings.tonemap.enabled      = state.visuals.tonemapping.enabled;
+        settings.tonemap.mode         = state.visuals.tonemapping.tonemapper;
+        settings.tonemap.exposure     = state.visuals.tonemapping.exposure;
+        settings.tonemap.gamma        = state.visuals.tonemapping.gamma;
+        marks_settings(&settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
+        PanelsDesc d = {};
+        d.view = view;
+        d.proj = proj;
+        d.width = width;
+        d.height = height;
+        d.count = count;
+        d.columns = columns;
+        d.panels = surfaces;
+        d.atom_colors = atom_colors;
+        d.settings = &settings;
+        md_render_bridge_panels_draw(&state, panels, d);
+    }
+
+    // The hit under the mouse in panel i of a window's panels: md_render asked about the pixel, its answer of a frame or
+    // two ago taken, as a surface's hit (of the source, where it is in the world: clip_to_world, the panels' camera's)
+    static void panel_hit(PickingHit* hit, ApplicationState& state, MdRenderPanels* panels, uint32_t i, const InteractionSurfaceState& surface,
+                          PickingSourceID source, const md_float4x4_t& clip_to_world, int width, int height) {
+        const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+        md_render_bridge_panels_pick(&state, panels, i, surface.mouse_local.x * scale.x, surface.mouse_local.y * scale.y);
+        *hit = {};
+        if (md_render_bridge_panels_hit(&state, panels, hit)) {
+            hit->source = source;
+            hit->screen_coord = surface.mouse_local;
+            const md_float4_t viewport = {0, 0, (float)width, (float)height};
+            hit->world_pos = md_float4x4_unproject({hit->surface_coord.x, hit->surface_coord.y, hit->depth}, clip_to_world, viewport);
+        }
+    }
+
+    // The Orbital Grid's and the Transition Analysis' panels and volumes (the charge transfer views': ctv_free)
+    void panels_free() {
+        if (app) {
+            md_render_bridge_panels_destroy(app, &orb.panels);
+            md_render_bridge_panels_destroy(app, &nto.panels);
+        }
+#if MD_ENABLE_GPU
+        for (Volume& v : orb.vol) gpu_volume_destroy(&v.gpu);
+        for (Volume& v : nto.vol) gpu_volume_destroy(&v.gpu);
+#endif
     }
 
     // Charge Transfer Analysis: the layered flow diagram (docs/transition_flow_design.md).
@@ -2108,6 +2140,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     panel_meshes_free(&orb.mesh, app);
                     panel_meshes_free(&nto.mesh, app);
                 }
+                panels_free();
                 ctv_free();
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
@@ -2559,11 +2592,8 @@ struct QuantumChemistry : viamd::EventHandler {
         // the system it was built from, released by free_system_data.
         md_topo_gpu_context_destroy(critical_points.topo_ctx);
 #endif
-        //md_gl_mol_destroy(gl_mol);
-        md_gl_rep_destroy(gl_rep);
-        gl_rep = {};
-        // Zeroed with nto below, which would leave its slot taken for good: one for each system loaded
-        md_gl_rep_destroy(nto.gl_rep);
+        // The panels and their volumes, on the GPU: they go before orb and nto are zeroed below
+        panels_free();
         ctv_free();
         num_qm_atoms = 0;
         num_mos = 0;
@@ -2627,15 +2657,16 @@ struct QuantumChemistry : viamd::EventHandler {
         QmAtoms qm = {};
         if (!es_qm_atoms(&qm, sys)) return;
 
-        md_temp_scope_t temp = md_temp_begin();
-		MD_DEFER { md_temp_end(temp); };
-        size_t num_atoms = qm.count;
-        uint32_t* colors = (uint32_t*)md_temp_alloc_array(temp, uint32_t, num_atoms);
-        // Group 0 is "not in any group", so it keeps the element colour the molecule would have
-        // anyway. Stamping the unassigned grey over everything would make an ungrouped system look
-        // like a system whose groups all happen to be grey.
+        // Per atom of the system: the QM atoms' in their groups' colours, the others not shown. Group 0 is "not in
+        // any group", so it keeps the element colour the molecule would have anyway. Stamping the unassigned grey over
+        // everything would make an ungrouped system look like a system whose groups all happen to be grey.
+        const size_t num_sys_atoms = sys.atom.count;
+        md_array_resize(nto.atom_colors, num_sys_atoms, arena);
+        md_memset(nto.atom_colors, 0, num_sys_atoms * sizeof(uint32_t));
         const md_atomic_number_t* atom_z = qm.atomic_number;
-        for (size_t i = 0; i < num_atoms; ++i) {
+        for (size_t i = 0; i < qm.count; ++i) {
+            const size_t a = qm.system_index ? (size_t)qm.system_index[i] : i;
+            if (a >= num_sys_atoms) continue;
             const size_t group_idx = nto.atom_group_idx[i];
             uint32_t color = U32_MAGENTA;
             if (group_idx == 0) {
@@ -2643,11 +2674,8 @@ struct QuantumChemistry : viamd::EventHandler {
             } else if (group_idx < nto.group.count) {
                 color = convert_color(nto.group.color[group_idx]);
             }
-            colors[i] = color;
+            nto.atom_colors[a] = color;
         }
-
-        md_gl_rep_set_atom_colors(nto.gl_rep, 0, (uint32_t)num_atoms, colors, 0);
-        nto.render_hash = 0;
     }
 
     // Everything this component needs about a quantum chemistry system, out of the system's own
@@ -2706,21 +2734,18 @@ struct QuantumChemistry : viamd::EventHandler {
         homo_idx[1] = frontier.homo_idx;
         lumo_idx[1] = frontier.lumo_idx;
 
+        // The orbital panels' molecule: the QM atoms by element, the others not shown
         size_t num_colors = state.mold.sys.atom.count;
-        uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_colors * sizeof(uint32_t));
-        color_atoms_type(colors, num_colors, state.mold.sys);
+        orb.atom_colors = md_array_create(uint32_t, num_colors, arena);
+        color_atoms_type(orb.atom_colors, num_colors, state.mold.sys);
 
         if (qm.system_index) {
             md_bitset_t mask = md_bitset_from_indices((uint32_t*)qm.system_index, qm.count, state.allocator.frame);
-            filter_colors(colors, num_colors, mask);
+            filter_colors(orb.atom_colors, num_colors, mask);
             reset_view(&default_view, state.mold.state, &mask);
         } else {
             reset_view(&default_view, state.mold.state);
         }
-
-        gl_rep = md_gl_rep_create(state.mold.gl_mol);
-        md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
-        orb.render_hash = 0;
 
 					const md_atomic_number_t* atom_z = qm.atomic_number;
 					md_double3_t nucl_dipole = { 0, 0, 0 };
@@ -2751,7 +2776,6 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_excited > 0) {
             //nto.show_window = true;
 
-            picking_surface_init(&nto.picking_surface, interaction_surface_nto);
 						md_float3_t center = (oabb.min_ext + oabb.max_ext) * 0.5f * BOHR_TO_ANGSTROM;
 						md_float3_t half_ext = (oabb.max_ext - oabb.min_ext) * 0.5f * BOHR_TO_ANGSTROM;
             nto.target = compute_optimal_view(center, half_ext, oabb.orientation, nto.distance_scale);
@@ -2776,7 +2800,6 @@ struct QuantumChemistry : viamd::EventHandler {
             // structure in front of the user and then invited them to read charge
             // transfer off it.
             nto.group.count = 1;
-            nto.gl_rep = md_gl_rep_create(state.mold.gl_mol);
             update_nto_group_colors(state.mold.sys);
 
             // Callculate ballpark scaling factor for dipole vectors
@@ -2804,18 +2827,16 @@ struct QuantumChemistry : viamd::EventHandler {
             // The charge transfer window's side views: the same view to start from, the molecule in its element
             // colours, a grid at half the density of the main one. What a previous system left goes first.
             ctv_free();
-            picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
             ctv.target = default_view;
             ctv.camera = ctv.target;
-            ctv.gl_rep = md_gl_rep_create(state.mold.gl_mol);
             {
-                QmAtoms qm = {};
-                if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
-                    md_temp_scope_t temp = md_temp_begin();
-                    MD_DEFER { md_temp_end(temp); };
-                    uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
-                    for (size_t i = 0; i < qm.count; ++i) colors[i] = qm.atomic_number ? md_atomic_number_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
-                    md_gl_rep_set_atom_colors(ctv.gl_rep, 0, (uint32_t)qm.count, colors, 0);
+                // The QM atoms by element, the others not shown
+                const size_t n = state.mold.sys.atom.count;
+                md_array_resize(ctv.atom_colors, n, md_get_heap_allocator());
+                md_memset(ctv.atom_colors, 0, n * sizeof(uint32_t));
+                for (size_t i = 0; i < qm.count; ++i) {
+                    const size_t a = qm.system_index ? (size_t)qm.system_index[i] : i;
+                    if (a < n) ctv.atom_colors[a] = qm.atomic_number ? md_atomic_number_cpk_color(qm.atomic_number[i]) : U32_MAGENTA;
                 }
             }
             ctv.initialized = true;
@@ -2837,7 +2858,6 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // ORB
         //orb.show_window = true;
-        picking_surface_init(&orb.picking_surface, interaction_surface_orb);
         orb.target = default_view;
         orb.camera = orb.target;
         // homo_idx is -1 when the file carries no occupations, which is not an orbital to open on.
@@ -7796,32 +7816,6 @@ struct QuantumChemistry : viamd::EventHandler {
                         // geometry, and qm/atom/coordinate is not guaranteed to be published.
                         if (norm_modes && atom_coord) {
 
-#if 0
-                            md_temp_scope_t temp = md_temp_begin();
-                            MD_DEFER { md_temp_end(temp); };
-
-                            const double scl = vib.displacement_amp_scl * 1.0;
-
-                            float* vx = (float*)md_temp_alloc(temp, sizeof(float) * num_atoms);
-                            float* vy = (float*)md_temp_alloc(temp, sizeof(float) * num_atoms);
-                            float* vz = (float*)md_temp_alloc(temp, sizeof(float) * num_atoms);
-
-                            for (size_t i = 0; i < num_atoms; i++) {
-                                /*
-                                state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
-                                */
-                                vx[i] = (float)(norm_modes[i].x * scl);
-                                vy[i] = (float)(norm_modes[i].y * scl);
-                                vz[i] = (float)(norm_modes[i].z * scl);
-                            }
-
-                            //md_gl_mol_set_atom_position(state.mold.gl_mol, 0, num_atoms, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, 0);
-                            md_gl_mol_set_atom_velocity(state.mold.gl_mol, 0, num_atoms, vx, vy, vz, 0);
-                            
-
-#else
                             const double scl = vib.displacement_amp_scl * 0.25 * sin(vib.t);
                             // Through the QM atom map and bounded by the system state, exactly as
                             // set_atom_coordinates writes: QM atom i is system atom i only when the
@@ -7836,7 +7830,6 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (vib.displace_aos) {
                             }
                             state.mold.dirty_gpu_buffers |= MolBit_DirtyPosition;
-#endif
                             vib.coord_modified = true;
 
                             if (vib.displace_aos) {
@@ -8246,8 +8239,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     orb.vol_mo_type[slot_idx] = mo_type;
 
                     if (-1 < mo_idx && mo_idx < num_tot_mos) {
-                        init_volume(&orb.vol[slot_idx], grid);
-                        evaluate_mo(state, orb.vol[slot_idx].tex_id, grid, mo_type, mo_idx, MD_GTO_OP_SET);
+                        init_volume_gpu(&orb.vol[slot_idx], grid);
+                        evaluate_mo(state, orb.vol[slot_idx].gpu, grid, mo_type, mo_idx, MD_GTO_OP_SET);
                     }
                 }
             }
@@ -8268,10 +8261,8 @@ struct QuantumChemistry : viamd::EventHandler {
             ImVec2 orb_win_sz = ImFloor(canvas_sz / ImVec2((float)num_x, (float)num_y));
 
             const float aspect = orb_win_sz.x / orb_win_sz.y;
-
-            //const md_float4x4_t world_to_view = camera_world_to_view_matrix(orb.camera);
-            //const md_float4x4_t view_to_clip  = camera_view_to_clip_matrix_persp(orb.camera, aspect);
-
+            const md_float4x4_t view_mat      = camera_world_to_view_matrix(orb.camera);
+            const md_float4x4_t proj_mat      = camera_view_to_clip_matrix_persp(orb.camera, aspect);
             const md_float4x4_t view_to_world = camera_view_to_world_matrix(orb.camera);
             const md_float4x4_t clip_to_view  = camera_clip_to_view_matrix_persp(orb.camera, aspect);
             const md_float4x4_t clip_to_world = md_float4x4_mul(view_to_world, clip_to_view);
@@ -8279,22 +8270,58 @@ struct QuantumChemistry : viamd::EventHandler {
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             draw_list->AddRectFilled(canvas_min, canvas_max, IM_COL32(255, 255, 255, 255));
 
-            // The render targets, sized before the panels go into the draw list: it records the texture
-            // names, and a texture reallocated later in the frame would be drawn under a dead name
-            int width  = MD_MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
-            int height = MD_MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
+            // A panel's pixels
+            const int width  = MD_MAX(1, (int)(orb_win_sz.x * io.DisplayFramebufferScale.x));
+            const int height = MD_MAX(1, (int)(orb_win_sz.y * io.DisplayFramebufferScale.y));
 
-            auto& gbuf = orb.gbuf;
-            if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                gbuffer_init(&gbuf, width, height);
-                for (int i = 0; i < (int)MD_COUNTOF(orb.iso_tex); ++i) {
-                    if (orb.iso_tex[i]) gl::free_texture(&orb.iso_tex[i]);
-                    if (orb.out_tex[i]) gl::free_texture(&orb.out_tex[i]);
+            // The mesh rendering mode: each panel's orbital as a field, the meshes of all of them extracted together
+            const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+            if (mesh_mode) {
+                const uint64_t pos_hash = panel_positions_hash(state);
+                for (int i = 0; i < PanelMeshes::MAX; ++i) {
+                    const int mo_idx = (i < num_mos) ? orb.vol_mo_idx[i] : -1;
+                    const SpinChannel mo_type = orb.vol_mo_type[i];
+                    uint64_t key = 0;
+                    if (-1 < mo_idx && mo_idx < num_tot_mos) {
+                        const int id[2] = {mo_idx, (int)mo_type};
+                        key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                    }
+                    panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
+                        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
+                        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
+                        return iso_field_create_orbital(&state, path, &slice);
+                    });
                 }
+                panel_meshes_update(&orb.mesh, &state, num_mos, fabs((double)orb.iso.values[0]), MD_GTO_ISO_SHEET_BOTH);
+            } else if (orb.mesh.meshes.key) {
+                panel_meshes_free(&orb.mesh, &state);
             }
-            for (int i = 0; i < num_mos; ++i) {
-                if (!orb.iso_tex[i]) gl::init_texture_2D(&orb.iso_tex[i], width, height, GL_RGBA16F);
-                if (!orb.out_tex[i]) gl::init_texture_2D(&orb.out_tex[i], width, height, GL_RGBA8);
+
+            // The panels, each its orbital's isosurfaces over the molecule (md_render_bridge.h), drawn before they go into
+            // the draw list: it records the image's texture, which a size changed later in the frame would replace
+            {
+                PanelSurfaces surfaces[16] = {};
+                PanelSheet sheets[16][2] = {};
+                // The sheet of each sign in the colour of the isovalue of that sign
+                const bool pos_first = orb.iso.values[0] >= 0.0f;
+                const md_float4_t sheet_colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
+                for (int i = 0; i < num_mos && i < 16; ++i) {
+                    if (orb.vol_mo_idx[i] < 0 || orb.vol_mo_idx[i] >= num_tot_mos) continue;
+                    PanelSurfaces& ps = surfaces[i];
+                    if (mesh_mode) {
+                        ps.meshes = &orb.mesh.meshes;
+                        ps.sheets = sheets[i];
+                        ps.sheet_count = mesh_sheets(sheets[i], orb.mesh.meshes, orb.mesh.slot[i], sheet_colors);
+                    } else {
+                        ps.volume = orb.vol[i].gpu;
+                        ps.iso_count = (uint32_t)orb.iso.count;
+                        ps.iso_values = orb.iso.values;
+                        ps.iso_colors = orb.iso.colors;
+                    }
+                }
+                draw_panels(state, &orb.panels, view_mat, proj_mat, (uint32_t)width, (uint32_t)height, (uint32_t)num_mos, (uint32_t)num_x,
+                            surfaces, orb.atom_colors, md_float3_t{1.0f, 1.0f, 1.0f});
             }
 
             for (int i = 0; i < num_mos; ++i) {
@@ -8318,15 +8345,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     PickingHit hit = {};
                     if (surface_state.hovered) {
-                        InteractionSurfaceHitArgs hit_args = {
-                            .picking_surface = &orb.picking_surface,
-                            .picking_handler = state.picking_handler,
-                            .fbo = orb.gbuf.fbo,
-                            .width = orb.gbuf.width,
-                            .height = orb.gbuf.height,
-                            .clip_to_world = clip_to_world,
-                        };
-                        interaction_surface_hit_extract(&hit, surface_state, hit_args);
+                        panel_hit(&hit, state, orb.panels, (uint32_t)i, surface_state, interaction_surface_orb, clip_to_world, width, height);
 
                         InteractionSurfaceEvent event = {};
                         interaction_surface_event_extract(&event, surface_state, hit);
@@ -8375,7 +8394,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
-                    draw_list->AddImage((ImTextureID)(intptr_t)orb.out_tex[i], p0, p1, { 0,1 }, { 1,0 });
+                    uint32_t tex = 0;
+                    md_float2_t uv0, uv1;
+                    if (md_render_bridge_panels_image(orb.panels, (uint32_t)i, &tex, &uv0, &uv1)) {
+                        draw_list->AddImage((ImTextureID)(intptr_t)tex, p0, p1, vec_cast(uv0), vec_cast(uv1));
+                    }
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
                     // The energy label is dropped, not faked, when the file carries no energies
@@ -8424,247 +8447,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
 
-            const float aspect_ratio = orb_win_sz.x / orb_win_sz.y;
-            md_float4x4_t view_mat = camera_world_to_view_matrix(orb.camera);
-            md_float4x4_t proj_mat = camera_view_to_clip_matrix_persp(orb.camera, aspect_ratio);
-            md_float4x4_t inv_proj_mat = camera_clip_to_view_matrix_persp(orb.camera, aspect_ratio);
-
-            // The mesh rendering mode: each panel's orbital as a field, the meshes of all of them extracted together
-            const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-            if (mesh_mode) {
-                const uint64_t pos_hash = panel_positions_hash(state);
-                for (int i = 0; i < PanelMeshes::MAX; ++i) {
-                    const int mo_idx = (i < num_mos) ? orb.vol_mo_idx[i] : -1;
-                    const SpinChannel mo_type = orb.vol_mo_type[i];
-                    uint64_t key = 0;
-                    if (-1 < mo_idx && mo_idx < num_tot_mos) {
-                        const int id[2] = {mo_idx, (int)mo_type};
-                        key = md_hash64(id, sizeof(id), pos_hash);
-                        key = key ? key : 1;
-                    }
-                    panel_meshes_field(&orb.mesh, &state, i, key, [&]() {
-                        const md_str_t path = (mo_type == SPIN_BETA) ? es_path::beta_coefficient : es_path::alpha_coefficient;
-                        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)mo_idx);
-                        return iso_field_create_orbital(&state, path, &slice);
-                    });
-                }
-                panel_meshes_update(&orb.mesh, &state, num_mos, fabs((double)orb.iso.values[0]), MD_GTO_ISO_SHEET_BOTH);
-            } else if (orb.mesh.meshes.key) {
-                panel_meshes_free(&orb.mesh, &state);
-            }
-
-            // The panels are only redrawn when something they show changed, or while their meshes are refined
-            // over the frames: a static grid costs nothing
-            uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)gl_rep.id);
-            {
-                render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
-                if (mesh_mode) {
-                    render_hash = md_hash64(&orb.mesh.meshes.mesh.version, sizeof(orb.mesh.meshes.mesh.version), render_hash);
-                }
-                const int layout[3] = { width, height, num_mos };
-                render_hash = md_hash64(layout, sizeof(layout), render_hash);
-                for (int i = 0; i < num_mos; ++i) {
-                    const uint64_t vol_version = volume::data_version(orb.vol[i].tex_id);
-                    render_hash = md_hash64(&orb.vol[i].tex_id, sizeof(orb.vol[i].tex_id), render_hash);
-                    render_hash = md_hash64(&vol_version, sizeof(vol_version), render_hash);
-                    render_hash = md_hash64(&orb.vol[i].texture_to_world, sizeof(orb.vol[i].texture_to_world), render_hash);
-                }
-                render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
-                render_hash = md_hash64(&orb.iso, sizeof(orb.iso), render_hash);
-                render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
-                render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
-                render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
-                render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
-                // Baked into the picking buffer, which hovering reads
-                const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
-                render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
-                render_hash = render_hash ? render_hash : 1;
-            }
-
-            if (gl_rep.id && (render_hash != orb.render_hash || (mesh_mode && !orb.mesh.converged))) {
-                orb.render_hash = render_hash;
-
-                gbuffer_clear(&gbuf);
-
-                const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                    GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-                glEnable(GL_CULL_FACE);
-                glCullFace(GL_BACK);
-
-                glEnable(GL_DEPTH_TEST);
-                glDepthFunc(GL_LESS);
-                glDepthMask(GL_TRUE);
-                glEnable(GL_SCISSOR_TEST);
-
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
-                glViewport(0, 0, gbuf.width, gbuf.height);
-                glScissor(0, 0, gbuf.width, gbuf.height);
-
-                md_gl_draw_op_t draw_op = {};
-                draw_op.type = MD_GL_REP_BALL_AND_STICK;
-                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-                draw_op.args.ball_and_stick.stick_radius = 1.0f;
-                draw_op.args.ball_and_stick.bond_orders  = true;
-                draw_op.rep = gl_rep;
-
-                md_gl_draw_args_t draw_args = {
-                    .shaders = state.gl.shaders,
-                    .draw_operations = {
-                        .count = 1,
-                        .ops = &draw_op
-                    },
-                    .view_transform = {
-                        .view_matrix = (const float*)view_mat.elem,
-                        .proj_matrix = (const float*)proj_mat.elem,
-                    },
-                    .picking_offset = gl_picking_offset(state),
-                };
-
-                md_gl_draw(&draw_args);
-
-                glDisable(GL_SCISSOR_TEST);
-
-                postprocess_pipeline::Settings postprocess_settings = {};
-                postprocess_settings.background_color = {1.f, 1.f, 1.f};
-                postprocess_settings.shading.mode = state.visuals.shading.mode;
-                postprocess_settings.shading.ambient = state.visuals.shading.ambient;
-                postprocess_settings.shading.specular = state.visuals.shading.specular;
-                postprocess_settings.shading.colors = state.visuals.shading.colors;
-                postprocess_settings.shading.light = state.visuals.shading.light;
-                postprocess_settings.shading.environment = state.visuals.shading.environment;
-                postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
-                postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
-                postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
-                postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
-                postprocess_settings.shadows.enabled = false;
-                postprocess_settings.ssao.enabled = false;
-                postprocess_settings.dof.enabled = false;
-                postprocess_settings.fxaa.enabled = true;
-                postprocess_settings.taa.enabled = false;
-                postprocess_settings.sharpen.enabled = false;
-
-                ViewParam view_param = {
-                    .matrix = {
-                        .curr = {
-                        .view = view_mat,
-                        .proj = proj_mat,
-                        .norm = view_mat,
-                    },
-                    .inv = {
-                        .proj = inv_proj_mat,
-                    }
-                    },
-                    .clip_planes = {
-                        .near = orb.camera.near_plane,
-                        .far  = orb.camera.far_plane,
-                    },
-                    .resolution = {orb_win_sz.x, orb_win_sz.y},
-                    .fov_y = orb.camera.fov_y,
-                };
-
-                if (!orb.out_fbo) glGenFramebuffers(1, &orb.out_fbo);
-
-                // Every panel is its own orbital's isosurfaces over the one opaque image they share, put
-                // through post-processing on its own: the surfaces are composited in HDR, before tone mapping
-                PUSH_GPU_SECTION("ORB GRID PANELS")
-                bool converged = true;
-                for (int i = 0; i < num_mos; ++i) {
-                    bool iso_written = false;
-                    if (mesh_mode) {
-                        // The sheet of each sign in the colour of the isovalue of that sign
-                        const bool pos_first = orb.iso.values[0] >= 0.0f;
-                        const md_float4_t colors[2] = {orb.iso.colors[pos_first ? 0 : 1], orb.iso.colors[pos_first ? 1 : 0]};
-                        isomesh::Surface surfaces[2];
-                        const size_t num_surfaces = panel_meshes_surfaces(surfaces, orb.mesh, i, colors);
-                        const isomesh::RenderDesc mesh_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                            },
-                            .matrix = {
-                                .view = view_mat,
-                                .proj = proj_mat,
-                                .proj_no_jitter = proj_mat,
-                            },
-                            .surfaces = surfaces,
-                            .num_surfaces = num_surfaces,
-                            .shading = {
-                                .roughness = 0.3f,
-                                .ior = 1.5f,
-                                .mode = state.visuals.shading.mode,
-                                .ambient = state.visuals.shading.ambient,
-                                .specular = state.visuals.shading.specular,
-                                .colors = state.visuals.shading.colors,
-                                .light = state.visuals.shading.light,
-                                .environment = state.visuals.shading.environment,
-                            },
-                            .scene_hash = render_hash,
-                        };
-                        bool panel_converged = true;
-                        iso_written = isomesh::render(&orb.mesh.target[i], mesh_desc, &panel_converged);
-                        converged &= panel_converged;
-                    } else {
-                        volume::IsoRenderDesc vol_desc = {
-                            .render_target = {
-                                .depth  = orb.gbuf.tex.depth,
-                                .color  = orb.iso_tex[i],
-                                .width  = orb.gbuf.width,
-                                .height = orb.gbuf.height,
-                                .clear_color = true,
-                            },
-                            .texture = {
-                                .density_volume = orb.vol[i].tex_id,
-                            },
-                            .matrix = {
-                                .model = orb.vol[i].texture_to_world,
-                                .view  = view_mat,
-                                .proj  = proj_mat,
-                                .inv_proj = inv_proj_mat,
-                            },
-                            .iso = {
-                                .count  = (size_t)orb.iso.count,
-                                .values = orb.iso.values,
-                                .colors = orb.iso.colors,
-                                .exact  = state.settings.exact_isosurfaces,
-                            },
-                            .shading = {
-                                .roughness = 0.3f,
-                                .ior = 1.5f,
-                                .mode = state.visuals.shading.mode,
-                                .ambient = state.visuals.shading.ambient,
-                                .specular = state.visuals.shading.specular,
-                                .colors = state.visuals.shading.colors,
-                                .light = state.visuals.shading.light,
-                                .environment = state.visuals.shading.environment,
-                            },
-                        };
-                        iso_written = volume::render_isosurfaces(vol_desc);
-                    }
-
-                    postprocess_pipeline::Inputs postprocess_inputs = {};
-                    postprocess_inputs.depth = orb.gbuf.tex.depth;
-                    postprocess_inputs.color = orb.gbuf.tex.color;
-                    postprocess_inputs.normal = orb.gbuf.tex.normal;
-                    postprocess_inputs.velocity = orb.gbuf.tex.velocity;
-                    postprocess_inputs.transparency_hdr = iso_written ? orb.iso_tex[i] : 0;
-
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, orb.out_fbo);
-                    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, orb.out_tex[i], 0);
-                    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-                    glViewport(0, 0, orb.gbuf.width, orb.gbuf.height);
-                    postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
-                }
-                orb.mesh.converged = converged;
-                POP_GPU_SECTION()
-
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                glDrawBuffer(GL_BACK);
-            }
         }
         ImGui::End();
     }
@@ -8957,14 +8739,18 @@ struct QuantumChemistry : viamd::EventHandler {
                         md_temp_end(temp);
                     };
 
+                    // A volume on md_gpu (gpu_volume.h), read back once evaluated, and let go of
                     Volume vol = {};
-                    init_volume(&vol, grid, GL_R32F);
+                    init_volume_gpu(&vol, grid);
+#if MD_ENABLE_GPU
+                    MD_DEFER { gpu_volume_destroy(&vol.gpu); };
+#endif
 
                     switch (export_state.source) {
                     case ElectronicStructureSource::MolecularOrbital:
                     {
                         md_gto_op_t op = es_gto_op(export_state.use_magnitude);
-                        evaluate_mo(state, vol.tex_id, grid, export_state.mo.type, export_state.mo.idx, op);
+                        evaluate_mo(state, vol.gpu, grid, export_state.mo.type, export_state.mo.idx, op);
                         break;
                     }
                     case ElectronicStructureSource::NaturalTransitionOrbital:
@@ -8973,16 +8759,16 @@ struct QuantumChemistry : viamd::EventHandler {
 
                         // The export's own component selection IS what evaluate_nto takes; there is
                         // nothing left to translate it through.
-                        evaluate_nto(state, vol.tex_id, grid, export_state.nto.idx, export_state.nto.lambda_idx, export_state.nto_component, op);
+                        evaluate_nto(state, vol.gpu, grid, export_state.nto.idx, export_state.nto.lambda_idx, export_state.nto_component, op);
                         break;
                     }
                     case ElectronicStructureSource::TransitionDensity:
                     {
-                        evaluate_transition_density(state, vol.tex_id, grid, export_state.nto.idx, export_state.transition_density_component);
+                        evaluate_transition_density(state, vol.gpu, grid, export_state.nto.idx, export_state.transition_density_component);
                         break;
                     }
                     case ElectronicStructureSource::ElectronDensity:
-                        evaluate_electron_density(state, vol.tex_id, grid, export_state.spin, es_gto_op(export_state.spin == ElectronicStructureSpin::Difference && export_state.use_magnitude));
+                        evaluate_electron_density(state, vol.gpu, grid, export_state.spin, es_gto_op(export_state.spin == ElectronicStructureSpin::Difference && export_state.use_magnitude));
                         break;
                     default:
                         MD_LOG_ERROR("Unsupported export type");
@@ -9006,15 +8792,17 @@ struct QuantumChemistry : viamd::EventHandler {
                     md_float3_t step_y = grid.orientation[1] * grid.spacing[1];
                     md_float3_t step_z = grid.orientation[2] * grid.spacing[2];
 
-                    // Readbacks are queued, not completed, by the evaluate_* calls above.
-                    // Exporting reads the texture directly, so it is one of the few places that
-                    // genuinely needs the data now rather than next frame.
+                    // The evaluate_* calls above queue the copy into the volume, not complete it:
+                    // the export is one of the few places that needs the data now rather than next frame
                     gpu_volume_jobs_drain(&state);
-
-                    // Extract data from OpenGL Texture
-                    glBindTexture(GL_TEXTURE_3D, vol.tex_id);
-                    glGetTexImage(GL_TEXTURE_3D, 0, GL_RED, GL_FLOAT, data);
-                    glBindTexture(GL_TEXTURE_3D, 0);
+#if MD_ENABLE_GPU
+                    if (!gpu_volume_read(vol.gpu, data, (size_t)num_samples)) {
+                        MD_LOG_ERROR("The volume to export could not be read back");
+                        goto done;
+                    }
+#else
+                    goto done;
+#endif
 
                     switch (file_format) {
                     case EXPORT_FILE_FORMAT_CUBE: {
@@ -9082,7 +8870,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         }
 
                         md_float3_t pos   = origin * BOHR_TO_ANGSTROM;
-                        md_float3_t step  = vol.voxel_size * BOHR_TO_ANGSTROM;
+                        md_float3_t step  = grid.spacing * BOHR_TO_ANGSTROM;     // vol.voxel_size is Angstrom already
 
                         md_file_printf(mhd_file, "ObjectType = Image\n");
                         md_file_printf(mhd_file, "NDims = 3\n");
@@ -9562,11 +9350,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     nto.sel_nto_idx = rsp.selected;
                     size_t nto_idx = (size_t)rsp.selected;
 
-                    init_volume(&nto.vol[NTO_Attachment], nto.grid, GL_R32F);
-                    init_volume(&nto.vol[NTO_Detachment], nto.grid, GL_R32F);
+                    init_volume_gpu(&nto.vol[NTO_Attachment], nto.grid);
+                    init_volume_gpu(&nto.vol[NTO_Detachment], nto.grid);
 
-                    evaluate_transition_density(state, nto.vol[NTO_Attachment].tex_id, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Attachment);
-                    evaluate_transition_density(state, nto.vol[NTO_Detachment].tex_id, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Detachment);
+                    evaluate_transition_density(state, nto.vol[NTO_Attachment].gpu, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Attachment);
+                    evaluate_transition_density(state, nto.vol[NTO_Detachment].gpu, nto.grid, nto_idx, ElectronicStructureTransitionDensityComponent::Detachment);
                 }
             }
 
@@ -9599,22 +9387,54 @@ struct QuantumChemistry : viamd::EventHandler {
                     NTO_Detachment,
                 };
 
-                // The render targets, sized before the panels go into the draw list: it records the texture
-                // names, and a texture reallocated later in the frame would be drawn under a dead name
-                int width  = MD_MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
-                int height = MD_MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
+                // A panel's pixels
+                const int width  = MD_MAX(1, (int)(win_sz.x * io.DisplayFramebufferScale.x));
+                const int height = MD_MAX(1, (int)(win_sz.y * io.DisplayFramebufferScale.y));
 
-                auto& gbuf = nto.gbuf;
-                if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                    gbuffer_init(&gbuf, width, height);
-                    for (int i = 0; i < (int)MD_COUNTOF(nto.iso_tex); ++i) {
-                        if (nto.iso_tex[i]) gl::free_texture(&nto.iso_tex[i]);
-                        if (nto.out_tex[i]) gl::free_texture(&nto.out_tex[i]);
+                // The mesh rendering mode: the attachment and detachment densities as fields, extracted together
+                const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
+                if (mesh_mode) {
+                    const uint64_t pos_hash = panel_positions_hash(state);
+                    for (int i : nto_target_idx) {
+                        const int id[2] = {nto.sel_nto_idx, i};
+                        uint64_t key = md_hash64(id, sizeof(id), pos_hash);
+                        key = key ? key : 1;
+                        panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
+                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
+                            const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
+                            return iso_field_create_density_matrix(&state, D, td_cache.dim);
+                        });
                     }
+                    panel_meshes_update(&nto.mesh, &state, 2, nto.iso_val * nto.iso_val, MD_GTO_ISO_SHEET_POSITIVE);
+                } else if (nto.mesh.meshes.key) {
+                    panel_meshes_free(&nto.mesh, &state);
                 }
-                for (int i : nto_target_idx) {
-                    if (!nto.iso_tex[i]) gl::init_texture_2D(&nto.iso_tex[i], width, height, GL_RGBA16F);
-                    if (!nto.out_tex[i]) gl::init_texture_2D(&nto.out_tex[i], width, height, GL_RGBA8);
+
+                // The panels, each its density's isosurface over the molecule in its groups' colours (md_render_bridge.h),
+                // drawn before they go into the draw list: it records the image's texture
+                {
+                    PanelSurfaces surfaces[2] = {};
+                    PanelSheet sheets[2][2] = {};
+                    float values[2] = {};
+                    md_float4_t colors[2][2] = {};
+                    for (int i : nto_target_idx) {
+                        const md_float4_t c = nto.link_attachment_detachment_density ? nto.col_den : (i == NTO_Attachment ? nto.col_att : nto.col_det);
+                        colors[i][0] = colors[i][1] = c;
+                        values[i] = (float)(nto.iso_val * nto.iso_val);
+                        PanelSurfaces& ps = surfaces[i];
+                        if (mesh_mode) {
+                            ps.meshes = &nto.mesh.meshes;
+                            ps.sheets = sheets[i];
+                            ps.sheet_count = mesh_sheets(sheets[i], nto.mesh.meshes, nto.mesh.slot[i], colors[i]);
+                        } else {
+                            ps.volume = nto.vol[i].gpu;
+                            ps.iso_count = 1;
+                            ps.iso_values = &values[i];
+                            ps.iso_colors = colors[i];
+                        }
+                    }
+                    draw_panels(state, &nto.panels, view_mat, proj_mat, (uint32_t)width, (uint32_t)height, 2, 1, surfaces, nto.atom_colors,
+                                state.visuals.background.color);
                 }
 
                 // Draw Attachment / Detachment
@@ -9649,17 +9469,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
 
                     if (surface.hovered) {
-                        InteractionSurfaceHitArgs hit_args = {
-                            .picking_surface = &nto.picking_surface,
-                            .picking_handler = state.picking_handler,
-                            .fbo = nto.gbuf.fbo,
-                            .width = nto.gbuf.width,
-                            .height = nto.gbuf.height,
-                            .clip_to_world = clip_to_world,
-                        };
-
                         PickingHit hit = {};
-                        interaction_surface_hit_extract(&hit, surface, hit_args);
+                        panel_hit(&hit, state, nto.panels, (uint32_t)idx, surface, interaction_surface_nto, clip_to_world, width, height);
 
                         InteractionSurfaceEvent event = {};
                         interaction_surface_event_extract(&event, surface, hit);
@@ -9704,7 +9515,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     //char buf[32];
                     //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
-                    draw_list->AddImage((ImTextureID)(intptr_t)nto.out_tex[idx], p0, p1, { 0,1 }, { 1,0 });
+                    uint32_t tex = 0;
+                    md_float2_t uv0, uv1;
+                    if (md_render_bridge_panels_image(nto.panels, (uint32_t)idx, &tex, &uv0, &uv1)) {
+                        draw_list->AddImage((ImTextureID)(intptr_t)tex, p0, p1, vec_cast(uv0), vec_cast(uv1));
+                    }
                     //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
 
@@ -9848,302 +9663,6 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                 }
 
-                // The mesh rendering mode: the attachment and detachment densities as fields, extracted together
-                const bool mesh_mode = state.settings.isosurface_rendering == IsosurfaceRendering_Mesh;
-                if (mesh_mode) {
-                    const uint64_t pos_hash = panel_positions_hash(state);
-                    for (int i : nto_target_idx) {
-                        const int id[2] = {nto.sel_nto_idx, i};
-                        uint64_t key = md_hash64(id, sizeof(id), pos_hash);
-                        key = key ? key : 1;
-                        panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
-                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
-                            const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
-                            return iso_field_create_density_matrix(&state, D, td_cache.dim);
-                        });
-                    }
-                    panel_meshes_update(&nto.mesh, &state, 2, nto.iso_val * nto.iso_val, MD_GTO_ISO_SHEET_POSITIVE);
-                } else if (nto.mesh.meshes.key) {
-                    panel_meshes_free(&nto.mesh, &state);
-                }
-
-                // The panels are only redrawn when something they show changed, or while their meshes are
-                // refined over the frames: a static view costs nothing
-                uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)nto.gl_rep.id);
-                {
-                    render_hash = md_hash64(&state.settings.isosurface_rendering, sizeof(state.settings.isosurface_rendering), render_hash);
-                    if (mesh_mode) {
-                        render_hash = md_hash64(&nto.mesh.meshes.mesh.version, sizeof(nto.mesh.meshes.mesh.version), render_hash);
-                    }
-                    const int layout[2] = { width, height };
-                    render_hash = md_hash64(layout, sizeof(layout), render_hash);
-                    for (int i : nto_target_idx) {
-                        const uint64_t vol_version = volume::data_version(nto.vol[i].tex_id);
-                        render_hash = md_hash64(&i, sizeof(i), render_hash);
-                        render_hash = md_hash64(&nto.vol[i].tex_id, sizeof(nto.vol[i].tex_id), render_hash);
-                        render_hash = md_hash64(&vol_version, sizeof(vol_version), render_hash);
-                        render_hash = md_hash64(&nto.vol[i].texture_to_world, sizeof(nto.vol[i].texture_to_world), render_hash);
-                    }
-                    render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
-                    render_hash = md_hash64(&nto.iso_val, sizeof(nto.iso_val), render_hash);
-                    render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
-                    const md_float4_t iso_colors[5] = { nto.col_pos, nto.col_neg, nto.col_den, nto.col_att, nto.col_det };
-                    render_hash = md_hash64(iso_colors, sizeof(iso_colors), render_hash);
-                    render_hash = md_hash64(&nto.link_attachment_detachment_density, sizeof(nto.link_attachment_detachment_density), render_hash);
-                    render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
-                    render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
-                    render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
-                    render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-                    render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
-                    // Baked into the picking buffer, which hovering reads
-                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
-                    render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
-                    render_hash = render_hash ? render_hash : 1;
-                }
-
-                if (render_hash != nto.render_hash || (mesh_mode && !nto.mesh.converged)) {
-                    nto.render_hash = render_hash;
-
-                    gbuffer_clear(&gbuf);
-
-                    const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-                    glEnable(GL_CULL_FACE);
-                    glCullFace(GL_BACK);
-
-                    glEnable(GL_DEPTH_TEST);
-                    glDepthFunc(GL_LESS);
-                    glDepthMask(GL_TRUE);
-                    glEnable(GL_SCISSOR_TEST);
-
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                    glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
-                    glViewport(0, 0, gbuf.width, gbuf.height);
-                    glScissor(0, 0, gbuf.width, gbuf.height);
-
-                    auto draw_rep = [&state](md_gl_rep_t& rep, md_gl_shaders_t& shaders, md_float4x4_t& view_mat, md_float4x4_t& proj_mat, uint32_t atom_mask = 0) {
-                        md_gl_draw_op_t draw_op = {};
-                        draw_op.type = MD_GL_REP_BALL_AND_STICK;
-                        draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-                        draw_op.args.ball_and_stick.stick_radius = 1.0f;
-                        draw_op.args.ball_and_stick.bond_orders  = true;
-                        draw_op.rep = rep;
-
-                        md_gl_draw_args_t draw_args = {
-                            .shaders = shaders,
-                            .draw_operations = {
-                                .count = 1,
-                                .ops = &draw_op
-                            },
-                            .view_transform = {
-                                .view_matrix = (const float*)view_mat.elem,
-                                .proj_matrix = (const float*)proj_mat.elem,
-                            },
-
-                            .picking_offset = gl_picking_offset(state),
-
-                            .atom_mask = atom_mask,
-                        };
-
-                        md_gl_draw(&draw_args);
-                    };
-
-                    draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
-
-                    // The marks of the selection and the highlight, put over each panel as it is presented
-                    const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
-                    if (draw_marks) {
-                        PUSH_GPU_SECTION("Marks")
-                        gbuffer_marks_begin(&gbuf);
-                        draw_rep(nto.gl_rep, state.gl.shaders_marks, view_mat, proj_mat, AtomBit_Marked);
-                        gbuffer_marks_end(&gbuf);
-                        POP_GPU_SECTION()
-                    }
-
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-                    glViewport(0, 0, gbuf.width, gbuf.height);
-                    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-                    glClearColor(0, 0, 0, 0);   // premultiplied: nothing
-                    glClear(GL_COLOR_BUFFER_BIT);
-                    glDepthFunc(GL_LESS);
-                    glDepthMask(0);
-                    glColorMask(1,1,1,1);
-
-                    PUSH_GPU_SECTION("Postprocessing")
-                    postprocess_pipeline::Settings postprocess_settings = {};
-                    postprocess_pipeline::Inputs postprocess_inputs = {};
-
-                    postprocess_settings.background_color = state.visuals.background.color;
-                    postprocess_settings.shading.mode = state.visuals.shading.mode;
-                    postprocess_settings.shading.ambient = state.visuals.shading.ambient;
-                    postprocess_settings.shading.specular = state.visuals.shading.specular;
-                    postprocess_settings.shading.colors = state.visuals.shading.colors;
-                    postprocess_settings.shading.light = state.visuals.shading.light;
-                    postprocess_settings.shading.environment = state.visuals.shading.environment;
-                    postprocess_settings.tonemap.enabled = state.visuals.tonemapping.enabled;
-                    postprocess_settings.tonemap.mode = state.visuals.tonemapping.tonemapper;
-                    postprocess_settings.tonemap.exposure = state.visuals.tonemapping.exposure;
-                    postprocess_settings.tonemap.gamma = state.visuals.tonemapping.gamma;
-                    postprocess_settings.shadows.enabled = false;
-                    postprocess_settings.ssao.enabled = false;
-                    postprocess_settings.dof.enabled = false;
-                    postprocess_settings.fxaa.enabled = true;
-                    postprocess_settings.taa.enabled = false;
-                    postprocess_settings.sharpen.enabled = false;
-
-                    postprocess_inputs.depth = nto.gbuf.tex.depth;
-                    postprocess_inputs.color = nto.gbuf.tex.color;
-                    postprocess_inputs.normal = nto.gbuf.tex.normal;
-                    postprocess_inputs.velocity = nto.gbuf.tex.velocity;
-                    postprocess_inputs.transparency = nto.gbuf.tex.transparency;
-                    if (draw_marks) {
-                        postprocess_inputs.marks = nto.gbuf.tex.marks;
-                        postprocess_inputs.marks_group = nto.gbuf.tex.marks_group;
-                        marks_settings(&postprocess_settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
-                    }
-
-                    ViewParam view_param = {
-                        .matrix = {
-                            .curr = {
-                            .view = view_mat,
-                            .proj = proj_mat,
-                            .norm = view_mat,
-                        },
-                        .inv = {
-                            .proj = inv_proj_mat,
-                        }
-                        },
-                        .clip_planes = {
-                            .near = nto.camera.near_plane,
-                            .far  = nto.camera.far_plane,
-                        },
-                        .resolution = {win_sz.x, win_sz.y},
-                        .fov_y = nto.camera.fov_y,
-                    };
-                    POP_GPU_SECTION()
-
-                    glDisable(GL_SCISSOR_TEST);
-                    if (!nto.out_fbo) glGenFramebuffers(1, &nto.out_fbo);
-
-                    // Every panel is its own density's isosurfaces over the opaque image (and selection) the two
-                    // share, put through post-processing on its own: the surfaces are composited in HDR
-                    PUSH_GPU_SECTION("NTO PANELS")
-                    bool converged = true;
-                    for (int i : nto_target_idx) {
-                        bool is_density = (i == NTO_Attachment || i == NTO_Detachment);
-                    
-                        bool enabled = true;
-                        bool iso_written = false;
-                        size_t count = is_density ? 1 : 2;
-                        float  values[2];
-                        md_float4_t colors[2];
-                    
-                        if (is_density) {
-                            if (nto.link_attachment_detachment_density) {
-                                colors[0] = nto.col_den;
-                            } else {
-                                if (i == NTO_Attachment) {
-                                    colors[0] = nto.col_att;
-                                } else {
-                                    colors[0] = nto.col_det;
-                                }
-                            }
-                            values[0] = (float)(nto.iso_val * nto.iso_val);
-                        } else {
-                            colors[0] = nto.col_pos;
-                            colors[1] = nto.col_neg;
-                            values[0] =  (float)nto.iso_val;
-                            values[1] = -(float)nto.iso_val;
-                        }
-
-                        if (enabled && mesh_mode) {
-                            const md_float4_t sheet_colors[2] = {colors[0], colors[0]};
-                            isomesh::Surface surfaces[2];
-                            const size_t num_surfaces = panel_meshes_surfaces(surfaces, nto.mesh, i, sheet_colors);
-                            const isomesh::RenderDesc mesh_desc = {
-                                .render_target = {
-                                    .depth  = nto.gbuf.tex.depth,
-                                    .color  = nto.iso_tex[i],
-                                    .width  = nto.gbuf.width,
-                                    .height = nto.gbuf.height,
-                                    .clear_color = true,
-                                },
-                                .matrix = {
-                                    .view = view_mat,
-                                    .proj = proj_mat,
-                                    .proj_no_jitter = proj_mat,
-                                },
-                                .surfaces = surfaces,
-                                .num_surfaces = num_surfaces,
-                                .shading = {
-                                    .roughness = 0.3f,
-                                    .ior = 1.5f,
-                                    .mode = postprocess_settings.shading.mode,
-                                    .ambient = postprocess_settings.shading.ambient,
-                                    .specular = postprocess_settings.shading.specular,
-                                    .colors = postprocess_settings.shading.colors,
-                                    .light = postprocess_settings.shading.light,
-                                    .environment = postprocess_settings.shading.environment,
-                                },
-                                .scene_hash = render_hash,
-                            };
-                            bool panel_converged = true;
-                            iso_written = isomesh::render(&nto.mesh.target[i], mesh_desc, &panel_converged);
-                            converged &= panel_converged;
-                        } else if (enabled) {
-                            volume::IsoRenderDesc vol_desc = {
-                                .render_target = {
-                                    .depth  = nto.gbuf.tex.depth,
-                                    .color  = nto.iso_tex[i],
-                                    .width  = nto.gbuf.width,
-                                    .height = nto.gbuf.height,
-                                    .clear_color = true,
-                                },
-                                .texture = {
-                                    .density_volume = nto.vol[i].tex_id,
-                                },
-                                .matrix = {
-                                    .model = nto.vol[i].texture_to_world,
-                                    .view  = view_mat,
-                                    .proj  = proj_mat,
-                                    .inv_proj = inv_proj_mat,
-                                },
-                                .iso = {
-                                    .count   = count,
-                                    .values  = values,
-                                    .colors  = colors,
-                                    .exact   = state.settings.exact_isosurfaces,
-                                },
-                                .shading = {
-                                    .roughness = 0.3f,
-                                    .ior = 1.5f,
-                                    .mode = postprocess_settings.shading.mode,
-                                    .ambient = postprocess_settings.shading.ambient,
-                                    .specular = postprocess_settings.shading.specular,
-                                    .colors = postprocess_settings.shading.colors,
-                                    .light = postprocess_settings.shading.light,
-                                    .environment = postprocess_settings.shading.environment,
-                                },
-                            };
-                            iso_written = volume::render_isosurfaces(vol_desc);
-                        }
-
-                        postprocess_inputs.transparency_hdr = iso_written ? nto.iso_tex[i] : 0;
-                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, nto.out_fbo);
-                        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, nto.out_tex[i], 0);
-                        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-                        glViewport(0, 0, nto.gbuf.width, nto.gbuf.height);
-                        postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
-                    }
-                    nto.mesh.converged = converged;
-                    POP_GPU_SECTION();
-
-                    // Reset state
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                    glDrawBuffer(GL_BACK);
-                    glDisable(GL_SCISSOR_TEST);
-                }
             }
             if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
                 md_bitmask_clear(&state.selection.highlight_mask);
@@ -11610,7 +11129,10 @@ struct QuantumChemistry : viamd::EventHandler {
         IsoMeshSlot slots[2];
         const uint32_t n = ctv_slots(slots, *e);
         if (n == 0) return;
-        if (!e->meshes) e->meshes = new IsoMeshes();
+        if (!e->meshes) {
+            e->meshes = new IsoMeshes();
+            e->meshes->gpu_mesh = true;     // on md_gpu, where the views draw them
+        }
         iso_meshes_update(e->meshes, &state, slots, n, ctv_cell_size(), e->key);
     }
 
@@ -11997,25 +11519,13 @@ struct QuantumChemistry : viamd::EventHandler {
 
         const int width  = MD_MAX(1, (int)(sz.x * io.DisplayFramebufferScale.x));
         const int height = MD_MAX(1, (int)(sz.y * io.DisplayFramebufferScale.y));
-        // Sized before the images go into the draw list, which records the texture names
-        if ((int)ctv.gbuf.width != width || (int)ctv.gbuf.height != height) {
-            gbuffer_init(&ctv.gbuf, width, height);
-            for (int i = 0; i < 2; ++i) {
-                if (ctv.iso_tex[i]) gl::free_texture(&ctv.iso_tex[i]);
-                if (ctv.out_tex[i]) gl::free_texture(&ctv.out_tex[i]);
-            }
-        }
-        for (int i = 0; i < 2; ++i) {
-            if (!ctv.iso_tex[i]) gl::init_texture_2D(&ctv.iso_tex[i], width, height, GL_RGBA16F);
-            if (!ctv.out_tex[i]) gl::init_texture_2D(&ctv.out_tex[i], width, height, GL_RGBA8);
-        }
 
         md_float4_t colors[2] = { flow.style.side_color[0], flow.style.side_color[2] };
         colors[0].w = colors[1].w = 0.75f;
         // orbitals in the orbital window's lobe colours: the positive sheet, the negative
         const md_float4_t orb_colors[2] = { orb.iso.colors[0], orb.iso.colors[1] };
 
-        // Camera control in either view; the picking reads the shared buffer, the same in both
+        // Camera control in either view, and picking
         for (int i = 0; i < 2; ++i) {
             ImGui::PushID(i + 0x5c7);
             ImGui::SetCursorScreenPos(r[i].Min);
@@ -12027,16 +11537,8 @@ struct QuantumChemistry : viamd::EventHandler {
             InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&ctv.target, surface, view_args);
             if (view_result.reset_requested) ctv.target = default_view;
             if (surface.hovered) {
-                InteractionSurfaceHitArgs hit_args = {
-                    .picking_surface = &ctv.picking_surface,
-                    .picking_handler = state.picking_handler,
-                    .fbo = ctv.gbuf.fbo,
-                    .width = ctv.gbuf.width,
-                    .height = ctv.gbuf.height,
-                    .clip_to_world = clip_to_world,
-                };
                 PickingHit hit = {};
-                interaction_surface_hit_extract(&hit, surface, hit_args);
+                panel_hit(&hit, state, ctv.panels, (uint32_t)i, surface, interaction_surface_flow, clip_to_world, width, height);
                 InteractionSurfaceEvent event = {};
                 interaction_surface_event_extract(&event, surface, hit);
                 event.clip_to_world = clip_to_world;
@@ -12048,192 +11550,28 @@ struct QuantumChemistry : viamd::EventHandler {
             ImGui::PopID();
         }
 
-        uint64_t render_hash = md_hash64(&view_mat, sizeof(view_mat), (uint64_t)ctv.gl_rep.id);
+        // The two views (md_render_bridge.h): view i the molecule with slot i of the meshes shown, a density's positive
+        // sheet in the side's colour, an orbital's two in the orbital window's lobe colours
         {
-            const int layout[2] = { width, height };
-            render_hash = md_hash64(layout, sizeof(layout), render_hash);
-            render_hash = md_hash64(&proj_mat, sizeof(proj_mat), render_hash);
-            const uint64_t s = shown ? shown->key : 0;
-            render_hash = md_hash64(&s, sizeof(s), render_hash);
-            if (shown) {
-                render_hash = md_hash64(&shown->meshes->mesh.version, sizeof(shown->meshes->mesh.version), render_hash);
-                render_hash = md_hash64(shown->meshes->index_offset, sizeof(shown->meshes->index_offset), render_hash);
-                render_hash = md_hash64(shown->meshes->index_count, sizeof(shown->meshes->index_count), render_hash);
+            PanelSurfaces surfaces[2] = {};
+            PanelSheet sheets[2][2] = {};
+            for (int i = 0; i < 2 && shown; ++i) {
+                const md_float4_t c[2] = { orbital ? orb_colors[0] : colors[i], orbital ? orb_colors[1] : colors[i] };
+                surfaces[i].meshes = shown->meshes;
+                surfaces[i].sheets = sheets[i];
+                surfaces[i].sheet_count = mesh_sheets(sheets[i], *shown->meshes, i, c);
             }
-            render_hash = md_hash64(colors, sizeof(colors), render_hash);
-            render_hash = md_hash64(orb_colors, sizeof(orb_colors), render_hash);
-            render_hash = md_hash64(&state.visuals.background, sizeof(state.visuals.background), render_hash);
-            render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
-            render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
-            render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-            render_hash = md_hash64(&state.mold.gpu_buffers_version, sizeof(state.mold.gpu_buffers_version), render_hash);
-            const md_gl_picking_offset_t picking_offset = gl_picking_offset(state);
-            render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
-            render_hash = render_hash ? render_hash : 1;
-        }
-
-        // Redrawn when anything it shows changed, and while the meshes' images are being refined over the frames
-        if (render_hash != ctv.render_hash || !ctv.converged) {
-            ctv.render_hash = render_hash;
-            bool converged = true;
-            GBuffer& gbuf = ctv.gbuf;
-            gbuffer_clear(&gbuf);
-
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                                            GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_LESS);
-            glDepthMask(GL_TRUE);
-            glEnable(GL_SCISSOR_TEST);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
-
-            auto draw_rep = [&state, &view_mat, &proj_mat](md_gl_rep_t rep, md_gl_shaders_t& shaders, uint32_t atom_mask) {
-                md_gl_draw_op_t draw_op = {};
-                draw_op.type = MD_GL_REP_BALL_AND_STICK;
-                draw_op.args.ball_and_stick.ball_scale   = 1.0f;
-                draw_op.args.ball_and_stick.stick_radius = 1.0f;
-                draw_op.args.ball_and_stick.bond_orders  = true;
-                draw_op.rep = rep;
-                md_gl_draw_args_t draw_args = {
-                    .shaders = shaders,
-                    .draw_operations = { .count = 1, .ops = &draw_op },
-                    .view_transform = {
-                        .view_matrix = (const float*)view_mat.elem,
-                        .proj_matrix = (const float*)proj_mat.elem,
-                    },
-                    .picking_offset = gl_picking_offset(state),
-                    .atom_mask = atom_mask,
-                };
-                md_gl_draw(&draw_args);
-            };
-            draw_rep(ctv.gl_rep, state.gl.shaders, 0);
-
-            const bool draw_marks = !md_bitmask_empty(&state.selection.selection_mask) || !md_bitmask_empty(&state.selection.highlight_mask);
-            if (draw_marks) {
-                gbuffer_marks_begin(&gbuf);
-                draw_rep(ctv.gl_rep, state.gl.shaders_marks, AtomBit_Marked);
-                gbuffer_marks_end(&gbuf);
-            }
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glDepthFunc(GL_LESS);
-            glDepthMask(0);
-            glColorMask(1, 1, 1, 1);
-
-            postprocess_pipeline::Settings pp = {};
-            postprocess_pipeline::Inputs in = {};
-            pp.background_color   = state.visuals.background.color;
-            pp.shading.mode       = state.visuals.shading.mode;
-            pp.shading.ambient    = state.visuals.shading.ambient;
-            pp.shading.specular   = state.visuals.shading.specular;
-            pp.shading.colors     = state.visuals.shading.colors;
-            pp.shading.light      = state.visuals.shading.light;
-            pp.shading.environment = state.visuals.shading.environment;
-            pp.tonemap.enabled    = state.visuals.tonemapping.enabled;
-            pp.tonemap.mode       = state.visuals.tonemapping.tonemapper;
-            pp.tonemap.exposure   = state.visuals.tonemapping.exposure;
-            pp.tonemap.gamma      = state.visuals.tonemapping.gamma;
-            pp.shadows.enabled = false;
-            pp.ssao.enabled    = false;
-            pp.dof.enabled     = false;
-            pp.fxaa.enabled    = true;
-            pp.taa.enabled     = false;
-            pp.sharpen.enabled = false;
-            in.depth        = gbuf.tex.depth;
-            in.color        = gbuf.tex.color;
-            in.normal       = gbuf.tex.normal;
-            in.velocity     = gbuf.tex.velocity;
-            in.transparency = gbuf.tex.transparency;
-            if (draw_marks) {
-                in.marks       = gbuf.tex.marks;
-                in.marks_group = gbuf.tex.marks_group;
-                marks_settings(&pp, state, 1.0f, MD_MAX(1, (int)roundf(io.DisplayFramebufferScale.x)));
-            }
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = { .view = view_mat, .proj = proj_mat, .norm = view_mat },
-                    .inv  = { .proj = inv_proj_mat },
-                },
-                .clip_planes = { .near = ctv.camera.near_plane, .far = ctv.camera.far_plane },
-                .resolution = { sz.x, sz.y },
-                .fov_y = ctv.camera.fov_y,
-            };
-
-            glDisable(GL_SCISSOR_TEST);
-            if (!ctv.out_fbo) glGenFramebuffers(1, &ctv.out_fbo);
-            for (int i = 0; i < 2; ++i) {
-                bool iso_written = false;
-                if (shown) {
-                    // view i shows slot i: a density's positive sheet in the side's colour, an orbital's two
-                    const IsoMeshes& m = *shown->meshes;
-                    isomesh::Surface surfaces[2];
-                    size_t num_surfaces = 0;
-                    for (int sheet = 0; sheet < 2; ++sheet) {
-                        if (m.index_count[i][sheet] == 0) continue;
-                        isomesh::Surface& surf = surfaces[num_surfaces++];
-                        surf = {};
-                        surf.mesh = &m.mesh;
-                        surf.index_offset = m.index_offset[i][sheet];
-                        surf.index_count  = m.index_count[i][sheet];
-                        surf.model = iso_meshes_model_matrix();
-                        surf.color = orbital ? orb_colors[sheet] : colors[i];
-                    }
-                    const isomesh::RenderDesc desc = {
-                        .render_target = {
-                            .depth  = gbuf.tex.depth,
-                            .color  = ctv.iso_tex[i],
-                            .width  = gbuf.width,
-                            .height = gbuf.height,
-                            .clear_color = true,
-                        },
-                        .matrix = {
-                            .view = view_mat,
-                            .proj = proj_mat,
-                            .proj_no_jitter = proj_mat,
-                        },
-                        .surfaces = surfaces,
-                        .num_surfaces = num_surfaces,
-                        .shading = {
-                            .roughness = 0.3f,
-                            .ior = 1.5f,
-                            .mode = pp.shading.mode,
-                            .ambient = pp.shading.ambient,
-                            .specular = pp.shading.specular,
-                            .colors = pp.shading.colors,
-                            .light = pp.shading.light,
-                            .environment = pp.shading.environment,
-                        },
-                        .scene_hash = render_hash,
-                    };
-                    bool view_converged = true;
-                    iso_written = isomesh::render(&ctv.mesh_target[i], desc, &view_converged);
-                    converged &= view_converged;
-                }
-                in.transparency_hdr = iso_written ? ctv.iso_tex[i] : 0;
-                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, ctv.out_fbo);
-                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctv.out_tex[i], 0);
-                glDrawBuffer(GL_COLOR_ATTACHMENT0);
-                glViewport(0, 0, gbuf.width, gbuf.height);
-                postprocess_pipeline::execute(in, pp, view_param);
-            }
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-            glDisable(GL_SCISSOR_TEST);
-            ctv.converged = converged;
+            draw_panels(state, &ctv.panels, view_mat, proj_mat, (uint32_t)width, (uint32_t)height, 2, 2, surfaces, ctv.atom_colors,
+                        state.visuals.background.color);
         }
 
         static const char* lbl[2] = { "Hole", "Particle" };
         for (int i = 0; i < 2; ++i) {
-            dl->AddImage((ImTextureID)(intptr_t)ctv.out_tex[i], r[i].Min, r[i].Max, { 0, 1 }, { 1, 0 });
+            uint32_t tex = 0;
+            md_float2_t uv0, uv1;
+            if (md_render_bridge_panels_image(ctv.panels, (uint32_t)i, &tex, &uv0, &uv1)) {
+                dl->AddImage((ImTextureID)(intptr_t)tex, r[i].Min, r[i].Max, vec_cast(uv0), vec_cast(uv1));
+            }
             dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
             const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
             const ImU32 caption_col = ImGui::ColorConvertFloat4ToU32(vec_cast(md_float4_t{ colors[i].x * 0.8f, colors[i].y * 0.8f, colors[i].z * 0.8f, 1.0f }));
