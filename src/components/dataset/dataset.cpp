@@ -27,6 +27,8 @@
 #include <implot_widgets.h>
 
 #include <string>
+#include <vector>
+#include <memory>
 #include <algorithm>
 
 namespace dataset {
@@ -68,7 +70,11 @@ static inline void set_type_bead(md_system_t& sys, size_t i, bool bead) {
 
 // A single deserialized [AtomType] section. The workspace is parsed before the system is loaded, so these
 // are buffered here and applied once the particle types actually exist (see apply_pending_particle_type_overrides).
+// The system of an override that names none: the first (ApplicationState::system_context)
+static constexpr uint32_t OVERRIDE_FIRST_SYSTEM = UINT32_MAX - 1;
+
 struct ParticleTypeOverride {
+    uint32_t system_id = OVERRIDE_FIRST_SYSTEM;  // Of the system (by id) it names (System=), else the first's
     char name[32] = "";             // Name of the particle type
     char ff_type[64] = "";          // Force field type, empty when the type has none
     md_atomic_number_t load_z = 0;  // Element the type was assigned upon load. Name, force field type and element identify the type
@@ -146,6 +152,7 @@ struct ResidueTypeItem {
 
 // A single deserialized [ComponentType] section, buffered until the system is loaded (as AtomTypeOverride)
 struct ResidueTypeOverride {
+    uint32_t system_id = OVERRIDE_FIRST_SYSTEM;  // Of the system (by id) it names (System=), else the first's
     char name[16] = "";
     md_residue_kind_t kind = MD_RESIDUE_KIND_OTHER;      // Name and kind identify the type
     bool has_color = false;
@@ -165,6 +172,30 @@ static inline bool res_type_has_monomer(const md_residue_type_data_t& type, size
     return md_residue_type_monomer(&type, i) != MD_MONOMER_NONE;
 }
 
+// What the last Optimize colors of the atom and residue types did, shown under the button
+struct ColorOptimizePanel {
+    bool has_result = false;
+    size_t num_changed = 0;     // Types whose color it changed
+    float min_distance = 0.0f;  // optimize_colors
+};
+
+// The types of a system as the window keeps them: what its loader assigned them (the baseline its modifications are
+// written against), whether each follows the defaults, and how the tables list them
+struct TypeItems {
+    uint32_t system_id = 0;
+    md_allocator_i* arena = 0;
+    md_array(DatasetItem) particle_types = 0;
+    md_array(ResidueTypeItem) res_types = 0;        // One per type of sys.residue.type
+    md_array(int) particle_type_order = 0;  // Display order of the particle types as sorted by the table, allocated in `arena`
+    bool particle_type_resort = false;      // The order is to be sorted again, e.g. after the particle types changed
+    int  particle_type_selected = -1;       // Particle type selected in the table, edited below it
+    md_array(int) res_type_order = 0;       // Display order of the residue types as sorted by the table, allocated in `arena`
+    bool res_type_resort    = false;
+    int  res_type_selected = -1;            // Residue type selected in the table, edited below it
+    ColorOptimizePanel particle_type_optimize;
+    ColorOptimizePanel res_type_optimize;
+};
+
 struct Dataset : viamd::EventHandler {
     bool show_window = false;
     char series_filter[64] = "";
@@ -175,34 +206,24 @@ struct Dataset : viamd::EventHandler {
     
     // Dataset data (moved from ApplicationState.dataset)
     md_array(AtomElementMapping) atom_element_remappings = 0;
-    md_array(DatasetItem) particle_types = 0;
-    md_array(ResidueTypeItem) res_types = 0;        // One per type of sys.residue.type
-    md_allocator_i* arena = 0;
+
+    // The system shown, by id (system_or_first). The system worked on, and its types: the one shown, or another while it
+    // is set up as it is loaded (ViamdSystemInit) or its types are written (work_on).
+    uint32_t system_id = 0;
+    SystemContext* work = nullptr;
+    TypeItems* T = nullptr;
+    std::vector<std::unique_ptr<TypeItems>> all_types;     // Of each system, by its id
 
     char particle_type_filter[64] = "";
-    md_array(int) particle_type_order = 0;  // Display order of the particle types as sorted by the table, allocated in `arena`
-    bool particle_type_resort = false;      // The order is to be sorted again, e.g. after the particle types changed
-    int  particle_type_selected = -1;       // Particle type selected in the table, edited below it
     int  element_popup_z = -1;              // Element whose defaults are being edited
 
     ElementDefault element_defaults[MD_Z_Count] = {};
 
     char res_type_filter[64] = "";
-    md_array(int) res_type_order = 0;       // Display order of the residue types as sorted by the table, allocated in `arena`
-    bool res_type_resort    = false;
-    int  res_type_selected = -1;            // Residue type selected in the table, edited below it
     int  monomer_popup      = -1;           // Monomer whose defaults are being edited
 
     MonomerDefault monomer_defaults[MD_MONOMER_COUNT] = {};
 
-    // What the last Optimize colors of the atom and residue types did, shown under the button
-    struct ColorOptimizePanel {
-        bool has_result = false;
-        size_t num_changed = 0;     // Types whose color it changed
-        float min_distance = 0.0f;  // optimize_colors
-    };
-    ColorOptimizePanel particle_type_optimize;
-    ColorOptimizePanel res_type_optimize;
 
     // Particle type overrides read from a workspace, waiting for a system to be applied to.
     // Deliberately heap allocated: `arena` is reset by init_dataset_items, which runs after these are parsed.
@@ -212,6 +233,47 @@ struct Dataset : viamd::EventHandler {
 
     Dataset() { 
         viamd::event_system_register_handler(*this); 
+    }
+
+    // ## The system worked on
+
+    // The types kept of a system, made the first time
+    TypeItems& types_of(uint32_t id) {
+        for (auto& t : all_types) {
+            if (t->system_id == id) return *t;
+        }
+        all_types.push_back(std::make_unique<TypeItems>());
+        all_types.back()->system_id = id;
+        return *all_types.back();
+    }
+
+    void work_on(SystemContext& sc) {
+        work = &sc;
+        T = &types_of(sc.id);
+    }
+
+    // The one shown
+    void work_on_shown(ApplicationState& data) { work_on(system_or_first(&data, system_id)); }
+    SystemContext* shown_before_all(ApplicationState& data) { return &system_or_first(&data, system_id); }
+
+    SystemContext& system(ApplicationState& data) {
+        if (!work) work_on_shown(data);
+        return *work;
+    }
+    const SystemContext& system(const ApplicationState& data) const { return work ? *work : system_or_first(data, system_id); }
+
+    // What was kept of a system that goes
+    void forget_system(uint32_t id) {
+        for (size_t i = 0; i < all_types.size(); ++i) {
+            if (all_types[i]->system_id != id) continue;
+            if (all_types[i]->arena) md_arena_allocator_destroy(all_types[i]->arena);
+            if (T == all_types[i].get()) {
+                T = nullptr;
+                work = nullptr;
+            }
+            all_types.erase(all_types.begin() + i);
+            return;
+        }
     }
     
     ~Dataset() {
@@ -234,33 +296,33 @@ struct Dataset : viamd::EventHandler {
     }
 
     void clear_dataset_items() {
-        res_types = 0;
-        particle_types = 0;
-        particle_type_optimize = {};
-        res_type_optimize = {};
-        particle_type_order = 0;
-        particle_type_selected = -1;
-        res_type_order = 0;
-        res_type_selected = -1;
-        if (arena) {
-            md_arena_allocator_reset(arena);
+        T->res_types = 0;
+        T->particle_types = 0;
+        T->particle_type_optimize = {};
+        T->res_type_optimize = {};
+        T->particle_type_order = 0;
+        T->particle_type_selected = -1;
+        T->res_type_order = 0;
+        T->res_type_selected = -1;
+        if (T->arena) {
+            md_arena_allocator_reset(T->arena);
         }
     }
 
     void init_dataset_items(ApplicationState& data) {
-        if (!arena) {
-            arena = md_arena_allocator_create(data.allocator.persistent, MD_MEGABYTES(1));
+        if (!T->arena) {
+            T->arena = md_arena_allocator_create(data.allocator.persistent, MD_MEGABYTES(1));
         }
         clear_dataset_items();
 
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
 
         size_t type_count = md_system_particle_type_count(&sys);
         size_t atom_count = md_system_atom_count(&sys);
 
         if (atom_count == 0) return;
 
-        md_array_resize(particle_types, type_count, arena);
+        md_array_resize(T->particle_types, type_count, T->arena);
 
         // Map particle types into dataset items
         for (size_t i = 0; i < type_count; ++i) {
@@ -285,50 +347,50 @@ struct Dataset : viamd::EventHandler {
             // Coarse grained types have no element to inherit from, so they always carry custom properties
             item.use_defaults = !type_is_bead(item.load.flags);
 
-            particle_types[i] = item;
+            T->particle_types[i] = item;
         }
 
         // Count and set indices for each particle type
         for (size_t i = 0; i < atom_count; ++i) {
             md_particle_type_idx_t type_idx = sys.atom.type_idx[i]; 
-            particle_types[type_idx].count += 1;
-            md_array_push(particle_types[type_idx].indices, (int)i, arena);
+            T->particle_types[type_idx].count += 1;
+            md_array_push(T->particle_types[type_idx].indices, (int)i, T->arena);
         }
         
         // Calculate fractions
         for (size_t i = 0; i < type_count; ++i) {
-            particle_types[i].fraction = particle_types[i].count / (float)atom_count;
+            T->particle_types[i].fraction = T->particle_types[i].count / (float)atom_count;
         }
 
         init_residue_type_items(data);
     }
 
     void init_residue_type_items(ApplicationState& data) {
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         const md_residue_type_data_t& type = sys.residue.type;
         const size_t type_count = md_residue_type_count(&type);
         const size_t res_count = md_system_residue_count(&sys);
         const size_t atom_count = md_system_atom_count(&sys);
         if (type_count == 0 || !sys.residue.type_idx || atom_count == 0) return;
 
-        md_array_resize(res_types, type_count, arena);
+        md_array_resize(T->res_types, type_count, T->arena);
         for (size_t i = 0; i < type_count; ++i) {
             ResidueTypeItem item = {};
             snprintf(item.label, sizeof(item.label), MD_STR_FMT, MD_STR_ARG(md_residue_type_name(&type, i)));
             item.load_color   = md_residue_type_color(&type, i);
             item.use_defaults = res_type_has_monomer(type, i);
-            res_types[i] = item;
+            T->res_types[i] = item;
         }
         for (size_t c = 0; c < res_count; ++c) {
             const md_residue_type_idx_t t = md_system_residue_type_idx(&sys, c);
             if (t < 0 || (size_t)t >= type_count) continue;
-            ResidueTypeItem& item = res_types[t];
+            ResidueTypeItem& item = T->res_types[t];
             item.count += 1;
             item.atom_count += (uint32_t)md_system_residue_atom_count(&sys, c);
-            md_array_push(item.res_indices, (int)c, arena);
+            md_array_push(item.res_indices, (int)c, T->arena);
         }
         for (size_t i = 0; i < type_count; ++i) {
-            res_types[i].fraction = res_types[i].atom_count / (float)atom_count;
+            T->res_types[i].fraction = T->res_types[i].atom_count / (float)atom_count;
         }
     }
 
@@ -394,13 +456,13 @@ struct Dataset : viamd::EventHandler {
     // the table in the UI does. Property by property, so a mass the loader took from a force field is not
     // clobbered by the element's mass just because the user recolored that element.
     void apply_element_defaults_to_particle_types(ApplicationState& data, bool& radius_changed, bool& color_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
 
-        size_t type_count = md_system_particle_type_count(&data.mold.sys);
-        if (type_count == 0 || md_array_size(particle_types) != type_count) return;
+        size_t type_count = md_system_particle_type_count(&system(data).data.sys);
+        if (type_count == 0 || md_array_size(T->particle_types) != type_count) return;
 
         for (size_t i = 0; i < type_count; ++i) {
-            if (!particle_types[i].use_defaults) continue;
+            if (!T->particle_types[i].use_defaults) continue;
 
             const md_atomic_number_t z = type.z[i];
             const ElementDefaultDelta delta = compute_element_default_delta(z);
@@ -479,14 +541,14 @@ struct Dataset : viamd::EventHandler {
     // the one it was inferred with. Diffing against it keeps an edit of the defaults in [MonomerDefault], instead of
     // duplicated in every type which follows them.
     uint32_t res_type_base_color(const md_residue_type_data_t& type, size_t i) const {
-        return res_types[i].use_defaults ? monomer_default_color(md_residue_type_monomer(&type, i)) : res_types[i].load_color;
+        return T->res_types[i].use_defaults ? monomer_default_color(md_residue_type_monomer(&type, i)) : T->res_types[i].load_color;
     }
 
     ResidueTypeDelta compute_res_type_delta(const md_residue_type_data_t& type, size_t i) const {
         ResidueTypeDelta delta;
         delta.color    = md_residue_type_color(&type, i) != res_type_base_color(type, i);
         // use_defaults is not stored in the system, its implicit default follows whether the type has a monomer
-        delta.defaults = res_types[i].use_defaults != res_type_has_monomer(type, i);
+        delta.defaults = T->res_types[i].use_defaults != res_type_has_monomer(type, i);
         return delta;
     }
 
@@ -500,7 +562,7 @@ struct Dataset : viamd::EventHandler {
 
     // Restore a residue type to its state right after loading: linked when it has a monomer
     void reset_res_type(md_residue_type_data_t& type, size_t i, bool& color_changed) {
-        ResidueTypeItem& item = res_types[i];
+        ResidueTypeItem& item = T->res_types[i];
         item.use_defaults = res_type_has_monomer(type, i);
         const uint32_t color = res_type_base_color(type, i);
         color_changed |= type.color[i] != color;
@@ -508,11 +570,11 @@ struct Dataset : viamd::EventHandler {
     }
 
     void apply_monomer_defaults_to_res_types(ApplicationState& data, bool& color_changed) {
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
         const size_t type_count = md_residue_type_count(&type);
-        if (type_count == 0 || md_array_size(res_types) != type_count) return;
+        if (type_count == 0 || md_array_size(T->res_types) != type_count) return;
         for (size_t i = 0; i < type_count; ++i) {
-            if (res_types[i].use_defaults) link_res_type_to_monomer(type, i, color_changed);
+            if (T->res_types[i].use_defaults) link_res_type_to_monomer(type, i, color_changed);
         }
     }
 
@@ -521,19 +583,20 @@ struct Dataset : viamd::EventHandler {
         const size_t num_overrides = md_array_size(pending_res_type_overrides);
         if (num_overrides == 0) return;
 
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
         const size_t type_count = md_residue_type_count(&type);
-        if (type_count == 0 || md_array_size(res_types) != type_count) return;
+        if (type_count == 0 || md_array_size(T->res_types) != type_count) return;
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ResidueTypeOverride& ovr = pending_res_type_overrides[j];
+            if (!override_of_work(ovr.system_id)) continue;
             const md_residue_type_idx_t t = md_residue_type_find(&type, md_str_from_cstr(ovr.name), ovr.kind);
             if (t < 0) {
                 MD_LOG_INFO("Dataset: workspace contains overrides for residue type '%s' (%s) which is not present in the loaded system", ovr.name, md_residue_kind_name(ovr.kind));
                 continue;
             }
             if (ovr.has_use_defaults) {
-                res_types[t].use_defaults = ovr.use_defaults && res_type_has_monomer(type, t);
+                T->res_types[t].use_defaults = ovr.use_defaults && res_type_has_monomer(type, t);
             }
             if (ovr.has_color) {
                 color_changed |= type.color[t] != ovr.color;
@@ -576,18 +639,20 @@ struct Dataset : viamd::EventHandler {
     // One [ComponentType] section per residue type the user modified: its name and kind, then what differs
     void serialize_residue_types(viamd::serialization_state_t& state) {
         if (!app_state) return;
-        const md_residue_type_data_t& type = app_state->mold.sys.residue.type;
+        const md_residue_type_data_t& type = system(*app_state).data.sys.residue.type;
         const size_t type_count = md_residue_type_count(&type);
-        if (type_count == 0 || md_array_size(res_types) != type_count) return;
+        if (type_count == 0 || md_array_size(T->res_types) != type_count) return;
 
         for (size_t i = 0; i < type_count; ++i) {
             const ResidueTypeDelta delta = compute_res_type_delta(type, i);
             if (!delta) continue;
             viamd::write_section_header(state, MD_STR_LIT("ComponentType"));
+            // Of which system, where there are several: by its id, as the workspace names it
+            if (system_count(*app_state) > 1) viamd::write_int(state, MD_STR_LIT("System"), (int)work->id);
             viamd::write_str(state, MD_STR_LIT("Name"), md_residue_type_name(&type, i));
             viamd::write_int(state, MD_STR_LIT("Kind"), (int)md_residue_type_kind(&type, i));
             if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"), md_float4_from_u32(type.color[i]));
-            if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"), res_types[i].use_defaults);
+            if (delta.defaults) viamd::write_bool(state, MD_STR_LIT("UseDefaults"), T->res_types[i].use_defaults);
         }
     }
 
@@ -606,7 +671,9 @@ struct Dataset : viamd::EventHandler {
 
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "System")) {
+                ovr.system_id = override_system(state, arg);
+            } else if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
             } else if (md_str_eq_cstr(ident, "Kind")) {
                 int kind = 0;
@@ -635,14 +702,14 @@ struct Dataset : viamd::EventHandler {
     void serialize_particle_types(viamd::serialization_state_t& state) {
         if (!app_state) return;
 
-        const md_system_t& sys = app_state->mold.sys;
+        const md_system_t& sys = system(*app_state).data.sys;
         const md_particle_type_data_t& type = sys.atom.type;
 
         size_t type_count = md_system_particle_type_count(&sys);
-        if (type_count == 0 || md_array_size(particle_types) != type_count) return;
+        if (type_count == 0 || md_array_size(T->particle_types) != type_count) return;
 
         for (size_t i = 0; i < type_count; ++i) {
-            const DatasetItem& item = particle_types[i];
+            const DatasetItem& item = T->particle_types[i];
             if (i == 0 && item.count == 0) {
                 // Skip sentinel "unknown" particle type if unused
                 continue;
@@ -652,6 +719,8 @@ struct Dataset : viamd::EventHandler {
             if (!delta) continue;
 
             viamd::write_section_header(state, MD_STR_LIT("AtomType"));
+            // Of which system, where there are several: by its id, as the workspace names it
+            if (system_count(*app_state) > 1) viamd::write_int(state, MD_STR_LIT("System"), (int)work->id);
             viamd::write_str(state, MD_STR_LIT("Name"), md_particle_type_name(&type, i));
             const md_str_t ff_type = md_particle_type_ff_type(&type, i);
             if (!md_str_empty(ff_type)) {
@@ -676,7 +745,9 @@ struct Dataset : viamd::EventHandler {
 
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "System")) {
+                ovr.system_id = override_system(state, arg);
+            } else if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
             } else if (md_str_eq_cstr(ident, "ForceFieldType")) {
                 viamd::extract_to_char_buf(ovr.ff_type, sizeof(ovr.ff_type), arg);
@@ -716,6 +787,30 @@ struct Dataset : viamd::EventHandler {
         md_array_push(pending_overrides, ovr, md_get_heap_allocator());
     }
 
+    // The system an override names (System=), by the id the workspace names it by; of none it loads, no system's
+    static uint32_t override_system(const viamd::deserialization_state_t& state, md_str_t arg) {
+        int id = 0;
+        const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
+        return sc ? sc->id : UINT32_MAX;
+    }
+
+    // Whether an override of the system (OVERRIDE_FIRST_SYSTEM for the first) is of the system worked on
+    bool override_of_work(uint32_t id) const {
+        return id == work->id || (id == OVERRIDE_FIRST_SYSTEM && app_state && work == &app_state->system_context);
+    }
+
+    // Those of the system worked on, applied: gone from what waits
+    void drop_pending_overrides_of_work() {
+        for (size_t i = 0; i < md_array_size(pending_overrides);) {
+            if (override_of_work(pending_overrides[i].system_id)) md_array_swap_back_and_pop(pending_overrides, i);
+            else ++i;
+        }
+        for (size_t i = 0; i < md_array_size(pending_res_type_overrides);) {
+            if (override_of_work(pending_res_type_overrides[i].system_id)) md_array_swap_back_and_pop(pending_res_type_overrides, i);
+            else ++i;
+        }
+    }
+
     void free_pending_overrides() {
         md_array_free(pending_overrides, md_get_heap_allocator());
         pending_overrides = 0;
@@ -731,14 +826,15 @@ struct Dataset : viamd::EventHandler {
         size_t num_overrides = md_array_size(pending_overrides);
         if (num_overrides == 0) return;
 
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         md_particle_type_data_t& type = sys.atom.type;
 
         size_t type_count = md_system_particle_type_count(&sys);
-        if (type_count == 0 || md_array_size(particle_types) != type_count) return;
+        if (type_count == 0 || md_array_size(T->particle_types) != type_count) return;
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ParticleTypeOverride& ovr = pending_overrides[j];
+            if (!override_of_work(ovr.system_id)) continue;
             md_str_t name = md_str_from_cstr(ovr.name);
             md_str_t ff_type = md_str_from_cstr(ovr.ff_type);
 
@@ -747,7 +843,7 @@ struct Dataset : viamd::EventHandler {
             // it had upon load
             bool matched = false;
             for (size_t i = 0; i < type_count; ++i) {
-                DatasetItem& item = particle_types[i];
+                DatasetItem& item = T->particle_types[i];
                 if (item.load.z != ovr.load_z) continue;
                 if (!md_str_eq(md_particle_type_name(&type, i), name)) continue;
                 if (!md_str_eq(md_particle_type_ff_type(&type, i), ff_type)) continue;
@@ -798,11 +894,11 @@ struct Dataset : viamd::EventHandler {
         apply_pending_res_type_overrides(data, color_changed);
         apply_monomer_defaults_to_res_types(data, color_changed);
 
-        // Applied, or for a system they do not belong to
-        free_pending_overrides();
+        // Applied: those of another system wait for it
+        drop_pending_overrides_of_work();
 
         if (radius_changed) {
-            system_instances_flag(data.system_context, MolBit_DirtyRadius);
+            system_instances_flag(system(data), MolBit_DirtyRadius);
         }
         if (color_changed) {
             flag_all_representations_as_dirty(&data);
@@ -829,18 +925,27 @@ struct Dataset : viamd::EventHandler {
                 break;
             case viamd::EventType_ViamdShutdown:
                 // Cleanup
-                clear_dataset_items();
+                while (!all_types.empty()) forget_system(all_types.back()->system_id);
                 free_pending_overrides();
                 app_state = nullptr;
                 break;
             case viamd::EventType_ViamdSystemInit: {
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
-                ApplicationState& state = *((SystemContext*)e.payload)->app;
+                // Of whichever system: its types, the defaults and what the workspace says of them
+                SystemContext& sc = *(SystemContext*)e.payload;
+                ApplicationState& state = *sc.app;
+                work_on(sc);
                 on_system_init(state);
+                work_on_shown(state);
+                break;
+            }
+            case viamd::EventType_ViamdSystemFree: {
+                const SystemContext* sc = event_system(e);
+                if (sc && sc != &sc->app->system_context) forget_system(sc->id);
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
+                work_on_shown(state);
                 draw(state);
                 break;
             }
@@ -850,9 +955,18 @@ struct Dataset : viamd::EventHandler {
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 serialize_element_defaults(state);
-                serialize_particle_types(state);
                 serialize_monomer_defaults(state);
-                serialize_residue_types(state);
+                // The types of each system: those of another than the first say which (System=)
+                if (app_state) {
+                    for (size_t k = 0; k < app_state->num_systems; ++k) {
+                        SystemContext& sc = *app_state->systems[k];
+                        if (!system_loaded(sc)) continue;
+                        work_on(sc);
+                        serialize_particle_types(state);
+                        serialize_residue_types(state);
+                    }
+                    work_on_shown(*app_state);
+                }
                 break;
             }
             case viamd::EventType_ViamdDeserialize: {
@@ -875,14 +989,14 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
-    static inline void handle_item_click(ApplicationState& state) {
+    void handle_item_click(ApplicationState& state) {
         if (ImGui::IsKeyDown(ImGuiMod_Shift)) {
             // Shift + click on element header to select all particle types that use this element
             // Since the hover should already contain the correct selection we can just copy it to the filter mask to achieve this
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                md_bitmask_or(&system(state).selection.selection_mask, md_bitmask_view(&system(state).selection.highlight_mask));
             } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                md_bitmask_andnot(&system(state).selection.selection_mask, md_bitmask_view(&system(state).selection.highlight_mask));
             }
         }
     }
@@ -1057,7 +1171,7 @@ struct Dataset : viamd::EventHandler {
     void draw_files(ApplicationState& data) {
         if (!ImGui::CollapsingHeader("Files", ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-        const FileList* list = &data.file_list;
+        const FileList* list = &system(data).files;
         if (file_list_count(list) == 0) {
             ImGui::TextDisabled("Nothing loaded. Open files with File > Open File..., or drop them on the window.");
             return;
@@ -1077,7 +1191,7 @@ struct Dataset : viamd::EventHandler {
             row.missing = e.missing;
 
             if (!e.missing) {
-                system_file_details(row.details, sizeof(row.details), data.system_context, i);
+                system_file_details(row.details, sizeof(row.details), system(data), i);
             }
             file_row(row);
         }
@@ -1190,17 +1304,17 @@ struct Dataset : viamd::EventHandler {
         return "Other";
     }
 
-    static uint64_t composition_key(const ApplicationState& data) {
-        const md_system_t& sys = data.mold.sys;
+    uint64_t composition_key(const ApplicationState& data) {
+        const md_system_t& sys = system(data).data.sys;
         uint64_t key = md_hash64(&sys.topology_version, sizeof(sys.topology_version), 0);
         const md_attribute_t* charge = md_attributes_find(&sys.attributes, MD_STR_LIT("atom/charge"));
         const uint64_t charge_version = charge ? charge->version : 0;
         key = md_hash64(&charge_version, sizeof(charge_version), key);
-        return md_hash64(&data.mold.sys.atom.type_idx, sizeof(void*), key);
+        return md_hash64(&system(data).data.sys.atom.type_idx, sizeof(void*), key);
     }
 
     void compute_composition(ApplicationState& data) {
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         md_allocator_i* alloc = data.allocator.persistent;
         Composition& c = composition;
         md_array_free(c.rows, alloc);
@@ -1381,9 +1495,9 @@ struct Dataset : viamd::EventHandler {
         return md_atom_mass(&sys.atom, a) > 0.0f;
     }
 
-    static void highlight_row(ApplicationState& data, const Composition& c, size_t row_idx) {
-        const md_system_t& sys = data.mold.sys;
-        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+    void highlight_row(ApplicationState& data, const Composition& c, size_t row_idx) {
+        const md_system_t& sys = system(data).data.sys;
+        md_bitmask_t* hb = &system(data).selection.highlight_mask;
         md_bitmask_clear(hb);
         const TypeRow& row = c.rows[row_idx];
         if (row.type < 0) {
@@ -1401,9 +1515,9 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
-    static void highlight_molecule(ApplicationState& data, uint32_t mol_idx) {
-        const md_molecule_t mol = md_system_molecule(&data.mold.sys, mol_idx);
-        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+    void highlight_molecule(ApplicationState& data, uint32_t mol_idx) {
+        const md_molecule_t mol = md_system_molecule(&system(data).data.sys, mol_idx);
+        md_bitmask_t* hb = &system(data).selection.highlight_mask;
         md_bitmask_clear(hb);
         for (size_t i = 0; i < mol.count; ++i) md_bitmask_set_bit(hb, (uint32_t)mol.atom_idx[i]);
     }
@@ -1438,7 +1552,7 @@ struct Dataset : viamd::EventHandler {
 
     // The sequences of the strands of a molecule
     void draw_molecule_sequences(ApplicationState& data, const Composition& c, uint32_t mol_idx) {
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         for (uint32_t k = c.mol_part_offset[mol_idx]; k < c.mol_part_offset[mol_idx + 1]; ++k) {
             if (!md_part_kind_is_polymer(md_system_part_kind(&sys, c.mol_part[k]))) continue;
             draw_sequence(data, c.mol_part[k], use_short_labels);
@@ -1447,7 +1561,7 @@ struct Dataset : viamd::EventHandler {
 
     // A polymer's sequence, one chip per residue, wrapping to the window
     void draw_sequence(ApplicationState& data, size_t part_idx, bool short_labels) {
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         const ImGuiStyle& style = ImGui::GetStyle();
         const md_urange_t range = md_system_part_residue_range(&sys, part_idx);
         const uint32_t max_shown = 4000;
@@ -1501,7 +1615,7 @@ struct Dataset : viamd::EventHandler {
                 const md_str_t full = md_system_residue_name(&sys, res_idx);
                 ImGui::SetTooltip(MD_STR_FMT " %d", MD_STR_ARG(full), md_system_residue_seq_id(&sys, res_idx));
                 const md_urange_t atoms = md_system_residue_atom_range(&sys, res_idx);
-                md_bitmask_assign(&data.system_context.selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
+                md_bitmask_assign(&system(data).selection.highlight_mask, md_bitset_range(atoms.beg, atoms.end));
                 handle_item_click(data);
             }
         }
@@ -1512,7 +1626,7 @@ struct Dataset : viamd::EventHandler {
 
     void draw_composition(ApplicationState& data) {
         if (!ImGui::CollapsingHeader("Composition", ImGuiTreeNodeFlags_DefaultOpen)) return;
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         if (sys.atom.count == 0) {
             ImGui::TextDisabled("No system loaded");
             return;
@@ -1650,7 +1764,7 @@ struct Dataset : viamd::EventHandler {
     }
 
     void compute_group_composition(ApplicationState& data) {
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         md_allocator_i* alloc = data.allocator.persistent;
         md_array_shrink(group_comp.entry_offset, 0);
         md_array_shrink(group_comp.entries, 0);
@@ -1731,7 +1845,7 @@ struct Dataset : viamd::EventHandler {
     }
 
     void draw_groups(ApplicationState& data) {
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         const md_group_data_t& groups = sys.group;
         if (group_comp.key != group_comp_key(sys) || md_array_size(group_comp.entry_offset) != groups.count + 1) {
             compute_group_composition(data);
@@ -1741,10 +1855,10 @@ struct Dataset : viamd::EventHandler {
         const bool vial = data.script.language == script::Language::V2;
         ImGui::TextDisabled("Named sets of atoms: those of the run (index groups, from a tpr or an index file) and your own.\n"
                             "Hover to highlight, shift click to select, click to list what it holds.");
-        SystemSelection& selection = data.system_context.selection;
+        SystemSelection& selection = system(data).selection;
         const bool has_selection = !md_bitmask_empty(&selection.selection_mask);
         if (!has_selection) ImGui::PushDisabled();
-        if (ImGui::Button("Store Selection as Group")) store_selection_as_group(data.system_context);
+        if (ImGui::Button("Store Selection as Group")) store_selection_as_group(system(data));
         if (!has_selection) ImGui::PopDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             if (has_selection) md_bitmask_assign(&selection.highlight_mask, md_bitmask_view(&selection.selection_mask));
@@ -1788,7 +1902,7 @@ struct Dataset : viamd::EventHandler {
                     if (!ImGui::IsKeyDown(ImGuiMod_Shift)) expanded_group = expanded_group == (int)g ? -1 : (int)g;
                 }
                 if (ImGui::IsItemHovered()) {
-                    md_bitmask_assign(&data.system_context.selection.highlight_mask, groups.atoms[g]);
+                    md_bitmask_assign(&system(data).selection.highlight_mask, groups.atoms[g]);
                     handle_item_click(data);
                 }
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
@@ -1910,7 +2024,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::TextUnformatted(mass_buf);
 
         // Density, with a box: a quick check that the box and the contents belong together
-        const md_unitcell_t& cell = system_instance(data.system_context).state.unitcell;
+        const md_unitcell_t& cell = system_instance(system(data)).state.unitcell;
         md_float3x3_t A = {0};
         md_unitcell_A_extract_float(A.elem, &cell);
         const double volume = fabs((double)md_float3x3_determinant(A));   // Angstrom^3
@@ -1973,14 +2087,14 @@ struct Dataset : viamd::EventHandler {
     // Only what applies is shown; each highlights its atoms on hover
     void draw_warnings(ApplicationState& data) {
         const Composition& c = composition;
-        const md_system_t& sys = data.mold.sys;
+        const md_system_t& sys = system(data).data.sys;
         const ImVec4 warn = ImVec4(1.0f, 0.75f, 0.2f, 1.0f);
 
         if (c.atoms_without_element > 0) {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu atoms have no element", c.atoms_without_element);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Their element could not be told from the file: they are drawn as unknown and\nhave no radius or colour of their own. Set it under Atom Types.");
-                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+                md_bitmask_t* hb = &system(data).selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t a = 0; a < sys.atom.count; ++a) {
                     if (atom_without_element(sys, a)) md_bitmask_set_bit(hb, (uint32_t)a);
@@ -1993,7 +2107,7 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextColored(warn, ICON_FA_TRIANGLE_EXCLAMATION " %zu residues are named like %s but their backbone was not found", count, what);
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("They are not part of any chain, so cartoons, secondary structure and\nbackbone angles skip them. Their backbone atoms may be missing, or their bonds not inferred.");
-                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+                md_bitmask_t* hb = &system(data).selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t i = 0; i < sys.residue.count; ++i) {
                     if (md_system_residue_kind(&sys, i) == kind && !(md_system_residue_flags(&sys, i) & MD_RESIDUE_FLAG_RESOLVED)) {
@@ -2014,7 +2128,7 @@ struct Dataset : viamd::EventHandler {
         if (c.bonds_user > 0) {
             ImGui::TextDisabled(ICON_FA_CIRCLE_INFO " %zu bonds were added by you", c.bonds_user);
             if (ImGui::IsItemHovered()) {
-                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+                md_bitmask_t* hb = &system(data).selection.highlight_mask;
                 md_bitmask_clear(hb);
                 for (size_t b = 0; b < sys.bond.count + sys.bond.interaction_count; ++b) {
                     if (sys.bond.flags && md_bond_origin(sys.bond.flags[b]) == MD_BOND_ORIGIN_USER) {
@@ -2028,7 +2142,7 @@ struct Dataset : viamd::EventHandler {
 
     // The interactions the simulation used, when the system came with them (a .tpr)
     void draw_forcefield(ApplicationState& data) {
-        const md_nb_forcefield_t* ff = data.mold.sys.nonbonded;
+        const md_nb_forcefield_t* ff = system(data).data.sys.nonbonded;
         if (!ff) return;
         const md_nb_potential_t& pot = ff->potential;
         const char* coulomb = "none";
@@ -2061,20 +2175,20 @@ struct Dataset : viamd::EventHandler {
     } traj;
 
     uint64_t trajectory_key(const ApplicationState& data) {
-        const md_attribute_t* axis = run_time_axis(data.system_context);
-        const md_attribute_t* cell = run_attribute(data.system_context, MD_STR_LIT("unitcell"));
-        const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&data.mold.sys.attributes) };
-        return md_hash64(v, sizeof(v), md_hash64_str(run_path(data.system_context), 0));
+        const md_attribute_t* axis = run_time_axis(system(data));
+        const md_attribute_t* cell = run_attribute(system(data), MD_STR_LIT("unitcell"));
+        const uint64_t v[3] = { axis ? axis->version : 0, cell ? cell->version : 0, (uint64_t)md_attributes_count(&system(data).data.sys.attributes) };
+        return md_hash64(v, sizeof(v), md_hash64_str(run_path(system(data)), 0));
     }
 
     void compute_trajectory(ApplicationState& data) {
         traj = TrajectoryInfo{};
         traj.key = trajectory_key(data);
-        const md_attributes_t* attrs = &data.mold.sys.attributes;
-        const size_t n = run_num_frames(data.system_context);
-        const double* t = run_frame_times(data.system_context);
+        const md_attributes_t* attrs = &system(data).data.sys.attributes;
+        const size_t n = run_num_frames(system(data));
+        const double* t = run_frame_times(system(data));
         traj.num_frames = n;
-        traj.has_time = n > 0 && t && !md_unit_is_none(run_time_unit(data.system_context));
+        traj.has_time = n > 0 && t && !md_unit_is_none(run_time_unit(system(data)));
         if (n > 0 && t) {
             traj.t0 = t[0];
             traj.t1 = t[n - 1];
@@ -2089,12 +2203,12 @@ struct Dataset : viamd::EventHandler {
             if (n < 2) traj.dt_min = traj.dt_max = 0;
         }
 
-        traj.has_velocity = run_attribute(data.system_context, MD_STR_LIT("atom/velocity")) != nullptr;
-        traj.has_force    = run_attribute(data.system_context, MD_STR_LIT("atom/force")) != nullptr;
+        traj.has_velocity = run_attribute(system(data), MD_STR_LIT("atom/velocity")) != nullptr;
+        traj.has_force    = run_attribute(system(data), MD_STR_LIT("atom/force")) != nullptr;
 
         // Sections with an axis of their own: "<run>/trr/<name>/time"
         char buf[256];
-        const md_str_t trr = run_attribute_path(buf, sizeof(buf), data.system_context, MD_STR_LIT("trr"));
+        const md_str_t trr = run_attribute_path(buf, sizeof(buf), system(data), MD_STR_LIT("trr"));
         if (!md_str_empty(trr)) {
             int len = 0;
             for (md_attribute_iter_t it = md_attributes_iter_children(attrs, trr); md_attributes_next(&it);) {
@@ -2107,11 +2221,11 @@ struct Dataset : viamd::EventHandler {
         }
 
         // The box, frame by frame
-        const md_attribute_t* cell = run_attribute(data.system_context, MD_STR_LIT("unitcell"));
+        const md_attribute_t* cell = run_attribute(system(data), MD_STR_LIT("unitcell"));
         if (cell && cell->data && md_attribute_element_count(&cell->format) == n * 9 && n > 0) {
             md_temp_scope_t temp = md_temp_begin();
             float* m = md_temp_alloc_array(temp, float, n * 9);
-            if (md_attribute_extract_f32(m, n * 9, &data.mold.sys.attributes, cell, md_attribute_slice_all(), md_unit_none()) == n * 9) {
+            if (md_attribute_extract_f32(m, n * 9, &system(data).data.sys.attributes, cell, md_attribute_slice_all(), md_unit_none()) == n * 9) {
                 traj.vol_min = DBL_MAX;
                 traj.vol_max = 0;
                 for (size_t f = 0; f < n; ++f) {
@@ -2131,14 +2245,14 @@ struct Dataset : viamd::EventHandler {
     }
 
     void draw_trajectory(ApplicationState& data) {
-        if (run_num_frames(data.system_context) == 0) return;
+        if (run_num_frames(system(data)) == 0) return;
         if (!ImGui::CollapsingHeader("Trajectory", ImGuiTreeNodeFlags_DefaultOpen)) return;
         if (traj.key != trajectory_key(data)) {
             compute_trajectory(data);
         }
 
         char tu[32] = "";
-        const double ts = display_units::factor_print(tu, sizeof(tu), run_time_unit(data.system_context));
+        const double ts = display_units::factor_print(tu, sizeof(tu), run_time_unit(system(data)));
         const ImVec4 warn = ImVec4(1.0f, 0.75f, 0.2f, 1.0f);
 
         if (traj.has_time) {
@@ -2183,9 +2297,9 @@ struct Dataset : viamd::EventHandler {
             ImGui::TextDisabled("Box: none in the frames");
         }
 
-        const double frame = clock_frame(&data);
+        const double frame = MD_MAX(instance_current_frame(system_instance(system(data))), 0.0);
         const size_t fi = (size_t)MD_CLAMP(frame + 0.5, 0.0, (double)(traj.num_frames - 1));
-        const double* t = run_frame_times(data.system_context);
+        const double* t = run_frame_times(system(data));
         if (traj.has_time && t) {
             ImGui::Text("Showing frame %zu, %.6g %s", fi, t[fi] * ts, tu);
         } else {
@@ -2194,9 +2308,9 @@ struct Dataset : viamd::EventHandler {
 
         // What was loaded along the frames, and how it lines up with them
         md_str_t groups[64];
-        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data.system_context), MD_COUNTOF(groups));
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), system(data)), MD_COUNTOF(groups));
         for (size_t g = 0; g < num_groups; ++g) {
-            const md_attribute_t* axis = md_attributes_find_in(&data.mold.sys.attributes, groups[g], MD_STR_LIT("time"));
+            const md_attribute_t* axis = md_attributes_find_in(&system(data).data.sys.attributes, groups[g], MD_STR_LIT("time"));
             char label[256];
             system_series_group_label(label, sizeof(label), &data, groups[g]);
             if (!axis || axis->format.shape[0] < 1) {
@@ -2205,8 +2319,8 @@ struct Dataset : viamd::EventHandler {
             }
             const size_t m = axis->format.shape[0];
             double ends[2] = {0, 0};
-            md_attribute_extract_f64(&ends[0], 1, &data.mold.sys.attributes, axis, md_attribute_slice_1(0),                  run_time_unit(data.system_context));
-            md_attribute_extract_f64(&ends[1], 1, &data.mold.sys.attributes, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(data.system_context));
+            md_attribute_extract_f64(&ends[0], 1, &system(data).data.sys.attributes, axis, md_attribute_slice_1(0),                  run_time_unit(system(data)));
+            md_attribute_extract_f64(&ends[1], 1, &system(data).data.sys.attributes, axis, md_attribute_slice_1((uint32_t)(m - 1)), run_time_unit(system(data)));
             const double every = m > 1 ? (ends[1] - ends[0]) / (double)(m - 1) : 0.0;
             const bool covers = traj.has_time && ends[0] <= traj.t0 + 1e-6 * fabs(traj.t1 - traj.t0) && ends[1] >= traj.t1 - 1e-6 * fabs(traj.t1 - traj.t0);
             ImGui::TextDisabled("%s: every %.4g %s, %s", label, every * ts, tu,
@@ -2235,7 +2349,7 @@ struct Dataset : viamd::EventHandler {
     // it, attr("edr/potential").
     void draw_series(ApplicationState& data) {
         md_str_t groups[64];
-        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data.system_context), MD_COUNTOF(groups));
+        const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), system(data)), MD_COUNTOF(groups));
         if (num_groups == 0) return;
 
         if (!ImGui::CollapsingHeader("Series", ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -2244,15 +2358,15 @@ struct Dataset : viamd::EventHandler {
         ImGui::InputTextWithHint("##series_filter", "Filter by name", series_filter, sizeof(series_filter));
         const md_str_t filter = md_str_from_cstr(series_filter);
 
-        const md_attributes_t* table = &data.mold.sys.attributes;
+        const md_attributes_t* table = &system(data).data.sys.attributes;
 
         for (size_t g = 0; g < num_groups; ++g) {
             md_temp_scope_t temp = md_temp_begin();
             MD_DEFER { md_temp_end(temp); };
 
-            const size_t num = system_series_members(nullptr, 0, data.system_context, groups[g]);
+            const size_t num = system_series_members(nullptr, 0, system(data), groups[g]);
             md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
-            system_series_members(paths, num, data.system_context, groups[g]);
+            system_series_members(paths, num, system(data), groups[g]);
 
             char group_label[256];
             system_series_group_label(group_label, sizeof(group_label), &data, groups[g]);
@@ -2536,8 +2650,8 @@ struct Dataset : viamd::EventHandler {
     // defaults pushed on top if it is linked to them (see on_system_init). This is the baseline compute_particle_type_delta
     // diffs against, so a reset type is no longer written to the workspace.
     void reset_particle_type(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
-        DatasetItem& item = particle_types[i];
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
+        DatasetItem& item = T->particle_types[i];
         const ParticleTypeLoadState& load = item.load;
 
         float    radius = load.radius;
@@ -2561,12 +2675,12 @@ struct Dataset : viamd::EventHandler {
         type.radius[i] = radius;
         type.mass[i]   = mass;
         type.color[i]  = color;
-        set_type_bead(data.mold.sys, i, type_is_bead(load.flags));
+        set_type_bead(system(data).data.sys, i, type_is_bead(load.flags));
     }
 
     // Push the element defaults onto a particle type which is linked to them
     void link_particle_type_to_element(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
         const ElementDefault& def = element_defaults[type.z[i]];
         const uint32_t color = md_u32_from_float4(def.color);
 
@@ -2580,8 +2694,8 @@ struct Dataset : viamd::EventHandler {
     }
 
     void particle_type_tooltip(const ApplicationState& data, size_t i) const {
-        const md_particle_type_data_t& type = data.mold.sys.atom.type;
-        const DatasetItem& item = particle_types[i];
+        const md_particle_type_data_t& type = system(data).data.sys.atom.type;
+        const DatasetItem& item = T->particle_types[i];
         const bool cg = type_is_bead(type.flags[i]);
         const md_str_t name    = md_particle_type_name(&type, i);
         const md_str_t ff_type = md_particle_type_ff_type(&type, i);
@@ -2656,22 +2770,22 @@ struct Dataset : viamd::EventHandler {
         const bool cg_a = type_is_bead(type.flags[a]);
         const bool cg_b = type_is_bead(type.flags[b]);
         switch (column) {
-        case ParticleTypeCol_Type: return strcmp(particle_types[a].label, particle_types[b].label);
+        case ParticleTypeCol_Type: return strcmp(T->particle_types[a].label, T->particle_types[b].label);
         case ParticleTypeCol_Element: return compare3(cg_a ? (int)MD_Z_Count : (int)type.z[a], cg_b ? (int)MD_Z_Count : (int)type.z[b]); // Beads have no element and go last
         case ParticleTypeCol_Radius: return compare3(type.radius[a], type.radius[b]);
         case ParticleTypeCol_Mass: return compare3(type.mass[a], type.mass[b]);
-        case ParticleTypeCol_Atoms: return compare3(particle_types[a].count, particle_types[b].count);
+        case ParticleTypeCol_Atoms: return compare3(T->particle_types[a].count, T->particle_types[b].count);
         default: return 0;
         }
     }
 
     // Order the particle types by the sort specs of the table. Without any specs (tri-state sorting) the loader order is restored.
     void sort_particle_types(const md_particle_type_data_t& type, const ImGuiTableSortSpecs* specs) {
-        const size_t n = md_array_size(particle_type_order);
-        for (size_t k = 0; k < n; ++k) particle_type_order[k] = (int)k;
+        const size_t n = md_array_size(T->particle_type_order);
+        for (size_t k = 0; k < n; ++k) T->particle_type_order[k] = (int)k;
         if (!specs || specs->SpecsCount == 0) return;
 
-        std::stable_sort(particle_type_order, particle_type_order + n, [&](int a, int b) {
+        std::stable_sort(T->particle_type_order, T->particle_type_order + n, [&](int a, int b) {
             for (int s = 0; s < specs->SpecsCount; ++s) {
                 const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
                 const int c = compare_particle_types(type, a, b, spec.ColumnUserID);
@@ -2692,8 +2806,8 @@ struct Dataset : viamd::EventHandler {
 
     // Editor of the selected particle type, shown below the table
     void draw_particle_type_editor(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
-        DatasetItem& item = particle_types[i];
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
+        DatasetItem& item = T->particle_types[i];
 
         ImGui::PushID("##atom_type_editor");
         ImGui::PushID((int)i);
@@ -2710,7 +2824,7 @@ struct Dataset : viamd::EventHandler {
 
         bool coarse_grained = type_is_bead(type.flags[i]);
         if (ImGui::Checkbox("Coarse grained", &coarse_grained)) {
-            set_type_bead(data.mold.sys, i, coarse_grained);
+            set_type_bead(system(data).data.sys, i, coarse_grained);
         }
 
         if (!coarse_grained) {
@@ -2776,34 +2890,34 @@ struct Dataset : viamd::EventHandler {
     }
 
     void optimize_particle_type_colors(ApplicationState& data, bool& color_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
-        const size_t num_types = md_system_particle_type_count(&data.mold.sys);
-        if (num_types == 0 || md_array_size(particle_types) != num_types) return;
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
+        const size_t num_types = md_system_particle_type_count(&system(data).data.sys);
+        if (num_types == 0 || md_array_size(T->particle_types) != num_types) return;
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         md_array(ColorOptimizeItem) items = 0;
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
-            if (particle_types[i].count == 0) continue; // Only the types in use
+            if (T->particle_types[i].count == 0) continue; // Only the types in use
             // A type of an element is pulled to the color of its defaults, a bead or a type without an element starts
             // from the color it was loaded with and is free
             const bool has_element = !type_is_bead(type.flags[i]) && type.z[i] != 0;
             ColorOptimizeItem it;
-            it.color  = has_element ? md_u32_from_float4(element_defaults[type.z[i]].color) : particle_types[i].load.color;
+            it.color  = has_element ? md_u32_from_float4(element_defaults[type.z[i]].color) : T->particle_types[i].load.color;
             it.pull   = has_element ? color_optimize_pull : 0.0f;
-            it.weight = (float)particle_types[i].count;
+            it.weight = (float)T->particle_types[i].count;
             md_array_push(items, it, md_temp_allocator(temp));
             md_array_push(index, i, md_temp_allocator(temp));
         }
         const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
-        particle_type_optimize.has_result = true;
-        particle_type_optimize.min_distance = res.min_distance;
-        particle_type_optimize.num_changed = 0;
+        T->particle_type_optimize.has_result = true;
+        T->particle_type_optimize.min_distance = res.min_distance;
+        T->particle_type_optimize.num_changed = 0;
 
         for (size_t k = 0; k < md_array_size(items); ++k) {
             const size_t i = index[k];
-            DatasetItem& item = particle_types[i];
+            DatasetItem& item = T->particle_types[i];
             if (items[k].pull > 0.0f) {
                 const ElementDefault& def = element_defaults[type.z[i]];
                 if (items[k].color == md_u32_from_float4(def.color)) {
@@ -2813,44 +2927,44 @@ struct Dataset : viamd::EventHandler {
                     item.use_defaults = false;  // A color of its own now
                 }
             }
-            particle_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            T->particle_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
             color_changed |= type.color[i] != items[k].color;
             type.color[i] = items[k].color;
         }
     }
 
     void draw_particle_types(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         md_particle_type_data_t& type = sys.atom.type;
         const size_t num_types = md_system_particle_type_count(&sys);
-        if (num_types == 0 || md_array_size(particle_types) != num_types) return;
+        if (num_types == 0 || md_array_size(T->particle_types) != num_types) return;
 
         // The sentinel "unknown" type is only listed when used
-        const size_t first = particle_types[0].count == 0 ? 1 : 0;
+        const size_t first = T->particle_types[0].count == 0 ? 1 : 0;
 
         char header[64];
         snprintf(header, sizeof(header), "Atom Types (%zu)###AtomTypes", num_types - first);
         if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-        if (particle_type_selected >= (int)num_types) particle_type_selected = -1;
+        if (T->particle_type_selected >= (int)num_types) T->particle_type_selected = -1;
 
         size_t num_modified = 0;
         for (size_t i = first; i < num_types; ++i) {
-            num_modified += compute_particle_type_delta(type, particle_types[i], i) ? 1 : 0;
+            num_modified += compute_particle_type_delta(type, T->particle_types[i], i) ? 1 : 0;
         }
 
         const bool show_filter = num_types - first > 8;
         {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##atom_type_toolbar", show_filter, particle_type_filter, sizeof(particle_type_filter), "Filter by name or element",
-                num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", particle_type_optimize,
+                num_modified, reset_clicked, "Restore the modified atom types (marked *) to what was loaded", T->particle_type_optimize,
                 "Make the colors of the atom types in use as distinct as they can be. Every type starts from its default:\n"
                 "colors you set are replaced, and Reset undoes it.\n\n"
                 "Types of an element are pulled back to its color and move a little at most, where two are too close to tell apart.\n"
                 "Coarse grained beads and types without an element move freely.");
             if (reset_clicked) {
                 for (size_t i = first; i < num_types; ++i) {
-                    if (compute_particle_type_delta(type, particle_types[i], i)) {
+                    if (compute_particle_type_delta(type, T->particle_types[i], i)) {
                         reset_particle_type(data, i, radius_changed, color_changed, mass_changed);
                     }
                 }
@@ -2865,7 +2979,7 @@ struct Dataset : viamd::EventHandler {
             if (i < first) return false;
             if (md_str_empty(filter)) return true;
             const bool cg = type_is_bead(type.flags[i]);
-            return contains_ignore_case(md_str_from_cstr(particle_types[i].label), filter) || (!cg && md_str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
+            return contains_ignore_case(md_str_from_cstr(T->particle_types[i].label), filter) || (!cg && md_str_eq_ignore_case(md_atomic_number_symbol(type.z[i]), filter));
         };
 
         size_t num_rows = 0;
@@ -2880,8 +2994,8 @@ struct Dataset : viamd::EventHandler {
         }
 
         // The editor stays when the filter hides the selected type, its header tells which type it is
-        if (particle_type_selected >= 0) {
-            draw_particle_type_editor(data, (size_t)particle_type_selected, radius_changed, color_changed, mass_changed);
+        if (T->particle_type_selected >= 0) {
+            draw_particle_type_editor(data, (size_t)T->particle_type_selected, radius_changed, color_changed, mass_changed);
         } else {
             ImGui::TextDisabled("Select an atom type to edit it");
         }
@@ -2890,13 +3004,13 @@ struct Dataset : viamd::EventHandler {
 
     template <typename Filter>
     void draw_particle_type_table(ApplicationState& data, size_t num_rows, const Filter& passes_filter, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_particle_type_data_t& type = data.mold.sys.atom.type;
-        const size_t num_types = md_system_particle_type_count(&data.mold.sys);
+        md_particle_type_data_t& type = system(data).data.sys.atom.type;
+        const size_t num_types = md_system_particle_type_count(&system(data).data.sys);
 
-        if (md_array_size(particle_type_order) != num_types) {
-            md_array_resize(particle_type_order, num_types, arena);
-            for (size_t k = 0; k < num_types; ++k) particle_type_order[k] = (int)k;
-            particle_type_resort = true;
+        if (md_array_size(T->particle_type_order) != num_types) {
+            md_array_resize(T->particle_type_order, num_types, T->arena);
+            for (size_t k = 0; k < num_types; ++k) T->particle_type_order[k] = (int)k;
+            T->particle_type_resort = true;
         }
 
         // Rows hold frame sized widgets, the table scrolls once there are more than fit in max_rows
@@ -2940,15 +3054,15 @@ struct Dataset : viamd::EventHandler {
 
         // Sorted when the specs change, not when values are edited, so a row does not move away while it is being edited
         if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
-            if (specs->SpecsDirty || particle_type_resort) {
+            if (specs->SpecsDirty || T->particle_type_resort) {
                 sort_particle_types(type, specs);
                 specs->SpecsDirty = false;
-                particle_type_resort = false;
+                T->particle_type_resort = false;
             }
         }
 
         if (ImGui::IsWindowHovered()) {
-            md_bitmask_clear(&data.system_context.selection.highlight_mask);
+            md_bitmask_clear(&system(data).selection.highlight_mask);
         }
 
         md_temp_scope_t temp = md_temp_begin();
@@ -2956,7 +3070,7 @@ struct Dataset : viamd::EventHandler {
         md_array(int) rows = 0;
         md_array_ensure(rows, num_rows, md_temp_allocator(temp));
         for (size_t k = 0; k < num_types; ++k) {
-            const int i = particle_type_order[k];
+            const int i = T->particle_type_order[k];
             if (passes_filter((size_t)i)) md_array_push(rows, i, md_temp_allocator(temp));
         }
 
@@ -2965,11 +3079,11 @@ struct Dataset : viamd::EventHandler {
         while (clipper.Step()) {
             for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                 const size_t i = (size_t)rows[r];
-                DatasetItem& item = particle_types[i];
+                DatasetItem& item = T->particle_types[i];
                 const bool cg       = type_is_bead(type.flags[i]);
                 const bool linked   = item.use_defaults && !cg;
                 const bool modified = (bool)compute_particle_type_delta(type, item, i);
-                const bool selected = particle_type_selected == (int)i;
+                const bool selected = T->particle_type_selected == (int)i;
 
                 ImGui::PushID((int)i);
                 ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
@@ -2982,13 +3096,13 @@ struct Dataset : viamd::EventHandler {
                     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
                     // Shift + click is taken by the selection of atoms (handle_item_click)
                     if (ImGui::Selectable(lbl, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, frame_h)) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                        particle_type_selected = selected ? -1 : (int)i;
+                        T->particle_type_selected = selected ? -1 : (int)i;
                     }
                     ImGui::PopStyleVar();
 
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenOverlappedByItem)) {
-                        md_bitmask_clear(&data.system_context.selection.highlight_mask);
-                        md_bitmask_set_indices(&data.system_context.selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
+                        md_bitmask_clear(&system(data).selection.highlight_mask);
+                        md_bitmask_set_indices(&system(data).selection.highlight_mask, (uint32_t*)item.indices, md_array_size(item.indices));
                         handle_item_click(data);
                         // Shift + right click is taken by deselect
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift) && ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
@@ -3053,16 +3167,16 @@ struct Dataset : viamd::EventHandler {
     // ## Element defaults
 
     void draw_element_defaults(ApplicationState& data, bool& radius_changed, bool& color_changed, bool& mass_changed) {
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         md_particle_type_data_t& type = sys.atom.type;
         const size_t num_types = md_system_particle_type_count(&sys);
-        if (num_types == 0 || md_array_size(particle_types) != num_types) return;
+        if (num_types == 0 || md_array_size(T->particle_types) != num_types) return;
 
         // Elements used by particle types linked to the defaults, the others are shown disabled
         uint64_t elem_mask[2] = { 0 };
         for (size_t i = 0; i < num_types; ++i) {
             const int z = type.z[i];
-            if (particle_types[i].use_defaults && particle_types[i].count > 0) {
+            if (T->particle_types[i].use_defaults && T->particle_types[i].count > 0) {
                 elem_mask[z / 64] |= (1ULL << (z % 64));
             }
         }
@@ -3074,10 +3188,10 @@ struct Dataset : viamd::EventHandler {
 
         const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
         if (table_res.hovered) {
-            md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+            md_bitmask_t* hb = &system(data).selection.highlight_mask;
             md_bitmask_clear(hb);
             for (size_t i = 0; i < num_types; ++i) {
-                const DatasetItem& item = particle_types[i];
+                const DatasetItem& item = T->particle_types[i];
                 if (type.z[i] == table_res.z) {
                     md_bitmask_set_indices(hb, (uint32_t*)item.indices, md_array_size(item.indices));
                 }
@@ -3120,12 +3234,30 @@ struct Dataset : viamd::EventHandler {
             }
 
             if (edited) {
-                // Push onto every particle type of this element which is linked to the defaults
-                for (size_t i = 0; i < num_types; ++i) {
-                    if (type.z[i] == z && particle_types[i].use_defaults) {
-                        link_particle_type_to_element(data, i, radius_changed, color_changed, mass_changed);
+                // Push onto every particle type of this element which is linked to the defaults, of every system: the
+                // defaults are of them all
+                for (size_t k = 0; k < data.num_systems; ++k) {
+                    SystemContext& sc = *data.systems[k];
+                    work_on(sc);
+                    const md_particle_type_data_t& t = sc.data.sys.atom.type;
+                    const size_t n = MD_MIN(md_system_particle_type_count(&sc.data.sys), md_array_size(T->particle_types));
+                    bool radius = false, color = false, mass = false;
+                    for (size_t i = 0; i < n; ++i) {
+                        if (t.z[i] == z && T->particle_types[i].use_defaults) {
+                            link_particle_type_to_element(data, i, radius, color, mass);
+                        }
+                    }
+                    // Of another than the one shown, said here: the caller tells only of that one
+                    if (&sc != shown_before_all(data)) {
+                        if (radius) system_instances_flag(sc, MolBit_DirtyRadius);
+                        if (color)  flag_all_representations_as_dirty(sc);
+                    } else {
+                        radius_changed |= radius;
+                        color_changed |= color;
+                        mass_changed |= mass;
                     }
                 }
+                work_on_shown(data);
             }
             ImGui::EndPopup();
         }
@@ -3151,7 +3283,7 @@ struct Dataset : viamd::EventHandler {
         draw_element_defaults(data, radius_changed, color_changed, mass_changed);
 
         if (radius_changed) {
-            system_instances_flag(data.system_context, MolBit_DirtyRadius);
+            system_instances_flag(system(data), MolBit_DirtyRadius);
         }
         if (color_changed) {
             // @NOTE: Only the color within representations needs to be updated, not the filter.
@@ -3165,10 +3297,10 @@ struct Dataset : viamd::EventHandler {
     // ## Residue types (residue types)
 
     void highlight_res_type(ApplicationState& data, size_t i) {
-        const md_system_t& sys = data.mold.sys;
-        md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+        const md_system_t& sys = system(data).data.sys;
+        md_bitmask_t* hb = &system(data).selection.highlight_mask;
         md_bitmask_clear(hb);
-        const ResidueTypeItem& item = res_types[i];
+        const ResidueTypeItem& item = T->res_types[i];
         for (size_t k = 0; k < md_array_size(item.res_indices); ++k) {
             const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)item.res_indices[k]);
             md_bitmask_set_range(hb, r.beg, r.end);
@@ -3176,8 +3308,8 @@ struct Dataset : viamd::EventHandler {
     }
 
     void res_type_tooltip(const ApplicationState& data, size_t i) const {
-        const md_residue_type_data_t& type = data.mold.sys.residue.type;
-        const ResidueTypeItem& item = res_types[i];
+        const md_residue_type_data_t& type = system(data).data.sys.residue.type;
+        const ResidueTypeItem& item = T->res_types[i];
         const md_monomer_t m = md_residue_type_monomer(&type, i);
         char num[32];
 
@@ -3222,24 +3354,24 @@ struct Dataset : viamd::EventHandler {
 
     int compare_res_types(const md_residue_type_data_t& type, int a, int b, ImGuiID column) const {
         switch (column) {
-        case ResTypeCol_Type:      return strcmp(res_types[a].label, res_types[b].label);
+        case ResTypeCol_Type:      return strcmp(T->res_types[a].label, T->res_types[b].label);
         case ResTypeCol_Kind:      return compare3((int)md_residue_type_kind(&type, a), (int)md_residue_type_kind(&type, b));
         case ResTypeCol_Standard: {
             // Those without a standard residue go last
             const int ma = md_residue_type_monomer(&type, a), mb = md_residue_type_monomer(&type, b);
             return compare3(ma ? ma : (int)MD_MONOMER_COUNT, mb ? mb : (int)MD_MONOMER_COUNT);
         }
-        case ResTypeCol_Residues: return compare3(res_types[a].count, res_types[b].count);
+        case ResTypeCol_Residues: return compare3(T->res_types[a].count, T->res_types[b].count);
         default: return 0;
         }
     }
 
     void sort_res_types(const md_residue_type_data_t& type, const ImGuiTableSortSpecs* specs) {
-        const size_t n = md_array_size(res_type_order);
-        for (size_t k = 0; k < n; ++k) res_type_order[k] = (int)k;
+        const size_t n = md_array_size(T->res_type_order);
+        for (size_t k = 0; k < n; ++k) T->res_type_order[k] = (int)k;
         if (!specs || specs->SpecsCount == 0) return;
 
-        std::stable_sort(res_type_order, res_type_order + n, [&](int a, int b) {
+        std::stable_sort(T->res_type_order, T->res_type_order + n, [&](int a, int b) {
             for (int s = 0; s < specs->SpecsCount; ++s) {
                 const ImGuiTableColumnSortSpecs& spec = specs->Specs[s];
                 const int c = compare_res_types(type, a, b, spec.ColumnUserID);
@@ -3251,8 +3383,8 @@ struct Dataset : viamd::EventHandler {
 
     // Editor of the selected residue type, shown below the table
     void draw_res_type_editor(ApplicationState& data, size_t i, bool& color_changed) {
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
-        ResidueTypeItem& item = res_types[i];
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
+        ResidueTypeItem& item = T->res_types[i];
         const md_monomer_t m = md_residue_type_monomer(&type, i);
 
         ImGui::PushID("##comp_type_editor");
@@ -3304,13 +3436,13 @@ struct Dataset : viamd::EventHandler {
 
     template <typename Filter>
     void draw_res_type_table(ApplicationState& data, size_t num_rows, const Filter& passes_filter, bool& color_changed) {
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
         const size_t num_types = md_residue_type_count(&type);
 
-        if (md_array_size(res_type_order) != num_types) {
-            md_array_resize(res_type_order, num_types, arena);
-            for (size_t k = 0; k < num_types; ++k) res_type_order[k] = (int)k;
-            res_type_resort = true;
+        if (md_array_size(T->res_type_order) != num_types) {
+            md_array_resize(T->res_type_order, num_types, T->arena);
+            for (size_t k = 0; k < num_types; ++k) T->res_type_order[k] = (int)k;
+            T->res_type_resort = true;
         }
 
         const ImGuiStyle& style = ImGui::GetStyle();
@@ -3349,15 +3481,15 @@ struct Dataset : viamd::EventHandler {
         }
 
         if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs()) {
-            if (specs->SpecsDirty || res_type_resort) {
+            if (specs->SpecsDirty || T->res_type_resort) {
                 sort_res_types(type, specs);
                 specs->SpecsDirty = false;
-                res_type_resort   = false;
+                T->res_type_resort   = false;
             }
         }
 
         if (ImGui::IsWindowHovered()) {
-            md_bitmask_clear(&data.system_context.selection.highlight_mask);
+            md_bitmask_clear(&system(data).selection.highlight_mask);
         }
 
         md_temp_scope_t temp = md_temp_begin();
@@ -3365,7 +3497,7 @@ struct Dataset : viamd::EventHandler {
         md_array(int) rows = 0;
         md_array_ensure(rows, num_rows, md_temp_allocator(temp));
         for (size_t k = 0; k < num_types; ++k) {
-            const int i = res_type_order[k];
+            const int i = T->res_type_order[k];
             if (passes_filter((size_t)i)) md_array_push(rows, i, md_temp_allocator(temp));
         }
 
@@ -3374,10 +3506,10 @@ struct Dataset : viamd::EventHandler {
         while (clipper.Step()) {
             for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                 const size_t i = (size_t)rows[r];
-                ResidueTypeItem& item = res_types[i];
+                ResidueTypeItem& item = T->res_types[i];
                 const md_monomer_t m = md_residue_type_monomer(&type, i);
                 const bool modified = (bool)compute_res_type_delta(type, i);
-                const bool selected = res_type_selected == (int)i;
+                const bool selected = T->res_type_selected == (int)i;
 
                 ImGui::PushID((int)i);
                 ImGui::TableNextRow(ImGuiTableRowFlags_None, row_h);
@@ -3388,7 +3520,7 @@ struct Dataset : viamd::EventHandler {
                     snprintf(lbl, sizeof(lbl), "%s%s", item.label, modified ? " *" : "");
                     ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
                     if (ImGui::Selectable(lbl, selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap, ImVec2(0, frame_h)) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                        res_type_selected = selected ? -1 : (int)i;
+                        T->res_type_selected = selected ? -1 : (int)i;
                     }
                     ImGui::PopStyleVar();
 
@@ -3451,60 +3583,60 @@ struct Dataset : viamd::EventHandler {
     }
 
     void optimize_res_type_colors(ApplicationState& data, bool& color_changed) {
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
         const size_t num_types = md_residue_type_count(&type);
-        if (num_types == 0 || md_array_size(res_types) != num_types) return;
+        if (num_types == 0 || md_array_size(T->res_types) != num_types) return;
 
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         md_array(ColorOptimizeItem) items = 0;
         md_array(size_t) index = 0;
         for (size_t i = 0; i < num_types; ++i) {
-            if (res_types[i].count == 0) continue;      // Only the types in use
+            if (T->res_types[i].count == 0) continue;      // Only the types in use
             // A form of a standard residue is pulled to the color of its defaults, a monatomic ion to that of its element
             // (which it was inferred with), unless it is a bead without one. The others start from the color they were
             // inferred with and are free.
             const bool has_monomer = res_type_has_monomer(type, i);
             bool element_ion = false;
             if (!has_monomer && md_residue_type_kind(&type, i) == MD_RESIDUE_KIND_ION) {
-                const md_urange_t atoms = md_system_residue_atom_range(&data.mold.sys, (size_t)res_types[i].res_indices[0]);
-                element_ion = atoms.end > atoms.beg && md_atom_atomic_number(&data.mold.sys.atom, atoms.beg) != 0;
+                const md_urange_t atoms = md_system_residue_atom_range(&system(data).data.sys, (size_t)T->res_types[i].res_indices[0]);
+                element_ion = atoms.end > atoms.beg && md_atom_atomic_number(&system(data).data.sys.atom, atoms.beg) != 0;
             }
             ColorOptimizeItem it;
-            it.color  = has_monomer ? monomer_default_color(md_residue_type_monomer(&type, i)) : res_types[i].load_color;
+            it.color  = has_monomer ? monomer_default_color(md_residue_type_monomer(&type, i)) : T->res_types[i].load_color;
             it.pull   = has_monomer || element_ion ? color_optimize_pull : 0.0f;
-            it.weight = (float)res_types[i].atom_count;
+            it.weight = (float)T->res_types[i].atom_count;
             md_array_push(items, it, md_temp_allocator(temp));
             md_array_push(index, i, md_temp_allocator(temp));
         }
         const ColorOptimizeResult res = optimize_colors(items, md_array_size(items), color_optimize_desc(data));
-        res_type_optimize.has_result    = true;
-        res_type_optimize.min_distance = res.min_distance;
-        res_type_optimize.num_changed   = 0;
+        T->res_type_optimize.has_result    = true;
+        T->res_type_optimize.min_distance = res.min_distance;
+        T->res_type_optimize.num_changed   = 0;
 
         for (size_t k = 0; k < md_array_size(items); ++k) {
             const size_t i = index[k];
             if (res_type_has_monomer(type, i)) {
                 // Linked to its defaults as long as it kept their color
-                res_types[i].use_defaults = items[k].color == monomer_default_color(md_residue_type_monomer(&type, i));
+                T->res_types[i].use_defaults = items[k].color == monomer_default_color(md_residue_type_monomer(&type, i));
             }
-            res_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
+            T->res_type_optimize.num_changed += type.color[i] != items[k].color ? 1 : 0;
             color_changed |= type.color[i] != items[k].color;
             type.color[i] = items[k].color;
         }
     }
 
     void draw_res_types(ApplicationState& data, bool& color_changed) {
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         md_residue_type_data_t& type = sys.residue.type;
         const size_t num_types = md_residue_type_count(&type);
-        if (num_types == 0 || md_array_size(res_types) != num_types) {
+        if (num_types == 0 || md_array_size(T->res_types) != num_types) {
             ImGui::TextDisabled("No residues in this system");
             return;
         }
 
         // Types no residue is of any more (reclassified when the system was inferred again) are not listed
-        auto in_use = [&](size_t i) { return res_types[i].count > 0; };
+        auto in_use = [&](size_t i) { return T->res_types[i].count > 0; };
         size_t num_used = 0;
         size_t num_modified = 0;
         for (size_t i = 0; i < num_types; ++i) {
@@ -3516,13 +3648,13 @@ struct Dataset : viamd::EventHandler {
         snprintf(header, sizeof(header), "Residue Types (%zu)###ResidueTypes", num_used);
         if (!ImGui::CollapsingHeader(header, ImGuiTreeNodeFlags_DefaultOpen)) return;
 
-        if (res_type_selected >= (int)num_types) res_type_selected = -1;
+        if (T->res_type_selected >= (int)num_types) T->res_type_selected = -1;
 
         const bool show_filter = num_used > 8;
         {
             bool reset_clicked = false;
             const bool optimize = draw_type_table_toolbar("##comp_type_toolbar", show_filter, res_type_filter, sizeof(res_type_filter), "Filter by name, standard residue or kind",
-                num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", res_type_optimize,
+                num_modified, reset_clicked, "Restore the modified residue types (marked *) to what was loaded", T->res_type_optimize,
                 "Make the colors of the residue types in use as distinct as they can be. Every type starts from its default:\n"
                 "colors you set are replaced, and Reset undoes it.\n\n"
                 "Standard residues are pulled back to their palette color, and ions to the color of their element: they move a little\n"
@@ -3542,7 +3674,7 @@ struct Dataset : viamd::EventHandler {
             if (!in_use(i)) return false;
             if (md_str_empty(filter)) return true;
             const md_monomer_t m = md_residue_type_monomer(&type, i);
-            return contains_ignore_case(md_str_from_cstr(res_types[i].label), filter) ||
+            return contains_ignore_case(md_str_from_cstr(T->res_types[i].label), filter) ||
                    (m != MD_MONOMER_NONE && md_str_eq_ignore_case(md_monomer_id(m), filter)) ||
                    contains_ignore_case(md_str_from_cstr(md_residue_kind_name(md_residue_type_kind(&type, i))), filter);
         };
@@ -3558,8 +3690,8 @@ struct Dataset : viamd::EventHandler {
             draw_res_type_table(data, num_rows, passes_filter, color_changed);
         }
 
-        if (res_type_selected >= 0) {
-            draw_res_type_editor(data, (size_t)res_type_selected, color_changed);
+        if (T->res_type_selected >= 0) {
+            draw_res_type_editor(data, (size_t)T->res_type_selected, color_changed);
         } else {
             ImGui::TextDisabled("Select a residue type to edit it");
         }
@@ -3586,15 +3718,15 @@ struct Dataset : viamd::EventHandler {
 
     // The defaults of the standard monomers (tier 1), which the residue types linked to them follow
     void draw_monomer_defaults(ApplicationState& data, bool& color_changed) {
-        md_residue_type_data_t& type = data.mold.sys.residue.type;
+        md_residue_type_data_t& type = system(data).data.sys.residue.type;
         const size_t num_types = md_residue_type_count(&type);
-        if (num_types == 0 || md_array_size(res_types) != num_types) return;
+        if (num_types == 0 || md_array_size(T->res_types) != num_types) return;
 
         // Monomers of residue types linked to the defaults, the others are shown disabled
         bool used[MD_MONOMER_COUNT] = {};
         bool any = false;
         for (size_t i = 0; i < num_types; ++i) {
-            if (res_types[i].use_defaults && res_types[i].count > 0) {
+            if (T->res_types[i].use_defaults && T->res_types[i].count > 0) {
                 used[md_residue_type_monomer(&type, i)] = true;
                 any = true;
             }
@@ -3626,12 +3758,12 @@ struct Dataset : viamd::EventHandler {
                 ImGui::EndDisabled();
                 if (ImGui::IsItemHovered()) {
                     // The atoms of the residue types which follow these defaults
-                    md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+                    md_bitmask_t* hb = &system(data).selection.highlight_mask;
                     md_bitmask_clear(hb);
                     for (size_t i = 0; i < num_types; ++i) {
-                        if (!res_types[i].use_defaults || md_residue_type_monomer(&type, i) != m) continue;
-                        for (size_t k = 0; k < md_array_size(res_types[i].res_indices); ++k) {
-                            const md_urange_t r = md_system_residue_atom_range(&data.mold.sys, (size_t)res_types[i].res_indices[k]);
+                        if (!T->res_types[i].use_defaults || md_residue_type_monomer(&type, i) != m) continue;
+                        for (size_t k = 0; k < md_array_size(T->res_types[i].res_indices); ++k) {
+                            const md_urange_t r = md_system_residue_atom_range(&system(data).data.sys, (size_t)T->res_types[i].res_indices[k]);
                             md_bitmask_set_range(hb, r.beg, r.end);
                         }
                     }
@@ -3660,11 +3792,25 @@ struct Dataset : viamd::EventHandler {
             }
             if (edited) {
                 def.color.w = 1.0f;
-                for (size_t i = 0; i < num_types; ++i) {
-                    if (res_types[i].use_defaults && md_residue_type_monomer(&type, i) == m) {
-                        link_res_type_to_monomer(type, i, color_changed);
+                // Of every system: the defaults are of them all
+                for (size_t k = 0; k < data.num_systems; ++k) {
+                    SystemContext& sc = *data.systems[k];
+                    work_on(sc);
+                    md_residue_type_data_t& t = sc.data.sys.residue.type;
+                    const size_t n = MD_MIN(md_residue_type_count(&t), md_array_size(T->res_types));
+                    bool color = false;
+                    for (size_t i = 0; i < n; ++i) {
+                        if (T->res_types[i].use_defaults && md_residue_type_monomer(&t, i) == m) {
+                            link_res_type_to_monomer(t, i, color);
+                        }
+                    }
+                    if (&sc != shown_before_all(data)) {
+                        if (color) flag_all_representations_as_dirty(sc);
+                    } else {
+                        color_changed |= color;
                     }
                 }
+                work_on_shown(data);
             }
             ImGui::EndPopup();
         }
@@ -3704,8 +3850,8 @@ struct Dataset : viamd::EventHandler {
     // A table of the user's edits of the bonds (md_system_t::bond_edit): the bonds added (to remove), or those removed
     // (MD_BOND_FLAG_INACTIVE, to restore). Returns the edit whose button was pressed, -1 for none: applied after, as it
     // changes what is drawn.
-    static int64_t draw_bond_edits(ApplicationState& data, const char* id, const md_bond_list_t& bonds, bool removed) {
-        const md_system_t& sys = data.mold.sys;
+    int64_t draw_bond_edits(ApplicationState& data, const char* id, const md_bond_list_t& bonds, bool removed) {
+        const md_system_t& sys = system(data).data.sys;
         int64_t pressed = -1;
         const size_t num = md_bond_list_count(&bonds);
         const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
@@ -3729,7 +3875,7 @@ struct Dataset : viamd::EventHandler {
             snprintf(label, sizeof(label), "%s - %s", a, b);
             ImGui::Selectable(label, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
             if (ImGui::IsItemHovered()) {
-                md_bitmask_t* hb = &data.system_context.selection.highlight_mask;
+                md_bitmask_t* hb = &system(data).selection.highlight_mask;
                 md_bitmask_clear(hb);
                 md_bitmask_set_bit(hb, (uint32_t)pair.idx[0]);
                 md_bitmask_set_bit(hb, (uint32_t)pair.idx[1]);
@@ -3753,7 +3899,7 @@ struct Dataset : viamd::EventHandler {
     // The bonds: how many, by where they came from, and the user's edits of them, added and removed, which are kept in
     // the workspace
     void draw_bonds_tab(ApplicationState& data) {
-        md_system_t& sys = data.mold.sys;
+        md_system_t& sys = system(data).data.sys;
         const uint64_t key = sys.topology_version ^ (uint64_t)(uintptr_t)sys.bond.flags ^ ((uint64_t)sys.bond.count << 40);
         if (bond_counts.key != key) {
             bond_counts = {};
@@ -3783,7 +3929,7 @@ struct Dataset : viamd::EventHandler {
                 const int64_t i = draw_bond_edits(data, "##removed_bonds", edits, true);
                 const bool all = ImGui::Button("Restore All");
                 if (i >= 0 || all) {
-                    system_core_edit_begin(data.system_context);
+                    system_core_edit_begin(system(data));
                     if (all) {
                         // Each restored takes its edit away, which the last takes the place of: from the last down
                         for (size_t k = md_bond_list_count(&sys.bond_edit); k-- > 0;) {
@@ -3796,7 +3942,7 @@ struct Dataset : viamd::EventHandler {
                         const md_atom_pair_t p = edits.pairs[i];
                         md_system_bond_restore(&sys, p.idx[0], p.idx[1], edits.flags[i]);
                     }
-                    system_core_changed(data.system_context);
+                    system_core_changed(system(data));
                 }
             }
         }
@@ -3808,10 +3954,10 @@ struct Dataset : viamd::EventHandler {
             } else {
                 const int64_t i = draw_bond_edits(data, "##added_bonds", edits, false);
                 if (i >= 0) {
-                    system_core_edit_begin(data.system_context);
+                    system_core_edit_begin(system(data));
                     const md_atom_pair_t p = edits.pairs[i];
                     md_system_bond_remove(&sys, p.idx[0], p.idx[1], edits.flags[i]);
-                    system_core_changed(data.system_context);
+                    system_core_changed(system(data));
                 }
             }
         }
@@ -3822,8 +3968,14 @@ struct Dataset : viamd::EventHandler {
 
         ImGui::SetNextWindowSize(ImVec2(560, 700), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("System", &show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            // Of which system, where there are several
+            if (system_count(data) > 1) {
+                ImGui::SetNextItemWidth(220);
+                if (system_combo("##system", &system_id, data)) work_on_shown(data);
+                ImGui::SetItemTooltip("The system shown");
+            }
             if (ImGui::IsWindowHovered()) {
-                md_bitmask_clear(&data.system_context.selection.highlight_mask);
+                md_bitmask_clear(&system(data).selection.highlight_mask);
             }
             if (ImGui::BeginTabBar("##system_tabs")) {
                 if (ImGui::BeginTabItem("Overview")) {
