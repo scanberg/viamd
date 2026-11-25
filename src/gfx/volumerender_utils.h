@@ -43,9 +43,10 @@ enum ramp_type_t {
 // If you want a monotonic ramp (standard), you can for example use SAWTOOTH with a period of 1
 void compute_transfer_function_texture(uint32_t* texture, int implot_colormap, ramp_type_t ramp_type = RAMP_TYPE_SAWTOOTH, float ramp_scale = 1.0f, float ramp_period = 1.0001f, int resolution = 128);
 
-// Precomputes a 3D texture of interpolated point colors from a list of colored points (e.g. for splatting or point-based rendering)
-// It uses Shepard interpolation combined with RDFs encoded as gaussians to interpolate the colors of the points onto a regular grid.
-void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power = 4.0f);
+// The interpolated colours of coloured points on a regular grid (RGBA8, x fastest, into result: volume_dim's voxels):
+// Shepard interpolation with Gaussian weights of each point's radius (xyz, w: radius), the voxels' centres placed by
+// index_to_world. On the CPU.
+void splat_point_colors(uint32_t* result, const int volume_dim[3], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power = 4.0);
 
 // The two renderers below share no state and are never combined in one pass: a view shows either
 // the isosurfaces of a volume or a direct volume rendering of it.

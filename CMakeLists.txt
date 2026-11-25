@@ -193,6 +193,8 @@ set(SRC_FILES
     src/main.cpp
     src/md_render_bridge.cpp
     src/md_render_bridge.h
+    src/gpu_volume.cpp
+    src/gpu_volume.h
     src/plot_series.cpp
     src/plot_periodic.cpp
     src/plot_periodic_core.cpp
@@ -328,7 +330,6 @@ set(SHADER_FILES
     src/shaders/volume/cell_minmax.frag
     src/shaders/volume/block_proxy.vert
     src/shaders/volume/block_proxy.frag
-    src/shaders/volume/splat_color.comp
     src/shaders/volume/isomesh.vert
     src/shaders/volume/isomesh.frag
     src/shaders/volume/isomesh_accumulate.frag

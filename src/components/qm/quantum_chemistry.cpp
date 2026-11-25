@@ -2099,7 +2099,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
                 use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
 #if MD_ENABLE_GPU
-                md_gto_gpu_initialize(state.gpu_device);
+                // (md_gto's GPU evaluation is the application's: main.cpp)
                 md_topo_gpu_initialize(state.gpu_device);
 #endif
                 break;
@@ -2112,7 +2112,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 ctv_free();
 #if MD_ENABLE_GPU
                 gl::pbo_upload_shutdown();
-                md_gto_gpu_shutdown();
                 md_topo_gpu_shutdown();
                 // Nothing is freed here: the device scratch and the dataset's uploaded basis are
                 // both the application's, and it destroys them.

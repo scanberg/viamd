@@ -448,14 +448,84 @@ static void keep_index(IsoMeshes* m, const uint32_t* idx, uint32_t count) {
     if (m->tri_index) md_memcpy(m->tri_index, idx, sizeof(uint32_t) * count);
 }
 
-// The device copy of the vertices, which goes with the mesh it is of
+// The device copies of the mesh, which go with the mesh they are of: freed after what may read them, the evaluations'
+// stream (the field at the vertices) and, of gpu_mesh, the main view's (the device's graphics stream)
 static void drop_gpu_xyz(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
-    if (m->gpu_xyz && state->gpu_stream) md_gpu_free(state->gpu_stream, m->gpu_xyz);
+    md_gpu_stream_t s = state->gpu_stream;
+    if (s && (m->gpu_xyz || m->gpu_normal || m->gpu_index)) {
+        if (m->gpu_mesh) md_gpu_stream_wait(s, md_gpu_stream_record(md_gpu_stream_default(state->gpu_device, MD_GPU_STREAM_GRAPHICS)));
+        if (m->gpu_xyz) md_gpu_free(s, m->gpu_xyz);
+        if (m->gpu_normal) md_gpu_free(s, m->gpu_normal);
+        if (m->gpu_index) md_gpu_free(s, m->gpu_index);
+    }
 #else
     (void)state;
 #endif
-    m->gpu_xyz = 0;
+    m->gpu_xyz = m->gpu_normal = m->gpu_index = 0;
+    m->num_vertices = m->num_indices = 0;
+}
+
+static uint64_t mesh_version_count = 0;     // IsoMeshes::version: unique across meshes
+
+#if MD_ENABLE_GPU
+// count float4 of what is at stride floats in src (its first 3; w 1), into a new device buffer on the stream
+static md_gpu_addr_t upload_float4(md_gpu_stream_t s, const float* src, size_t stride, uint32_t count) {
+    const md_gpu_addr_t a = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(float) * 4 * MD_MAX(count, 1u)).gpu;
+    float* dst = a ? (float*)md_gpu_upload_begin(s, a, sizeof(float) * 4 * count) : nullptr;
+    if (!dst) {
+        if (a) md_gpu_free(s, a);
+        return 0;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        for (int k = 0; k < 3; ++k) dst[4 * i + k] = src[stride * i + k];
+        dst[4 * i + 3] = 1.0f;
+    }
+    md_gpu_upload_end(s);
+    return a;
+}
+#endif
+
+// The mesh made (positions and normals stride floats apart; the GPU path's device buffers, taken where given): into
+// GL for the windows' panels, onto md_gpu for the main view (gpu_mesh). The positions on the device either way, where
+// the GPU path has them (for the field at the vertices). False when it cannot be.
+static bool mesh_publish(IsoMeshes* m, ApplicationState* state, const float* pos, const float* nrm, size_t stride, uint32_t nv,
+                         const uint32_t* idx, uint32_t ni, md_gpu_addr_t* dev_pos, md_gpu_addr_t* dev_nrm, md_gpu_addr_t* dev_idx) {
+    m->version = ++mesh_version_count;
+    if (dev_pos) {
+        m->gpu_xyz = *dev_pos;
+        *dev_pos = 0;
+    }
+    if (!m->gpu_mesh) {
+        const bool ok = isomesh::mesh_upload(&m->mesh, pos, nrm, stride, nv, idx, ni);
+        m->num_vertices = ok ? nv : 0;
+        m->num_indices = ok ? ni : 0;
+        return ok;
+    }
+#if MD_ENABLE_GPU
+    md_gpu_stream_t s = state->gpu_stream;
+    if (dev_nrm && dev_idx && m->gpu_xyz) {
+        m->gpu_normal = *dev_nrm;
+        m->gpu_index = *dev_idx;
+        *dev_nrm = *dev_idx = 0;
+    } else if (nv > 0 && ni > 0 && s) {
+        if (!m->gpu_xyz) m->gpu_xyz = upload_float4(s, pos, stride, nv);
+        m->gpu_normal = upload_float4(s, nrm, stride, nv);
+        m->gpu_index = md_gpu_malloc(s, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * ni).gpu;
+        if (m->gpu_index && !md_gpu_upload(s, m->gpu_index, idx, sizeof(uint32_t) * ni)) {
+            md_gpu_free(s, m->gpu_index);
+            m->gpu_index = 0;
+        }
+        if (!m->gpu_xyz || !m->gpu_normal || !m->gpu_index) return false;
+    }
+    m->gpu_ready = s ? md_gpu_stream_record(s) : md_gpu_sync_none();
+    m->num_vertices = nv;
+    m->num_indices = ni;
+    return true;
+#else
+    (void)state; (void)dev_nrm; (void)dev_idx;
+    return false;
+#endif
 }
 
 void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
@@ -467,8 +537,10 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
     free(m->xyz);
     free(m->tri_index);
     const uint64_t version = m->mesh.version;
+    const bool gpu_mesh = m->gpu_mesh;
     *m = {};
     m->mesh.version = version;
+    m->gpu_mesh = gpu_mesh;
 }
 
 static void set_ranges(IsoMeshes* m, uint32_t num_slots, const uint32_t offset[][2], const uint32_t count[][2]) {
@@ -581,14 +653,13 @@ static int job_poll(IsoMeshes* m, ApplicationState* state) {
     m->job_slots = 0;
     if (!done) return 0;
     drop_gpu_xyz(m, state);
-    const bool ok = isomesh::mesh_upload(&m->mesh, gm.host_position, gm.host_normal, 4, gm.vertex_count, gm.host_index, gm.index_count);
+    // the positions stay on the device for what is evaluated at them (and the mesh for the main view: gpu_mesh)
+    const bool ok = mesh_publish(m, state, gm.host_position, gm.host_normal, 4, gm.vertex_count, gm.host_index, gm.index_count,
+                                 &gm.position, &gm.normal, &gm.index);
     if (ok) {
         set_ranges(m, n, gm.index_offset, gm.index_count_of);
         keep_xyz(m, gm.host_position, 4, gm.vertex_count);
         keep_index(m, gm.host_index, gm.index_count);
-        // the positions stay on the device for what is evaluated at them
-        m->gpu_xyz = gm.position;
-        gm.position = 0;
     }
     m->seconds = gm.seconds_total;
     md_gto_iso_gpu_mesh_free(state->gpu_stream, &gm);
@@ -596,8 +667,8 @@ static int job_poll(IsoMeshes* m, ApplicationState* state) {
     m->ok = ok;
     m->on_gpu = true;
     if (ok) {
-        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (GPU, over frames)", n, m->mesh.vertex_count,
-                     m->mesh.index_count / 3, m->seconds * 1.0e3);
+        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (GPU, over frames)", n, m->num_vertices,
+                     m->num_indices / 3, m->seconds * 1.0e3);
     } else {
         MD_LOG_ERROR("Isosurface meshes: the upload failed");
     }
@@ -655,7 +726,7 @@ static md_gto_iso_cache_t* cpu_cache(IsoMeshes* m, const md_gto_iso_field_t* fie
     return cache;
 }
 
-static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, double cell_size) {
+static bool extract_cpu(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* slots, uint32_t n, double cell_size) {
     md_gto_iso_mesh_t meshes[ISO_MESHES_MAX_SLOTS] = {};
     uint32_t offset[ISO_MESHES_MAX_SLOTS][2] = {}, count[ISO_MESHES_MAX_SLOTS][2] = {};
     size_t nv = 0, ni = 0;
@@ -690,7 +761,7 @@ static bool extract_cpu(IsoMeshes* m, const IsoMeshSlot* slots, uint32_t n, doub
             v0 += mk.vertex_count;
             i0 += mk.index_count;
         }
-        ok = pos && nrm && idx && isomesh::mesh_upload(&m->mesh, pos, nrm, 3, (uint32_t)nv, idx, (uint32_t)ni);
+        ok = pos && nrm && idx && mesh_publish(m, state, pos, nrm, 3, (uint32_t)nv, idx, (uint32_t)ni, nullptr, nullptr, nullptr);
         if (ok) {
             set_ranges(m, n, offset, count);
             keep_xyz(m, pos, 3, (uint32_t)nv);
@@ -791,18 +862,18 @@ static bool extract_now(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot
     const md_tick_t t0 = md_tick_now();
     bool ok = false;
     if (n == 0) {
-        ok = isomesh::mesh_upload(&m->mesh, nullptr, nullptr, 3, 0, nullptr, 0);
+        ok = mesh_publish(m, state, nullptr, nullptr, 3, 0, nullptr, 0, nullptr, nullptr, nullptr);
         set_ranges(m, 0, nullptr, nullptr);
         keep_xyz(m, nullptr, 3, 0);
         keep_index(m, nullptr, 0);
     } else {
-        ok = extract_cpu(m, slots, n, cell_size);
+        ok = extract_cpu(m, state, slots, n, cell_size);
     }
     m->seconds = md_tick_to_milliseconds(md_tick_now() - t0) * 1.0e-3;
     m->ok = ok;
     m->on_gpu = false;
     if (ok) {
-        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (CPU)", n, m->mesh.vertex_count, m->mesh.index_count / 3,
+        MD_LOG_DEBUG("Isosurface meshes: %u slots, %u vertices, %u triangles in %.1f ms (CPU)", n, m->num_vertices, m->num_indices / 3,
                      m->seconds * 1.0e3);
     } else {
         MD_LOG_ERROR("Isosurface meshes: the extraction failed");
@@ -835,11 +906,28 @@ struct EsIsoMesh {
     IsoBuild* field_build = nullptr;    // the field of another key, being made on a worker thread
     IsoMeshes meshes = {};
 
-    // A field at the vertices (SurfaceColoring::Field)
+    // A field at the vertices (SurfaceColoring::Field), and its values there once they are (a copy)
     SurfaceFieldPoints field_points = {};
     uint64_t values_key = 0;        // of the mesh and the field the values are of
     ColorScaleSpan span = {};
+    float*   values = nullptr;
+    uint32_t values_count = 0;
+    uint64_t values_version = 0;
+
+    // The surfaces as drawn (electronic_structure_mesh_draw): an isovalue's sheet each
+    EsMeshDraw::Part parts[16] = {};
+    uint32_t num_parts = 0;
 };
+
+static uint64_t values_version_count = 0;   // EsIsoMesh::values_version: unique across meshes
+
+static void values_set(EsIsoMesh& em, const float* v, size_t n) {
+    free(em.values);
+    em.values = n && v ? (float*)malloc(sizeof(float) * n) : nullptr;
+    em.values_count = em.values ? (uint32_t)n : 0;
+    if (em.values) md_memcpy(em.values, v, sizeof(float) * n);
+    em.values_version = ++values_version_count;
+}
 
 static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
@@ -967,6 +1055,7 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
     iso_field_release(es->iso_mesh->field);     // when no set of it is being made
     build_orphan(es->iso_mesh->field_build);
     free(es->iso_mesh->field_xyz);
+    free(es->iso_mesh->values);
     surface_field_points_free(&es->iso_mesh->field_points);
     delete es->iso_mesh;
     es->iso_mesh = nullptr;
@@ -992,11 +1081,15 @@ static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t f
     }
 }
 
-size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, ApplicationState* state, Representation* rep, const IsoDesc& iso) {
+// The meshes of the representation's isosurfaces (electronic_structure_meshes_update), on md_gpu for the main view
+static void es_meshes_update(ApplicationState* state, Representation* rep, const IsoDesc& iso) {
     MD_ASSERT(state);
     MD_ASSERT(rep);
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    if (!es.iso_mesh) es.iso_mesh = new EsIsoMesh();
+    if (!es.iso_mesh) {
+        es.iso_mesh = new EsIsoMesh();
+        es.iso_mesh->meshes.gpu_mesh = true;
+    }
     EsIsoMesh& em = *es.iso_mesh;
 
     // The field, made on a worker thread: the old one and its meshes stay until the new one is there. A field
@@ -1036,7 +1129,8 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     }
     if (!em.field) {
         field_build_begin(em, state, field_key, spec);
-        return 0;
+        em.num_parts = 0;
+        return;
     }
 
     // One slot per distinct isovalue, its sheets those of the entries that share it: the + and - surfaces of
@@ -1072,10 +1166,12 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     geometry.num_atoms = em.field_num_atoms;
     const bool ok = iso_meshes_update(&em.meshes, state, slots, num_slots, iso_meshes_cell_size(es.resolution), em.field_key, &geometry);
     field_build_begin(em, state, field_key, spec);
-    if (!ok) return 0;
+    if (!ok) {
+        em.num_parts = 0;
+        return;
+    }
 
     // Coloured by a field: the field at the vertices
-    bool vertex_field = false;
     if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, state->mold.sys)) {
         // What the values are of: the field (its kind, the frame) and the vertices
         uint64_t source = md_hash64(&es.field_kind, sizeof(es.field_kind), 0x5f1e1d);
@@ -1105,72 +1201,74 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             points.gpu_xyz    = em.meshes.gpu_xyz;
             points.gpu_stride = sizeof(float) * 4;
             points.count      = em.meshes.xyz_count;
-            if (!surface_field_points_begin(&em.field_points, points, desc)) {
-                isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
-            }
+            if (!surface_field_points_begin(&em.field_points, points, desc)) values_set(em, nullptr, 0);
             md_temp_end(temp);
         }
         const float* values = nullptr;
         size_t nv = 0;
         if (surface_field_points_poll(&em.field_points, &values, &nv) == SurfaceFieldPointsStatus::Done && values && nv == em.meshes.xyz_count) {
-            // and its gradient along the surface, which the isolines take their width from
-            md_temp_scope_t temp = md_temp_begin();
-            float* gradients = (float*)md_temp_alloc(temp, sizeof(float) * 3 * MD_MAX(nv, (size_t)1));
-            isomesh::mesh_field_gradient(gradients, em.meshes.xyz, values, (uint32_t)nv, em.meshes.tri_index, em.meshes.tri_index_count);
-            if (isomesh::mesh_upload_values(&em.meshes.mesh, values, gradients, (uint32_t)nv)) {
-                em.span = surface_field_span_of(values, nv);
-                color_scale_update_range(&es.field_map, em.span);
-                MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
-                             em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
-            } else {
-                isomesh::mesh_upload_values(&em.meshes.mesh, nullptr, nullptr, 0);
-            }
-            md_temp_end(temp);
+            values_set(em, values, nv);
+            em.span = surface_field_span_of(values, nv);
+            color_scale_update_range(&es.field_map, em.span);
+            MD_LOG_DEBUG("Isosurface meshes: %s at %zu vertices in %.1f ms (%s, over frames)", surface_field_kind_info(es.field_kind).label, nv,
+                         em.field_points.seconds * 1.0e3, em.field_points.on_gpu ? "GPU" : "CPU");
         }
-        vertex_field = em.span.valid;
     }
 
-    const md_float4x4_t model = iso_meshes_model_matrix();
-    size_t n = 0;
+    em.num_parts = 0;
     for (size_t i = 0; i < count; ++i) {
         if (entry_slot[i] < 0) continue;
         const int k = entry_slot[i];
         for (int s = 0; s < 2; ++s) {
-            if (!(entry_sheets[i] & (1u << s)) || em.meshes.index_count[k][s] == 0 || n >= cap) continue;
-            isomesh::Surface& surf = out[n++];
-            surf = {};
-            surf.mesh = &em.meshes.mesh;
-            surf.index_offset = em.meshes.index_offset[k][s];
-            surf.index_count  = em.meshes.index_count[k][s];
-            surf.model = model;
-            surf.color = iso.colors[i];
-            surf.optical_density = iso.optical_densities[i];
-            if (vertex_field) surf.coloring = isomesh::Coloring_VertexField;
+            if (!(entry_sheets[i] & (1u << s)) || em.meshes.index_count[k][s] == 0 || em.num_parts >= MD_COUNTOF(em.parts)) continue;
+            EsMeshDraw::Part& p = em.parts[em.num_parts++];
+            p.index_offset = em.meshes.index_offset[k][s];
+            p.index_count  = em.meshes.index_count[k][s];
+            p.color        = iso.colors[i];
         }
     }
-    return n;
 }
 
 void electronic_structure_meshes_update(ApplicationState* state, Representation* rep) {
     MD_ASSERT(state);
     MD_ASSERT(rep);
-    // as draw_representations_transparent_mesh draws them
     if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(*state, *rep)) return;
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es_mesh_mode(state, es) || state->mold.sys.atom.count == 0) return;
     if (es.display != ElectronicStructureDisplay::Isosurface) return;
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);
-    isomesh::Surface surfaces[16];      // 8 values, 2 sheets each
-    electronic_structure_mesh_surfaces(surfaces, MD_COUNTOF(surfaces), state, rep, iso);
+    es_meshes_update(state, rep, iso);
 }
 
 uint64_t electronic_structure_mesh_key(const ElectronicStructureRepresentation& es) {
     if (!es.iso_mesh) return 0;
     const EsIsoMesh& em = *es.iso_mesh;
-    const uint64_t v[4] = {(uint64_t)(uintptr_t)&em, em.meshes.mesh.version, (uint64_t)em.meshes.ok | ((uint64_t)em.span.valid << 1),
-                           em.meshes.num_slots};
-    return md_hash64(v, sizeof(v), 0x150e5);
+    const uint64_t v[4] = {em.meshes.version, (uint64_t)em.meshes.ok | ((uint64_t)em.span.valid << 1), em.values_version, em.num_parts};
+    uint64_t h = md_hash64(v, sizeof(v), 0x150e5);
+    return md_hash64(em.parts, sizeof(em.parts[0]) * em.num_parts, h);
+}
+
+bool electronic_structure_mesh_draw(EsMeshDraw* out, const ElectronicStructureRepresentation& es) {
+    *out = {};
+    if (!es.iso_mesh) return false;
+    const EsIsoMesh& em = *es.iso_mesh;
+    const IsoMeshes& m = em.meshes;
+    if (!m.ok || !m.gpu_xyz || !m.gpu_normal || !m.gpu_index || m.num_vertices == 0 || em.num_parts == 0) return false;
+    out->position = m.gpu_xyz;
+    out->normal = m.gpu_normal;
+    out->index = m.gpu_index;
+    out->num_vertices = m.num_vertices;
+    out->ready = m.gpu_ready;
+    out->version = m.version;
+    out->xyz = m.xyz_count == m.num_vertices ? m.xyz : nullptr;
+    if (es.coloring == SurfaceColoring::Field && em.values && em.values_count == m.num_vertices) {
+        out->values = em.values;
+        out->values_version = em.values_version;
+    }
+    out->num_parts = em.num_parts;
+    for (uint32_t i = 0; i < em.num_parts; ++i) out->parts[i] = em.parts[i];
+    return true;
 }
 
 ColorScaleSpan electronic_structure_mesh_field_span(const ElectronicStructureRepresentation& es) {

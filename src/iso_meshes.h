@@ -54,7 +54,15 @@ struct IsoFieldGeometry {
 };
 
 struct IsoMeshes {
-    isomesh::Mesh mesh = {};
+    isomesh::Mesh mesh = {};    // on GL, for the windows' panels (gpu_mesh false)
+    // Or on md_gpu, for the main view (a representation's: md_render_bridge.cpp): gpu_xyz its positions (below), these
+    // its normals (float4 per vertex) and its triangles (uint32 per corner), ready once the stream it was made on is
+    // past gpu_ready (to wait for on another). Freed after what the main view's stream has issued.
+    bool          gpu_mesh = false;
+    md_gpu_addr_t gpu_normal = 0, gpu_index = 0;
+    md_gpu_sync_t gpu_ready = {};
+    uint32_t num_vertices = 0, num_indices = 0;
+    uint64_t version = 0;       // counted up with every mesh made, unique across meshes
     uint32_t num_slots = 0;
     uint32_t index_offset[ISO_MESHES_MAX_SLOTS][2] = {};   // [slot][0] the positive sheet, [1] the negative
     uint32_t index_count [ISO_MESHES_MAX_SLOTS][2] = {};
@@ -63,8 +71,8 @@ struct IsoMeshes {
     bool     on_gpu = false;    // which path made it
     double   seconds = 0.0;     // what the last extraction took
     // The vertices, bohr, where a field is evaluated (surface_field_evaluate_points): on the host, packed
-    // float3, and after a GPU extraction also where the extraction left them on the device (float4 per
-    // vertex), so the evaluation reads them there instead of uploading them again
+    // float3, and after a GPU extraction (or of gpu_mesh) also on the device (float4 per vertex), so the evaluation
+    // reads them there instead of uploading them again
     float*   xyz = nullptr;
     uint32_t xyz_count = 0;
     uint32_t* tri_index = nullptr;  // the triangles on the host too, three per triangle, for the field's gradient
@@ -129,22 +137,33 @@ md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, con
 md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const double* left, const double* right, const double* weight,
                                               size_t count, size_t num_ao);
 
-// The surfaces of an electronic structure representation as meshes: the field its volume is evaluated from,
-// cut at the values of 'iso' (electronic_structure_iso_desc_init). Fills 'out' (mesh, range, model matrix,
-// colour, optical density; the caller sets the colouring) and returns how many there are; 0 when there is
-// nothing to draw or the extraction failed.
-//
-// Coloured by a field (SurfaceColoring::Field), the field is evaluated at the vertices of the meshes
-// (surface_field_evaluate_points: on the GPU where it can be) and the surfaces come with
-// Coloring_VertexField; the caller sets the colour map and the range. The colour scale's range follows
-// the values on the vertices when it is automatic.
-size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, ApplicationState* state, Representation* rep, const IsoDesc& iso);
-
 // Brings a representation's meshes up to date, once a frame whether or not the view is drawn: lazy rendering draws
-// the scene only when its key changes, and what electronic_structure_mesh_surfaces takes over frames (the field from
-// its worker thread, the extraction's job, the field at the vertices) is to arrive all the same. Nothing for a
-// representation that the mesh rendering does not draw (hidden, another display, the isosurfaces raycast).
+// the scene only when its key changes, and what the meshes take over frames (the field from its worker thread, the
+// extraction's job, the field at the vertices) is to arrive all the same. Nothing for a representation that the mesh
+// rendering does not draw (hidden, another display, the isosurfaces raycast).
+//
+// The surfaces are the field its volume is evaluated from, cut at the values of its isosurfaces
+// (electronic_structure_iso_desc_init). Coloured by a field (SurfaceColoring::Field), the field is evaluated at the
+// vertices (surface_field_evaluate_points: on the GPU where it can be); the colour scale's range follows the values on
+// the vertices when it is automatic.
 void electronic_structure_meshes_update(ApplicationState* state, Representation* rep);
+
+// A representation's meshes as they are now, for the main view to draw (md_render_bridge.cpp): on md_gpu, bohr; its
+// surfaces (an isovalue's sheet each) by their range of the triangles and their colour; the vertices on the host and,
+// coloured by a field, the field's values at them. False when there are none.
+struct EsMeshDraw {
+    md_gpu_addr_t position = 0, normal = 0, index = 0;     // float4, float4 per vertex; uint32 per corner
+    uint32_t      num_vertices = 0;
+    md_gpu_sync_t ready = {};
+    uint64_t      version = 0;                              // of the mesh
+    const float*  xyz = nullptr;                            // float3 per vertex, bohr
+    const float*  values = nullptr;                         // per vertex; null: not coloured by a field (yet)
+    uint64_t      values_version = 0;
+    struct Part { uint32_t index_offset, index_count; md_float4_t color; };
+    Part          parts[16] = {};
+    uint32_t      num_parts = 0;
+};
+bool electronic_structure_mesh_draw(EsMeshDraw* out, const ElectronicStructureRepresentation& es);
 
 // What the representation's meshes are as drawn (their geometry and the values at their vertices), for the key of the
 // view: 0 without any

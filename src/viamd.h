@@ -690,12 +690,16 @@ struct Volume {
     md_float4x4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
     md_float3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
-    uint32_t tex_id = 0;
+    uint32_t tex_id = 0;    // a GL 3D texture (the component windows')
+    uint32_t gpu = 0;       // or a volume on md_gpu (gpu_volume.h): a representation's, which the main view draws
 };
 
 // Sizes and allocates the GL 3D texture for a grid, and fills in the transforms that place it in
 // the world. Defined in viamd.cpp because it is the half that touches GL.
 void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
+// The same for a volume on md_gpu: its transforms, and its id (made if it has none). What it holds is replaced when an
+// evaluation into it is done (gpu_volume.h), with where that is.
+void init_volume_gpu(Volume* vol, const md_grid_t& grid);
 
 // How isosurfaces are drawn: a Field representation's (ElectronicStructureRepresentation::rendering), and the
 // panels of the Orbital Grid and Transition Analysis windows (Settings::isosurface_rendering)
@@ -751,9 +755,7 @@ struct FieldRef {
 struct ElectronicStructureRepresentation {
     Volume density_vol = {};
     Volume color_vol   = {};
-    // The analytic normals of density_vol (RGB10_A2, its dims), where its evaluation made them (es_normals_of): what the
-    // raycast isosurfaces are shaded with
-    uint32_t normal_tex = 0;
+    uint32_t* color_rgba = nullptr;    // owned: color_vol's texels on the host too, for the meshes' vertices
     EsIsoMesh* iso_mesh = nullptr;     // owned: the mesh rendering mode's surfaces, made on first use
     VolumeResolution resolution = VolumeResolution::Mid;
 
@@ -845,8 +847,6 @@ struct ElectronicStructureRepresentation {
         int   map_kind = 0;            // ... of this kind (ElectronicStructureValueKind): set up again when that changes
         int   map_source = -1;         // ... and of this field where it is a range of its own (a surface field's source;
                                        // -2 for the others, -1 as loaded: taken to be the field it is of)
-        uint32_t tf_tex = 0;           // tf baked into a texture, and the hash of what it was baked from
-        uint64_t tf_hash = 0;
         TransferFunctionView view = {};// the editor's view of the values, and the histogram it shows (of the volume)
     } volume;
 };
@@ -1460,12 +1460,12 @@ struct ApplicationState {
     // Where the evaluations write and their readbacks read: gpu_volume when null. An evaluation into another
     // scratch sets it for its call (gpu_eval_target_scope, viamd.cpp); a readback queued records its own.
     md_gpu_texture_t gpu_eval_target = nullptr;
-    // Normals of what is evaluated (for the raycast isosurfaces, es_normals_of): when gpu_eval_normals names a GL
-    // texture (RGB10_A2, the grid's dims) for the call, the orbitals' and densities' evaluations write their analytic
-    // gradient into gpu_grad (RGBA32F) and set gpu_grad_written, and the readback packs it into gpu_normals (R32UI,
-    // md_gto_gpu_gradient_pack) and fills that texture too. Both made for the largest grid asked for so far
-    // (gpu_grad_dim), up to GPU_GRAD_MAX_VOXELS; past it no normals.
-    uint32_t         gpu_eval_normals = 0;
+    // Normals of what is evaluated (for the raycast isosurfaces of a representation's volume, gpu_volume.h): while
+    // gpu_eval_normals is set for the call, the orbitals' and densities' evaluations write their analytic gradient into
+    // gpu_grad (RGBA32F) and set gpu_grad_written, and the readback packs it into gpu_normals (R32UI,
+    // md_gto_gpu_gradient_pack) and from there into the volume's normals (RGB10A2). Both made for the largest grid
+    // asked for so far (gpu_grad_dim), up to GPU_GRAD_MAX_VOXELS; past it no normals.
+    bool             gpu_eval_normals = false;
     bool             gpu_grad_written = false;
     md_gpu_texture_t gpu_grad    = nullptr;
     md_gpu_texture_t gpu_normals = nullptr;
@@ -1480,12 +1480,17 @@ struct ApplicationState {
     struct GpuVolumeJob {
         bool              in_flight = false;
         ApplicationState* owner     = nullptr;
-        uint32_t          tex_id    = 0;        // GL texture to receive the data
+        uint32_t          tex_id    = 0;        // GL texture to receive the data, or a representation's volume (gpu_volume.h)
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
         md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
         size_t            size      = 0;
-        uint32_t          normal_tex = 0;       // GL texture to receive the normals (gpu_eval_normals), 0: none
-        md_gpu_mem_t      rb_normals = {};      // their HOST_READ block
+        bool              normals   = false;    // the normals of its gradient with it (gpu_eval_normals)
+        // A representation's volume: what the scratch is copied into on the GPU (and the normals), where it is, the
+        // point of the stream after the copies; the volume holds them once that is reached (gpu_volume_job_complete)
+        md_gpu_texture_t  gpu_tex = nullptr;
+        md_gpu_texture_t  gpu_normals = nullptr;
+        md_float4x4_t     gpu_model = {};
+        md_gpu_sync_t     gpu_ready = {};
         // A density evaluation not yet all issued (md_gto_gpu_job_t: issued in pieces over the frames): the
         // readback is queued when it is (gpu_volume_jobs_poll), of this grid
         void*             density_job = nullptr;
@@ -3140,10 +3145,6 @@ bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md
 // Whether the evaluations above can run: the GPU is there, and the main thread only queues them. False when they
 // cannot, and what would be evaluated ahead of being asked for should not be asked for.
 bool gpu_volume_evaluation_available(const ApplicationState* state);
-
-// The analytic normals of a density volume's texels (RGB10_A2: ElectronicStructureRepresentation::normal_tex), where its
-// last evaluation made them along with it; 0 where it did not (the texels came without: from the CPU, of ELF, or before)
-uint32_t es_normals_of(uint32_t vol_tex);
 
 #if MD_ENABLE_GPU
 // The first half of density_evaluate: evaluates into the DEVICE scratch volume (ApplicationState::

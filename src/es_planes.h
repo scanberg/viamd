@@ -88,9 +88,9 @@ void es_slice_image_grid(struct md_grid_t* grid, const EsSliceFrame& f, float sp
 // the plane it was on
 void es_planes_remove(ApplicationState* state, Representation* rep, int i);
 
+// The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
+// picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
+// gizmo is); faint for a hidden one
+md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled);
 // Whether the gizmo is dragging this plane of this representation now
 bool es_planes_dragging(uint32_t rep_id, int plane);
-
-// The transfer function of a representation's volume rendering (ElectronicStructureRepresentation::volume.tf) baked
-// into a 2D texture of 256 x 1 RGBA32F texels, made again when it changes.
-uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es);

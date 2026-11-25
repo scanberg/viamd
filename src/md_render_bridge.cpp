@@ -27,6 +27,14 @@
 #include <md_post.h>
 #include <core/md_gpu_gl.h>
 #include <gfx/postprocessing_utils.h>
+#include <gfx/isolines.h>
+#include <gpu_volume.h>
+#include <iso_meshes.h>
+#include <es_planes.h>
+#include <color_scale.h>
+#include <transfer_function.h>
+#include <transfer_function_widget.h>
+#include <implot.h>
 
 // Pairs of atoms drawn as sticks (md_render_mol_rep_t.pairs): by kind, each with its id (what a pick of it reports)
 struct PairSet {
@@ -150,6 +158,19 @@ struct MdRenderBridge {
     GLuint depth_fbo = 0, depth_tex = 0;
     uint32_t depth_tex_w = 0, depth_tex_h = 0;
     bool   depth_tex_valid = false;
+
+    // The lookup tables of the electronic structure representations (lut_texture): their transfer functions and colour
+    // maps, each kept while it is drawn
+    struct Lut { uint64_t key; md_gpu_texture_t tex; bool used; };
+    md_array(Lut) luts = nullptr;
+    bool          es_dropped_logged = false;    // that some were left out (collect_electronic_structure), once
+
+    // The colours of the vertices of the isosurfaces drawn as meshes (emit_meshes), a representation's each, by what
+    // they are of, kept while drawn; what the meshes were as drawn last (a new one may be where an old one was)
+    struct MeshColors { uint32_t rep_id; uint64_t key; md_gpu_addr_t color; uint32_t cap; bool used; };
+    md_array(MeshColors) mesh_colors = nullptr;
+    uint64_t             meshes_key = 0;
+    md_float4x4_t        mesh_model = {};     // their bohr to the world
 
     // md_render's answers to the picks, the newest last
     static constexpr int PICKS = 8;
@@ -1054,6 +1075,195 @@ static void emit_shapes(MdRenderBridge* b, ApplicationState* state, md_allocator
     }
 }
 
+// ---- The isosurfaces drawn as meshes ------------------------------------------------------------------------------
+
+// Their batches' keys: shapes', a surface of a representation's meshes each (not picked: the cells' edges' are not)
+enum { SHAPE_MESH = 0x10 };
+
+// The entries of a lookup table (a transfer function, a colour map: lut_texture)
+static constexpr int LUT_RES = 256;
+
+static uint32_t rgba8_of(md_float4_t c) {
+    uint32_t v = 0;
+    for (int k = 0; k < 4; ++k) v |= (uint32_t)(MD_CLAMP(c.elem[k], 0.0f, 1.0f) * 255.0f + 0.5f) << (8 * k);
+    return v;
+}
+
+static float srgb_to_linear1(float c) {
+    return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// The colour volume's (RGBA8, its dims, texture space t) at t, trilinear between its texels' centres
+static md_float4_t color_volume_at(const uint32_t* v, const int dim[3], md_float3_t t) {
+    float f[3];
+    int   i0[3], i1[3];
+    for (int k = 0; k < 3; ++k) {
+        const float x = MD_CLAMP(t.elem[k] * (float)dim[k] - 0.5f, 0.0f, (float)(dim[k] - 1));
+        i0[k] = (int)x;
+        i1[k] = MD_MIN(i0[k] + 1, dim[k] - 1);
+        f[k] = x - (float)i0[k];
+    }
+    md_float4_t c = {0, 0, 0, 0};
+    for (int n = 0; n < 8; ++n) {
+        const int x = (n & 1) ? i1[0] : i0[0], y = (n & 2) ? i1[1] : i0[1], z = (n & 4) ? i1[2] : i0[2];
+        const float w = ((n & 1) ? f[0] : 1.0f - f[0]) * ((n & 2) ? f[1] : 1.0f - f[1]) * ((n & 4) ? f[2] : 1.0f - f[2]);
+        const uint32_t p = v[((size_t)z * dim[1] + y) * dim[0] + x];
+        for (int k = 0; k < 4; ++k) c.elem[k] += w * (float)((p >> (8 * k)) & 0xFF) / 255.0f;
+    }
+    return c;
+}
+
+// A representation's vertex colours, of `key` (made from what it is of, on the host, when they are not), on the GPU
+static md_gpu_addr_t mesh_colors(MdRenderBridge* b, uint32_t rep_id, uint64_t key, uint32_t count, md_allocator_i* alloc,
+                                 void (*fill)(uint32_t* out, uint32_t count, const void* user), const void* user) {
+    MdRenderBridge::MeshColors* mc = nullptr;
+    for (size_t i = 0; i < md_array_size(b->mesh_colors); ++i) {
+        if (b->mesh_colors[i].rep_id == rep_id) mc = &b->mesh_colors[i];
+    }
+    if (!mc) {
+        md_array_push(b->mesh_colors, (MdRenderBridge::MeshColors{rep_id, 0, 0, 0, false}), alloc);
+        mc = &b->mesh_colors[md_array_size(b->mesh_colors) - 1];
+    }
+    mc->used = true;
+    if (mc->key == key && mc->color) return mc->color;
+    if (mc->cap < count) {
+        if (mc->color) md_gpu_free(b->stream, mc->color);
+        mc->color = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, sizeof(uint32_t) * count).gpu;
+        mc->cap = mc->color ? count : 0;
+    }
+    uint32_t* px = (uint32_t*)malloc(sizeof(uint32_t) * MD_MAX(count, 1u));
+    if (!mc->color || !px) {
+        free(px);
+        mc->key = 0;
+        return 0;
+    }
+    fill(px, count, user);
+    const bool ok = md_gpu_upload(b->stream, mc->color, px, sizeof(uint32_t) * count);
+    free(px);
+    mc->key = ok ? key : 0;
+    return ok ? mc->color : 0;
+}
+
+struct FieldColors { const float* values; float beg, inv_ext; uint32_t lut[LUT_RES]; };
+static void fill_field_colors(uint32_t* out, uint32_t count, const void* user) {
+    const FieldColors& f = *(const FieldColors*)user;
+    for (uint32_t i = 0; i < count; ++i) {
+        const float t = MD_CLAMP((f.values[i] - f.beg) * f.inv_ext, 0.0f, 1.0f);
+        out[i] = f.lut[(int)(t * (float)(LUT_RES - 1) + 0.5f)];
+    }
+}
+
+struct AtomColors { const float* xyz; const uint32_t* vol; int dim[3]; md_float4x4_t world_to_texture; };
+static void fill_atom_colors(uint32_t* out, uint32_t count, const void* user) {
+    const AtomColors& a = *(const AtomColors*)user;
+    const float scl = (float)BOHR_TO_ANGSTROM;
+    for (uint32_t i = 0; i < count; ++i) {
+        const md_float4_t w = md_float4_set(a.xyz[3 * i] * scl, a.xyz[3 * i + 1] * scl, a.xyz[3 * i + 2] * scl, 1.0f);
+        const md_float3_t t = md_float3_from_float4(md_float4x4_mul_float4(a.world_to_texture, w));
+        md_float4_t c = color_volume_at(a.vol, a.dim, t);
+        c.w = 1.0f;
+        out[i] = rgba8_of(c);
+    }
+}
+
+// The isosurfaces of the electronic structure representations drawn as meshes (es_mesh_mode): transparent triangles
+// of md_render's, an isovalue's sheet a batch, of its colour and coverage; by a field, its colour map's colour at each
+// vertex (the coverage the surface's); by atom, the colour volume's there times the surface's colour. Without their
+// optical density inside, and the field's isolines.
+static void emit_meshes(MdRenderBridge* b, ApplicationState* state, md_allocator_i* alloc) {
+    // read when the frame is drawn
+    b->mesh_model = iso_meshes_model_matrix();
+    uint64_t drawn = 0;
+    for (size_t i = 0; i < md_array_size(b->mesh_colors); ++i) b->mesh_colors[i].used = false;
+    for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
+        const Representation& rep = state->representation.reps[r];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        const ElectronicStructureRepresentation& es = rep.electronic_structure;
+        if (es.display != ElectronicStructureDisplay::Isosurface || !es_mesh_mode(state, es)) continue;
+        EsMeshDraw d;
+        if (!electronic_structure_mesh_draw(&d, es)) continue;
+        md_gpu_stream_wait(b->stream, d.ready);
+
+        // The vertices' colours: by the field, by atom, or none (the surfaces' own)
+        md_gpu_addr_t colors = 0;
+        bool tinted = false;
+        if (d.values) {
+            FieldColors fc;
+            fc.values = d.values;
+            fc.beg = es.field_map.range_beg;
+            const float ext = es.field_map.range_end - es.field_map.range_beg;
+            fc.inv_ext = ext != 0.0f ? 1.0f / ext : 0.0f;
+            for (int i = 0; i < LUT_RES; ++i) {
+                ImVec4 c = ImPlot::SampleColormap((float)i / (float)(LUT_RES - 1), es.field_map.colormap);
+                c.w = 1.0f;
+                fc.lut[i] = ImGui::ColorConvertFloat4ToU32(c);
+            }
+            uint64_t key = md_hash64(&d.values_version, sizeof(d.values_version), 0xf1e1d);
+            const float m[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
+            key = md_hash64(m, sizeof(m), key);
+            colors = mesh_colors(b, rep.node.id, key, d.num_vertices, alloc, fill_field_colors, &fc);
+        } else if (es.coloring == SurfaceColoring::AtomColors && es.color_rgba && d.xyz) {
+            AtomColors ac;
+            ac.xyz = d.xyz;
+            ac.vol = es.color_rgba;
+            for (int k = 0; k < 3; ++k) ac.dim[k] = es.color_vol.dim[k];
+            ac.world_to_texture = md_float4x4_inverse(es.color_vol.texture_to_world);
+            uint64_t key = md_hash64(&es.col_hash, sizeof(es.col_hash), d.version);
+            key = md_hash64(&ac.vol, sizeof(ac.vol), key);
+            colors = mesh_colors(b, rep.node.id, key, d.num_vertices, alloc, fill_atom_colors, &ac);
+            tinted = colors != 0;
+        }
+        drawn = md_hash64(&d.version, sizeof(d.version), drawn);
+        drawn = md_hash64(&colors, sizeof(colors), drawn);
+
+        for (uint32_t i = 0; i < d.num_parts; ++i) {
+            const EsMeshDraw::Part& p = d.parts[i];
+            const float alpha = MD_CLAMP(p.color.w, 0.0f, 1.0f);
+            if (alpha <= 0.0f || p.index_count < 3) continue;
+            md_render_batch_t bt = {};
+            bt.key = shape_key(rep.node.id, SHAPE_MESH + i);
+            bt.kind = MD_RENDER_TRIANGLES;
+            bt.count = p.index_count / 3;
+            bt.points.count = d.num_vertices;
+            bt.points.position = d.position;
+            bt.points.stride = 16;
+            bt.index = d.index + (md_gpu_addr_t)p.index_offset * sizeof(uint32_t);
+            bt.style.triangles.normal = d.normal;
+            bt.style.triangles.normal_stride = 16;
+            if (colors) {
+                bt.points.color = colors;
+                bt.color.mode = MD_RENDER_COLOR_POINTS;
+                if (tinted) {
+                    for (int k = 0; k < 3; ++k) bt.color.tint[k] = srgb_to_linear1(MD_CLAMP(p.color.elem[k], 0.0f, 1.0f));
+                    bt.color.tint[3] = 1.0f;
+                }
+            } else {
+                bt.color.mode = MD_RENDER_COLOR_UNIFORM;
+                bt.color.uniform = rgba8_of(md_float4_set(p.color.x, p.color.y, p.color.z, 1.0f));
+            }
+            bt.color.transparency = alpha < 1.0f ? 1.0f - alpha : 0.0f;
+            bt.transform = &b->mesh_model.elem[0][0];
+            bt.transform_count = 1;
+            md_array_push(b->batches, bt, alloc);
+        }
+    }
+    // the colours of what is no more drawn
+    for (size_t i = 0; i < md_array_size(b->mesh_colors);) {
+        if (!b->mesh_colors[i].used) {
+            if (b->mesh_colors[i].color) md_gpu_free(b->stream, b->mesh_colors[i].color);
+            md_array_swap_back_and_pop(b->mesh_colors, i);
+        } else {
+            ++i;
+        }
+    }
+    // A mesh or its colours made where another was: its contents changed under the same addresses
+    if (drawn != b->meshes_key) {
+        b->meshes_key = drawn;
+        b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
+        b->content[MD_RENDER_CONTENT_APPEARANCE] += 1;
+    }
+}
+
 // ---- The frame ---------------------------------------------------------------------------------------------------
 
 // md_compose's shading of the settings', the compose pass's that was (compose_deferred: its roughness and F0)
@@ -1074,6 +1284,209 @@ static void shading_of(md_compose_shading_t* sh, const postprocess_pipeline::Set
     sh->f0        = 0.04f;
     sh->ambient   = MD_CLAMP(s.shading.ambient, 0.0f, 1.0f);
     sh->specular  = MD_MAX(s.shading.specular, 0.0f);
+}
+
+// ---- The electronic structure representations ---------------------------------------------------------------------
+
+// A lookup table of LUT_RES x 1 RGBA8 texels by what it is of (key), made from px (filled by the caller on a miss: px
+// null asks whether it is there), and kept while it is drawn (luts_sweep)
+static md_gpu_texture_t lut_texture(MdRenderBridge* b, uint64_t key, const uint32_t* px, md_allocator_i* alloc) {
+    for (size_t i = 0; i < md_array_size(b->luts); ++i) {
+        if (b->luts[i].key == key) {
+            b->luts[i].used = true;
+            return b->luts[i].tex;
+        }
+    }
+    if (!px) return nullptr;
+    md_gpu_texture_desc_t d = {};
+    d.type = MD_GPU_TEX_2D;
+    d.format = MD_GPU_FORMAT_RGBA8_UNORM;
+    d.usage = MD_GPU_TEX_SAMPLED;
+    d.width = LUT_RES;
+    d.height = 1;
+    d.depth_or_layers = 1;
+    d.label = "Lookup table";
+    md_gpu_texture_t tex = md_gpu_texture_create(b->stream, &d);
+    if (!tex || !md_gpu_upload_texture(b->stream, tex, nullptr, px, sizeof(uint32_t) * LUT_RES)) {
+        if (tex) md_gpu_texture_destroy(tex);
+        return nullptr;
+    }
+    md_array_push(b->luts, (MdRenderBridge::Lut{key, tex, true}), alloc);
+    return tex;
+}
+
+// The tables not drawn since the last sweep released
+static void luts_sweep(MdRenderBridge* b) {
+    for (size_t i = 0; i < md_array_size(b->luts);) {
+        if (!b->luts[i].used) {
+            md_gpu_texture_destroy(b->luts[i].tex);
+            md_array_swap_back_and_pop(b->luts, i);
+        } else {
+            b->luts[i].used = false;
+            ++i;
+        }
+    }
+}
+
+// A transfer function as md_compose reads it: the colour map's sRGB colour, the opacity of a slab 1/150 of the box thick
+static md_gpu_texture_t tf_texture(MdRenderBridge* b, const TransferFunction& tf, md_allocator_i* alloc) {
+    const uint64_t key = md_hash64_combine(transfer_function_hash(tf), 0x7f0a11ce);
+    if (md_gpu_texture_t t = lut_texture(b, key, nullptr, alloc)) return t;
+    float f[LUT_RES * 4];
+    transfer_function_bake_rgba(tf, f, LUT_RES);
+    uint32_t px[LUT_RES];
+    for (int i = 0; i < LUT_RES; ++i) {
+        uint32_t c = 0;
+        for (int k = 0; k < 4; ++k) c |= (uint32_t)(MD_CLAMP(f[4 * i + k], 0.0f, 1.0f) * 255.0f + 0.5f) << (8 * k);
+        px[i] = c;
+    }
+    return lut_texture(b, key, px, alloc);
+}
+
+// A colour map (ImPlot's), opaque
+static md_gpu_texture_t colormap_texture(MdRenderBridge* b, int colormap, md_allocator_i* alloc) {
+    const uint64_t key = md_hash64(&colormap, sizeof(colormap), 0xc0105ca1e);
+    if (md_gpu_texture_t t = lut_texture(b, key, nullptr, alloc)) return t;
+    uint32_t px[LUT_RES];
+    for (int i = 0; i < LUT_RES; ++i) {
+        ImVec4 c = ImPlot::SampleColormap((float)i / (float)(LUT_RES - 1), colormap);
+        c.w = 1.0f;
+        px[i] = ImGui::ColorConvertFloat4ToU32(c);
+    }
+    return lut_texture(b, key, px, alloc);
+}
+
+static void mat_store(float out[16], const md_float4x4_t& m) {
+    md_memcpy(out, &m.elem[0][0], sizeof(float) * 16);
+}
+
+// What the frame reads of a volume: written by the evaluations' stream, waited for on the bridge's
+static md_gpu_texture_t volume_take(MdRenderBridge* b, const GpuVolume& v) {
+    if (v.tex) md_gpu_stream_wait(b->stream, v.ready);
+    return v.tex;
+}
+
+// The electronic structure representations shown, as md_compose draws them: the raycast isosurfaces and the volume
+// renderings as its volumes (at most MD_COMPOSE_MAX_VOLUMES), the planes as its slices (MD_COMPOSE_MAX_SLICES), what is
+// past those left out. Of a volume not there yet, nothing; of a slice, its edge. The isosurfaces drawn as meshes are
+// not drawn yet.
+static void collect_electronic_structure(MdRenderBridge* b, ApplicationState* state, md_compose_volume_t* vols, uint32_t* num_vols,
+                                         md_compose_slice_t* slices, uint32_t* num_slices) {
+    md_allocator_i* alloc = state->allocator.persistent;
+    *num_vols = *num_slices = 0;
+    // a point of the GUI in the target's pixels (an isoline's width); a slice's edge 1.5 points wide, as the outlines
+    const float h_pt = ImGui::GetIO().DisplaySize.y;
+    const float px_per_point = h_pt > 0.0f ? (float)b->height / h_pt : 1.0f;
+    const float edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)b->width / (float)MD_MAX(state->app.framebuffer.width, 1);
+    bool dropped = false;
+
+    for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
+        Representation& rep = state->representation.reps[r];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        ElectronicStructureRepresentation& es = rep.electronic_structure;
+        const GpuVolume dv = gpu_volume_get(es.density_vol.gpu);
+
+        if (es.display == ElectronicStructureDisplay::Isosurface || es.display == ElectronicStructureDisplay::Volume) {
+            const bool iso = es.display == ElectronicStructureDisplay::Isosurface;
+            if (!dv.tex || (iso && es_mesh_mode(state, es))) continue;
+            if (*num_vols == MD_COMPOSE_MAX_VOLUMES) {
+                dropped = true;
+                continue;
+            }
+            md_compose_volume_t& v = vols[(*num_vols)++];
+            v = {};
+            v.field = volume_take(b, dv);
+            mat_store(v.model, dv.texture_to_world);
+            for (int k = 0; k < 3; ++k) {
+                v.clip_min[k] = 0.0f;
+                v.clip_max[k] = 1.0f;
+            }
+            if (iso) {
+                IsoDesc d;
+                electronic_structure_iso_desc_init(&d, es);
+                v.iso_count = (uint32_t)MD_MIN(d.count, (size_t)MD_COMPOSE_MAX_ISO);
+                for (uint32_t i = 0; i < v.iso_count; ++i) {
+                    v.iso_values[i] = d.values[i];
+                    for (int k = 0; k < 4; ++k) v.iso_colors[i][k] = d.colors[i].elem[k];
+                    v.iso_densities[i] = d.optical_densities[i];
+                }
+                if (es.coloring == SurfaceColoring::AtomColors) {
+                    v.color_volume = volume_take(b, gpu_volume_get(es.color_vol.gpu));
+                } else if (es.coloring == SurfaceColoring::Field) {
+                    v.color_field = volume_take(b, gpu_volume_get(es.field_vol.gpu));
+                    if (v.color_field) {
+                        v.color_map = colormap_texture(b, es.field_map.colormap, alloc);
+                        if (!v.color_map) v.color_field = nullptr;
+                        v.color_range[0] = es.field_map.range_beg;
+                        v.color_range[1] = es.field_map.range_end;
+                        const IsolineDesc il = color_scale_isoline_desc(es.field_isolines, px_per_point);
+                        v.isoline_count = MD_MIN(il.count, (uint32_t)MD_COMPOSE_MAX_ISOLINES);
+                        for (uint32_t i = 0; i < v.isoline_count; ++i) v.isoline_values[i] = il.values[i];
+                        v.isoline_hover = il.hover;
+                        v.isoline_hover_value = il.hover_value;
+                        v.isoline_width = il.width;
+                    }
+                }
+                v.normals = dv.normals;
+            } else {
+                md_float4_t planes[ES_MAX_PLANES];
+                v.plane_count = (uint32_t)MD_MIN(es_volume_clip_planes(planes, es), MD_COMPOSE_MAX_PLANES);
+                for (uint32_t i = 0; i < v.plane_count; ++i) {
+                    for (int k = 0; k < 4; ++k) v.planes[i][k] = planes[i].elem[k];
+                }
+                v.transfer = tf_texture(b, es.volume.tf, alloc);
+                v.transfer_range[0] = es.volume.tf.range_beg;
+                v.transfer_range[1] = es.volume.tf.range_end;
+                if (!v.transfer) *num_vols -= 1;
+            }
+            continue;
+        }
+
+        if (es.display != ElectronicStructureDisplay::Planes || !es.has_box) continue;
+        // Each slice from its own image where it is of the plane as it is, else from the volume; its edge alone while
+        // there is neither
+        es_slices_conform(&es);
+        const bool on_planes = es_plane_images_supported(state, es);
+        md_gpu_texture_t transfer = nullptr;
+        for (int i = 0; i < es.slices.count && i < ES_MAX_PLANES; ++i) {
+            const ElectronicStructurePlane& p = es.slices.items[i];
+            EsSliceFrame f;
+            if (!es_slice_frame(&f, p)) continue;
+            const md_float4_t edge = es_slice_edge_color(state, rep.node.id, i, p.enabled);
+            float opacity = p.enabled ? MD_CLAMP(p.opacity, 0.0f, 1.0f) : 0.0f;
+            GpuVolume field = {};
+            if (opacity > 0.0f) {
+                const ElectronicStructurePlaneImage& im = es.plane_images[i];
+                if (on_planes && im.current) field = gpu_volume_get(im.img[im.front].gpu);
+                if (!field.tex) field = dv;
+                if (!transfer) transfer = tf_texture(b, es.volume.tf, alloc);
+                if (!field.tex || !transfer) opacity = 0.0f;
+            }
+            if (opacity <= 0.0f && edge.w <= 0.0f) continue;
+            if (*num_slices == MD_COMPOSE_MAX_SLICES) {
+                dropped = true;
+                continue;
+            }
+            md_compose_slice_t& s = slices[(*num_slices)++];
+            s = {};
+            mat_store(s.rect, md_float4x4_inverse(es_slice_rect_from_world(f)));
+            if (opacity > 0.0f) {
+                s.field = volume_take(b, field);
+                mat_store(s.field_from_world, md_float4x4_inverse(field.texture_to_world));
+                s.transfer = transfer;
+                s.transfer_range[0] = es.volume.tf.range_beg;
+                s.transfer_range[1] = es.volume.tf.range_end;
+            }
+            s.opacity = opacity;
+            for (int k = 0; k < 4; ++k) s.edge[k] = edge.elem[k];
+            s.edge_px = edge_px;
+        }
+    }
+    if (dropped && !b->es_dropped_logged) {
+        MD_LOG_INFO("The main view draws at most %d volumes and %d planes of the electronic structure representations: the rest are left out",
+                    MD_COMPOSE_MAX_VOLUMES, MD_COMPOSE_MAX_SLICES);
+    }
+    b->es_dropped_logged = dropped;
 }
 
 // md_post's display transform of the settings' (display::transform of the post-processing that was): basic shading
@@ -1202,6 +1615,7 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         }
     }
     emit_shapes(b, state, alloc);
+    emit_meshes(b, state, alloc);
     }
 
     md_render_frame_t f = {};
@@ -1225,8 +1639,16 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
 
     // Composed, the display transform, the TAA into the history at the image's size (the frame alone when there is
     // none to go on from)
+    md_compose_volume_t vols[MD_COMPOSE_MAX_VOLUMES];
+    md_compose_slice_t  slices[MD_COMPOSE_MAX_SLICES];
+    uint32_t num_vols = 0, num_slices = 0;
+    collect_electronic_structure(b, state, vols, &num_vols, slices, &num_slices);
     md_compose_desc_t cd = {};
     cd.camera = f.camera;
+    cd.volumes = vols;
+    cd.volume_count = num_vols;
+    cd.slices = slices;
+    cd.slice_count = num_slices;
     shading_of(&cd.shading, settings);
     cd.ao = settings.ssao.enabled ? MD_MAX(settings.ssao.intensity, 0.0f) : 0.0f;
     cd.ao_mode = settings.ssao.mode == postprocess_pipeline::SsaoMode_Quality ? MD_COMPOSE_AO_QUALITY : MD_COMPOSE_AO_PERFORMANCE;
@@ -1237,6 +1659,7 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     dd.scene  = b->scene;
     dd.target = b->frame;
     bool ok = md_compose(b->stream, b->compose, b->view, &cd) && md_post_display(b->stream, b->post, &dd);
+    luts_sweep(b);
     if (ok && settings.taa.enabled) {
         md_post_resolve_t rd = {};
         rd.view = b->view;
@@ -1594,6 +2017,12 @@ void md_render_bridge_destroy(ApplicationState* state) {
     md_array_free(b->shape_col_cpu, state->allocator.persistent);
     md_array_free(b->shape_scale_cpu, state->allocator.persistent);
     md_array_free(b->dipoles, state->allocator.persistent);
+    for (size_t i = 0; i < md_array_size(b->luts); ++i) md_gpu_texture_destroy(b->luts[i].tex);
+    md_array_free(b->luts, state->allocator.persistent);
+    for (size_t i = 0; i < md_array_size(b->mesh_colors); ++i) {
+        if (b->stream && b->mesh_colors[i].color) md_gpu_free(b->stream, b->mesh_colors[i].color);
+    }
+    md_array_free(b->mesh_colors, state->allocator.persistent);
     delete b;
     state->md_render_bridge = nullptr;
 }

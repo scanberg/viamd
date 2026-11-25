@@ -47,7 +47,6 @@ static struct {
 
     struct {
         GLuint dvr = 0;
-        GLuint splat_color = 0;
     } program;
 
     struct {
@@ -918,16 +917,6 @@ void initialize() {
         if (f_shader) glDeleteShader(f_shader);
     }
 
-    if (gl.version.major > 4 || (gl.version.major == 4 && gl.version.minor >= 3)) {
-        GLuint c_shader_splat_color = gl::compile_shader_from_source({ (const char*)splat_color_comp, splat_color_comp_size }, GL_COMPUTE_SHADER);
-        if (c_shader_splat_color) {
-            if (!gl.program.splat_color) gl.program.splat_color = glCreateProgram();
-            gl::attach_link_detach(gl.program.splat_color, &c_shader_splat_color, 1);
-            glDeleteShader(c_shader_splat_color);
-        } else {
-            MD_LOG_ERROR("shader compilation failed, shader program for splat color computation will not be updated");
-        }
-    }
 
     if (!gl.vao) {
         glGenVertexArrays(1, &gl.vao);
@@ -1059,48 +1048,10 @@ void compute_transfer_function_texture(uint32_t* tex, int colormap, ramp_type_t 
 
 }
 
-static void splat_point_color_volume_GPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
-    PUSH_GPU_SECTION("SPLAT COLOR VOLUME")
-    glUseProgram(gl.program.splat_color);
-
-    glUniformMatrix4fv(glGetUniformLocation(gl.program.splat_color, "u_voxel_to_world"), 1, GL_FALSE, (const float*)index_to_world);
-    glUniform3iv(glGetUniformLocation(gl.program.splat_color, "u_volume_dim"), 1, volume_dim);
-    glUniform1i (glGetUniformLocation(gl.program.splat_color, "u_num_points"), (int)point_count);
-    glUniform1f (glGetUniformLocation(gl.program.splat_color, "u_power"), power);
-
-    size_t point_xyzw_offset    = 0;
-    size_t point_xyzw_size      = MD_ALIGN_TO(sizeof(md_float4_t) * point_count, 256);
-    size_t point_color_offset   = point_xyzw_offset + point_xyzw_size;
-    size_t point_color_size     = MD_ALIGN_TO(sizeof(uint32_t) * point_count, 256);
-    size_t total_buffer_size    = MD_ALIGN_TO(point_xyzw_size + point_color_size, 256);
-
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, gl.ssbo);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, total_buffer_size , NULL, GL_DYNAMIC_DRAW);
-
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_xyzw_offset,  sizeof(md_float4_t)   * point_count, point_xyzw);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, point_color_offset, sizeof(uint32_t) * point_count, point_color);
-
-    // Bind two contiguous vec4 arrays as separate shader storage buffer bindings for position/radius and color
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, gl.ssbo, point_xyzw_offset,  point_xyzw_size);  // point_xyzw
-    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, gl.ssbo, point_color_offset, point_color_size); // point_color
-    glBindImageTexture(0, vol_texture, 0, GL_TRUE, 0, GL_WRITE_ONLY, GL_RGBA8);
-
-    const int num_wg[3] = {
-        MD_DIV_UP((int)volume_dim[0], 8),
-        MD_DIV_UP((int)volume_dim[1], 8),
-        MD_DIV_UP((int)volume_dim[2], 8),
-    };
-
-    glDispatchCompute(num_wg[0], num_wg[1], num_wg[2]);
-    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    POP_GPU_SECTION()
-}
-
-// The CPU twin of splat_color.comp (used where there are no compute shaders, GL < 4.3): normalised
-// Gaussian weights evaluated relative to the largest one, over the points that can matter in each 8^3
+// Normalised Gaussian weights evaluated relative to the largest one, over the points that can matter in each 8^3
 // block of voxels.
-static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_dim[3], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, float power) {
+void splat_point_colors(uint32_t* result, const int volume_dim[3], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power_d) {
+    const float power = (float)power_d;
     const int dim_x = volume_dim[0];
     const int dim_y = volume_dim[1];
     const int dim_z = volume_dim[2];
@@ -1112,7 +1063,6 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
     md_temp_scope_t temp_scope = md_temp_begin();
     MD_DEFER { md_temp_end(temp_scope); };
 
-    uint32_t* result = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * (size_t)dim_x * dim_y * dim_z);
     md_float4_t*   points = (md_float4_t*)  md_temp_alloc(temp_scope, sizeof(md_float4_t) * point_count);    // xyz, power / (2 sigma^2)
     md_float4_t*   colors = (md_float4_t*)  md_temp_alloc(temp_scope, sizeof(md_float4_t) * point_count);
     uint32_t* cand   = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * point_count);
@@ -1188,31 +1138,6 @@ static void splat_point_color_volume_CPU(uint32_t vol_texture, const int volume_
                 }
             }
         }
-    }
-
-    glBindTexture(GL_TEXTURE_3D, vol_texture);
-    glTexSubImage3D(GL_TEXTURE_3D, 0, 0, 0, 0, dim_x, dim_y, dim_z, GL_RGBA, GL_UNSIGNED_BYTE, result);
-    glBindTexture(GL_TEXTURE_3D, 0);
-}
-
-// vol_origin is the origin of the volume in world space
-// voxel_spacing is the spacing of voxels in world space
-void compute_point_color_volume(uint32_t vol_texture, const int volume_dim[3], const float voxel_spacing[3], const float world_to_model[4][4], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power) {
-    if (!glIsTexture(vol_texture)) {
-        MD_LOG_ERROR("Invalid volume texture");
-        return;
-    }
-
-    int gl_major, gl_minor;
-    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
-    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
-
-    (void)voxel_spacing;
-    (void)world_to_model;
-    if ((gl_major > 4 || (gl_major == 4 && gl_minor >= 3)) && gl.program.splat_color) {
-        splat_point_color_volume_GPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_color, point_count, (float)power);
-    } else {
-        splat_point_color_volume_CPU(vol_texture, volume_dim, index_to_world, point_xyzw, point_color, point_count, (float)power);
     }
 }
 

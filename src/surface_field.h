@@ -162,16 +162,14 @@ ColorScale surface_field_default_scale(SurfaceFieldKind kind);
 void surface_field_scale_for_kind(ColorScale* scale, SurfaceFieldKind from, SurfaceFieldKind to);
 
 struct SurfaceFieldVolume {
-    uint32_t  tex_id = 0;           // GL_R32F, the dimensions of grid
-    uint32_t  colormap_tex = 0;     // RGBA8, 256 x 1
-    int       colormap = -1;        // which colour map colormap_tex holds
+    uint32_t  gpu = 0;              // the values on md_gpu (gpu_volume.h): R32F, the dimensions of grid
     md_grid_t grid = {};            // what the values are sampled on: see surface_field_grid
 
     float*    values = nullptr;     // [num_voxels] x fastest, the field where evaluated, 0 elsewhere
     uint64_t* done = nullptr;       // [num_voxels / 64] which voxels hold a value
     size_t    num_voxels = 0;
     size_t    num_evaluated = 0;
-    size_t    num_uploaded = 0;     // num_evaluated when the texture was last written
+    size_t    num_uploaded = 0;     // num_evaluated when the volume on md_gpu was last written
     uint64_t  version = 0;          // of what the texture holds: new with every write (unique across volumes), for the
                                     // key of the view (lazy rendering draws it again only when that changes)
     bool      complete = false;     // every voxel holds a value
@@ -294,9 +292,6 @@ void surface_field_invalidate(SurfaceFieldVolume* vol);
 // The spread of the field on the surface, as a colour scale reads it: the 1st to 99th percentile for
 // an automatic range, the extremes beside it. Empty while there are no samples.
 ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol);
-
-// The colour map texture for the mapping's colour map, rebuilt when it changed
-uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap);
 
 void surface_field_free(SurfaceFieldVolume* vol);
 

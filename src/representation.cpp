@@ -21,6 +21,7 @@
 #include <gfx/gl_utils.h>
 #include <es_planes.h>
 #include <gfx/volumerender_utils.h>
+#include <gpu_volume.h>
 #include <iso_meshes.h>
 #include <script_suggestions.h>
 
@@ -326,9 +327,9 @@ static void clear_owned(Representation* rep) {
     rep->atom_mask = {};
     rep->bond_pairs = nullptr;
     rep->bond_flags = nullptr;
-    rep->electronic_structure.density_vol.tex_id = 0;
-    rep->electronic_structure.color_vol.tex_id   = 0;
-    rep->electronic_structure.normal_tex         = 0;
+    rep->electronic_structure.density_vol.gpu    = 0;
+    rep->electronic_structure.color_vol.gpu      = 0;
+    rep->electronic_structure.color_rgba         = nullptr;
     for (ElectronicStructurePlaneImage& im : rep->electronic_structure.plane_images) im = ElectronicStructurePlaneImage{};
     rep->electronic_structure.field_vol          = SurfaceFieldVolume{};
     rep->electronic_structure.source_vol         = SurfaceFieldVolume{};
@@ -402,17 +403,19 @@ void remove_representation(ApplicationState* state, size_t idx) {
     md_array_free(rep.bond_flags, state->allocator.persistent);
     md_gl_rep_destroy(rep.md_rep);
     md_gl_rep_destroy(rep.glyph_rep);
-    // A readback queued for this representation's volume would land in a texture that no longer
-    // exists, so let the queue run out first. Its evaluation not yet all issued is dropped first: the
-    // drain then waits for what is in flight only.
-    gpu_volume_job_cancel(state, rep.electronic_structure.density_vol.tex_id);
+    // Its evaluation not yet all issued is dropped, and what is in flight run out: the volumes go below (what lands in
+    // one no more is released, gpu_volume.h)
+    gpu_volume_job_cancel(state, rep.electronic_structure.density_vol.gpu);
     gpu_volume_jobs_drain(state);
-    if (rep.electronic_structure.density_vol.tex_id) gl::free_texture(&rep.electronic_structure.density_vol.tex_id);
-    if (rep.electronic_structure.normal_tex) gl::free_texture(&rep.electronic_structure.normal_tex);
-    if (rep.electronic_structure.color_vol.tex_id)   gl::free_texture(&rep.electronic_structure.color_vol.tex_id);
+#if MD_ENABLE_GPU
+    gpu_volume_destroy(&rep.electronic_structure.density_vol.gpu);
+    gpu_volume_destroy(&rep.electronic_structure.color_vol.gpu);
+    free(rep.electronic_structure.color_rgba);
+    rep.electronic_structure.color_rgba = nullptr;
     for (ElectronicStructurePlaneImage& im : rep.electronic_structure.plane_images) {
-        for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
+        for (Volume& v : im.img) gpu_volume_destroy(&v.gpu);
     }
+#endif
     surface_field_free(&rep.electronic_structure.field_vol);
     surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
@@ -3096,7 +3099,7 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
                 const ElectronicStructurePlaneImage& im = es.plane_images[i];
                 const Volume& v = im.img[im.front];
                 ImGui::Separator();
-                if (im.key[im.front] && v.tex_id) {
+                if (im.key[im.front] && v.gpu) {
                     ImGui::Text("Image %d x %d at %.3f \xc3\x85, there after %.0f ms (" ES_PLANE_IMAGES_REVISION ")", v.dim[0], v.dim[1], im.spacing[im.front], im.ms);
                 }
                 if (im.pending) ImGui::TextUnformatted("Being evaluated: drawn from the volume until it is there");
@@ -3644,10 +3647,17 @@ static bool draw_representations_window_electronic_structure(ApplicationState* s
             // The transfer function's editor over the volume's values: its histogram over what is in view
             const bool colors_only = es.display == ElectronicStructureDisplay::Planes;
             float lo = 0.0f, hi = 0.0f;
-            const bool have_range = es.density_vol.tex_id && volume::value_range(es.density_vol.tex_id, &lo, &hi);
+#if MD_ENABLE_GPU
+            const bool have_range = es.density_vol.gpu && gpu_volume_value_range(es.density_vol.gpu, &lo, &hi);
             TransferFunctionHistogram hist = {};
             enum { HIST_BINS = 128 };
-            const float* counts = have_range ? volume::histogram(es.density_vol.tex_id, (float)es.volume.view.x_min, (float)es.volume.view.x_max, HIST_BINS) : nullptr;
+            const float* counts = have_range ? gpu_volume_histogram(es.density_vol.gpu, (float)es.volume.view.x_min, (float)es.volume.view.x_max, HIST_BINS) : nullptr;
+#else
+            const bool have_range = false;
+            TransferFunctionHistogram hist = {};
+            enum { HIST_BINS = 128 };
+            const float* counts = nullptr;
+#endif
             if (counts) {
                 hist.counts = counts;
                 hist.bins = HIST_BINS;
@@ -4834,7 +4844,7 @@ void draw_representation_legends(ApplicationState& state) {
 
         if (rep.type == RepresentationType::ElectronicStructure) {
             ElectronicStructureRepresentation& es = rep.electronic_structure;
-            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.gpu != 0;
             const bool colored = es.display == ElectronicStructureDisplay::Isosurface && es.coloring == SurfaceColoring::Field;
             if (colored && es.field_map.show_legend && has_field) {
                 color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);

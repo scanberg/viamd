@@ -1,6 +1,7 @@
 #include <es_planes.h>
 
 #include <viamd.h>
+#include <gpu_volume.h>
 #include <representation.h>
 #include <gfx/gl_utils.h>
 
@@ -193,6 +194,13 @@ md_float4_t es_volume_plane(const ElectronicStructureRepresentation& es, const P
     return md_float4_set(md_float3_dot(c0, n), md_float3_dot(c1, n), md_float3_dot(c2, n), md_float3_dot(n, t) + plane.d);
 }
 
+md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
+    const bool offscreen = !md_str_empty(state->screenshot.path_to_file) && state->screenshot.hide_gui;
+    if (offscreen) return md_float4_set(0, 0, 0, 0);
+    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return md_float4_set(0, 0, 0, 0);
+    return enabled ? md_float4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_float4_set(0.78f, 0.78f, 0.78f, 0.4f);
+}
+
 int es_volume_clip_planes(md_float4_t* out, const ElectronicStructureRepresentation& es) {
     int k = 0;
     for (int i = 0; i < es.cuts.count && i < ES_MAX_PLANES; ++i) {
@@ -220,18 +228,6 @@ int es_volume_slices(md_float4_t* out_plane, float* out_opacity, md_float4x4_t* 
         }
     }
     return count;
-}
-
-uint32_t es_volume_transfer_function(ElectronicStructureRepresentation* es) {
-    const uint64_t h = transfer_function_hash(es->volume.tf);
-    if (es->volume.tf_tex && h == es->volume.tf_hash) return es->volume.tf_tex;
-    enum { RES = 256 };
-    float px[RES * 4];
-    transfer_function_bake_rgba(es->volume.tf, px, RES);
-    if (!es->volume.tf_tex) gl::init_texture_2D(&es->volume.tf_tex, RES, 1, GL_RGBA32F);
-    gl::set_texture_2D_data(es->volume.tf_tex, 0, px, GL_RGBA32F);
-    es->volume.tf_hash = h;
-    return es->volume.tf_tex;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -301,17 +297,19 @@ void es_planes_remove(ApplicationState* state, Representation* rep, int i) {
     set.items[set.count - 1] = ElectronicStructurePlane{};
     set.count -= 1;
     if (&set == &es.slices) {
-        // its image with it: what is being evaluated into it first let finish (it would land in a texture freed)
+        // its image with it: what is being evaluated into it first let finish
         ElectronicStructurePlaneImage& im = es.plane_images[i];
         bool any = false;
         for (Volume& v : im.img) {
-            if (v.tex_id) {
-                gpu_volume_job_cancel(state, v.tex_id);
+            if (v.gpu) {
+                gpu_volume_job_cancel(state, v.gpu);
                 any = true;
             }
         }
         if (any) gpu_volume_jobs_drain(state);
-        for (Volume& v : im.img) if (v.tex_id) gl::free_texture(&v.tex_id);
+#if MD_ENABLE_GPU
+        for (Volume& v : im.img) gpu_volume_destroy(&v.gpu);
+#endif
         for (int k = i; k + 1 < ES_MAX_PLANES; ++k) es.plane_images[k] = es.plane_images[k + 1];
         es.plane_images[ES_MAX_PLANES - 1] = ElectronicStructurePlaneImage{};
     }

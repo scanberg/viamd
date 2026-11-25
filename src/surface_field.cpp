@@ -4,8 +4,8 @@
 
 #include <task_system.h>
 #include <gpu_job.h>
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
+#include <gpu_volume.h>
+#include <viamd.h>
 
 #include <md_system.h>
 #include <md_attributes.h>
@@ -20,7 +20,6 @@
 #include <core/md_os.h>
 
 #include <imgui.h>
-#include <implot.h>
 
 #include <algorithm>
 #include <atomic>
@@ -1737,34 +1736,22 @@ static uint64_t field_upload_count = 0;   // SurfaceFieldVolume::version: unique
 
 static void field_upload(SurfaceFieldVolume* vol) {
     vol->version = ++field_upload_count;
-    const int* dim = vol->grid.dim;
-    if (!vol->tex_id) {
-        gl::init_texture_3D(&vol->tex_id, dim[0], dim[1], dim[2], GL_R32F);
-    } else {
-        int tex_dim[3] = {};
-        gl::get_texture_dim(tex_dim, vol->tex_id);
-        if (tex_dim[0] != dim[0] || tex_dim[1] != dim[1] || tex_dim[2] != dim[2]) {
-            gl::init_texture_3D(&vol->tex_id, dim[0], dim[1], dim[2], GL_R32F);
-        }
-    }
-    const size_t bytes = sizeof(float) * vol->num_voxels;
-    if (void* dst = gl::pbo_upload_begin(bytes)) {
-        md_memcpy(dst, vol->values, bytes);
-        if (!gl::pbo_upload_end_texture_3D(vol->tex_id, 0, GL_R32F)) {
-            gl::set_texture_3D_data(vol->tex_id, 0, vol->values, GL_R32F);
-        }
-    } else {
-        gl::set_texture_3D_data(vol->tex_id, 0, vol->values, GL_R32F);
-    }
+#if MD_ENABLE_GPU
+    // placed as the grid is (in the world: Angstrom), whole each time: what is drawn never half of it
+    const float scl = (float)BOHR_TO_ANGSTROM;
+    const md_float4x4_t model = compute_texture_to_world_mat(vol->grid.orientation, vol->grid.origin * scl, md_grid_extent(&vol->grid) * scl);
+    gpu_volume_ensure(&vol->gpu);
+    gpu_volume_upload(vol->gpu, MD_GPU_FORMAT_R32_FLOAT, vol->grid.dim, vol->values, model);
+#endif
     vol->num_uploaded = vol->num_evaluated;
 }
 
-// The values, the span over the surfaces, the texture: after new values or a new band
+// The values, the span over the surfaces, the volume on md_gpu: after new values or a new band
 static void field_publish(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     surface_statistics(vol, *w);
     // all of the grid: for its owner to take whole, once complete (no texture of its own)
     if (w->full) return;
-    if (!vol->tex_id || vol->num_uploaded != vol->num_evaluated) {
+    if (!vol->gpu || vol->num_uploaded != vol->num_evaluated) {
         field_upload(vol);
     }
 }
@@ -2000,34 +1987,15 @@ ColorScaleSpan surface_field_span(const SurfaceFieldVolume& vol) {
     return span;
 }
 
-uint32_t surface_field_colormap_texture(SurfaceFieldVolume* vol, int colormap) {
-    MD_ASSERT(vol);
-    if (vol->colormap_tex && vol->colormap == colormap) {
-        return vol->colormap_tex;
-    }
-    const int res = 256;
-    uint32_t pixels[256];
-    for (int i = 0; i < res; ++i) {
-        ImVec4 col = ImPlot::SampleColormap((float)i / (float)(res - 1), colormap);
-        col.w = 1.0f;
-        pixels[i] = ImGui::ColorConvertFloat4ToU32(col);
-    }
-    if (!vol->colormap_tex) {
-        gl::init_texture_2D(&vol->colormap_tex, res, 1, GL_RGBA8);
-    }
-    gl::set_texture_2D_data(vol->colormap_tex, 0, pixels, GL_RGBA8);
-    vol->colormap = colormap;
-    return vol->colormap_tex;
-}
-
 void surface_field_free(SurfaceFieldVolume* vol) {
     MD_ASSERT(vol);
     md_allocator_i* heap = md_get_heap_allocator();
     work_destroy(vol->work);
     if (vol->values) md_free(heap, vol->values, sizeof(float) * vol->num_voxels);
     if (vol->done)   md_free(heap, vol->done, sizeof(uint64_t) * ((vol->num_voxels + 63) / 64));
-    if (vol->tex_id)       gl::free_texture(&vol->tex_id);
-    if (vol->colormap_tex) gl::free_texture(&vol->colormap_tex);
+#if MD_ENABLE_GPU
+    gpu_volume_destroy(&vol->gpu);
+#endif
     *vol = SurfaceFieldVolume{};
 }
 

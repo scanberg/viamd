@@ -51,6 +51,7 @@
 #include <iso_meshes.h>
 #include <gpu_job.h>
 #include <md_render_bridge.h>
+#include <gpu_volume.h>
 #include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
@@ -445,15 +446,6 @@ static inline bool screenshot_offscreen(const ApplicationState* state) {
     return screenshot_pending(state) && state->screenshot.hide_gui;
 }
 
-// The colour and alpha of a slice's edge as the slices are drawn (behind what of them is in front): none for the one
-// picked (the gizmo's outline is drawn over the view instead) and in an image without the GUI (as nothing of the
-// gizmo is); faint for a hidden one
-static md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
-    if (screenshot_offscreen(state)) return md_float4_set(0, 0, 0, 0);
-    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return md_float4_set(0, 0, 0, 0);
-    return enabled ? md_float4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_float4_set(0.78f, 0.78f, 0.78f, 0.4f);
-}
-
 // Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
 // in a screenshot without the windows, which shows it in the middle.
 static inline md_float2_t view_shift(const ApplicationState* state) {
@@ -734,6 +726,8 @@ int main(int argc, char** argv) {
         // The scratch belongs to the device, not to whichever component happens to evaluate
         // first. Components borrow it; see the note on ApplicationState.
         state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
+        // The representations' volumes, filled by the evaluations on that stream (gpu_volume.h)
+        gpu_volumes_init(state.gpu_stream);
 
         md_gpu_texture_desc_t vol_desc = {
             .type            = MD_GPU_TEX_3D,
@@ -763,6 +757,9 @@ int main(int argc, char** argv) {
         md_gto_int_gpu_initialize(state.gpu_device);
         // Isosurface meshes (the mesh rendering mode): kernels made on the first extraction
         md_gto_iso_gpu_initialize(state.gpu_device);
+        // Orbitals and densities on grids (the representations' volumes and planes, the windows'): kernels made on
+        // first use
+        md_gto_gpu_initialize(state.gpu_device);
 
         // The main view (md_render_bridge.h)
         if (!md_render_bridge_create(&state)) {
@@ -1699,9 +1696,11 @@ int main(int argc, char** argv) {
         // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
         md_render_bridge_destroy(&state);
+        gpu_volumes_shutdown();
         system_gpu_data_free(&state);
         md_gto_int_gpu_shutdown();
         md_gto_iso_gpu_shutdown();
+        md_gto_gpu_shutdown();
 
         md_gpu_free(state.gpu_stream, state.gpu_coeff);
         md_gpu_texture_destroy(state.gpu_volume);
@@ -7299,8 +7298,9 @@ static uint64_t scene_key(const ApplicationState* state) {
     // highlighted), the volumes, what the script shows, what the components draw
     h = md_hash64_combine(h, opaque_scene_hash(state));
     h = md_hash64(&state->render.selection_hash, sizeof(state->render.selection_hash), h);
-    const uint64_t volumes = volume::data_version_any();
-    h = md_hash64(&volumes, sizeof(volumes), h);
+    // (the representations' on md_gpu, and the GL volumes of what scripts show)
+    const uint64_t volumes[2] = {volume::data_version_any(), gpu_volume_version_any()};
+    h = md_hash64(volumes, sizeof(volumes), h);
     const uint64_t vis = script_vis_shown_key(state);
     h = md_hash64(&vis, sizeof(vis), h);
     const md_float4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
@@ -7545,7 +7545,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
             // (electronic_structure_field_poll), and the range of its colour scale, which follows the values
             const uint64_t meshes = electronic_structure_mesh_key(es);
             h = md_hash64(&meshes, sizeof(meshes), h);
-            h = md_hash64(&es.field_vol.tex_id, sizeof(es.field_vol.tex_id), h);
+            h = md_hash64(&es.field_vol.gpu, sizeof(es.field_vol.gpu), h);
             h = md_hash64(&es.field_vol.version, sizeof(es.field_vol.version), h);
             const float field_map[3] = {(float)es.field_map.colormap, es.field_map.range_beg, es.field_map.range_end};
             h = md_hash64(field_map, sizeof(field_map), h);
