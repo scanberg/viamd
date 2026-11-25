@@ -1197,6 +1197,10 @@ void draw_system_files(SystemContext& sc, InstanceActions* inst_act) {
                     if (ImGui::MenuItem("Close this run")) sc.app->run_close = { sc.id, (size_t)e.run };
                     ImGui::SetItemTooltip("Its file and the series along it are unloaded, and the instances which show it\n"
                                           "with their representations, but for the first");
+                    if (!e.missing && run_num_frames(sc, sc.runs[e.run]) > 0) {
+                        ImGui::SeparatorText("On the time shown");
+                        draw_run_time_offset(sc, sc.runs[e.run]);
+                    }
                 }
                 ImGui::EndPopup();
             }

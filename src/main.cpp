@@ -4295,17 +4295,16 @@ static void draw_timeline_properties_menu(ApplicationState* data) {
 static void draw_timeline_instances_lane(ApplicationState* data, double view_beg, double view_end, double x_scale, const char* x_unit) {
     SystemInstance* rows[SYSTEM_MAX * INSTANCE_MAX];
     size_t n = 0;
-    bool any_fixed = false;
     for (size_t i = 0; i < data->num_systems; ++i) {
         SystemContext& sc = *data->systems[i];
         for (size_t k = 0; k < sc.num_instances; ++k) {
             SystemInstance* inst = sc.instances[k];
             if (run_num_frames(sc, instance_run(*inst)) == 0) continue;
             rows[n++] = inst;
-            any_fixed |= inst->frame >= 0;
         }
     }
-    if (n < 2 && !any_fixed) return;
+    // A row for every instance with a run, one alone too: where a run is on the clock, and where it is moved along it
+    if (n == 0) return;
 
     // A row's run on the screen: its bar and, of an instance which keeps to a frame, the marker's x
     const ImVec2 pos   = ImGui::GetCursorScreenPos();
