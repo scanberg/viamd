@@ -3014,11 +3014,9 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
         // What this dataset's potential is made of, since a polarizable run may or may not have kept its
         // induced dipoles. Counted only while the tooltip shows: it reads a column over every atom.
         if (ImGui::BeginItemTooltip()) {
-            ImGui::TextUnformatted("The electrostatic potential of the environment on the surface: its charges, the dipoles and\n"
-                                   "quadrupoles where the potential has them, and for a polarizable embedding the dipoles the\n"
-                                   "calculation induced, where it kept them - the potential the QM region was embedded in.\n"
-                                   "The QM region is left out, whatever charges a topology gives its atoms.");
-            // What this dataset's potential is made of: whatever it carries, as it carries it
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
+            ImGui::TextUnformatted(field_description_of_kind(es.field_kind));
+            ImGui::PopTextWrapPos();
             const SurfaceFieldEmbeddingContent c = surface_field_embedding_content(sys);
             ImGui::Separator();
             ImGui::TextUnformatted("This dataset:");
@@ -3034,30 +3032,6 @@ static bool draw_surface_coloring(ElectronicStructureRepresentation& es, const m
             }
             ImGui::EndTooltip();
         }
-    } else if (es.field_kind == SurfaceFieldKind::ElectrostaticPotential) {
-        ImGui::SetItemTooltip("The electrostatic potential of the QM region on the surface: its nuclei and its ground state\n"
-                              "electron density, exact over the basis. Negative (red) where the electrons dominate - lone pairs,\n"
-                              "pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened.\n"
-                              "Mapped onto an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential.\n"
-                              "An embedding's environment is not part of it.");
-    } else if (es.field_kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
-        ImGui::SetItemTooltip("The average local ionization energy of the QM region on the surface: the orbital energies of its\n"
-                              "occupied orbitals, weighted by how much each contributes to the electron density there,\n"
-                              "sum n |e| |phi|^2 / sum n |phi|^2. Lowest (red) where the least tightly held electrons are - the\n"
-                              "sites an electrophile or a radical attacks - and never below the HOMO's |e|. Meant for an\n"
-                              "isodensity surface (0.001-0.002 au). Kohn-Sham orbital energies give lower values than Hartree-Fock.");
-    } else if (es.field_kind == SurfaceFieldKind::LocalElectronAttachmentEnergy) {
-        ImGui::SetItemTooltip("The local electron attachment energy of the QM region on the surface: the energies of its virtual\n"
-                              "orbitals below zero, the ones that bind an added electron, weighted by their densities against the\n"
-                              "electron density. Never positive; lowest where a nucleophile attacks or a halogen bond forms (the\n"
-                              "sigma hole). Defined for hybrid DFT orbitals and read on the 0.004 au isodensity surface; it depends\n"
-                              "strongly on the method and basis, and is 0 everywhere with Hartree-Fock virtuals.");
-    } else if (es.field_kind == SurfaceFieldKind::DensityScaleLength) {
-        ImGui::SetItemTooltip((const char*)u8"The density scale length ρ/|∇ρ| of the QM region's ground state density on the surface: the\n"
-                              u8"distance over which the density changes by a factor e. On an isodensity surface it is how far the\n"
-                              u8"surface moves along its normal per relative change of the density (dρ/ρ moves it by ρ/|∇ρ| dρ/ρ):\n"
-                              u8"long where the boundary of the electron cloud is soft, short where it is stiff, as when the density\n"
-                              u8"is compressed under pressure (GOSTSHYP). About 0.3-1 bohr on the 0.001 au surface.");
     }
 
     // The colours are applied per pixel as the surface is shaded, so a change to the scale needs
@@ -4185,6 +4159,15 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
     return update_rep;
 }
 
+// An attribute's description as a tooltip, wrapped (a publisher's descriptions are a paragraph each)
+static void attribute_description_tooltip(const md_attribute_t* a) {
+    if (!a || !a->description.len || !ImGui::BeginTooltip()) return;
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
+    ImGui::TextUnformatted(a->description.ptr, a->description.ptr + a->description.len);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
+}
+
 // The name of an attribute as the controls show it: its label, else its leaf
 static md_str_t glyph_attribute_name(const md_attribute_t* a) {
     return a->label.len ? a->label : md_attribute_leaf(a);
@@ -4211,7 +4194,7 @@ static bool glyph_quantity_combo(const char* id, md_attribute_id_t* q, const md_
             char label[160];
             snprintf(label, sizeof(label), "%.*s##%u", (int)nm.len, nm.ptr, (unsigned)i);
             if (ImGui::Selectable(label, ids[i] == *q)) { *q = ids[i]; changed = true; }
-            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+            if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
         }
         ImGui::EndCombo();
     }
@@ -4337,7 +4320,7 @@ static bool draw_representation_glyphs(Representation& rep, const md_system_t& s
             snprintf(tip, sizeof(tip), "%.*s", (int)a->path.len, a->path.ptr);
             prop::row(row, a->description.len ? nullptr : tip);
             ImGui::Text(unit[0] ? "%.4g %s" : "%.4g", v * f, unit);
-            if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+            if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
         }
         if (open) prop::section_end();
     }
@@ -4370,7 +4353,7 @@ static bool draw_representation_vdw_surface(ApplicationState* state, Representat
                     char label[176];
                     snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
                     if (ImGui::Selectable(label, sets[i] == v.radii)) { vdw_surface_select_cavity(&v, sys, sets[i]); update_rep = true; }
-                    if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+                    if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
                 }
                 ImGui::EndCombo();
             }
@@ -4402,11 +4385,11 @@ static bool draw_representation_vdw_surface(ApplicationState* state, Representat
                     char label[176];
                     snprintf(label, sizeof(label), "%.*s##%u", (int)nm.len, nm.ptr, (unsigned)i);
                     if (ImGui::Selectable(label, q[i] == v.quantity)) { vdw_surface_select_quantity(&v, sys, q[i]); update_rep = true; }
-                    if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+                    if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
                 }
                 ImGui::EndCombo();
             }
-            if (cur && cur->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)cur->description.len, cur->description.ptr);
+            if (cur && cur->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(cur);
         }
         if (const md_attribute_t* a = v.quantity != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.quantity) : nullptr) {
             char unit[64];

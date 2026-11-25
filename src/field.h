@@ -38,6 +38,7 @@ struct FieldEntry {
     char path[FIELD_PATH_MAX] = "";
     md_str_t label = {};                    // the pretty name, searched as the path is; borrowed: static, or the attribute's
     const char* keywords = "";              // more words a search finds it by
+    md_str_t description = {};              // what it is, shown on hover; borrowed as the label (a density property's: its attribute's)
     ElectronicStructureSource source = {};
     md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
     SurfaceFieldKind field_kind = SurfaceFieldKind::Count;  // the surface field it is, if it is one: what can colour
@@ -63,4 +64,11 @@ bool field_resolve_kind(SurfaceFieldKind* kind, md_str_t path);
 // A combo of the fields: its popup a filter (every word of it in the path, the label or the keywords) and the fields
 // under the labels of their groups. `pickable` leaves out what cannot be picked here (NULL: none); `selected` the
 // path shown as picked. Returns the index of the one picked, -1 for none.
+// Each entry's description shows as it is hovered in the popup, and the picked one's on the closed combo.
 int field_picker(const char* id, const char* preview, const FieldEntry* entries, size_t count, md_str_t selected, bool (*pickable)(const FieldEntry&));
+
+// What a field is, as a tooltip: its description and its path
+void field_tooltip(const FieldEntry& e);
+
+// The description of the field a surface field kind is (empty for none)
+const char* field_description_of_kind(SurfaceFieldKind kind);

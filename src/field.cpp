@@ -12,23 +12,38 @@ struct EsField {
     const char* label;
     ElectronicStructureSource source;
     const char* keywords;
+    const char* description;    // what it is, as the picker and the field's row show it on hover
 };
 
 static const EsField es_fields[] = {
-    { "es/orbital",                       "Molecular Orbital",                 ElectronicStructureSource::MolecularOrbital,              "mo homo lumo" },
-    { "es/nto",                           "Natural Transition Orbital",        ElectronicStructureSource::NaturalTransitionOrbital,      "excited state particle hole" },
-    { "es/transition_density",            "Transition Density",                ElectronicStructureSource::TransitionDensity,             "excited state attachment detachment" },
-    { "es/density",                       "Electron Density",                  ElectronicStructureSource::ElectronDensity,               "rho spin ground state" },
-    { "es/elf",                           "Electron Localization Function",    ElectronicStructureSource::ElectronLocalization,          "elf basins" },
-    { "es/lol",                           "Localized Orbital Locator",         ElectronicStructureSource::LocalizedOrbitalLocator,       "lol" },
-    { "es/esp",                           "Electrostatic Potential",           ElectronicStructureSource::ElectrostaticPotential,        "esp mep molecular" },
-    { "es/embedding_potential",           "Embedding Potential",               ElectronicStructureSource::EmbeddingPotential,            "polarizable pe environment solvent" },
-    { "es/alie",                          "Average Local Ionization Energy",   ElectronicStructureSource::AverageLocalIonizationEnergy,  "alie" },
-    { "es/leae",                          "Local Electron Attachment Energy",  ElectronicStructureSource::LocalElectronAttachmentEnergy, "leae" },
-    { "es/density_scale_length",          "Density Scale Length",              ElectronicStructureSource::DensityScaleLength,            "dsl" },
-    { "es/gostshyp/wall_potential",       "Wall Potential",                    ElectronicStructureSource::GostshypWallPotential,         "pressure cavity v1" },
-    { "es/gostshyp/effective_potential",  "Effective Potential",               ElectronicStructureSource::GostshypEffectivePotential,    "pressure cavity" },
-    { "es/gostshyp/energy_density",       "Energy Density",                    ElectronicStructureSource::GostshypEnergyDensity,         "pressure cavity wall energy" },
+    { "es/orbital", "Molecular Orbital", ElectronicStructureSource::MolecularOrbital, "mo homo lumo",
+      "A molecular orbital psi_i of the calculation, of either spin: its value, the positive and negative lobes apart (their isosurfaces at +-0.05 au show its shape and its nodes), or its square, the density of an electron in it." },
+    { "es/nto", "Natural Transition Orbital", ElectronicStructureSource::NaturalTransitionOrbital, "excited state particle hole",
+      "A natural transition orbital of an excited state: the particle (where the excited electron goes) or the hole (where it leaves), of the pairs that together are the transition, each pair with its weight lambda. One pair of large weight: the transition is that one excitation." },
+    { "es/transition_density", "Transition Density", ElectronicStructureSource::TransitionDensity, "excited state attachment detachment",
+      "The densities of an excitation: the attachment and the detachment, where the excited state has more and less electron density than the ground state, or the transition density between the two states (whose dipole is the transition dipole)." },
+    { "es/density", "Electron Density", ElectronicStructureSource::ElectronDensity, "rho spin ground state",
+      "The ground state electron density rho of the QM region, in all or of a spin (alpha, beta, or the spin density, their difference). Its isosurface at 0.001-0.002 au is the usual molecular surface, what the energies and potentials below are read on." },
+    { "es/elf", "Electron Localization Function", ElectronicStructureSource::ElectronLocalization, "elf basins",
+      "The electron localization function (Becke and Edgecombe), 0 to 1: near 1 where the electrons are paired and held (cores, bonds, lone pairs), 1/2 in an electron gas of the same density. From the kinetic energy density of the orbitals against the gas's; its basins are the shells, the bonds and the lone pairs." },
+    { "es/lol", "Localized Orbital Locator", ElectronicStructureSource::LocalizedOrbitalLocator, "lol",
+      "The localized orbital locator (Schmider and Becke), 0 to 1: like ELF large where the electrons are localized, from the kinetic energy density alone, t / (1 + t) of t = tau_gas / tau. Sharper than ELF between the atoms." },
+    { "es/esp", "Electrostatic Potential", ElectronicStructureSource::ElectrostaticPotential, "esp mep molecular",
+      "The electrostatic potential of the QM region: its nuclei and its ground state electron density, exact over the basis. Negative (red) where the electrons dominate - lone pairs, pi systems, where an electrophile is drawn - and positive (blue) where the nuclei are less screened. On an isodensity surface (0.001-0.002 au) it is the molecular electrostatic potential. An embedding's environment is not part of it." },
+    { "es/embedding_potential", "Embedding Potential", ElectronicStructureSource::EmbeddingPotential, "polarizable pe environment solvent",
+      "The electrostatic potential of the environment: its charges, the dipoles and quadrupoles where it has them, and for a polarizable embedding the dipoles the calculation induced, where it kept them - the potential the QM region was embedded in. The QM region is left out, whatever charges a topology gives its atoms." },
+    { "es/alie", "Average Local Ionization Energy", ElectronicStructureSource::AverageLocalIonizationEnergy, "alie",
+      "The average local ionization energy of the QM region: the orbital energies of its occupied orbitals, weighted by how much each contributes to the electron density there, sum n |e| |phi|^2 / sum n |phi|^2. Lowest (red) where the least tightly held electrons are - the sites an electrophile or a radical attacks - and never below the HOMO's |e|. Meant for an isodensity surface (0.001-0.002 au). Kohn-Sham orbital energies give lower values than Hartree-Fock." },
+    { "es/leae", "Local Electron Attachment Energy", ElectronicStructureSource::LocalElectronAttachmentEnergy, "leae",
+      "The local electron attachment energy of the QM region: the energies of its virtual orbitals below zero, the ones that bind an added electron, weighted by their densities against the electron density. Never positive; lowest where a nucleophile attacks or a halogen bond forms (the sigma hole). Defined for hybrid DFT orbitals and read on the 0.004 au isodensity surface; it depends strongly on the method and basis, and is 0 everywhere with Hartree-Fock virtuals." },
+    { "es/density_scale_length", "Density Scale Length", ElectronicStructureSource::DensityScaleLength, "dsl",
+      "The density scale length rho / |grad rho| of the QM region's ground state density: the distance over which the density changes by a factor e. On an isodensity surface it is how far the surface moves along its normal per relative change of the density: long where the boundary of the electron cloud is soft, short where it is stiff, as when the density is compressed under pressure (GOSTSHYP). About 0.3-1 bohr on the 0.001 au surface." },
+    { "es/gostshyp/wall_potential", "Wall Potential", ElectronicStructureSource::GostshypWallPotential, "pressure cavity v1",
+      "The potential of the GOSTSHYP wall, V1 = sum_j p_j g_j: a normalized Gaussian on each tessera of the cavity, of the amplitude the SCF settled, that holds the electron density in and so puts it under the pressure. Positive, largest at the cavity's surface, gone a few decay lengths inside." },
+    { "es/gostshyp/effective_potential", "Effective Potential", ElectronicStructureSource::GostshypEffectivePotential, "pressure cavity",
+      "The wall's potential with the first order term of each Gaussian along its tessera's normal, sum_j p_j g_j (1 + 2 zeta_j lambda_j n_j . (r - c_j)), n_j the outward normal: V1 - V2 of VeloxChem's GOSTSHYP. Higher than V1 outside the cavity's surface, lower inside, and negative a little way in." },
+    { "es/gostshyp/energy_density", "Energy Density", ElectronicStructureSource::GostshypEnergyDensity, "pressure cavity wall energy",
+      "The wall's energy per volume, rho V1: the electron density times the wall's potential. Where the wall's energy is; its integral over space is the wall energy (the cavity's Wall Energy)." },
 };
 
 static const md_str_t density_property_prefix = MD_STR_LIT("es/density_property/");
@@ -72,6 +87,7 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
         entry_path(&e, f.path);
         e.label = md_str_from_cstr(f.label);
         e.keywords = f.keywords;
+        e.description = md_str_from_cstr(f.description);
         e.source = f.source;
         // the density colours as the total density, whatever its spin shown
         e.field_kind = f.source == ElectronicStructureSource::ElectronDensity ? SurfaceFieldKind::ElectronDensity : electronic_structure_source_field_kind(f.source);
@@ -86,6 +102,7 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
         snprintf(e.path, sizeof(e.path), "%.*s%.*s", (int)density_property_prefix.len, density_property_prefix.ptr, (int)rel.len, rel.ptr);
         e.label = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
         e.keywords = "density property";
+        e.description = attr->description;
         e.source = ElectronicStructureSource::DensityProperty;
         e.density_property_key = attr->id;
         md_array_push(*out, e, alloc);
@@ -236,13 +253,37 @@ int field_picker(const char* id, const char* preview, const FieldEntry* entries,
             snprintf(label, sizeof(label), "%.*s##%s", (int)e.label.len, e.label.ptr, e.path);
             ImGui::Indent();
             if (ImGui::Selectable(label, is_selected)) picked = (int)i;
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", e.path);
+            if (ImGui::IsItemHovered()) field_tooltip(e);
             if (is_selected && ImGui::IsWindowAppearing()) ImGui::SetScrollHereY();
             ImGui::Unindent();
         }
         if (!any) ImGui::TextDisabled("Nothing matches");
         ImGui::EndCombo();
+    } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        // the one picked, closed: what it is
+        for (size_t i = 0; i < count; ++i) {
+            if (md_str_eq_cstr(selected, entries[i].path)) { field_tooltip(entries[i]); break; }
+        }
     }
     ImGui::PopID();
     return picked;
+}
+
+const char* field_description_of_kind(SurfaceFieldKind kind) {
+    for (const EsField& f : es_fields) {
+        if (electronic_structure_source_field_kind(f.source) == kind) return f.description;
+    }
+    return "";
+}
+
+void field_tooltip(const FieldEntry& e) {
+    if (!ImGui::BeginTooltip()) return;
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40.0f);
+    if (e.description.len) {
+        ImGui::TextUnformatted(e.description.ptr, e.description.ptr + e.description.len);
+        ImGui::Spacing();
+    }
+    ImGui::TextDisabled("%s", e.path);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
 }
