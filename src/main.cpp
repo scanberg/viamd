@@ -792,8 +792,6 @@ int main(int argc, char** argv) {
     // Init subsystems
     VIAMD_LOG_DEBUG("Initializing immediate draw...");
     immediate::initialize();
-    state.gfx.world   = immediate::queue_create("world");
-	state.gfx.overlay = immediate::queue_create("overlay");
 
     VIAMD_LOG_DEBUG("Initializing post processing...");
 
@@ -1661,13 +1659,7 @@ int main(int argc, char** argv) {
 
     // shutdown subsystems
     VIAMD_LOG_DEBUG("Shutting down immediate draw...");
-    immediate::queue_destroy(state.gfx.world);
-    immediate::queue_destroy(state.gfx.overlay);
     immediate::shutdown();
-    es_planes_shutdown();
-
-    state.gfx.world = nullptr;
-    state.gfx.overlay = nullptr;
 
     profiler::shutdown();
     VIAMD_LOG_DEBUG("Shutting down post processing...");
@@ -7307,16 +7299,12 @@ static uint64_t scene_key(const ApplicationState* state) {
     h = md_hash64(&state->settings, sizeof(state->settings), h);
 
     // What it shows: the representations and the atoms (their visibility, the dimmed by the selection: not the
-    // highlighted), the volumes, what the script shows, what the components draw
+    // highlighted), the volumes. Not the overlay (what the script shows, the components' marks): drawn every frame.
     h = md_hash64_combine(h, opaque_scene_hash(state));
     h = md_hash64(&state->render.selection_hash, sizeof(state->render.selection_hash), h);
     // (the representations' on md_gpu, and the GL volumes of what scripts show)
     const uint64_t volumes[2] = {volume::data_version_any(), gpu_volume_version_any()};
     h = md_hash64(volumes, sizeof(volumes), h);
-    const uint64_t vis = script_vis_shown_key(state);
-    h = md_hash64(&vis, sizeof(vis), h);
-    const md_float4_t vis_colors[3] = {state->script.point_color, state->script.line_color, state->script.triangle_color};
-    h = md_hash64(vis_colors, sizeof(vis_colors), h);
     h = md_hash64(&state->render.version, sizeof(state->render.version), h);
 
     RenderKey rk = {state, h};
@@ -7353,6 +7341,72 @@ static postprocess_pipeline::Settings frame_settings(const ApplicationState* sta
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
     return settings;
+}
+
+// What the script shows, into the overlay (viamd.h): its points as discs, its lines and triangles as they are, each
+// vertex's colour times the script's for its kind; the frames of an sdf's structures as their axes, over everything,
+// and the edges of their boxes, behind what is in front of them. None of it picks.
+static void script_overlay(Overlay* o, const ApplicationState* state) {
+    const script::Drawing* vis = state->script.vis_shown;
+    if (!vis) return;
+    const float pt = o->px_per_point;
+    auto color = [](uint32_t c, md_float4_t mult) { return md_u32_from_float4(md_float4_mul(md_float4_from_u32(c), mult)); };
+    auto segment = [o](md_float3_t a, md_float3_t b, float half_px, uint32_t c, bool depth) {
+        OverlayItem it = {};
+        it.shape = OverlayShape::Segment;
+        it.p[0] = a;
+        it.p[1] = b;
+        it.size = half_px;
+        it.color = c;
+        it.pixels = true;
+        it.depth = depth;
+        overlay_add(o, it);
+    };
+    for (size_t i = 0; i + 2 < md_array_size(vis->triangles); i += 3) {
+        OverlayItem it = {};
+        it.shape = OverlayShape::Triangle;
+        for (int k = 0; k < 3; ++k) it.p[k] = vis->triangles[i + k].pos;
+        it.color = color(vis->triangles[i].color, state->script.triangle_color);
+        overlay_add(o, it);
+    }
+    for (size_t i = 0; i + 1 < md_array_size(vis->lines); i += 2) {
+        segment(vis->lines[i].pos, vis->lines[i + 1].pos, 1.0f * pt, color(vis->lines[i].color, state->script.line_color), false);
+    }
+    for (size_t i = 0; i < md_array_size(vis->points); ++i) {
+        OverlayItem it = {};
+        it.shape = OverlayShape::Disc;
+        it.p[0] = vis->points[i].pos;
+        it.size = 3.0f * pt;
+        it.color = color(vis->points[i].color, state->script.point_color);
+        it.pixels = true;
+        overlay_add(o, it);
+    }
+    const size_t num_matrices = md_array_size(vis->sdf.matrices);
+    const size_t num_structures = md_array_size(vis->sdf.structures);
+    const size_t num_sdf_items = MD_MIN(MD_MIN(num_matrices, num_structures), 100);
+    if (num_matrices != num_structures) {
+        VIAMD_LOG_DEBUG("SDF visualization returned mismatched matrix and structure counts (%zu, %zu)", num_matrices, num_structures);
+    }
+    const uint32_t axis_color[3] = {md_u32_from_float4({1, 0, 0, 0.7f}), md_u32_from_float4({0, 1, 0, 0.7f}), md_u32_from_float4({0, 0, 1, 0.7f})};
+    const float ext = vis->sdf.extent;
+    for (size_t i = 0; i < num_sdf_items; ++i) {
+        const md_float4x4_t M = md_float4x4_inverse(vis->sdf.matrices[i]);
+        const md_float3_t origin = md_float4x4_mul_float3(M, md_float3_set1(0.0f), 1.0f);
+        for (int k = 0; k < 3; ++k) {
+            md_float3_t e = {0, 0, 0};
+            e.elem[k] = 0.25f * ext;
+            segment(origin, md_float4x4_mul_float3(M, e, 1.0f), 1.0f * pt, axis_color[k], false);
+        }
+        md_float3_t corner[8];
+        for (int c = 0; c < 8; ++c) {
+            corner[c] = md_float4x4_mul_float3(M, md_float3_set((c & 1) ? ext : -ext, (c & 2) ? ext : -ext, (c & 4) ? ext : -ext), 1.0f);
+        }
+        for (int c = 0; c < 8; ++c) {
+            for (int k = 0; k < 3; ++k) {
+                if (!(c & (1 << k))) segment(corner[c], corner[c | (1 << k)], 0.75f * pt, 0xFF000000u, true);
+            }
+        }
+    }
 }
 
 // The image of the scene, on md_gpu (md_render_bridge.h): drawn, composed and made into the image kept, which render()
@@ -7422,8 +7476,9 @@ static void render(ApplicationState* state) {
     const bool draw_marks = !md_bitmask_empty(&state->selection.selection_mask) || !md_bitmask_empty(&state->selection.highlight_mask) ||
                             state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
 
-    // The image kept, the marks over it, into the framebuffer bound at the size of the image
-    auto present = [&]() {
+    // The image kept, the marks over it and the overlay over those, into the framebuffer bound at the size of the image.
+    // In the window the planes' outlines too (es_planes.h), which a screenshot leaves out.
+    auto present = [&](bool window) {
         PUSH_GPU_SECTION("Present")
         postprocess_pipeline::Settings settings = {};
         if (draw_marks) {
@@ -7433,7 +7488,15 @@ static void render(ApplicationState* state) {
             const int outline_step = MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
             marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
         }
-        md_render_bridge_present(state, draw_marks ? &settings : nullptr);
+        Overlay overlay = {};
+        overlay.state = state;
+        overlay.alloc = state->allocator.frame;
+        overlay.px_per_point = ImGui::GetIO().DisplayFramebufferScale.x * (float)MD_MAX(state->gbuffer.out_height, 1U) /
+                               (float)MD_MAX(state->app.framebuffer.height, 1);
+        if (window) es_planes_overlay(&overlay);
+        script_overlay(&overlay, state);
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOverlay, viamd::EventPayloadType_Overlay, &overlay);
+        md_render_bridge_present(state, draw_marks ? &settings : nullptr, &overlay);
         POP_GPU_SECTION()
     };
 
@@ -7442,7 +7505,7 @@ static void render(ApplicationState* state) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
         glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        present();
+        present(false);
         screenshot_save(state);
     }
 
@@ -7453,11 +7516,7 @@ static void render(ApplicationState* state) {
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     if (!offscreen) {
-        present();
-        // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
-        es_planes_draw_outlines(md_render_bridge_depth_gl(state), state->gbuffer.width, state->gbuffer.height,
-                                state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
-        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
+        present(true);
     } else {
         const uint32_t total = MD_MAX(settle_frames(state), 1u);
         const float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;

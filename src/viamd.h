@@ -31,7 +31,6 @@
 #include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
-#include <gfx/immediate_draw_utils.h>
 
 #include <task_system.h>
 #include <surface_field.h>
@@ -1812,11 +1811,6 @@ struct ApplicationState {
     // Primary gbuffer
     GBuffer gbuffer {};
 
-    struct {
-		immediate::Queue* world = nullptr;
-		immediate::Queue* overlay = nullptr;
-    } gfx;
-
     // --- PICKING ---
     PickingSurface picking_surface {};      // Surface for main viewport picking
 
@@ -2254,11 +2248,46 @@ enum ViewFitRound {
     ViewFitRound_Visible,
 };
 
-// The payload of EventType_ViamdRenderKey: what a handler draws into the main view from, folded into key
+// The payload of EventType_ViamdRenderKey: what the main view's scene is made from, folded into key
 struct RenderKey {
     const ApplicationState* state = nullptr;
     uint64_t key = 0;
 };
+
+// THE OVERLAY of the main view: what is drawn over the scene once it is made (md_post_overlay, md_render_bridge.cpp),
+// neither hiding it nor hidden by it but where drawn, each item over those before it. Asked for every frame: the
+// planes' outlines (es_planes.h), what the script shows, and what the components add (EventType_ViamdRenderOverlay,
+// with an Overlay as the payload).
+//   Disc      at p[0], facing the camera, of radius `size`, `color` inside an outline `width` wide of `color2`
+//   Segment   from p[0] to p[1], `size` its half width, round ends, `color`
+//   Triangle  p[0], p[1], p[2], `color`
+// World positions; sizes in Angstrom, or in the framebuffer's pixels (`pixels`). With `depth` an item is hidden where
+// the scene is in front of it. Colours RGBA8 (ImU32), sRGB-encoded. An item picks as its domain's (pick_key,
+// pick_index) where it is drawn (md_render_bridge_hit: the last drawn under the cursor); domain 0: nothing.
+enum class OverlayShape : uint32_t { Disc, Segment, Triangle };
+
+struct OverlayItem {
+    OverlayShape    shape = OverlayShape::Disc;
+    md_float3_t     p[3] = {};
+    float           size = 0.0f;
+    float           width = 0.0f;
+    uint32_t        color = 0;
+    uint32_t        color2 = 0;
+    bool            pixels = false;
+    bool            depth = false;
+    PickingDomainID pick_domain = 0;
+    uint64_t        pick_key = 0;
+    uint32_t        pick_index = 0;
+};
+
+struct Overlay {
+    const ApplicationState* state = nullptr;
+    md_allocator_i*         alloc = nullptr;   // the items': the frame's
+    md_array(OverlayItem)   items = nullptr;
+    float                   px_per_point = 1.0f;   // framebuffer pixels per point of the GUI
+};
+
+static inline void overlay_add(Overlay* o, const OverlayItem& item) { md_array_push(o->items, item, o->alloc); }
 
 // This is the supplied event payload for requesting a view fit.
 // The idea is to construct a weighted point cloud of whatever is 'highlighted'

@@ -13,11 +13,12 @@ enum : EventType {
 	EventType_ViamdShutdown 	   			= HASH_STR_LIT("VIAMD Shutdown"),
 	EventType_ViamdFrameTick 	   			= HASH_STR_LIT("VIAMD Frame Tick"),				// This is called once per frame
 
-	EventType_ViamdRenderOpaque				= HASH_STR_LIT("VIAMD Render Opaque"),			// Render opaque geometry into GBuffer
-	EventType_ViamdRenderTransparent		= HASH_STR_LIT("VIAMD Render Transparent"),		// Render transparent geometry (Occurs after opaque render pass)
-	// Before the main view is rendered, every frame: a handler that draws into it (RenderOpaque, RenderTransparent) folds
-	// what it draws from into the key (payload RenderKey), as it changes without input (a hover, a result arriving). The
-	// view is made again when the key changes, and else shown as it was made (lazy rendering).
+	// Every frame, as the main view is shown: a component adds what it draws over the scene to the overlay (payload
+	// Overlay, viamd.h): neither hiding the scene nor hidden by it, picked where drawn
+	EventType_ViamdRenderOverlay			= HASH_STR_LIT("VIAMD Render Overlay"),
+	// Before the main view is rendered, every frame: what the scene is made from that changes without input (a hover, a
+	// result arriving) folded into the key (payload RenderKey). The view is made again when the key changes, and else
+	// shown as it was made (lazy rendering). The overlay is drawn every frame and needs no key.
 	EventType_ViamdRenderKey				= HASH_STR_LIT("VIAMD Render Key"),
 
 	// While the Windows menu is open, every frame: a component adds its windows to the request (payload
@@ -100,6 +101,7 @@ enum : EventPayloadType {
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
+	EventPayloadType_Overlay					= HASH_STR_LIT("Payload Overlay"),
 	EventPayloadType_TaskProgressRequest		= HASH_STR_LIT("Payload Task Progress Request"),
 	EventPayloadType_WindowMenuRequest			= HASH_STR_LIT("Payload Window Menu Request"),
 };

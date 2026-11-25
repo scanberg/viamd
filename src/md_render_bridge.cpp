@@ -145,20 +145,22 @@ struct MdRenderBridge {
     int       hist = 0;                         // the history written last
     bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
     md_gpu_texture_t image = nullptr;
-    SharedTex depth, out;
-    bool      exported = false;     // depth holds the scene drawn last
+    SharedTex out;
     bool      still = true;         // md_render did not rasterise this frame: nothing moved
     md_render_frame_t last = {};    // the frame drawn last (its batches are `batches`), for the masks alone
     bool      has_last = false;
     int       last_ui_frame = -1;   // the ImGui frame it was drawn in
     uint32_t  presents = 0;         // seeds the dither
 
-    // GL: the image shown into the framebuffer; the depth as GL reads it (depth_gl)
-    GLuint present_program = 0, depth_program = 0, vao = 0;
-    GLint  ploc_image = -1, ploc_size = -1, dloc_depth = -1, dloc_size = -1;
-    GLuint depth_fbo = 0, depth_tex = 0;
-    uint32_t depth_tex_w = 0, depth_tex_h = 0;
-    bool   depth_tex_valid = false;
+    // GL: the image shown into the framebuffer
+    GLuint present_program = 0, vao = 0;
+    GLint  ploc_image = -1, ploc_size = -1;
+
+    // The overlay drawn last (draw_overlay), for picking it: its items, the camera and the size it was drawn at; and
+    // the pixel asked about last (md_render_bridge_pick: the scene's, rows from the top)
+    md_array(OverlayItem) overlay = nullptr;
+    md_render_camera_t    overlay_camera = {};
+    float                 pick_x = -1.0f, pick_y = -1.0f;
 
     // The lookup tables of the electronic structure representations (lut_texture): their transfer functions and colour
     // maps, each kept while it is drawn
@@ -241,25 +243,6 @@ void main() {
 }
 )";
 
-// md_render's depth (reverse Z, 0 where nothing; rows from the top) as GL's window depth (rows from the bottom):
-// md_render's projection is md_gl's with its depth reversed, d = (1 - ndc z) / 2
-static const char* depth_fs = R"(
-#ifdef RECT
-uniform sampler2DRect u_depth;
-#define FETCH(t, p) texelFetch(t, p)
-#else
-uniform sampler2D u_depth;
-#define FETCH(t, p) texelFetch(t, p, 0)
-#endif
-uniform ivec2 u_size;
-out vec4 out_depth;
-void main() {
-    ivec2 p = ivec2(gl_FragCoord.xy);
-    p.y = u_size.y - 1 - p.y;
-    float d = FETCH(u_depth, p).r;
-    out_depth = vec4(d > 0.0 ? 1.0 - d : 1.0);
-}
-)";
 
 static GLuint gl_program(const char* fs_body, bool rect) {
     char fs_src[4096];
@@ -282,14 +265,10 @@ static GLuint gl_program(const char* fs_body, bool rect) {
 
 static bool gl_init(MdRenderBridge* b, bool rect) {
     b->present_program = gl_program(present_fs, rect);
-    b->depth_program   = gl_program(depth_fs, rect);
-    if (!b->present_program || !b->depth_program) return false;
+    if (!b->present_program) return false;
     b->ploc_image = glGetUniformLocation(b->present_program, "u_image");
     b->ploc_size  = glGetUniformLocation(b->present_program, "u_size");
-    b->dloc_depth = glGetUniformLocation(b->depth_program, "u_depth");
-    b->dloc_size  = glGetUniformLocation(b->depth_program, "u_size");
     glGenVertexArrays(1, &b->vao);
-    glGenFramebuffers(1, &b->depth_fbo);
     return true;
 }
 
@@ -331,11 +310,12 @@ static void shared_free(SharedTex* s) {
     *s = SharedTex{};
 }
 
+// Written by md_post_present and drawn over by md_post_overlay
 static bool shared_make(MdRenderBridge* b, SharedTex* s, md_gpu_format_t format, uint32_t width, uint32_t height, const char* label) {
     md_gpu_texture_desc_t d = {};
     d.type   = MD_GPU_TEX_2D;
     d.format = format;
-    d.usage  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SHARED;
+    d.usage  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET | MD_GPU_TEX_SHARED;
     d.width  = width;
     d.height = height;
     d.label  = label;
@@ -364,11 +344,9 @@ static void free_targets(MdRenderBridge* b) {
         if (*x) md_gpu_texture_destroy(*x);
         *x = nullptr;
     }
-    shared_free(&b->depth);
     shared_free(&b->out);
     b->image = nullptr;
     b->hist_valid = false;
-    b->exported = false;
     b->width = b->height = b->out_width = b->out_height = 0;
 }
 
@@ -386,8 +364,7 @@ static bool ensure_targets(MdRenderBridge* b, uint32_t width, uint32_t height, u
         free_targets(b);
         return false;
     }
-    if (!shared_make(b, &b->depth, MD_GPU_FORMAT_R32_FLOAT, width, height, "main view depth") ||
-        !shared_make(b, &b->out, MD_GPU_FORMAT_RGBA8_UNORM, out_width, out_height, "main view image")) {
+    if (!shared_make(b, &b->out, MD_GPU_FORMAT_RGBA8_UNORM, out_width, out_height, "main view image")) {
         free_targets(b);
         return false;
     }
@@ -1972,16 +1949,96 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         return;
     }
 
-    // The depth, for GL to draw behind the scene (depth_gl)
-    share_write_begin(b, &b->depth);
-    md_render_export_t ex = {b->depth.tex, nullptr, nullptr};
-    b->exported = md_render_view_export(b->stream, b->view, &ex);
-    share_write_end(b, &b->depth);
-    b->depth_tex_valid = false;
     snprintf(b->status, sizeof(b->status), "Drawing %u batches, %u x %u, shown at %u x %u", f.batch_count, width, height, out_width, out_height);
 }
 
-bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks) {
+// ---- The overlay -------------------------------------------------------------------------------------------------
+
+// Over the image (md_post_overlay), of the camera the scene was drawn with and hidden behind its depth where asked;
+// kept for picking it
+static bool draw_overlay(MdRenderBridge* b, ApplicationState* state, const Overlay* o) {
+    md_array_shrink(b->overlay, 0);
+    const size_t n = o ? md_array_size(o->items) : 0;
+    if (n == 0 || !b->has_last) return true;
+    md_array_push_array(b->overlay, o->items, n, state->allocator.persistent);
+    b->overlay_camera = b->last.camera;
+    md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+    md_post_overlay_item_t* items = (md_post_overlay_item_t*)md_vm_arena_push(state->allocator.frame, n * sizeof(md_post_overlay_item_t));
+    for (size_t i = 0; i < n; ++i) {
+        const OverlayItem& it = o->items[i];
+        md_post_overlay_item_t& x = items[i];
+        x = {};
+        x.kind   = it.shape == OverlayShape::Disc ? MD_POST_OVERLAY_DISC : it.shape == OverlayShape::Segment ? MD_POST_OVERLAY_SEGMENT : MD_POST_OVERLAY_TRIANGLE;
+        x.flags  = (it.pixels ? MD_POST_OVERLAY_PIXELS : 0u) | (it.depth ? MD_POST_OVERLAY_DEPTH : 0u);
+        md_memcpy(x.p0, &it.p[0], sizeof(x.p0));
+        md_memcpy(x.p1, &it.p[1], sizeof(x.p1));
+        md_memcpy(x.p2, &it.p[2], sizeof(x.p2));
+        x.size   = it.size;
+        x.width  = it.width;
+        x.color  = it.color;
+        x.color2 = it.color2;
+    }
+    md_post_overlay_t ov = {};
+    ov.target = b->out.tex;
+    ov.camera = b->overlay_camera;
+    ov.items  = items;
+    ov.count  = (uint32_t)n;
+    ov.depth  = md_render_view_targets(b->view).depth;
+    const bool ok = md_post_overlay(b->stream, b->post, &ov);
+    md_temp_end(temp);
+    return ok;
+}
+
+// The item of the overlay drawn last under the point (the image's pixels, rows from the top) of those that pick: the
+// last drawn of them, as it is on top. depth: its first point's (md_render's, reverse Z).
+static const OverlayItem* overlay_pick(const MdRenderBridge* b, float x, float y, float* depth) {
+    const float* V = b->overlay_camera.view;
+    const float* P = b->overlay_camera.proj;
+    const float W = (float)b->out_width, H = (float)b->out_height;
+    const md_float2_t q = {x, y};
+    // a point's pixel, its clip w (> 0 in front) and depth
+    auto project = [&](md_float3_t p, float* w, float* d) {
+        float v[4], c[4];
+        for (int r = 0; r < 4; ++r) v[r] = V[r] * p.x + V[4 + r] * p.y + V[8 + r] * p.z + V[12 + r];
+        for (int r = 0; r < 4; ++r) c[r] = P[r] * v[0] + P[4 + r] * v[1] + P[8 + r] * v[2] + P[12 + r] * v[3];
+        *w = c[3];
+        *d = c[3] != 0.0f ? c[2] / c[3] : 0.0f;
+        return md_float2_t{(c[0] / c[3] * 0.5f + 0.5f) * W, (0.5f - c[1] / c[3] * 0.5f) * H};
+    };
+    auto px_size = [&](const OverlayItem& it, float w) { return it.pixels ? it.size : it.size * P[5] * 0.5f * H / w; };
+    for (size_t i = md_array_size(b->overlay); i-- > 0;) {
+        const OverlayItem& it = b->overlay[i];
+        if (!it.pick_domain) continue;
+        float w0, d0, w1, d1, w2, d2;
+        const md_float2_t a = project(it.p[0], &w0, &d0);
+        if (!(w0 > 0.0f)) continue;
+        bool in = false;
+        if (it.shape == OverlayShape::Disc) {
+            in = md_float2_length(md_float2_sub(q, a)) <= px_size(it, w0);
+        } else if (it.shape == OverlayShape::Segment) {
+            const md_float2_t e = project(it.p[1], &w1, &d1);
+            if (!(w1 > 0.0f)) continue;
+            const md_float2_t ab = md_float2_sub(e, a);
+            const float l2 = md_float2_dot(ab, ab);
+            const float t = l2 > 0.0f ? MD_CLAMP(md_float2_dot(md_float2_sub(q, a), ab) / l2, 0.0f, 1.0f) : 0.0f;
+            const md_float2_t c = md_float2_add(a, md_float2_mul1(ab, t));
+            in = md_float2_length(md_float2_sub(q, c)) <= px_size(it, w0) * (1.0f - t) + px_size(it, w1) * t;
+        } else {
+            const md_float2_t e = project(it.p[1], &w1, &d1), f = project(it.p[2], &w2, &d2);
+            if (!(w1 > 0.0f) || !(w2 > 0.0f)) continue;
+            auto side = [](md_float2_t p, md_float2_t u, md_float2_t v) { return (v.x - u.x) * (p.y - u.y) - (v.y - u.y) * (p.x - u.x); };
+            const float s0 = side(q, a, e), s1 = side(q, e, f), s2 = side(q, f, a);
+            in = (s0 >= 0.0f && s1 >= 0.0f && s2 >= 0.0f) || (s0 <= 0.0f && s1 <= 0.0f && s2 <= 0.0f);
+        }
+        if (in) {
+            *depth = d0;
+            return &it;
+        }
+    }
+    return nullptr;
+}
+
+bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks, const Overlay* overlay) {
     MdRenderBridge* b = state->md_render_bridge;
     if (!b || !b->ok || !b->image || !b->out.tex) return false;
     // The marks changed without the scene being made: md_render's masks again (only they are made)
@@ -2017,7 +2074,7 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
     pd.target = b->out.tex;
     pd.frame  = b->presents++;
     share_write_begin(b, &b->out);
-    const bool ok = md_post_present(b->stream, b->post, &pd);
+    const bool ok = md_post_present(b->stream, b->post, &pd) && draw_overlay(b, state, overlay);
     share_write_end(b, &b->out);
     if (!ok) return false;
 
@@ -2042,50 +2099,6 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
     return true;
 }
 
-uint32_t md_render_bridge_depth_gl(ApplicationState* state) {
-    MdRenderBridge* b = state->md_render_bridge;
-    if (!b || !b->ok || !b->exported || !b->depth_program) return 0;
-    if (b->depth_tex_valid) return b->depth_tex;
-    if (!b->depth_tex || b->depth_tex_w != b->width || b->depth_tex_h != b->height) {
-        if (b->depth_tex) glDeleteTextures(1, &b->depth_tex);
-        glGenTextures(1, &b->depth_tex);
-        glBindTexture(GL_TEXTURE_2D, b->depth_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, (GLsizei)b->width, (GLsizei)b->height, 0, GL_RED, GL_FLOAT, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        b->depth_tex_w = b->width;
-        b->depth_tex_h = b->height;
-    }
-    GLint fbo = 0, viewport[4];
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, b->depth_fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->depth_tex, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, (GLsizei)b->width, (GLsizei)b->height);
-    const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), blend = glIsEnabled(GL_BLEND);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    gl_read_begin(&b->depth);
-    glUseProgram(b->depth_program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(b->depth.gl.target, b->depth.gl.name);
-    glUniform1i(b->dloc_depth, 0);
-    glUniform2i(b->dloc_size, (GLint)b->width, (GLint)b->height);
-    glBindVertexArray(b->vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glBindTexture(b->depth.gl.target, 0);
-    glUseProgram(0);
-    gl_read_end(&b->depth);
-    if (depth_test) glEnable(GL_DEPTH_TEST);
-    if (blend) glEnable(GL_BLEND);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fbo);
-    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-    b->depth_tex_valid = true;
-    return b->depth_tex;
-}
 
 // ---- Picking ------------------------------------------------------------------------------------------------------
 
@@ -2102,7 +2115,10 @@ static void collect_picks(MdRenderBridge* b) {
 
 void md_render_bridge_pick(ApplicationState* state, float x, float y) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!b || !b->ok || !b->has_last) return;
+    if (!b || !b->ok) return;
+    b->pick_x = x;
+    b->pick_y = y;
+    if (!b->has_last) return;
     collect_picks(b);
     const int px = (int)x, py = (int)y;
     if (px < 0 || py < 0 || px >= (int)b->width || py >= (int)b->height) return;
@@ -2139,6 +2155,19 @@ static bool pair_middle(const MdRenderBridge* b, const ApplicationState& state, 
 bool md_render_bridge_hit(ApplicationState* state, PickingHit* hit) {
     MdRenderBridge* b = state->md_render_bridge;
     if (!hit || !b || !b->ok) return false;
+    // The overlay first, as it is over the scene: as it is drawn now, of the pixel asked about now
+    if (b->pick_x >= 0.0f && md_array_size(b->overlay) && b->width && b->height) {
+        float d = 0.0f;
+        const float sx = (float)b->out_width / (float)b->width, sy = (float)b->out_height / (float)b->height;
+        if (const OverlayItem* it = overlay_pick(b, b->pick_x * sx, b->pick_y * sy, &d)) {
+            *hit = {};
+            hit->frame_idx     = state->picking_handler.frame_idx;
+            hit->surface_coord = {b->pick_x, (float)b->height - b->pick_y};
+            hit->depth         = 1.0f - d;
+            set_hit(*state, hit, it->pick_domain, it->pick_key, it->pick_index);
+            return true;
+        }
+    }
     collect_picks(b);
     if (b->num_picks == 0) return false;
     // The newest answer, of the pixel asked about a frame or two ago (as the GL picking's readback was)
@@ -2300,14 +2329,12 @@ void md_render_bridge_destroy(ApplicationState* state) {
     if (b->mol) md_render_mol_destroy(b->mol);
     if (b->render) md_render_destroy(b->render);
     if (b->present_program) glDeleteProgram(b->present_program);
-    if (b->depth_program) glDeleteProgram(b->depth_program);
     if (b->vao) glDeleteVertexArrays(1, &b->vao);
-    if (b->depth_fbo) glDeleteFramebuffers(1, &b->depth_fbo);
-    if (b->depth_tex) glDeleteTextures(1, &b->depth_tex);
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
     md_array_free(b->light_batches, state->allocator.persistent);
     md_array_free(b->glyphs, state->allocator.persistent);
+    md_array_free(b->overlay, state->allocator.persistent);
     md_array_free(b->parts, state->allocator.persistent);
     md_array_free(b->shape_pos_cpu, state->allocator.persistent);
     md_array_free(b->shape_col_cpu, state->allocator.persistent);
@@ -2340,7 +2367,6 @@ void md_render_bridge_rep_colors(ApplicationState*, const Representation&, const
 void md_render_bridge_rep_pairs(ApplicationState*, const Representation&, const uint32_t*, const uint32_t*, const uint32_t*, size_t) {}
 void md_render_bridge_buffers(ApplicationState*, uint32_t) {}
 void md_render_bridge_render(ApplicationState*, const postprocess_pipeline::Settings&) {}
-bool md_render_bridge_present(ApplicationState*, const postprocess_pipeline::Settings*) { return false; }
-uint32_t md_render_bridge_depth_gl(ApplicationState*) { return 0; }
+bool md_render_bridge_present(ApplicationState*, const postprocess_pipeline::Settings*, const Overlay*) { return false; }
 
 #endif

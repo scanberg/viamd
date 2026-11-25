@@ -3,7 +3,6 @@
 #include <viamd.h>
 #include <gpu_volume.h>
 #include <representation.h>
-#include <gfx/gl_utils.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -361,8 +360,8 @@ static bool faces_camera(const ApplicationState* state, const Plane& p) {
     return plane_distance(p, md_float3_set(eye.x, eye.y, eye.z)) >= 0.0f;
 }
 
-// The outlines es_planes_gizmo found this frame, as segments in normalized device coordinates (z for the depth test),
-// for es_planes_draw_outlines; the gizmo's own parts are drawn by ImGui, over everything. Every cut's (they are not
+// The outlines es_planes_gizmo found this frame, as segments in the world, for es_planes_overlay; the gizmo's own
+// parts are drawn by ImGui, over everything. Every cut's (they are not
 // drawn otherwise), and the picked slice's: the others' edges are drawn with the slices (the volume rendering), behind
 // what of them is in front.
 struct OutlineSegment {
@@ -372,13 +371,6 @@ struct OutlineSegment {
 };
 static OutlineSegment outline_segs[256];
 static int            outline_count = 0;
-
-static inline bool project_ndc(md_float3_t* out, const md_float4x4_t& world_to_clip, md_float3_t p) {
-    const md_float4_t c = md_float4x4_mul_float4(world_to_clip, md_float4_set(p.x, p.y, p.z, 1.0f));
-    if (c.w <= 1.0e-6f) return false;
-    *out = md_float3_set(c.x / c.w, c.y / c.w, c.z / c.w);
-    return true;
-}
 
 static Representation* gizmo_target(ApplicationState* state, uint32_t rep_id, int plane) {
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
@@ -535,19 +527,18 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
                 centre_valid = true;
             }
             ImVec2 sp[6];
-            md_float3_t ndc[6];
             bool all = true;
-            for (int k = 0; k < n; ++k) all &= project(&sp[k], world_to_clip, poly[k], canvas_min, canvas_size) && project_ndc(&ndc[k], world_to_clip, poly[k]);
+            for (int k = 0; k < n; ++k) all &= project(&sp[k], world_to_clip, poly[k], canvas_min, canvas_size);
             if (!all) continue;
             if (!slices || selected) {
                 const bool enabled = set.items[i].enabled;
                 // a light line on a dark halo: seen over a light background and a dark one alike; hidden behind what
-                // is in front of it (es_planes_draw_outlines)
+                // is in front of it (es_planes_overlay)
                 const ImU32 col = selected ? IM_COL32(255, 200, 40, 255) : enabled ? IM_COL32(255, 255, 255, 220) : IM_COL32(200, 200, 200, 130);
                 const ImU32 halo = enabled || selected ? IM_COL32(0, 0, 0, 110) : IM_COL32(0, 0, 0, 60);
                 const float width = selected ? 2.0f : 1.5f;
                 for (int k = 0; k < n && outline_count < (int)MD_COUNTOF(outline_segs); ++k) {
-                    outline_segs[outline_count++] = OutlineSegment{ndc[k], ndc[(k + 1) % n], col, halo, width};
+                    outline_segs[outline_count++] = OutlineSegment{poly[k], poly[(k + 1) % n], col, halo, width};
                 }
             }
             for (int k = 0; k < n; ++k) {
@@ -856,148 +847,23 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The outlines drawn: each segment a quad of its width in pixels, the halos under the lines, over the image presented,
-// each fragment kept where nothing of the scene is in front of it (the G-buffer's depth). They write no depth and are
-// not part of the scene: they change nothing in it, as the gizmo does not.
+// The outlines drawn: over the image presented, in the main view's overlay, each segment of its width in points, the
+// halos under the lines, hidden where the scene is in front of them. Not part of the scene: they change nothing in it,
+// as the gizmo does not.
 
-static struct {
-    GLuint program = 0, vao = 0, vbo = 0;
-    GLint  loc_depth = -1, loc_scale = -1;
-    bool   failed = false;
-} outline_gl;
-
-struct OutlineVertex {
-    float    x, y, z;
-    uint32_t col;
-    float    across;    // pixels from the line's middle, signed
-    float    half;      // half its width, pixels
-};
-
-static const char* outline_vs = R"(
-#version 330 core
-layout(location = 0) in vec3 a_pos;
-layout(location = 1) in vec4 a_col;
-layout(location = 2) in vec2 a_edge;    // across, half
-out vec4 v_col;
-out vec2 v_edge;
-void main() {
-    v_col = a_col;
-    v_edge = a_edge;
-    gl_Position = vec4(a_pos, 1.0);
-}
-)";
-
-static const char* outline_fs = R"(
-#version 330 core
-uniform sampler2D u_depth;      // the scene's, window depth
-uniform vec2 u_scale;           // its texels per framebuffer pixel
-in vec4 v_col;
-in vec2 v_edge;
-out vec4 out_frag;
-void main() {
-    float scene = texelFetch(u_depth, ivec2(gl_FragCoord.xy * u_scale), 0).r;
-    // behind the scene (a margin for the scene's jitter and the depth's rounding)
-    if (gl_FragCoord.z > scene + 2.0e-6) discard;
-    // its edges feathered over a pixel
-    float cover = clamp(v_edge.y + 0.5 - abs(v_edge.x), 0.0, 1.0);
-    out_frag = vec4(v_col.rgb, v_col.a * cover);
-}
-)";
-
-static bool outline_gl_init() {
-    if (outline_gl.program || outline_gl.failed) return outline_gl.program != 0;
-    GLuint sh[2] = {
-        gl::compile_shader_from_source(md_str_from_cstr(outline_vs), GL_VERTEX_SHADER),
-        gl::compile_shader_from_source(md_str_from_cstr(outline_fs), GL_FRAGMENT_SHADER),
-    };
-    if (!sh[0] || !sh[1]) {
-        outline_gl.failed = true;
-    } else {
-        outline_gl.program = glCreateProgram();
-        if (!gl::attach_link_detach(outline_gl.program, sh, 2)) {
-            glDeleteProgram(outline_gl.program);
-            outline_gl.program = 0;
-            outline_gl.failed = true;
-        }
-    }
-    if (sh[0]) glDeleteShader(sh[0]);
-    if (sh[1]) glDeleteShader(sh[1]);
-    if (outline_gl.failed) return false;
-    outline_gl.loc_depth = glGetUniformLocation(outline_gl.program, "u_depth");
-    outline_gl.loc_scale = glGetUniformLocation(outline_gl.program, "u_scale");
-    glGenVertexArrays(1, &outline_gl.vao);
-    glGenBuffers(1, &outline_gl.vbo);
-    glBindVertexArray(outline_gl.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, outline_gl.vbo);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(OutlineVertex), (const GLvoid*)offsetof(OutlineVertex, x));
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(OutlineVertex), (const GLvoid*)offsetof(OutlineVertex, col));
-    glEnableVertexAttribArray(2);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(OutlineVertex), (const GLvoid*)offsetof(OutlineVertex, across));
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    return true;
-}
-
-void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int fb_width, int fb_height, float px_per_point) {
-    if (outline_count == 0 || fb_width <= 0 || fb_height <= 0 || !depth_tex || !outline_gl_init()) return;
-    // two quads (halo, line) of 6 vertices per segment; the halos first
-    static OutlineVertex verts[MD_COUNTOF(outline_segs) * 12];
-    int nv = 0;
-    const md_float2_t half = md_float2_set(0.5f * (float)fb_width, 0.5f * (float)fb_height);
+void es_planes_overlay(Overlay* o) {
     for (int pass = 0; pass < 2; ++pass) {
         for (int i = 0; i < outline_count; ++i) {
-            const OutlineSegment& s = outline_segs[i];
-            // in pixels: along it and across it, half the width out each way, and as far past each end (square caps
-            // that close the corners)
-            const md_float2_t a = md_float2_set(s.a.x * half.x, s.a.y * half.y), b = md_float2_set(s.b.x * half.x, s.b.y * half.y);
-            md_float2_t d = md_float2_sub(b, a);
-            const float len = md_float2_length(d);
-            if (!(len > 1.0e-3f)) continue;
-            d = md_float2_mul1(d, 1.0f / len);
-            const float w = 0.5f * (pass == 0 ? s.width + 2.0f : s.width) * px_per_point;
-            const float we = w + 1.0f;     // a pixel more, feathered (outline_fs)
-            const md_float2_t o = md_float2_set(-d.y * we, d.x * we), e = md_float2_mul1(d, w);
-            const md_float2_t pa = md_float2_sub(a, e), pb = md_float2_add(b, e);
-            const md_float2_t q[4] = { md_float2_add(pa, o), md_float2_sub(pa, o), md_float2_sub(pb, o), md_float2_add(pb, o) };
-            const float z[4] = { s.a.z, s.a.z, s.b.z, s.b.z };
-            const float across[4] = { we, -we, -we, we };
-            const uint32_t col = pass == 0 ? s.halo : s.col;
-            static const int idx[6] = {0, 1, 2, 0, 2, 3};
-            for (int k = 0; k < 6; ++k) {
-                const int j = idx[k];
-                verts[nv++] = OutlineVertex{q[j].x / half.x, q[j].y / half.y, z[j], col, across[j], w};
-            }
+            const OutlineSegment& sg = outline_segs[i];
+            OverlayItem it = {};
+            it.shape  = OverlayShape::Segment;
+            it.p[0]   = sg.a;
+            it.p[1]   = sg.b;
+            it.size   = 0.5f * (pass == 0 ? sg.width + 2.0f : sg.width) * o->px_per_point;
+            it.color  = pass == 0 ? sg.halo : sg.col;
+            it.pixels = true;
+            it.depth  = true;
+            overlay_add(o, it);
         }
     }
-    if (nv == 0) return;
-
-    glUseProgram(outline_gl.program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, depth_tex);
-    glUniform1i(outline_gl.loc_depth, 0);
-    glUniform2f(outline_gl.loc_scale, (float)depth_width / (float)fb_width, (float)depth_height / (float)fb_height);
-    glBindVertexArray(outline_gl.vao);
-    glBindBuffer(GL_ARRAY_BUFFER, outline_gl.vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(OutlineVertex) * nv, verts, GL_STREAM_DRAW);
-    glDisable(GL_DEPTH_TEST);
-    glDepthMask(GL_FALSE);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glDrawArrays(GL_TRIANGLES, 0, nv);
-    glDisable(GL_BLEND);
-    glDepthMask(GL_TRUE);
-    glBindVertexArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glUseProgram(0);
-}
-
-void es_planes_shutdown() {
-    if (outline_gl.program) glDeleteProgram(outline_gl.program);
-    if (outline_gl.vbo) glDeleteBuffers(1, &outline_gl.vbo);
-    if (outline_gl.vao) glDeleteVertexArrays(1, &outline_gl.vao);
-    outline_gl = {};
 }

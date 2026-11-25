@@ -14,7 +14,6 @@
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
 #include <gfx/gl_utils.h>
-#include <gfx/immediate_draw_utils.h>
 
 #include <md_gto.h>
 #include <md_gto_iso.h>
@@ -2186,38 +2185,11 @@ struct QuantumChemistry : viamd::EventHandler {
                     {.order = 160, .enabled = has_orbitals, .disabled_reason = no_orbitals});
                 break;
             }
-            case viamd::EventType_ViamdRenderTransparent: {
-                MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
-				const ApplicationState& state = *(ApplicationState*)e.payload;
-
-                md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
-                MD_DEFER { md_temp_end(temp); };
-
+            case viamd::EventType_ViamdRenderOverlay: {
+                MD_ASSERT(e.payload_type == viamd::EventPayloadType_Overlay);
+                Overlay* o = (Overlay*)e.payload;
                 if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    draw_critical_points(state, temp);
-                }
-
-                //ApplicationState& state = *(ApplicationState*)e.payload;
-                //draw_orb_volume(state);
-                break;
-            }
-            case viamd::EventType_ViamdRenderKey: {
-                // What the critical points are drawn from (RenderTransparent): they are selected and highlighted
-                // by hovering and clicking them
-                MD_ASSERT(e.payload_type == viamd::EventPayloadType_RenderKey);
-                RenderKey* rk = (RenderKey*)e.payload;
-                if (critical_points.enabled && critical_points.simp_graph.num_vertices > 0) {
-                    const md_topo_extremum_graph_t& g = critical_points.simp_graph;
-                    const uint64_t counts[2] = {(uint64_t)g.num_vertices, (uint64_t)g.num_edges};
-                    uint64_t h = md_hash64(counts, sizeof(counts), rk->key);
-                    h = md_hash64(&g.vertices, sizeof(g.vertices), h);
-                    h = md_bitset_hash64(md_bitmask_view(&critical_points.selection_mask), h);
-                    h = md_bitset_hash64(md_bitmask_view(&critical_points.highlight_mask), h);
-                    h = md_hash64(&rk->state->selection.color, sizeof(rk->state->selection.color), h);
-                    h = md_hash64(&critical_points.point_scale, sizeof(critical_points.point_scale), h);
-                    h = md_hash64(&critical_points.show_paths, sizeof(critical_points.show_paths), h);
-                    h = md_hash64(&rk->state->visuals.background.color, sizeof(rk->state->visuals.background.color), h);
-                    rk->key = h;
+                    draw_critical_points(o);
                 }
                 break;
             }
@@ -2490,23 +2462,18 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     // The critical points over the image, in the overlay: neither hidden by the atoms around them nor hiding them
-    // except where a marker is drawn, and picked wherever it is seen. Back to front: the paths as thin strips,
-    // then a disc per point facing the camera, in its type's colour (critical_point_styles) inside an outline
-    // that stands out from the background. The highlighted point is drawn larger, inside a ring of the
-    // highlight's colour, a selected one inside a ring of the selection's; while any are selected, the others
-    // keep only part of their colour, as atoms do. Sizes are in Å, so they scale with the view as the atoms do
-    // (and an orthographic view does not make them huge, as points of a size by depth did).
-    void draw_critical_points(const ApplicationState& state, md_temp_scope_t temp) {
+    // except where a marker is drawn, and picked wherever it is seen. Back to front: the paths as thin segments, then
+    // a disc per point facing the camera, in its type's colour (critical_point_styles) inside an outline that stands
+    // out from the background. The highlighted point is drawn larger, inside a ring of the highlight's colour, a
+    // selected one inside a ring of the selection's; while any are selected, the others keep only part of their
+    // colour, as atoms do. Sizes are in Å, so they scale with the view as the atoms do.
+    void draw_critical_points(Overlay* o) {
+        const ApplicationState& state = *o->state;
         const md_topo_extremum_graph_t& g = critical_points.simp_graph;
         const size_t num_cp = g.num_vertices;
 
-        immediate::Scope scope(state.gfx.overlay, "qm_critical_points");
-        immediate::set_picking_base_idx(scope, critical_points.picking_range.beg);
-
         const md_float4x4_t view = camera_world_to_view_matrix(state.view.camera);
-        const md_float3_t right = {view[0][0], view[1][0], view[2][0]};
-        const md_float3_t up    = {view[0][1], view[1][1], view[2][1]};
-        const md_float3_t back  = {view[0][2], view[1][2], view[2][2]};    // towards the camera
+        const md_float3_t back = {view[0][2], view[1][2], view[2][2]};    // towards the camera
 
         const md_float3_t bg = state.visuals.background.color;
         const bool dark_bg = 0.2126f * bg.x + 0.7152f * bg.y + 0.0722f * bg.z < 0.5f;
@@ -2522,70 +2489,50 @@ struct QuantumChemistry : viamd::EventHandler {
 
         // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
         // paths, from a ring critical point to the cage critical points beside it (md_topo traces each from the
-        // saddle, so a graph's edge runs from it)
-        if (critical_points.show_paths && g.num_edges > 0) {
-            immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, 6 * g.num_edges);
-            size_t n = 0;
+        // saddle, so a graph's edge runs from it). A path is not a point to pick.
+        if (critical_points.show_paths) {
             for (size_t i = 0; i < g.num_edges; ++i) {
                 const uint32_t i0 = g.edges[i].from, i1 = g.edges[i].to;
                 if (i0 >= num_cp || i1 >= num_cp) continue;
                 const bool bond = md_topo_vertex_type(&g, i0) == MD_TOPO_SPLIT_SADDLE;
-                const md_float3_t p0 = pos(i0), p1 = pos(i1);
-                const md_float3_t side = md_float3_cross(p1 - p0, back);
-                const float len = md_float3_length(side);
-                if (len < 1.0e-6f) continue;    // along the line of sight: nothing to see
-                const md_float3_t d = side * ((bond ? 0.018f : 0.012f) * scale / len);
-                const uint32_t col = convert_color(bond ? bond_path_color : rcp_path_color);
-                const md_float3_t q[4] = {p0 - d, p0 + d, p1 + d, p1 - d};
-                const int tri[6] = {0, 1, 2, 0, 2, 3};
-                for (int k = 0; k < 6; ++k) {
-                    v[n].coord = q[tri[k]];
-                    v[n].color = col;
-                    v[n].normal = back;
-                    v[n].picking_idx = 0xFFFFFFFF;   // a path is not a point to pick
-                    n++;
-                }
+                OverlayItem it = {};
+                it.shape = OverlayShape::Segment;
+                it.p[0]  = pos(i0);
+                it.p[1]  = pos(i1);
+                it.size  = (bond ? 0.018f : 0.012f) * scale;
+                it.color = convert_color(bond ? bond_path_color : rcp_path_color);
+                overlay_add(o, it);
             }
-            immediate::triangles(scope, v, n);
         }
 
         // The points, farthest first
-        uint32_t* order = md_temp_alloc_array(temp, uint32_t, num_cp);
-        float* depth = md_temp_alloc_array(temp, float, num_cp);
+        md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
+        uint32_t* order = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_cp * sizeof(uint32_t));
+        float* depth = (float*)md_vm_arena_push(state.allocator.frame, num_cp * sizeof(float));
         for (size_t i = 0; i < num_cp; ++i) {
             order[i] = (uint32_t)i;
             depth[i] = md_float3_dot(pos(i), back);
         }
         std::sort(order, order + num_cp, [depth](uint32_t a, uint32_t b) { return depth[a] < depth[b]; });
 
-        constexpr int SEG = 16;
-        md_float2_t circle[SEG + 1];
-        for (int k = 0; k <= SEG; ++k) {
-            const float a = (float)(2.0 * MD_PI * k / SEG);
-            circle[k] = {cosf(a), sinf(a)};
-        }
-
         const md_float4_t selection_color = state.selection.color.selection.outline;
         const md_float4_t highlight_color = state.selection.color.highlight.outline;
         const bool any_selected = md_bitmask_count(&critical_points.selection_mask) > 0;
         const float saturation = any_selected ? state.selection.color.saturation : 1.0f;
 
-        // At most four discs a point: the highlight's ring, the selection's, the outline, the fill
-        immediate::Vertex* v = md_temp_alloc_array(temp, immediate::Vertex, num_cp * 4 * SEG * 3);
-        size_t n = 0;
-        auto disc = [&](md_float3_t c, float r, md_float4_t color, uint32_t picking_idx) {
-            const uint32_t col = convert_color(color);
-            const md_float3_t u = right * r, w = up * r;
-            for (int k = 0; k < SEG; ++k) {
-                const md_float3_t e[3] = {c, c + u * circle[k].x + w * circle[k].y, c + u * circle[k + 1].x + w * circle[k + 1].y};
-                for (int j = 0; j < 3; ++j) {
-                    v[n].coord = e[j];
-                    v[n].color = col;
-                    v[n].normal = back;
-                    v[n].picking_idx = picking_idx;
-                    n++;
-                }
-            }
+        // A disc of a point, picked as it: the rings of the highlight and the selection, then the point's, its fill
+        // inside its outline (the inner 78 % of the radius)
+        auto disc = [&](md_float3_t c, float r, uint32_t i, md_float4_t color, md_float4_t outline, float outline_width) {
+            OverlayItem it = {};
+            it.shape  = OverlayShape::Disc;
+            it.p[0]   = c;
+            it.size   = r;
+            it.width  = outline_width;
+            it.color  = convert_color(color);
+            it.color2 = convert_color(outline);
+            it.pick_domain = PickingDomain_CriticalPoints;
+            it.pick_index  = i;
+            overlay_add(o, it);
         };
         for (size_t j = 0; j < num_cp; ++j) {
             const uint32_t i = order[j];
@@ -2594,13 +2541,12 @@ struct QuantumChemistry : viamd::EventHandler {
             const bool highlighted = md_bitmask_test_bit(&critical_points.highlight_mask, i);
             const float r = style.radius * scale * (highlighted ? 1.3f : 1.0f);
             const md_float3_t c = pos(i);
-            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), highlight_color, i);
-            if (selected)    disc(c, r * 1.4f, selection_color, i);
-            disc(c, r, outline_color, i);
+            if (highlighted) disc(c, r * (selected ? 1.75f : 1.4f), i, highlight_color, {}, 0.0f);
+            if (selected)    disc(c, r * 1.4f, i, selection_color, {}, 0.0f);
             const md_float4_t fill = (any_selected && !selected) ? tint_color(style.color, style.color, 0.0f, saturation) : style.color;
-            disc(c, r * 0.78f, fill, i);
+            disc(c, r, i, fill, outline_color, r * 0.22f);
         }
-        immediate::triangles(scope, v, n);
+        md_temp_end(temp);
     }
 
     void reset_data() {

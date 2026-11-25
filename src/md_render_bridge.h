@@ -1,15 +1,13 @@
 #pragma once
 
-// The main view, drawn on md_gpu (mdlib): md_render draws the representations it can and the shapes of the dipoles and
-// the cell (their arrows, its edges); md_compose shades what it drew (the ambient occlusion, the shadows, the
-// transparent layers) with the electronic structure representations' volumes (gpu_volume.h: their raycast isosurfaces,
-// volume renderings and planes; their isosurfaces drawn as meshes are md_render's triangles); md_post makes the image of
-// it (the display transform, the temporal antialiasing at the size of the image shown) and presents it with the marks
-// of the selection and the highlight into a texture shared with OpenGL, which draws it into the framebuffer bound,
-// under the GUI. OpenGL draws nothing of the scene.
-//
-// What is not in the main view yet: the glyphs, what a script shows, the components' drawings (the critical points).
-// See render_scene (main.cpp).
+// The main view, drawn on md_gpu (mdlib): md_render draws the representations (the glyphs among them) and the shapes
+// of the dipoles and the cell (their arrows, its edges); md_compose shades what it drew (the ambient occlusion, the
+// shadows, the transparent layers) with the electronic structure representations' volumes (gpu_volume.h: their raycast
+// isosurfaces, volume renderings and planes; their isosurfaces drawn as meshes are md_render's triangles); md_post
+// makes the image of it (the display transform, the temporal antialiasing at the size of the image shown) and presents
+// it with the marks of the selection and the highlight, and the overlay over those (viamd.h: what the script shows,
+// the planes' outlines, the critical points), into a texture shared with OpenGL, which draws it into the framebuffer
+// bound, under the GUI. OpenGL draws nothing of the scene. See render_scene and render (main.cpp).
 //
 // Needs a device that draws (md_gpu's graphics) and shares textures with the GL context (the same GPU,
 // GL_EXT_memory_object or IOSurface); otherwise md_render_bridge_status says why, and the main view is empty.
@@ -21,6 +19,7 @@ struct ApplicationState;
 struct Representation;
 struct PickingHit;
 struct MdRenderBridge;
+struct Overlay;
 
 namespace postprocess_pipeline { struct Settings; }
 
@@ -32,7 +31,8 @@ const char* md_render_bridge_status(const ApplicationState& state);
 
 // Picking: md_render is asked about the pixel under the mouse (x, y in the pixels of the scene drawn, rows from the
 // top), and its answer, a frame or two later, is the hit (hit): an atom, a bond, a segment of the cartoon, a ring, a
-// gap, a dipole, in their domains as md_gl's were, or nothing (the background, the cell's edges). Its surface_coord
+// gap, a dipole, a glyph, in their domains as md_gl's were, or nothing (the background, the cell's edges). An item of
+// the overlay drawn last that picks is the hit at once, wherever it is over the scene. Its surface_coord
 // and depth are as the GL picking's were (rows from the bottom, GL's window depth); the caller sets the rest (source,
 // screen_coord, world_pos). False: no answer (yet).
 void md_render_bridge_pick(ApplicationState* state, float x, float y);
@@ -55,11 +55,8 @@ void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty);
 // background and TAA are used; the rest are not done.
 void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline::Settings& settings);
 
-// The image kept, with the marks over it (settings.marks; null: none), into the framebuffer bound at the size of the
-// image shown (the viewport the caller set). When the marks changed without the scene being made, md_render makes its
-// masks again first. False: there is no image (nothing was made yet).
-bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks);
-
-// The depth of the scene drawn last as OpenGL reads it (for what is drawn over the image behind the scene: the planes'
-// outlines): a texture of the G-buffer's size, GL's window depth (1 the far plane), rows from the bottom. 0: none.
-uint32_t md_render_bridge_depth_gl(ApplicationState* state);
+// The image kept, with the marks over it (settings.marks; null: none) and the overlay over those (viamd.h; null: none),
+// into the framebuffer bound at the size of the image shown (the viewport the caller set). When the marks changed
+// without the scene being made, md_render makes its masks again first. The overlay is kept to be picked
+// (md_render_bridge_hit). False: there is no image (nothing was made yet).
+bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks, const Overlay* overlay);
