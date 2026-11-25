@@ -39,6 +39,7 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <system_scene.h>
 #include <event.h>
 #include <serialization_utils.h>
 #include <script_engine.h>
@@ -106,6 +107,10 @@ enum Work : int { Work_None = 0, Work_View, Work_Tiles };
 
 struct Heatmap {
     char     name[64] = "";
+    // Of the evaluation of the run of which instance of the first system (by id, instance_resolve): its frames, the
+    // frame it shows. The script is of the first system.
+    uint32_t instance = 0;
+    const script::Eval* eval = nullptr;     // That evaluation, as last read: what its view and labels are of
     Over     over = Over_All;
     uint32_t period = 0;            // Of Over_Period, by id
     bool     select = false;        // Its tab, next frame
@@ -212,14 +217,20 @@ struct Heatmaps : viamd::EventHandler {
             case viamd::EventType_ViamdScriptEvalBegin:
                 // A view made from its attributes stops: they change while it runs
                 for (auto& h : maps) {
-                    if (h->doing != Work_View || !h->from_attr) continue;
+                    if (h->doing != Work_View || !h->from_attr || h->eval != app->script.evaluating) continue;
                     h->job.cancel_and_wait();
                     h->made = 0;
                 }
                 break;
             case viamd::EventType_ViamdScriptEvalInit:
+                for (auto& h : maps) {
+                    h->made = 0;
+                    h->labels_stale = true;
+                }
+                break;
             case viamd::EventType_ViamdScriptEvalEnd:
                 for (auto& h : maps) {
+                    if (h->eval != app->script.evaluating) continue;
                     h->made = 0;
                     h->labels_stale = true;
                 }
@@ -235,6 +246,9 @@ struct Heatmaps : viamd::EventHandler {
                 viamd::write_section_header(state, MD_STR_LIT("Heatmaps"));
                 for (const auto& h : maps) {
                     viamd::write_str(state, MD_STR_LIT("Matrix"), md_str_from_cstr(h->name));
+                    // Of another instance than the first
+                    const SystemInstance& inst = instance_resolve(app->system_context, h->instance);
+                    if (&inst != &system_instance(app->system_context)) viamd::write_int(state, MD_STR_LIT("Instance"), (int)inst.id);
                     viamd::write_str(state, MD_STR_LIT("Over"), over_ini[h->over]);
                     if (h->over == Over_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)h->period);
                 }
@@ -250,6 +264,9 @@ struct Heatmaps : viamd::EventHandler {
                             viamd::extract_to_char_buf(maps.back()->name, sizeof(maps.back()->name), arg);
                         } else if (maps.empty()) {
                             continue;
+                        } else if (md_str_eq(ident, MD_STR_LIT("Instance"))) {
+                            int id = 0;
+                            if (viamd::extract_int(id, arg)) maps.back()->instance = (uint32_t)MD_MAX(id, 0);
                         } else if (md_str_eq(ident, MD_STR_LIT("Over"))) {
                             md_str_t s = {};
                             viamd::extract_str(s, arg);
@@ -285,6 +302,7 @@ struct Heatmaps : viamd::EventHandler {
     // Its job stopped and waited for, and every view and index dropped: what they read is about to go
     static void drop_views(Heatmap& h) {
         h.job.cancel_and_wait();
+        h.eval = nullptr;
         h.work.reset();
         h.num_work = 0;
         h.next_view.reset();
@@ -295,13 +313,23 @@ struct Heatmaps : viamd::EventHandler {
         h.labels_stale = true;
     }
 
+    const SystemInstance& instance_of(const Heatmap& h) const { return instance_resolve(app->system_context, h.instance); }
+
+    // The evaluation of the run of its instance: the first instance's run's for one without a run
+    const script::Eval* eval_of(const Heatmap& h) const {
+        const SystemRun* run = instance_run(instance_of(h));
+        return script_eval_of_run(app, run ? md_str_from_cstr(run->path) : md_str_t{});
+    }
+
     // The frames [beg, end) of what h is over, false when it covers none
     bool frames_of(const Heatmap& h, uint32_t* beg, uint32_t* end) const {
-        const int nf = (int)run_num_frames(app->system_context);
+        const SystemInstance& inst = instance_of(h);
+        const SystemRun* run = instance_run(inst);
+        const int nf = (int)run_num_frames(app->system_context, run);
         if (nf <= 0) return false;
         switch (h.over) {
         case Over_Frame: {
-            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, nf - 1);
+            const int f = MD_CLAMP((int)(instance_current_frame(inst) + 0.5), 0, nf - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -313,7 +341,7 @@ struct Heatmaps : viamd::EventHandler {
         case Over_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, h.period);
             int b = 0, e = 0;
-            if (!p || !period_frames(&b, &e, app, *p) || b >= nf) return false;
+            if (!p || !run_period_frames(&b, &e, app, app->system_context, run, *p) || b >= nf) return false;
             e = MD_MIN(e, nf - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
@@ -329,7 +357,7 @@ struct Heatmaps : viamd::EventHandler {
         h.labels_stale = false;
         h.row_labels.clear();
         h.col_labels.clear();
-        const md_attributes_t* attrs = app->script.eval ? script::attributes(app->script.eval) : nullptr;
+        const md_attributes_t* attrs = h.eval ? script::attributes(h.eval) : nullptr;
         if (!attrs) return;
         for (int d = 0; d < 2; ++d) {
             char path[SERIES_PATH_CAP + 16];
@@ -348,11 +376,16 @@ struct Heatmaps : viamd::EventHandler {
     // What h should show, as a key, and a job to make its view when that is not what it shows. On the main thread
     // nothing is computed here: what is read is what a view is made from.
     void request(Heatmap& h) {
-        const script::Eval* eval = app->script.eval;
+        const script::Eval* eval = eval_of(h);
+        // Of another evaluation (another instance, or a run shown anew): its labels too
+        if (eval != h.eval) {
+            h.eval = eval;
+            h.labels_stale = true;
+        }
         const script::Program* ir = app->script.eval_ir;
         const md_str_t name = md_str_from_cstr(h.name);
         const uint32_t flags = ir ? script::output_flags(ir, name) : 0;
-        const bool running = app->tasks.evaluate.running();
+        const bool running = eval && app->script.evaluating == eval;
         h.temporal = (flags & script::OUTPUT_TEMPORAL) != 0;
         h.blank = false;
         h.status[0] = '\0';
@@ -525,6 +558,13 @@ struct Heatmaps : viamd::EventHandler {
     void draw_map(Heatmap& h, int idx) {
         const View* v = h.view.get();
         h.wanted.clear();       // Of what is drawn below
+        // Of which instance's run, where the first system has several
+        if (app->system_context.num_instances > 1) {
+            ImGui::SetNextItemWidth(200);
+            instance_combo("Instance", &h.instance, app->system_context);
+            ImGui::SetItemTooltip("Of the evaluation of its run: its frames, and the frame it shows");
+            ImGui::SameLine();
+        }
         // What it is over: the frame shown, every frame, a period
         if (h.temporal) {
             const TimelinePeriod* cur = h.over == Over_Period ? timeline_periods_find(&app->timeline.periods, h.period) : nullptr;

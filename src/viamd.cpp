@@ -9642,12 +9642,14 @@ void script_switch_language(ApplicationState* state, script::Language lang) {
 void script_eval_free(ApplicationState* state) {
     // Nothing runs on them now: the caller stopped the evaluation task
     state->script.evaluating = nullptr;
+    if (state->script.eval || md_array_size(state->script.run_evals)) {
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, state);
+    }
     for (size_t i = 0; i < md_array_size(state->script.run_evals); ++i) {
         script::eval_free(state->script.run_evals[i].eval);
     }
     md_array_shrink(state->script.run_evals, 0);
     if (!state->script.eval) return;
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, state);
     script::eval_free(state->script.eval);
     state->script.eval = nullptr;
     state->script.eval_run[0] = '\0';
@@ -9700,6 +9702,7 @@ void script_run_evals_sync(ApplicationState* state) {
             ++i;
             continue;
         }
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalFree, viamd::EventPayloadType_ApplicationState, state);
         script::eval_free(e.eval);
         md_array_swap_back_and_pop(sc.run_evals, i);
         // The caches are keyed on versions within its table, and the next may be allocated where it was

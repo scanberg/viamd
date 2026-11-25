@@ -1623,22 +1623,21 @@ int main(int argc, char** argv) {
                     script::program_retain(ir);
                     const uint32_t* frames = state.script.eval_frames;
                     const std::string run_str(run.ptr, run.len);
-                    const bool first = eval == state.script.eval;
                     state.script.evaluating = eval;
-                    // Once it has ended, run or cancelled: the IR it held goes. The tools are told of the first
-                    // instance's run's evaluation, which is the one they read (EventType_ViamdScriptEvalBegin).
+                    // Once it has ended, run or cancelled: the IR it held goes. The tools are told of every evaluation,
+                    // the one being evaluated (EventType_ViamdScriptEvalBegin, End).
 #if MEASURE_EVALUATION_TIME
                     const uint64_t t0 = (uint64_t)md_tick_now();
-                    auto on_main = [&state, ir, first, t0, n](task_system::Status) {
+                    auto on_main = [&state, ir, t0, n](task_system::Status) {
                         VIAMD_LOG_INFO("Evaluation of %zu frames completed in: %.3fs", n, md_tick_to_seconds(md_tick_now() - t0));
 #else
-                    auto on_main = [&state, ir, first](task_system::Status) {
+                    auto on_main = [&state, ir](task_system::Status) {
 #endif
                         script::program_release(ir);
+                        viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
                         state.script.evaluating = nullptr;
-                        if (first) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalEnd, viamd::EventPayloadType_ApplicationState, &state);
                     };
-                    if (first) viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalBegin, viamd::EventPayloadType_ApplicationState, &state);
+                    viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalBegin, viamd::EventPayloadType_ApplicationState, &state);
                     if (script::eval_whole(eval)) {
                         // v2: one call evaluates every pending frame, spreading them over the pool itself
                         state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval, run_str]() {
