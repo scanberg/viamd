@@ -2225,7 +2225,7 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
         // loaded from (load_file_into)
         if (system_count(*data) <= 1 && md_system_state_has_coords(&sys.data.state)) {
             ViewTransform default_view = {};
-            reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
+            reset_view(&default_view, sys.data.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, view_aspect_ratio(*data));
             data->view.trackball_param.max_distance = MD_MAX(max_cell_ext, max_aabb_ext) * 10.0f;
             data->view.target = default_view;
             data->view.camera = default_view;
@@ -3019,7 +3019,7 @@ static LoadResult join_system(ApplicationState* state, SystemContext& sys, md_st
     state->script.compile_ir = true;
     if (!had_coords && md_system_state_has_coords(&sys.data.state)) {
         // Shown now that it has coordinates: framed as a system loaded is
-        reset_view_scene(&state->view.target, *state, state->view.camera.fov_y, state->view.region);
+        reset_view_scene(&state->view.target, *state, state->view.camera.fov_y, view_aspect_ratio(*state));
     }
     VIAMD_LOG_SUCCESS("Joined '" MD_STR_FMT "' to '%s'", MD_STR_ARG(path), sys.name);
     return LoadResult_Joined;
@@ -4160,7 +4160,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
 
     // The camera flies in: from every system to where the workspace looked from. Without a stored camera, both are
     // every system (or the assembly shown, of one).
-    reset_view_scene(&data->view.camera, *data, data->view.camera.fov_y, data->view.region);
+    reset_view_scene(&data->view.camera, *data, data->view.camera.fov_y, view_aspect_ratio(*data));
     data->view.trackball_param.max_distance = MD_MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
     data->view.target = pending.has_camera ? pending.camera : (ViewTransform)data->view.camera;
 
@@ -8672,7 +8672,6 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
             input.screen_size = state.surface_size;
             input.dolly_delta = scroll_delta;
             input.fov_y = args.camera.fov_y;
-            input.ndc_center = args.view_shift;
 
             TrackballFlags flags = TrackballFlags_None;
             if (state.active) {
@@ -8881,7 +8880,7 @@ static void load_into_done(ApplicationState* app, SystemContext* sys, bool fresh
         clock_update(app);
         clock_set_frame(app, 0.0);
         app->animation.mode = PlaybackMode::Stopped;
-        reset_view_scene(&app->view.target, *app, app->view.camera.fov_y, app->view.region);
+        reset_view_scene(&app->view.target, *app, app->view.camera.fov_y, view_aspect_ratio(*app));
     }
 }
 
@@ -9429,7 +9428,7 @@ const SystemContext& scene_frame_system(const ApplicationState& app) {
     return app.system_context;
 }
 
-void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, const ViewRegion& region) {
+void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, float aspect_ratio) {
     MD_ASSERT(transform);
     // Every instance shown, of every system shown
     const SystemInstance* shown[SYSTEM_MAX * INSTANCE_MAX];
@@ -9447,7 +9446,7 @@ void reset_view_scene(ViewTransform* transform, const ApplicationState& app, flo
         const SystemInstance& inst = *shown[0];
         const SystemContext& sc = *inst.sys;
         const md_bitset_t visible = md_bitmask_view(&sc.representation.visibility_mask);
-        reset_view(transform, inst.state, &visible, fov_y, region, &sc.data.sys, inst.scene.assembly);
+        reset_view(transform, inst.state, &visible, fov_y, aspect_ratio, &sc.data.sys, inst.scene.assembly);
         if (&sc != &scene_frame_system(app)) {
             // Its cell is not the frame of the world: reset_view placed it as if it were
             const md_float3_t own   = md_float4x4_mul_float3(inst.unitcell_transform, md_float3_set1(0.0f), 1.0f);
@@ -9486,11 +9485,11 @@ void reset_view_scene(ViewTransform* transform, const ApplicationState& app, flo
     }
     const size_t n = md_array_size(xyz);
     if (n == 0) return;
-    *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+    *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, aspect_ratio);
     transform->position = md_float4x4_mul_float3(system_instance(scene_frame_system(app)).unitcell_transform, transform->position, 1.0f);
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, float aspect_ratio, const md_system_t* sys, int assembly) {
     MD_ASSERT(transform);
     if (!state.num_atoms) return;
 
@@ -9537,7 +9536,7 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
             md_float3x3_t A = {};
             md_unitcell_A_extract(A.elem, &state.unitcell);
             const md_float3_t cell_offset = -md_float3x3_mul_float3(A, md_float3_set1(0.5f));
-            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, aspect_ratio);
             transform->position = transform->position + cell_offset;
             return;
         }
@@ -9572,13 +9571,13 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
         md_float3_t aabb_min = {}, aabb_max = {};
         md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, indices, count);
         const md_float3_t center = (aabb_min + aabb_max) * 0.5f;
-        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
+        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, aspect_ratio);
         transform->position = center + cell_offset + transform->orientation * md_float3_set(0, 0, transform->distance);
         return;
     }
 
     // See camera_compute_default_view for what it considers a good view of what
-    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, region);
+    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, aspect_ratio);
     transform->position = transform->position + cell_offset;
 }
 

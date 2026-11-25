@@ -575,7 +575,7 @@ inline const double volume_resolution_samples_per_angstrom[(int)VolumeResolution
 #define DEFAULT_GTO_CUTOFF_VALUE 1.0e-6
 
 enum class ScreenshotResolution {
-    Window,
+    View,       // the main view's, as it is shown
     FHD,
     QHD,
     UHD_4K,
@@ -585,7 +585,7 @@ enum class ScreenshotResolution {
 };
 
 inline const char* screenshot_resolution_str[(int)ScreenshotResolution::Count] = {
-    "Window",
+    "View",
     "Full HD (1920x1080)",
     "Quad HD (2560x1440)",
     "Ultra HD 4K (3840x2160)",
@@ -2052,18 +2052,18 @@ struct ApplicationState {
 
 		ViewTransform target = {};
 
-        // The part of the view that what the view is reset to is framed in: what the windows left uncovered when
-        // it was last focused with a double click (with settings.focus_in_free_space), or all of it. The projection is shifted so that the camera's
-        // look-at point is seen at its center (see ViewRegion); shift is where it is seen, animated like the camera.
-        ViewRegion region = {};
-        md_float2_t shift = {0, 0};
+        // Where it is drawn: the dockspace's central node, what the windows docked about it leave (CreateDockspace),
+        // in points, as ImGui places things on the screen. Its size is that of the image made of it (at the framebuffer's
+        // pixels per point); windows that float over it cover it.
+        md_float2_t screen_pos  = {0, 0};
+        md_float2_t screen_size = {0, 0};
 
         // The copies each system is drawn in are its own (SystemScene)
     } view;
 
     struct {
         bool  hide_gui = true;
-        ScreenshotResolution resolution = ScreenshotResolution::Window;
+        ScreenshotResolution resolution = ScreenshotResolution::View;
         int   res_x = 1920;
         int   res_y = 1080;
         md_str_t path_to_file = {};    // Being made: saved once the image has settled (render())
@@ -2383,7 +2383,6 @@ struct ApplicationState {
         char palette[4096] = "";            // The palette as the .ini keeps it (palette_write)
         int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
                                             // representation has its own: ElectronicStructureRepresentation::rendering)
-        bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
         float font_size = 18.0f;    // Matches the size the default font is baked at.
         // The scene rendered at this fraction of the display's resolution (each side) and upscaled to it: by the TAA,
         // which rebuilds the detail over frames, else a frame on its own. Screenshots are at the full resolution.
@@ -3876,7 +3875,6 @@ bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfa
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;
     const TrackballControllerParam& trackball_param = {};
-    md_float2_t view_shift = {0, 0};     // Where the projection is shifted to (see ViewRegion)
 };
 
 struct InteractionSurfaceViewTransformResult {
@@ -3976,13 +3974,20 @@ void draw_placement_prompt(ApplicationState* state);
 bool system_move_file(ApplicationState* app, uint32_t from, size_t i, uint32_t to);
 
 // view
-// A good view of the atoms in mask (all of them when null), framed in region of the view (see ViewRegion and
-// camera_compute_default_view). fov_y is that of the camera that looks through it. With an assembly of sys (system.assembly,
-// -1 for none), of those atoms in the instances of each of its groups, in all of the copies of the group.
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1);
-static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, const ViewRegion& region = {}, const md_system_t* sys = nullptr, int assembly = -1) {
+// A good view of the atoms in mask (all of them when null), framed in a view of aspect_ratio, its width over its height
+// (view_aspect_ratio: the main view's; camera_compute_default_view). fov_y is that of the camera that looks through it.
+// With an assembly of sys (an instance's scene.assembly, -1 for none), of those atoms in the instances of each of its
+// groups, in all of the copies of the group.
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask = nullptr, float fov_y = Camera().fov_y, float aspect_ratio = 1.0f, const md_system_t* sys = nullptr, int assembly = -1);
+static inline void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitmask_t* mask, float fov_y = Camera().fov_y, float aspect_ratio = 1.0f, const md_system_t* sys = nullptr, int assembly = -1) {
     const md_bitset_t members = md_bitmask_view(mask);
-    reset_view(transform, state, &members, fov_y, region, sys, assembly);
+    reset_view(transform, state, &members, fov_y, aspect_ratio, sys, assembly);
+}
+
+// The main view's width over its height (view.screen_size), 1 before it has a size
+static inline float view_aspect_ratio(const ApplicationState& state) {
+    const md_float2_t s = state.view.screen_size;
+    return (s.x > 0.0f && s.y > 0.0f) ? s.x / s.y : 1.0f;
 }
 
 // The system whose cell the world is drawn in: the first loaded (the world is translated so that the center of its cell
@@ -3991,7 +3996,7 @@ static inline void reset_view(ViewTransform* transform, const md_system_state_t&
 const SystemContext& scene_frame_system(const ApplicationState& app);
 
 // A good view of every system shown (their visible atoms), as reset_view of the one when only one is
-void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, const ViewRegion& region = {});
+void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, float aspect_ratio = 1.0f);
 
 // ASSEMBLIES (system.assembly). The groups of assembly asm_idx are [a.group_offset[asm_idx], a.group_offset[asm_idx + 1]),
 // and the instances and operators of group g those assembly_group gives, pointers into the arrays of a. Both read from the

@@ -152,7 +152,7 @@ void instance_set_assembly(SystemInstance& inst, int assembly, bool frame) {
     inst.scene.assembly = assembly;
     assembly_transforms(&inst.scene.assembly_transforms, &inst.scene.assembly_copy_offset, sys.data.sys, assembly, app->allocator.persistent);
     if (!frame) return;
-    reset_view(&app->view.target, inst.state, &sys.representation.visibility_mask, app->view.camera.fov_y, app->view.region, &sys.data.sys, assembly);
+    reset_view(&app->view.target, inst.state, &sys.representation.visibility_mask, app->view.camera.fov_y, view_aspect_ratio(*app), &sys.data.sys, assembly);
     // Room to zoom out to all of it
     app->view.trackball_param.max_distance = MD_MAX(app->view.trackball_param.max_distance, app->view.target.distance * 10.0f);
 }

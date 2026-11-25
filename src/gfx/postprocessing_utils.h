@@ -177,8 +177,9 @@ void initialize(int width, int height, int out_width = 0, int out_height = 0);
 void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
 // Presents an image execute() made without presenting it (its size: the viewport's) into the framebuffer bound:
 // dithered, with the marks of the selection and the highlight over it when there are any (Inputs::marks,
-// Settings::marks). For showing the image again while nothing in it has changed.
-void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings);
+// Settings::marks). For showing the image again while nothing in it has changed. origin: the viewport's corner in the
+// framebuffer, where the image's first pixel goes.
+void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings, int origin_x = 0, int origin_y = 0);
 void shutdown();
 
 // The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces

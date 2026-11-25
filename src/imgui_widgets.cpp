@@ -389,7 +389,7 @@ void init_theme() {
     colors[ImGuiCol_ModalWindowDimBg]       = ImVec4(0.20f, 0.20f, 0.20f, 0.35f);
 }
 
-void CreateDockspace() {
+ImRect CreateDockspace() {
     // Invisible dockspace
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->Pos);
@@ -407,23 +407,30 @@ void CreateDockspace() {
     ImGui::Begin("DockspaceWindow", NULL, window_flags);
     ImGui::PopStyleVar(3);
 
-    // ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruDockspace;
+    // Its central node is the main view: windows dock about it, never over it
     const ImGuiID id = ImGui::GetID("Dockspace");
-    const ImGuiDockNodeFlags flags = ImGuiDockNodeFlags_PassthruCentralNode;
+    const ImGuiDockNodeFlags flags = ImGuiDockNodeFlags_PassthruCentralNode | ImGuiDockNodeFlags_NoDockingOverCentralNode;
     ImGui::DockSpace(id, ImVec2(0.0f, 0.0f), flags);
+    // What the docked windows leave: the central node, as laid out this frame. Before it has a size (the first frame),
+    // all of the viewport under its menu bar.
+    ImRect rect = ImRect(viewport->WorkPos, viewport->WorkPos + viewport->WorkSize);
+    if (const ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(id); central && central->Size.x > 0.0f && central->Size.y > 0.0f) {
+        rect = ImRect(central->Pos, central->Pos + central->Size);
+    }
 
     ImGui::End();
+    return rect;
 }
 
-void BeginCanvas(const char* id, bool allow_inputs) {
+void BeginCanvas(const char* id, const ImRect& rect, bool allow_inputs) {
     // Invisible Canvas
     ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos);
-    ImGui::SetNextWindowSize(viewport->Size);
+    ImGui::SetNextWindowPos(rect.Min);
+    ImGui::SetNextWindowSize(rect.GetSize());
     ImGui::SetNextWindowBgAlpha(0.0f);
     ImGui::SetNextWindowViewport(viewport->ID);
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoTitleBar |
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoDocking;
 
@@ -439,79 +446,6 @@ void BeginCanvas(const char* id, bool allow_inputs) {
 }
 
 void EndCanvas() { ImGui::End(); }
-
-ImRect LargestUncoveredRect(const ImRect& bounds, const ImGuiWindow* ignore) {
-    ImGuiContext& g = *GImGui;
-
-    ImVector<ImRect> covered;
-    for (ImGuiWindow* window : g.Windows) {
-        if (window == ignore || window->IsFallbackWindow) continue;
-        // Shown: this frame, or the last for the windows that are drawn after the caller
-        if (!(window->Active || window->WasActive) || window->Hidden) continue;
-        // A docked window covers what it is drawn over; any other child lies within its parent
-        if ((window->Flags & ImGuiWindowFlags_ChildWindow) && !window->DockIsActive) continue;
-        // A dockspace spans what it is docked into, the empty part in its middle included
-        if (window->DockNodeAsHost && window->DockNodeAsHost->IsDockSpace()) continue;
-        if (window->Flags & (ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_Popup | ImGuiWindowFlags_NoBackground)) continue;
-        // Notifications (imgui_notify) come and go by themselves
-        if (strncmp(window->Name, "##TOAST", 7) == 0) continue;
-
-        ImRect rect = window->Rect();
-        rect.ClipWithFull(bounds);
-        if (rect.GetWidth() > 0.0f && rect.GetHeight() > 0.0f) {
-            covered.push_back(rect);
-        }
-    }
-
-    // The largest uncovered rectangle has each of its sides on a side of bounds or of a covered rectangle. Within
-    // each band between such a left and right side, the tallest gap the covered rectangles leave is a candidate.
-    ImVector<float> lefts, rights;
-    lefts.push_back(bounds.Min.x);
-    rights.push_back(bounds.Max.x);
-    for (const ImRect& c : covered) {
-        lefts.push_back(c.Max.x);
-        rights.push_back(c.Min.x);
-    }
-
-    ImVector<ImRect> candidates;
-    ImVector<ImVec2> spans;
-    for (float x0 : lefts) {
-        for (float x1 : rights) {
-            if (x1 <= x0) continue;
-            spans.resize(0);
-            for (const ImRect& c : covered) {
-                if (c.Min.x < x1 && x0 < c.Max.x) spans.push_back(ImVec2(c.Min.y, c.Max.y));
-            }
-            ImQsort(spans.Data, (size_t)spans.Size, sizeof(ImVec2), [](const void* a, const void* b) {
-                const float ya = ((const ImVec2*)a)->x;
-                const float yb = ((const ImVec2*)b)->x;
-                return (ya > yb) - (ya < yb);
-            });
-            float y = bounds.Min.y, best_y0 = 0.0f, best_y1 = 0.0f;
-            for (const ImVec2& span : spans) {
-                if (span.x - y > best_y1 - best_y0) { best_y0 = y; best_y1 = span.x; }
-                y = ImMax(y, span.y);
-            }
-            if (bounds.Max.y - y > best_y1 - best_y0) { best_y0 = y; best_y1 = bounds.Max.y; }
-            if (best_y1 > best_y0) candidates.push_back(ImRect(x0, best_y0, x1, best_y1));
-        }
-    }
-
-    // What is shown in the rectangle is fitted to the largest square in it, so the rectangle that holds the
-    // largest square wins - a long sliver along an edge does not. Of the ones that come close, the largest.
-    const float CLOSE_TO_LARGEST_SQUARE = 0.95f;
-    float max_side = 0.0f;
-    for (const ImRect& c : candidates) {
-        max_side = ImMax(max_side, ImMin(c.GetWidth(), c.GetHeight()));
-    }
-    ImRect result = ImRect(bounds.Min, bounds.Min);
-    for (const ImRect& c : candidates) {
-        if (ImMin(c.GetWidth(), c.GetHeight()) >= max_side * CLOSE_TO_LARGEST_SQUARE && c.GetArea() > result.GetArea()) {
-            result = c;
-        }
-    }
-    return result;
-}
 
 constexpr unsigned int DEL_BTN_COLOR = 0xFF1111CC;
 constexpr unsigned int DEL_BTN_HOVER_COLOR = 0xFF3333DD;

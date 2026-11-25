@@ -218,7 +218,7 @@ bool camera_controller_trackball(ViewTransform* transform, const TrackballContro
     const bool mouse_move = mouse_coord_delta != md_float2_t{0, 0};
 
     if ((flags & TrackballFlags_RotateEnabled) && input.rotate_button && mouse_move) {
-        const md_quat_t q = trackball(ndc_prev - input.ndc_center, ndc_curr - input.ndc_center);
+        const md_quat_t q = trackball(ndc_prev, ndc_curr);
         const md_float3_t look_at = camera_get_look_at(*transform);
         transform->orientation = md_quat_normalize(transform->orientation * q);
         transform->position = camera_position_from_look_at(look_at, transform->orientation, transform->distance);
@@ -288,18 +288,8 @@ static double animate_interpolation_factor(double dt, double target_factor) {
 
 // Within these of the target, an animation is at the target: the exponential approach would go on in the last bits
 // for ever, and a view that never stops moving is never still enough to keep (lazy rendering). Far below a pixel.
-static const double SNAP_SHIFT    = 1.0e-5;     // of the shift, in clip space (a pixel is about 1e-3)
 static const double SNAP_RELATIVE = 1.0e-5;     // of the position and the distance, relative to the distance
 static const double SNAP_ANGLE    = 1.0e-5;     // of the orientation, in radians (a pixel is about 1e-4 at most)
-
-void camera_animate_shift(md_float2_t* current, md_float2_t target, double dt, double target_factor) {
-    MD_ASSERT(current);
-    const float t = (float)MD_CLAMP(animate_interpolation_factor(dt, target_factor), 0.0, 1.0);
-    *current = *current + (target - *current) * t;
-    if (fabs((double)current->x - (double)target.x) < SNAP_SHIFT && fabs((double)current->y - (double)target.y) < SNAP_SHIFT) {
-        *current = target;
-    }
-}
 
 void camera_animate(ViewTransform* current, const ViewTransform& target, double dt, double target_factor) {
     MD_ASSERT(current);
@@ -615,14 +605,12 @@ static DvFrame dv_frame_about_face(md_float3_t b, const md_float3_t* p, size_t n
     return f;
 }
 
-float camera_fit_distance(const md_float3_t* xyz, const int32_t* indices, size_t count, md_float3_t look_at, md_quat_t orientation, float fov_y, const ViewRegion& region) {
+float camera_fit_distance(const md_float3_t* xyz, const int32_t* indices, size_t count, md_float3_t look_at, md_quat_t orientation, float fov_y, float aspect_ratio) {
     const md_float3_t s = md_quat_mul_float3(orientation, DV_X);
     const md_float3_t u = md_quat_mul_float3(orientation, DV_Y);
     const md_float3_t b = md_quat_mul_float3(orientation, DV_Z);
-    // The shift moves the picture over without changing it, so only the size of the region matters: half the
-    // side of the largest square in it, as the tangent of an angle off the view axis
-    const md_float2_t half_ext = (region.max - region.min) * 0.5f;
-    const float tan_half_side = MD_MIN(half_ext.x * region.aspect_ratio, half_ext.y) * tanf(fov_y * 0.5f) * DV_FILL;
+    // Half the side of the largest square in the view, as the tangent of an angle off the view axis
+    const float tan_half_side = MD_MIN(aspect_ratio > 0.0f ? aspect_ratio : 1.0f, 1.0f) * tanf(fov_y * 0.5f) * DV_FILL;
     float dist = DV_MIN_DISTANCE;
     for (size_t i = 0; i < count; ++i) {
         const md_float3_t p = md_float3_sub(dv_load(xyz, indices, i), look_at);
@@ -632,7 +620,7 @@ float camera_fit_distance(const md_float3_t* xyz, const int32_t* indices, size_t
     return dist;
 }
 
-ViewTransform camera_compute_default_view(const md_float3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const md_float3x3_t* cell_A, float fov_y, const ViewRegion& region) {
+ViewTransform camera_compute_default_view(const md_float3_t* xyz, size_t num_atoms, const int32_t* indices, size_t count, const md_float3x3_t* cell_A, float fov_y, float aspect_ratio) {
     ViewTransform result = {};
     if (!indices) count = num_atoms;
     if (!count) return result;
@@ -724,7 +712,7 @@ ViewTransform camera_compute_default_view(const md_float3_t* xyz, size_t num_ato
     const md_float3_t center = md_float3_add(mean, md_float3_add(md_float3_add(md_float3_mul1(s, mid.x), md_float3_mul1(u, mid.y)), md_float3_mul1(b, mid.z)));
 
     const md_quat_t orientation = md_quat_from_float4x4(md_float4x4_look_at(md_float3_add(center, b), center, u));
-    const float  dist = camera_fit_distance(xyz, indices, count, center, orientation, fov_y, region);
+    const float  dist = camera_fit_distance(xyz, indices, count, center, orientation, fov_y, aspect_ratio);
 
     result.orientation = orientation;
     result.position    = md_float3_add(center, md_float3_mul1(b, dist));

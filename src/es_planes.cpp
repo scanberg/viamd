@@ -877,7 +877,7 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
 
 static struct {
     GLuint program = 0, vao = 0, vbo = 0;
-    GLint  loc_depth = -1, loc_scale = -1;
+    GLint  loc_depth = -1, loc_scale = -1, loc_origin = -1;
     bool   failed = false;
 } outline_gl;
 
@@ -906,11 +906,12 @@ static const char* outline_fs = R"(
 #version 330 core
 uniform sampler2D u_depth;      // the scene's, window depth
 uniform vec2 u_scale;           // its texels per framebuffer pixel
+uniform vec2 u_origin;          // the view's corner in the framebuffer (the viewport's): the depth's first texel
 in vec4 v_col;
 in vec2 v_edge;
 out vec4 out_frag;
 void main() {
-    float scene = texelFetch(u_depth, ivec2(gl_FragCoord.xy * u_scale), 0).r;
+    float scene = texelFetch(u_depth, ivec2((gl_FragCoord.xy - u_origin) * u_scale), 0).r;
     // behind the scene (a margin for the scene's jitter and the depth's rounding)
     if (gl_FragCoord.z > scene + 2.0e-6) discard;
     // its edges feathered over a pixel
@@ -940,6 +941,7 @@ static bool outline_gl_init() {
     if (outline_gl.failed) return false;
     outline_gl.loc_depth = glGetUniformLocation(outline_gl.program, "u_depth");
     outline_gl.loc_scale = glGetUniformLocation(outline_gl.program, "u_scale");
+    outline_gl.loc_origin = glGetUniformLocation(outline_gl.program, "u_origin");
     glGenVertexArrays(1, &outline_gl.vao);
     glGenBuffers(1, &outline_gl.vbo);
     glBindVertexArray(outline_gl.vao);
@@ -955,7 +957,7 @@ static bool outline_gl_init() {
     return true;
 }
 
-void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int fb_width, int fb_height, float px_per_point) {
+void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int view_x, int view_y, int fb_width, int fb_height, float px_per_point) {
     if (outline_count == 0 || fb_width <= 0 || fb_height <= 0 || !depth_tex || !outline_gl_init()) return;
     // two quads (halo, line) of 6 vertices per segment; the halos first
     static OutlineVertex verts[MD_COUNTOF(outline_segs) * 12];
@@ -993,6 +995,7 @@ void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_heig
     glBindTexture(GL_TEXTURE_2D, depth_tex);
     glUniform1i(outline_gl.loc_depth, 0);
     glUniform2f(outline_gl.loc_scale, (float)depth_width / (float)fb_width, (float)depth_height / (float)fb_height);
+    glUniform2f(outline_gl.loc_origin, (float)view_x, (float)view_y);
     glBindVertexArray(outline_gl.vao);
     glBindBuffer(GL_ARRAY_BUFFER, outline_gl.vbo);
     glBufferData(GL_ARRAY_BUFFER, sizeof(OutlineVertex) * nv, verts, GL_STREAM_DRAW);
