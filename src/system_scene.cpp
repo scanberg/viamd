@@ -175,8 +175,11 @@ static void instance_source_label(char* buf, size_t cap, const SystemInstance& i
     else                        snprintf(buf, cap, "%s", name);
 }
 
-bool system_combo(const char* label, uint32_t* system_id, const ApplicationState& app) {
-    if (system_count(app) < 2) return false;
+bool system_combo(const char* label, uint32_t* system_id, const ApplicationState& app, bool (*candidate)(const SystemContext&)) {
+    auto listed = [&](const SystemContext& sc) { return system_loaded(sc) && (!candidate || candidate(sc)); };
+    size_t num_listed = 0;
+    for (size_t i = 0; i < app.num_systems; ++i) num_listed += listed(*app.systems[i]) ? 1 : 0;
+    if (num_listed < 2) return false;
     const SystemContext& cur = system_or_first(app, *system_id);
     char preview[80];
     system_label(preview, sizeof(preview), cur);
@@ -184,7 +187,7 @@ bool system_combo(const char* label, uint32_t* system_id, const ApplicationState
     if (ImGui::BeginCombo(label, preview)) {
         for (size_t i = 0; i < app.num_systems; ++i) {
             const SystemContext& sc = *app.systems[i];
-            if (!system_loaded(sc)) continue;
+            if (!listed(sc)) continue;
             char item[80];
             system_label(item, sizeof(item), sc);
             ImGui::PushID((int)sc.id);
@@ -1277,6 +1280,8 @@ void draw_system_files(SystemContext& sc, InstanceActions* inst_act) {
 void system_remove(SystemContext& sys) {
     ApplicationState* app = sys.app;
     MD_ASSERT(app);
+    // The quantum chemistry is of another, when it was of this one and another has some
+    qm_system_update(app, &sys);
     // Its data, when it has any: an empty system (the first, before anything is loaded) has nothing to free
     if (system_loaded(sys) || sys.num_runs > 0) {
         interrupt_async_tasks(app);

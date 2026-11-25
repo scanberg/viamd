@@ -51,8 +51,8 @@ struct FieldContext {
 // The current frame's: what the public functions below make fields of
 static IsoFieldGeometry current_geometry(md_temp_scope_t temp, const ApplicationState* state) {
     IsoFieldGeometry g;
-    g.sys = &state->mold.sys;
-    g.atom_xyz = basis_atom_positions_extract(&g.num_atoms, temp, state->mold.sys, system_instance(state->system_context).state);
+    g.sys = &qm_system(*state).data.sys;
+    g.atom_xyz = basis_atom_positions_extract(&g.num_atoms, temp, qm_system(*state).data.sys, system_instance(qm_system(*state)).state);
     return g;
 }
 
@@ -947,7 +947,7 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
 // What names the field: what it is of and where the atoms are
 static uint64_t electronic_structure_field_key(const ApplicationState* state, const ElectronicStructureRepresentation& es) {
     uint64_t h = 0x150;
-    const md_system_state_t& st = system_instance(state->system_context).state;
+    const md_system_state_t& st = system_instance(qm_system(*state)).state;
     if (st.xyz && st.num_atoms) h = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, h);
     h = md_hash64(&es.shown.source, sizeof(es.shown.source), h);
     h = md_hash64(&es.shown.spin, sizeof(es.shown.spin), h);
@@ -1067,7 +1067,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     }
 
     IsoFieldGeometry geometry;
-    geometry.sys = &state->mold.sys;
+    geometry.sys = &qm_system(*state).data.sys;
     geometry.atom_xyz = em.field_xyz;
     geometry.num_atoms = em.field_num_atoms;
     const bool ok = iso_meshes_update(&em.meshes, state, slots, num_slots, iso_meshes_cell_size(es.resolution), em.field_key, &geometry);
@@ -1076,11 +1076,11 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
 
     // Coloured by a field: the field at the vertices
     bool vertex_field = false;
-    if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, state->mold.sys)) {
+    if (es.coloring == SurfaceColoring::Field && surface_field_available(es.field_kind, qm_system(*state).data.sys)) {
         // What the values are of: the field (its kind, the frame) and the vertices
         uint64_t source = md_hash64(&es.field_kind, sizeof(es.field_kind), 0x5f1e1d);
         source = md_hash64(&state->animation.time, sizeof(state->animation.time), source);
-        const md_system_state_t& st = system_instance(state->system_context).state;
+        const md_system_state_t& st = system_instance(qm_system(*state)).state;
         if (st.xyz && st.num_atoms) source = md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, source);
         const uint64_t values_key = md_hash64_combine(source, em.meshes.key);
         if (values_key != em.values_key) {
@@ -1090,12 +1090,12 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             md_temp_scope_t temp = md_temp_begin();
             SurfaceFieldDesc desc = {};
             desc.kind        = es.field_kind;
-            desc.sys         = &state->mold.sys;
-            desc.state       = &system_instance(state->system_context).state;
+            desc.sys         = &qm_system(*state).data.sys;
+            desc.state       = &system_instance(qm_system(*state)).state;
             desc.source_hash = source;
             desc.density_cache = density_cache_of(state);
             if (surface_field_uses_basis(es.field_kind)) {
-                desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, state->mold.sys, system_instance(state->system_context).state);
+                desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, qm_system(*state).data.sys, system_instance(qm_system(*state)).state);
             }
 #if MD_ENABLE_GPU
             desc.gpu_stream = state->gpu_stream;
@@ -1155,9 +1155,9 @@ void electronic_structure_meshes_update(ApplicationState* state, Representation*
     MD_ASSERT(state);
     MD_ASSERT(rep);
     // as draw_representations_transparent_mesh draws them
-    if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(state->system_context, *rep)) return;
+    if (rep->type != RepresentationType::ElectronicStructure || !rep->type_is_valid || !representation_shown(qm_system(*state), *rep)) return;
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    if (!es_mesh_mode(state, es) || state->mold.sys.atom.count == 0) return;
+    if (!es_mesh_mode(state, es) || qm_system(*state).data.sys.atom.count == 0) return;
     if (es.display != ElectronicStructureDisplay::Isosurface) return;
     IsoDesc iso;
     electronic_structure_iso_desc_init(&iso, es);

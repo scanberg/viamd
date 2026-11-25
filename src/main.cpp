@@ -1939,18 +1939,23 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
     isomesh::target_free(&iso_mesh_target);
-    for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-        electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
-        // what its field has under way holds the GPU stream and pool tasks: both still here
-        surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
-        surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
+    for (size_t k = 0; k < state.num_systems; ++k) {
+        SystemRepresentations& reps = state.systems[k]->representation;
+        for (size_t i = 0; i < md_array_size(reps.reps); ++i) {
+            electronic_structure_mesh_free(&state, &reps.reps[i].electronic_structure);
+            // what its field has under way holds the GPU stream and pool tasks: both still here
+            surface_field_free(&reps.reps[i].electronic_structure.field_vol);
+            surface_field_free(&reps.reps[i].electronic_structure.source_vol);
+        }
     }
     gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     isomesh::shutdown();
     // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
-    density_cache_destroy(state.mold.density_cache);
-    state.mold.density_cache = nullptr;
+    for (size_t k = 0; k < state.num_systems; ++k) {
+        density_cache_destroy(state.systems[k]->data.density_cache);
+        state.systems[k]->data.density_cache = nullptr;
+    }
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
@@ -1960,7 +1965,7 @@ int main(int argc, char** argv) {
         // A queued readback writes into a GL texture and frees its staging memory, so nothing
         // below may go until the queue has run out.
         gpu_volume_jobs_drain(&state);
-        system_gpu_data_free(state.system_context);
+        for (size_t k = 0; k < state.num_systems; ++k) system_gpu_data_free(*state.systems[k]);
         md_gto_int_gpu_shutdown();
         md_gto_iso_gpu_shutdown();
 
@@ -8763,9 +8768,11 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 // drawn.
 static bool draw_representations_volumes(ApplicationState* state, bool target_written) {
     bool written = false;
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(state->system_context, rep) || !rep.type_is_valid) continue;
+    // Of the quantum chemistry system, whose electronic structure is evaluated (qm_system)
+    SystemContext& es_sys = qm_system(*state);
+    for (size_t i = 0; i < md_array_size(es_sys.representation.reps); ++i) {
+        Representation& rep = es_sys.representation.reps[i];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(es_sys, rep) || !rep.type_is_valid) continue;
         ElectronicStructureRepresentation& es = rep.electronic_structure;
         const bool slice = es.display == ElectronicStructureDisplay::Planes;
         // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
@@ -8841,8 +8848,8 @@ static bool draw_representations_transparent(ApplicationState* state) {
     // The isosurfaces drawn as meshes first, then those raycast through their volume over them: as each
     // representation has it, and whatever meshes are not made of (es_mesh_mode)
     bool any_mesh = false;
-    // Of the first system, whose quantum chemistry is evaluated (until it is per system)
-    const SystemContext& es_sys = state->system_context;
+    // Of the quantum chemistry system, whose electronic structure is evaluated (qm_system)
+    const SystemContext& es_sys = qm_system(*state);
     for (size_t i = 0; i < md_array_size(es_sys.representation.reps); ++i) {
         const Representation& rep = es_sys.representation.reps[i];
         any_mesh |= representation_shown(es_sys, rep) && rep.type == RepresentationType::ElectronicStructure &&

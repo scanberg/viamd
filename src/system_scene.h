@@ -64,10 +64,10 @@ void system_label(char* buf, size_t cap, const SystemContext& sys);
 // keeps to, or the system's own)
 void instance_label(char* buf, size_t cap, const SystemInstance& inst);
 
-// Pickers of what a tool reads: a system, by id (system_or_first), offered when there are several; and an instance of a
-// system, by id (instance_resolve: 0 for its first, which picking the first gives), offered when it has several. True
-// when the id changed.
-bool system_combo(const char* label, uint32_t* system_id, const ApplicationState& app);
+// Pickers of what a tool reads: a system, by id (system_or_first), offered when there are several (of those loaded that
+// are candidates, when the tool takes only some); and an instance of a system, by id (instance_resolve: 0 for its first,
+// which picking the first gives), offered when it has several. True when the id changed.
+bool system_combo(const char* label, uint32_t* system_id, const ApplicationState& app, bool (*candidate)(const SystemContext&) = nullptr);
 bool instance_combo(const char* label, uint32_t* instance_id, const SystemContext& sys);
 
 // ## UI

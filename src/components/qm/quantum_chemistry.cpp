@@ -4,6 +4,7 @@
 #include <viamd_event.h>
 #include <window_menu.h>
 #include <viamd.h>
+#include <system_scene.h>
 #include <attribute_access.h>
 #include <representation.h>
 #include <task_system.h>
@@ -563,7 +564,7 @@ static void panel_meshes_free(PanelMeshes* pm, ApplicationState* state) {
 
 // Where the atoms are: a field is of one geometry
 static uint64_t panel_positions_hash(const ApplicationState& state) {
-    const md_system_state_t& st = system_instance(state.system_context).state;
+    const md_system_state_t& st = system_instance(qm_system(state)).state;
     return (st.xyz && st.num_atoms) ? md_hash64(st.xyz, sizeof(st.xyz[0]) * st.num_atoms, 0x9a7e1) : 0x9a7e1;
 }
 
@@ -729,8 +730,8 @@ struct GtoCriticalPointJob {
 // Starts a search of the system as it is now. Returns null, with the reason logged, when the system
 // does not carry what the search needs.
 static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, double rho_min, bool use_gpu, uint64_t hash) {
-    const md_system_t& sys = app.mold.sys;
-    const md_system_state_t& state = system_instance(app.system_context).state;
+    const md_system_t& sys = qm_system(app).data.sys;
+    const md_system_state_t& state = system_instance(qm_system(app)).state;
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
 
@@ -1027,12 +1028,12 @@ struct CtGeometry {
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
         size_t n = 0;
-        const md_float3_t* p = basis_atom_positions_extract(&n, temp, state.mold.sys, system_instance(state.system_context).state);
+        const md_float3_t* p = basis_atom_positions_extract(&n, temp, qm_system(state).data.sys, system_instance(qm_system(state)).state);
         if (!p || n == 0) return false;
         xyz = (md_float3_t*)md_alloc(md_get_heap_allocator(), sizeof(md_float3_t) * n);
         md_memcpy(xyz, p, sizeof(md_float3_t) * n);
         count = n;
-        sys = &state.mold.sys;
+        sys = &qm_system(state).data.sys;
         return true;
     }
     void free() {
@@ -1081,7 +1082,7 @@ static size_t nto_num_ao(const md_system_t& sys) {
 
 // Null when the state's pairs cannot be read (yet: ask es_nto_ready first)
 static CtFieldJob* ct_field_job_start(const ApplicationState& state, int32_t s) {
-    const md_system_t& sys = state.mold.sys;
+    const md_system_t& sys = qm_system(state).data.sys;
     const size_t A = nto_num_ao(sys);
     if (s < 0 || A == 0) return nullptr;
     CtFieldJob* job = new CtFieldJob();
@@ -1408,6 +1409,8 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // Version of the coefficient attribute the setup above last ran for. See the load event.
     uint64_t qm_version = 0;
+    // The system the windows were last of (qm_system, follow_qm_system): another, and what was of this one goes
+    uint32_t qm_system_seen = UINT32_MAX;
     md_bitset_t* qm_mask = nullptr;
 
     struct Summary {
@@ -1838,7 +1841,7 @@ struct QuantumChemistry : viamd::EventHandler {
         bool   region_add    = true;
         ImVec2 region_start  = {0, 0};
 
-        // ATOM selection is NOT held here. It lives in state.system_context.selection.selection_mask, and this
+        // ATOM selection is NOT held here. It lives in qm_system(state).selection.selection_mask, and this
         // window reads it every frame - so a selection made in the 3D view, by a script, or in any
         // other window shows up here, and one made here shows up everywhere else. A private copy
         // would be a second source of truth that silently drifts from the first.
@@ -2131,6 +2134,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_ApplicationState);
                 ApplicationState& state = *(ApplicationState*)e.payload;
 
+                // Of the quantum chemistry system as it is now: another, or its calculation loaded again
+                follow_qm_system(state);
+
                 // Here rather than in the window that started it, so a result lands whether or not
                 // that window is open.
                 critical_points_poll_gto();
@@ -2142,13 +2148,13 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     // Before any window draws, so both transition windows see the same numbers and
                     // neither has to be open for the other to have data.
-                    update_nto_derived_data(state.mold.sys);
+                    update_nto_derived_data(qm_system(state).data.sys);
 
                     update_critical_points(state);
 
                     draw_orb_window(state);
                     draw_summary_window(state);
-                    has_gostshyp = attribute_exists(state.mold.sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
+                    has_gostshyp = attribute_exists(qm_system(state).data.sys, MD_STR_LIT("vlx/scf/gostshyp/tessera/area"));
                     draw_gostshyp_window(state);
                     draw_critical_points_window(state);
                     draw_rsp_window(state);
@@ -2167,7 +2173,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 const bool  has_excited  = has_orbitals && num_excited > 0;
                 const char* no_orbitals  = "No calculation with molecular orbitals is loaded";
                 const char* no_excited   = has_orbitals ? "The calculation has no excited states" : no_orbitals;
-                const bool  has_rsp      = has_orbitals && app && rsp_has_content(app->mold.sys);
+                const bool  has_rsp      = has_orbitals && app && rsp_has_content(qm_system(*app).data.sys);
                 const char* no_rsp       = has_orbitals ? "The calculation has no response, vibrational or XPS results" : no_orbitals;
                 viamd::window_menu_add(e, "Analysis/Quantum Chemistry/Summary", &summary.show_window,
                     {.order = 100, .enabled = has_orbitals, .disabled_reason = no_orbitals});
@@ -2329,32 +2335,17 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdLoadData: {
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                  MD_ASSERT(e.payload_type == viamd::EventPayloadType_LoadData);
                  LoadDataPayload& payload = *(LoadDataPayload*)e.payload;
-                 ApplicationState& state = *payload.app_state;
-
-                 // Nothing is parsed here. The loader published this system's table before the
-                 // event was broadcast, and there is no branch on WHICH loader did: a file type
-                 // check would gate these windows on VeloxChem having been the reader, which is
-                 // exactly the coupling this component no longer has.
-                 //
-                 // Keyed on the coefficient attribute's VERSION, not on merely being present: this
-                 // event also fires for a trajectory or a supplemental file loaded on top of a
-                 // system that already has orbitals, and re-running the setup then would throw away
-                 // the user's cameras and selections. A version is bumped only when the attribute
-                 // is actually written, so a reload re-initialises and nothing else does.
-                 const md_attribute_t* coeff = md_attributes_find(&state.mold.sys.attributes, es_path::alpha_coefficient);
-                 const uint64_t version = coeff ? md_attributes_version(&state.mold.sys.attributes, coeff->id) : 0;
-                 if (version != 0 && version != qm_version) {
-                     qm_version = version;
-                     init_qm_from_system(state);
-                 }
+                 // Of any system: a load can make another the quantum chemistry system (qm_system_update)
+                 follow_qm_system(*payload.app_state);
                  break;
             }
             case viamd::EventType_ViamdSystemFree: {
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                const SystemContext* sys = event_system(e);
+                if (!sys || sys->id != qm_system_seen) break;     // of another system than the windows'
                 reset_data();
+                qm_system_seen = UINT32_MAX;    // followed again (follow_qm_system), of whichever it is then
                 break;
             }
             case viamd::EventType_ViamdSerialize: {
@@ -2371,9 +2362,10 @@ struct QuantumChemistry : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemStateChanged: {
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
                 MD_ASSERT(e.payload_type == viamd::EventPayloadType_System);
-                ApplicationState& state = *((SystemContext*)e.payload)->app;
+                const SystemContext* sys = event_system(e);
+                if (!sys || !sys->app || sys->id != qm_system_seen) break;     // of another system than the windows'
+                ApplicationState& state = *sys->app;
 
                 // Nothing below reads the reader any more - the QM atom domain and the dipole both
                 // come out of the table - so the gate is whether there are QM atoms to re-gather.
@@ -2383,7 +2375,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // agreeing is something to CHECK here rather than an invariant to assert. A
                 // disagreement skips the update; the load event that caused it re-initialises.
                 QmAtoms qm = {};
-                if (num_qm_atoms > 0 && es_qm_atoms(&qm, state.mold.sys) &&
+                if (num_qm_atoms > 0 && es_qm_atoms(&qm, qm_system(state).data.sys) &&
                     md_array_size(atom_xyzw) == qm.count) {
                     // Update atom_xyz
 					// Calculate nuclei charge weighted center of charge for later use in orbital centering
@@ -2393,21 +2385,22 @@ struct QuantumChemistry : viamd::EventHandler {
 					// No branch on whether a map exists: without one the QM atoms ARE the system's,
 					// so the count matches and qm_to_system_atom is the identity.
 					const size_t count = qm.count;
+                    const md_system_state_t& qst = system_instance(*sys).state;
                     for (size_t i = 0; i < count; ++i) {
                         const size_t idx = qm_to_system_atom(qm, i);
-                        atom_xyzw[i].x = (float)(system_instance(state.system_context).state.xyz[idx].x * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].y = (float)(system_instance(state.system_context).state.xyz[idx].y * ANGSTROM_TO_BOHR);
-                        atom_xyzw[i].z = (float)(system_instance(state.system_context).state.xyz[idx].z * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].x = (float)(qst.xyz[idx].x * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].y = (float)(qst.xyz[idx].y * ANGSTROM_TO_BOHR);
+                        atom_xyzw[i].z = (float)(qst.xyz[idx].z * ANGSTROM_TO_BOHR);
 
-						int z = md_atom_atomic_number(&state.mold.sys.atom, idx);
+						int z = md_atom_atomic_number(&sys->data.sys.atom, idx);
 						nucl_dipole.x += atom_xyzw[i].x * z;
 						nucl_dipole.y += atom_xyzw[i].y * z;
 						nucl_dipole.z += atom_xyzw[i].z * z;
                     }
 
                     // The occupations summed, rather than a count the reader kept beside them.
-                    const double num_electrons = es_electron_count(state.mold.sys, es_path::alpha_occupation) +
-                                                 es_electron_count(state.mold.sys, es_path::beta_occupation);
+                    const double num_electrons = es_electron_count(qm_system(state).data.sys, es_path::alpha_occupation) +
+                                                 es_electron_count(qm_system(state).data.sys, es_path::beta_occupation);
 
                     // The centroid of the ELECTRONIC charge: mu = sum_A Z_A R_A - <r_e> N_e, so
                     // <r_e> = (sum_A Z_A R_A - mu) / N_e. This used to divide the nuclear term by
@@ -2415,7 +2408,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // position - dimensionally impossible, and disagreeing with the load path,
                     // which had it right. The two now compute one formula.
                     const double inv_ne = num_electrons > 0.0 ? 1.0 / num_electrons : 1.0;
-                    center_of_charge = (nucl_dipole - dipole_ground_state(state.mold.sys)) * inv_ne;
+                    center_of_charge = (nucl_dipole - dipole_ground_state(qm_system(state).data.sys)) * inv_ne;
                     
                     // Recalculate OABB and AABB
                     oabb.orientation = mat3_PCA(atom_xyzw, md_array_size(atom_xyzw));
@@ -2423,9 +2416,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     calculate_bounds(aabb.min_ext.elem, aabb.max_ext.elem, atom_xyzw, md_array_size(atom_xyzw));
                 }
 
-                for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-                    if (state.representation.reps[i].type == RepresentationType::ElectronicStructure) {
-                        flag_representation_as_dirty(&state.representation.reps[i]);
+                for (size_t i = 0; i < md_array_size(qm_system(state).representation.reps); ++i) {
+                    if (qm_system(state).representation.reps[i].type == RepresentationType::ElectronicStructure) {
+                        flag_representation_as_dirty(&qm_system(state).representation.reps[i]);
                     }
                 }
                 
@@ -2607,6 +2600,35 @@ struct QuantumChemistry : viamd::EventHandler {
         immediate::triangles(scope, v, n);
     }
 
+    // The windows are of the quantum chemistry system (qm_system), one at a time. When it is another than they were of,
+    // what was of that one goes, and this one's calculation is read; when its calculation was loaded again (the
+    // coefficients' version), it is read again. Keyed on the VERSION, not on the coefficients merely being there: a
+    // trajectory or a supplemental file loaded onto a system with orbitals leaves them as they are, and reading them
+    // again would throw away the user's cameras and selections.
+    void follow_qm_system(ApplicationState& state) {
+        const SystemContext& sc = qm_system(state);
+        const md_attribute_t* coeff = md_attributes_find(&sc.data.sys.attributes, es_path::alpha_coefficient);
+        const uint64_t version = coeff ? md_attributes_version(&sc.data.sys.attributes, coeff->id) : 0;
+        if (sc.id == qm_system_seen && version == qm_version) return;
+        if (sc.id != qm_system_seen || version == 0) reset_data();
+        qm_system_seen = sc.id;
+        if (version != 0) {
+            qm_version = version;
+            init_qm_from_system(state);
+        }
+    }
+
+    // Which system's quantum chemistry the windows are of, when more than one has any: picked, it is studied from then
+    // on (qm_system_choose), and the windows are of it
+    void draw_qm_system_combo(ApplicationState& state) {
+        uint32_t id = qm_system(state).id;
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+        if (system_combo("##qm_system", &id, state, qm_system_candidate)) {
+            qm_system_choose(&state, id);
+        }
+        ImGui::SetItemTooltip("The system whose quantum chemistry is studied, here and in its representations: one at a time");
+    }
+
     void reset_data() {
         // First: the run holds nothing of the system's, but its result would land in a graph that
         // belongs to the next one.
@@ -2666,11 +2688,20 @@ struct QuantumChemistry : viamd::EventHandler {
             panel_meshes_free(&orb.mesh, app);
             panel_meshes_free(&nto.mesh, app);
         }
+        // Whether their windows are open is the user's, not the system's: carried across, as the critical points' is
+        // (the windows of the system studied next, qm_system)
+        const bool orb_show = orb.show_window, nto_show = nto.show_window, flow_show = flow.show_window;
+        const bool rsp_show = rsp.show_window, rsp_show_export = rsp.show_export_window;
         orb = QuantumChemistry::Orb{};
         nto = QuantumChemistry::Nto{};
         // The arena reset above already released everything these held.
         flow = QuantumChemistry::Flow{};
         rsp = QuantumChemistry::Rsp{};
+        orb.show_window = orb_show;
+        nto.show_window = nto_show;
+        flow.show_window = flow_show;
+        rsp.show_window = rsp_show;
+        rsp.show_export_window = rsp_show_export;
         // The rixs arena outlives the VLX object, so carry it across the value-initialization.
         // Rewinding it first drops the cached arrays that the zeroed struct would otherwise orphan.
         md_allocator_i* rixs_alloc = rixs.alloc;
@@ -2721,7 +2752,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // The basis comes out of that table too: an evaluator needs the system, not a
         // reader.
         md_gto_basis_free(&basis, arena);
-        if (!md_gto_basis_extract_attributes(&basis, &state.mold.sys.attributes, arena)) {
+        if (!md_gto_basis_extract_attributes(&basis, &qm_system(state).data.sys.attributes, arena)) {
             MD_LOG_ERROR("Failed to build a GTO basis from the system's attributes");
             return;
         }
@@ -2731,7 +2762,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // (md_vlx_system_is_file_supplemental) - so there is nothing left to validate
         // or to publish here.
         QmAtoms qm = {};
-        if (!es_qm_atoms(&qm, state.mold.sys)) {
+        if (!es_qm_atoms(&qm, qm_system(state).data.sys)) {
             MD_LOG_ERROR("The system carries no QM atom domain");
             return;
         }
@@ -2743,8 +2774,8 @@ struct QuantumChemistry : viamd::EventHandler {
         td_cache_free();
 
         num_mos = 0;
-        es_orbital_extent(state.mold.sys, &num_mos, nullptr);
-        num_excited = es_excited_state_count(state.mold.sys);
+        es_orbital_extent(qm_system(state).data.sys, &num_mos, nullptr);
+        num_excited = es_excited_state_count(qm_system(state).data.sys);
 
         // From the published occupations rather than from the vlx object: the frontier
         // is one scan of a column already in the table, and reading it there is what a
@@ -2756,27 +2787,27 @@ struct QuantumChemistry : viamd::EventHandler {
         // occupied set reported 0 for both; LUMO is now num_orbitals, out of range,
         // because there is no LUMO to point at.
         OrbitalFrontier frontier = {};
-        es_orbital_frontier(&frontier, state.mold.sys, es_path::alpha_occupation);
+        es_orbital_frontier(&frontier, qm_system(state).data.sys, es_path::alpha_occupation);
         homo_idx[0] = frontier.homo_idx;
         lumo_idx[0] = frontier.lumo_idx;
 
-        es_orbital_frontier(&frontier, state.mold.sys, es_path::beta_occupation);
+        es_orbital_frontier(&frontier, qm_system(state).data.sys, es_path::beta_occupation);
         homo_idx[1] = frontier.homo_idx;
         lumo_idx[1] = frontier.lumo_idx;
 
-        size_t num_colors = state.mold.sys.atom.count;
+        size_t num_colors = qm_system(state).data.sys.atom.count;
         uint32_t* colors = (uint32_t*)md_vm_arena_push(state.allocator.frame, num_colors * sizeof(uint32_t));
-        color_atoms_type(colors, num_colors, state.mold.sys);
+        color_atoms_type(colors, num_colors, qm_system(state).data.sys);
 
         if (qm.system_index) {
             md_bitset_t mask = md_bitset_from_indices((uint32_t*)qm.system_index, qm.count, state.allocator.frame);
             filter_colors(colors, num_colors, mask);
-            reset_view(&default_view, system_instance(state.system_context).state, &mask);
+            reset_view(&default_view, system_instance(qm_system(state)).state, &mask);
         } else {
-            reset_view(&default_view, system_instance(state.system_context).state);
+            reset_view(&default_view, system_instance(qm_system(state)).state);
         }
 
-        gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
+        gl_rep = md_gl_rep_create(system_instance(qm_system(state)).gl_mol);
         md_gl_rep_set_atom_colors(gl_rep, 0, (uint32_t)num_colors, colors, 0);
         orb.render_hash = 0;
 
@@ -2791,10 +2822,10 @@ struct QuantumChemistry : viamd::EventHandler {
 						nucl_dipole += xyz * atom_z[i];
         }
 
-					const md_double3_t ground_state_dipole = dipole_ground_state(state.mold.sys);
+					const md_double3_t ground_state_dipole = dipole_ground_state(qm_system(state).data.sys);
 
-        const double num_electrons = es_electron_count(state.mold.sys, es_path::alpha_occupation) +
-                                     es_electron_count(state.mold.sys, es_path::beta_occupation);
+        const double num_electrons = es_electron_count(qm_system(state).data.sys, es_path::alpha_occupation) +
+                                     es_electron_count(qm_system(state).data.sys, es_path::beta_occupation);
         const double inv_ne = num_electrons > 0.0 ? 1.0 / num_electrons : 1.0;
         center_of_charge = (nucl_dipole - ground_state_dipole) * inv_ne;
 
@@ -2834,8 +2865,8 @@ struct QuantumChemistry : viamd::EventHandler {
             // structure in front of the user and then invited them to read charge
             // transfer off it.
             nto.group.count = 1;
-            nto.gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
-            update_nto_group_colors(state.mold.sys);
+            nto.gl_rep = md_gl_rep_create(system_instance(qm_system(state)).gl_mol);
+            update_nto_group_colors(qm_system(state).data.sys);
 
             // Callculate ballpark scaling factor for dipole vectors
             md_float3_t extent = aabb.max_ext - aabb.min_ext;
@@ -2844,8 +2875,8 @@ struct QuantumChemistry : viamd::EventHandler {
             {
                 md_temp_scope_t temp = md_temp_begin();
                 MD_DEFER { md_temp_end(temp); };
-                max_len = (float)MD_MAX(dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")),
-                                     dipole_max_length(temp, state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")));
+                max_len = (float)MD_MAX(dipole_max_length(temp, qm_system(state).data.sys, MD_STR_LIT("dipole/electric_transition/vector")),
+                                     dipole_max_length(temp, qm_system(state).data.sys, MD_STR_LIT("dipole/magnetic_transition/vector")));
             }
             if (max_len > 0.0f) {
                 nto.dipole.vector_scale = MD_CLAMP((max_ext * 0.75f) / max_len, 0.1f, 10.0f);
@@ -2865,10 +2896,10 @@ struct QuantumChemistry : viamd::EventHandler {
             picking_surface_init(&ctv.picking_surface, interaction_surface_flow);
             ctv.target = default_view;
             ctv.camera = ctv.target;
-            ctv.gl_rep = md_gl_rep_create(system_instance(state.system_context).gl_mol);
+            ctv.gl_rep = md_gl_rep_create(system_instance(qm_system(state)).gl_mol);
             {
                 QmAtoms qm = {};
-                if (es_qm_atoms(&qm, state.mold.sys) && qm.count > 0) {
+                if (es_qm_atoms(&qm, qm_system(state).data.sys) && qm.count > 0) {
                     md_temp_scope_t temp = md_temp_begin();
                     MD_DEFER { md_temp_end(temp); };
                     uint32_t* colors = md_temp_alloc_array(temp, uint32_t, qm.count);
@@ -2882,14 +2913,14 @@ struct QuantumChemistry : viamd::EventHandler {
         // RSP. Oscillator strengths are what a linear response calculation produces and
         // what the absorption plot draws, so their presence is the question - a reader
         // with no response type of its own answers it just by publishing them.
-        if (md_attributes_find(&state.mold.sys.attributes, MD_STR_LIT("vlx/rsp/oscillator_strength"))) {
+        if (md_attributes_find(&qm_system(state).data.sys.attributes, MD_STR_LIT("vlx/rsp/oscillator_strength"))) {
             rsp.hovered = -1;
             rsp.selected = 0;
         }
 
         // OPT. Opens on the last step, which is the converged geometry.
         size_t num_opt_steps = 0;
-        if (attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/opt/energy")).get(&num_opt_steps) && num_opt_steps > 0) {
+        if (attribute_view<double>(qm_system(state).data.sys, MD_STR_LIT("vlx/opt/energy")).get(&num_opt_steps) && num_opt_steps > 0) {
             opt.selected = (int)(num_opt_steps - 1);
         }
 
@@ -2911,7 +2942,7 @@ struct QuantumChemistry : viamd::EventHandler {
         md_bitmask_clear(&critical_points.highlight_mask);
 
         // Last, so it overrides the placeholder grouping that init sets up.
-        apply_pending_groups(state.mold.sys);
+        apply_pending_groups(qm_system(state).data.sys);
 
         MD_LOG_INFO("Successfully initialized quantum chemistry data");
     }
@@ -2999,7 +3030,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // Out of the cache rather than out of the attribute: see TransitionDensityCache. The
         // difference is the one component the table would have reconstructed a third matrix for,
         // and it is the subtraction the provider performs anyway.
-        if (!td_cache_ensure(state.mold.sys, (int)state_idx)) {
+        if (!td_cache_ensure(qm_system(state).data.sys, (int)state_idx)) {
             return false;
         }
 
@@ -3714,7 +3745,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     bar_color = make_highlight_color(bar_color);
                     for (size_t atom_i = 0; atom_i < md_array_size(nto->atom_group_idx); atom_i++) {
                         if (nto->atom_group_idx[atom_i] == (uint32_t)i) {
-                            md_bitmask_set_bit(&state->system_context.selection.highlight_mask, (uint32_t)atom_i);
+                            md_bitmask_set_bit(&qm_system(*state).selection.highlight_mask, (uint32_t)atom_i);
                         }
                     }
                 }
@@ -5105,17 +5136,17 @@ struct QuantumChemistry : viamd::EventHandler {
         if (qm_atom_index < 0) return -1;
         if ((size_t)qm_atom_index >= qm.count) return -1;
         const size_t idx = qm_to_system_atom(qm, (size_t)qm_atom_index);
-        return (idx < state.mold.sys.atom.count) ? (int32_t)idx : -1;
+        return (idx < qm_system(state).data.sys.atom.count) ? (int32_t)idx : -1;
     }
 
     void draw_xps_plot(ApplicationState& state, ImVec2 size = ImVec2(-1.0f, 350.0f)) {
         XpsTable tbl = {};
-        if (!xps_table_gather(&tbl, state.mold.sys)) return;
+        if (!xps_table_gather(&tbl, qm_system(state).data.sys)) return;
 
         // The QM atom domain, for mapping an entry's atom onto a system atom. Gathered once here
         // and handed down; the peaks below index it, they do not each look it up.
         QmAtoms qm = {};
-        if (!es_qm_atoms(&qm, state.mold.sys)) return;
+        if (!es_qm_atoms(&qm, qm_system(state).data.sys)) return;
 
         // One run per element that carries a core hole, which is at most one per element there is.
         // A fixed array rather than an allocation: the gather is a scan of a column already in the
@@ -5221,7 +5252,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // which is what VeloxChem plots anyway.
             peaks_y[i] = (xps.weight_by_contribution && tbl.contribution) ? tbl.contribution[e] : 1.0;
             const int32_t atom = xps_atom_index(qm, tbl.atom_index ? tbl.atom_index[e] : -1, state);
-            peaks_selected[i]  = (atom >= 0) && md_bitmask_test_bit(&state.system_context.selection.selection_mask, (uint64_t)atom);
+            peaks_selected[i]  = (atom >= 0) && md_bitmask_test_bit(&qm_system(state).selection.selection_mask, (uint64_t)atom);
         }
 
         // ---- Energy range ------------------------------------------------------------------------
@@ -5295,9 +5326,9 @@ struct QuantumChemistry : viamd::EventHandler {
             // moving off a peak but staying inside the plot drops the highlight rather than leaving
             // the last atom lit up.
             if (plot_hovered) {
-                md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                md_bitmask_clear(&qm_system(state).selection.highlight_mask);
                 if (hov_atom >= 0) {
-                    md_bitmask_or(&state.system_context.selection.highlight_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                    md_bitmask_or(&qm_system(state).selection.highlight_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                 }
             }
 
@@ -5340,16 +5371,16 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (hov_atom >= 0) {
                     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
                         if (!ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                            md_bitmask_clear(&state.system_context.selection.selection_mask);
+                            md_bitmask_clear(&qm_system(state).selection.selection_mask);
                         }
-                        md_bitmask_or(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                        md_bitmask_or(&qm_system(state).selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                     else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                        md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
+                        md_bitmask_andnot(&qm_system(state).selection.selection_mask, md_bitset_range((uint32_t)((uint64_t)hov_atom), (uint32_t)((uint64_t)hov_atom) + 1));
                     }
                 }
                 else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right) && !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right)) {
-                    md_bitmask_clear(&state.system_context.selection.selection_mask);
+                    md_bitmask_clear(&qm_system(state).selection.selection_mask);
                 }
             }
 
@@ -5359,7 +5390,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
     void set_atom_coordinates(ApplicationState& state, const md_double3_t* atom_coords) {
         QmAtoms qm = {};
-        if (!es_qm_atoms(&qm, state.mold.sys)) return;
+        if (!es_qm_atoms(&qm, qm_system(state).data.sys)) return;
 
         const md_double3_t* coords = atom_coords ? atom_coords : qm.coordinate;
         if (!coords) return;
@@ -5368,15 +5399,16 @@ struct QuantumChemistry : viamd::EventHandler {
         // so writing them at i would put QM atom i's position on system atom i - which is only the
         // same atom when the calculation covers the whole system. Stepping an optimisation on a
         // subset used to scramble the first N atoms of the molecule.
+        md_system_state_t& qst = system_instance(qm_system(state)).state;
         for (size_t i = 0; i < qm.count; i++) {
             const size_t idx = qm_to_system_atom(qm, i);
-            if (idx >= system_instance(state.system_context).state.num_atoms) continue;
-            system_instance(state.system_context).state.xyz[idx].x = (float)coords[i].x;
-            system_instance(state.system_context).state.xyz[idx].y = (float)coords[i].y;
-            system_instance(state.system_context).state.xyz[idx].z = (float)coords[i].z;
+            if (idx >= qst.num_atoms) continue;
+            qst.xyz[idx].x = (float)coords[i].x;
+            qst.xyz[idx].y = (float)coords[i].y;
+            qst.xyz[idx].z = (float)coords[i].z;
         }
-		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
-        system_instance(state.system_context).dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
+		viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &qm_system(state));
+        system_instance(qm_system(state)).dirty_gpu_buffers |= MolBit_ClearVelocity | MolBit_DirtyPosition;
     }
 
     // The ground state dipole vector, in the e*bohr it is stored in, or zero when absent. Read as
@@ -5515,7 +5547,7 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
 
         size_t num_atoms = 0;
-        const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, state.mold.sys, system_instance(state.system_context).state);
+        const md_float3_t* atom_pos = basis_atom_positions_extract(&num_atoms, temp, qm_system(state).data.sys, system_instance(qm_system(state)).state);
         uint64_t hash = md_hash64(&cp.rho_min, sizeof(cp.rho_min), qm_version);
         hash = md_hash64(&cp.gto_use_gpu, sizeof(cp.gto_use_gpu), hash);
         if (atom_pos) hash = md_hash64(atom_pos, sizeof(md_float3_t) * num_atoms, hash);
@@ -5584,7 +5616,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
             if (!cp.topo_ctx) {
                 MD_LOG_ERROR("Failed to create topo GPU context for electron density");
-            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(state.mold.sys), nullptr, MD_GTO_OP_SET)) {
+            } else if (density_evaluate_to_gpu_volume(&state, grid, critical_points_density_path(qm_system(state).data.sys), nullptr, MD_GTO_OP_SET)) {
                 // Program order on the stream is the only dependency needed.
                 md_topo_gpu_record(state.gpu_stream, cp.topo_ctx, state.gpu_volume, &grid, 0.0f);
                 md_gpu_stream_sync(state.gpu_stream);
@@ -5734,6 +5766,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         ImGui::SetNextWindowSize({ 640, 600 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Critical Points", &cp.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_qm_system_combo(state);
             draw_critical_points_window_contents(state);
         }
         ImGui::End();
@@ -6058,7 +6091,7 @@ struct QuantumChemistry : viamd::EventHandler {
         ex.rho_min   = cp.gto_rho_min;
         ex.complete  = cp.gto_info.complete;
         ex.cancelled = cp.gto_info.cancelled;
-        ex.field     = critical_points_density_path(state.mold.sys);
+        ex.field     = critical_points_density_path(qm_system(state).data.sys);
         if (vtp) {
             critical_points_write_vtp(file, ex);
         } else {
@@ -6183,10 +6216,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
     // The glyph representation the table is linked to: the first one shown of the tesserae
     static const Representation* gostshyp_linked_rep(const ApplicationState& state) {
-        for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
-            const Representation& rep = state.representation.reps[i];
-            if (rep.type != RepresentationType::Glyphs || !representation_shown(state.system_context, rep) || !rep.type_is_valid) continue;
-            if (md_str_eq(glyphs_group(state.mold.sys, rep.glyphs.points), MD_STR_LIT("vlx/scf/gostshyp/tessera"))) return &rep;
+        for (size_t i = 0; i < md_array_size(qm_system(state).representation.reps); ++i) {
+            const Representation& rep = qm_system(state).representation.reps[i];
+            if (rep.type != RepresentationType::Glyphs || !representation_shown(qm_system(state), rep) || !rep.type_is_valid) continue;
+            if (md_str_eq(glyphs_group(qm_system(state).data.sys, rep.glyphs.points), MD_STR_LIT("vlx/scf/gostshyp/tessera"))) return &rep;
         }
         return nullptr;
     }
@@ -6219,12 +6252,13 @@ struct QuantumChemistry : viamd::EventHandler {
             gostshyp.row_hovered_last = false;
             return;
         }
-        const md_system_t& sys = state.mold.sys;
+        const md_system_t& sys = qm_system(state).data.sys;
         update_gostshyp(sys);
         Gostshyp& g = gostshyp;
 
         ImGui::SetNextWindowSize({ 720, 560 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("GOSTSHYP", &g.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_qm_system_combo(state);
             if (!g.valid) {
                 ImGui::TextUnformatted("This dataset has no GOSTSHYP cavity");
                 ImGui::End();
@@ -6328,7 +6362,7 @@ struct QuantumChemistry : viamd::EventHandler {
     }
 
     void draw_summary_window(ApplicationState& state) {
-        const md_system_t& sys = state.mold.sys;
+        const md_system_t& sys = qm_system(state).data.sys;
 
         // The QM atom domain, gathered per frame rather than cached. The System Information and
         // Geometry sections below both index it.
@@ -6357,6 +6391,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // The actual plot
         ImGui::SetNextWindowSize({ 300, 350 }, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Summary", &summary.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_qm_system_combo(state);
             if (ImGui::TreeNode("Level of Calculation")) {
                 const md_str_t basis_set = attribute_str(sys, MD_STR_LIT("vlx/basis_set"));
                 const md_str_t dft_func   = attribute_str(sys, MD_STR_LIT("vlx/dft_functional"));
@@ -6364,8 +6399,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Named from the same two questions the orbital grid branches on, so the label
                 // cannot disagree with the layout it describes. A reader with no word of its own for
                 // the method still gets an accurate one.
-                const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
-                const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
+                const bool unrestricted = es_has_distinct_beta_orbitals(qm_system(state).data.sys);
+                const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(qm_system(state).data.sys);
                 const char* scf_type = unrestricted ? "Unrestricted" : open_shell ? "Restricted Open-Shell" : "Restricted";
 
                 ImGui::Text("Method: %s", md_str_ptr(dft_func));
@@ -6380,8 +6415,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Summed from the occupation columns. The multiplicity follows from the same two
                 // numbers - 2S+1 with S the half difference - so it is arithmetic here rather than a
                 // third quantity to publish and keep in agreement with the other two.
-                const double n_alpha = es_electron_count(state.mold.sys, es_path::alpha_occupation);
-                const double n_beta  = es_electron_count(state.mold.sys, es_path::beta_occupation);
+                const double n_alpha = es_electron_count(qm_system(state).data.sys, es_path::alpha_occupation);
+                const double n_beta  = es_electron_count(qm_system(state).data.sys, es_path::beta_occupation);
                 ImGui::Text("Num Alpha Electrons: %-6.0f", n_alpha);
                 ImGui::Text("Num Beta Electrons:  %-6.0f", n_beta);
                 ImGui::Text("Molecular Charge:    %-6f",  attribute_scalar(sys, MD_STR_LIT("vlx/molecular_charge"), md_unit_none()));
@@ -6621,8 +6656,8 @@ struct QuantumChemistry : viamd::EventHandler {
                     for (size_t row_n = 0; row_n < num_atoms; row_n++) {
 
                         ImGuiSelectableFlags selectable_flags = ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
-                        bool is_sel = md_bitmask_test_bit(&state.system_context.selection.selection_mask, row_n); //If atom is selected, mark it as such
-                        bool is_hov = md_bitmask_test_bit(&state.system_context.selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
+                        bool is_sel = md_bitmask_test_bit(&qm_system(state).selection.selection_mask, row_n); //If atom is selected, mark it as such
+                        bool is_hov = md_bitmask_test_bit(&qm_system(state).selection.highlight_mask, row_n); //If atom is hovered,  mark it as such
                         ImGui::TableNextRow(ImGuiTableRowFlags_None, 0);
                         ImGui::TableNextColumn();
 
@@ -6637,18 +6672,18 @@ struct QuantumChemistry : viamd::EventHandler {
                         snprintf(label, sizeof(label), "%zu", row_n + 1);
                         ImGui::Selectable(label, is_sel || is_hov, selectable_flags);
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + 1)) {
-                            if (state.mold.sys.atom.count > row_n) {
-                                md_bitmask_clear(&state.system_context.selection.highlight_mask);
-                                md_bitmask_or(&state.system_context.selection.highlight_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                            if (qm_system(state).data.sys.atom.count > row_n) {
+                                md_bitmask_clear(&qm_system(state).selection.highlight_mask);
+                                md_bitmask_or(&qm_system(state).selection.highlight_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 item_hovered = true;
 
                                 //Selection
                                 if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitmask_or(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                                    md_bitmask_or(&qm_system(state).selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                                 //Deselect
                                 else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                    md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
+                                    md_bitmask_andnot(&qm_system(state).selection.selection_mask, md_bitset_range((uint32_t)(row_n), (uint32_t)(row_n) + 1));
                                 }
                             }
                         }
@@ -6675,7 +6710,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     }
                     if (!item_hovered && ImGui::IsWindowHovered()) {
                         //Makes sure that we clear the highlight if we are in this window, but don't hover an item
-                        md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                        md_bitmask_clear(&qm_system(state).selection.highlight_mask);
                     }
 
                     ImGui::PopStyleColor(2);
@@ -6858,7 +6893,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
         if (!rsp.show_window) return;
 
-        const md_system_t& sys = state.mold.sys;
+        const md_system_t& sys = qm_system(state).data.sys;
 
 		const RspType rsp_type = response_type(sys);
         // The frequencies are given in a.u. but can either be peaks to broaden if LINEAR, or spectrum samples if CPP.
@@ -6918,6 +6953,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 ImGui::EndMenuBar();
             }
+            draw_qm_system_combo(state);
 
             struct SpectrumGetterData {
                 const double* x_peaks;
@@ -6936,7 +6972,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // 1D spectrum plots below, so it gets its own section.
             if (rsp_type == RSP_RIXS) {
                 RixsMapInput rixs_input = {};
-                if (rixs_map_input_gather(rixs_input, state.mold.sys)) {
+                if (rixs_map_input_gather(rixs_input, qm_system(state).data.sys)) {
                     ImGui::SetNextItemOpen(true, ImGuiCond_Appearing);
                     if (ImGui::TreeNodeEx("RIXS", tree_flags)) {
                         draw_rixs_section(rixs_input, rixs);
@@ -7866,17 +7902,17 @@ struct QuantumChemistry : viamd::EventHandler {
 
                             for (size_t i = 0; i < num_atoms; i++) {
                                 /*
-                                state.mold.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                state.mold.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                state.mold.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                qm_system(state).data.sys.atom.x[i] = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                qm_system(state).data.sys.atom.y[i] = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                qm_system(state).data.sys.atom.z[i] = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                                 */
                                 vx[i] = (float)(norm_modes[i].x * scl);
                                 vy[i] = (float)(norm_modes[i].y * scl);
                                 vz[i] = (float)(norm_modes[i].z * scl);
                             }
 
-                            //md_gl_mol_set_atom_position(system_instance(state.system_context).gl_mol, 0, num_atoms, state.mold.sys.atom.x, state.mold.sys.atom.y, state.mold.sys.atom.z, 0);
-                            md_gl_mol_set_atom_velocity(system_instance(state.system_context).gl_mol, 0, num_atoms, vx, vy, vz, 0);
+                            //md_gl_mol_set_atom_position(system_instance(qm_system(state)).gl_mol, 0, num_atoms, qm_system(state).data.sys.atom.x, qm_system(state).data.sys.atom.y, qm_system(state).data.sys.atom.z, 0);
+                            md_gl_mol_set_atom_velocity(system_instance(qm_system(state)).gl_mol, 0, num_atoms, vx, vy, vz, 0);
                             
 
 #else
@@ -7884,25 +7920,26 @@ struct QuantumChemistry : viamd::EventHandler {
                             // Through the QM atom map and bounded by the system state, exactly as
                             // set_atom_coordinates writes: QM atom i is system atom i only when the
                             // calculation covers the whole system.
+                            md_system_state_t& qst = system_instance(qm_system(state)).state;
                             for (size_t i = 0; i < num_atoms; i++) {
                                 const size_t idx = qm_to_system_atom(qm, i);
-                                if (idx >= system_instance(state.system_context).state.num_atoms) continue;
-                                system_instance(state.system_context).state.xyz[idx].x = (float)(atom_coord[i].x + norm_modes[i].x * scl);
-                                system_instance(state.system_context).state.xyz[idx].y = (float)(atom_coord[i].y + norm_modes[i].y * scl);
-                                system_instance(state.system_context).state.xyz[idx].z = (float)(atom_coord[i].z + norm_modes[i].z * scl);
+                                if (idx >= qst.num_atoms) continue;
+                                qst.xyz[idx].x = (float)(atom_coord[i].x + norm_modes[i].x * scl);
+                                qst.xyz[idx].y = (float)(atom_coord[i].y + norm_modes[i].y * scl);
+                                qst.xyz[idx].z = (float)(atom_coord[i].z + norm_modes[i].z * scl);
                             }
                             if (vib.displace_aos) {
                             }
-                            system_instance(state.system_context).dirty_gpu_buffers |= MolBit_DirtyPosition;
+                            system_instance(qm_system(state)).dirty_gpu_buffers |= MolBit_DirtyPosition;
 #endif
                             vib.coord_modified = true;
 
                             if (vib.displace_aos) {
-                                viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
-                                size_t num_reps = md_array_size(state.representation.reps);
+                                viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &qm_system(state));
+                                size_t num_reps = md_array_size(qm_system(state).representation.reps);
                                 for (size_t i = 0; i < num_reps; ++i) {
-                                    if (state.representation.reps[i].type == RepresentationType::ElectronicStructure) {
-                                        flag_representation_as_dirty(&state.representation.reps[i]);
+                                    if (qm_system(state).representation.reps[i].type == RepresentationType::ElectronicStructure) {
+                                        flag_representation_as_dirty(&qm_system(state).representation.reps[i]);
                                     }
                                 }
                             }
@@ -7912,15 +7949,16 @@ struct QuantumChemistry : viamd::EventHandler {
                     else if (vib.coord_modified) {
                         // coord_modified is only ever set with atom_coord present, but the column
                         // is re-read every frame and the guard costs nothing.
+                        md_system_state_t& qst = system_instance(qm_system(state)).state;
                         for (size_t i = 0; atom_coord && i < num_atoms; i++) {
                             const size_t idx = qm_to_system_atom(qm, i);
-                            if (idx >= system_instance(state.system_context).state.num_atoms) continue;
-                            system_instance(state.system_context).state.xyz[idx].x = (float)atom_coord[i].x;
-                            system_instance(state.system_context).state.xyz[idx].y = (float)atom_coord[i].y;
-                            system_instance(state.system_context).state.xyz[idx].z = (float)atom_coord[i].z;
+                            if (idx >= qst.num_atoms) continue;
+                            qst.xyz[idx].x = (float)atom_coord[i].x;
+                            qst.xyz[idx].y = (float)atom_coord[i].y;
+                            qst.xyz[idx].z = (float)atom_coord[i].z;
                         }
-                        viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &state.system_context);
-                        system_instance(state.system_context).dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
+                        viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemStateChanged, viamd::EventPayloadType_System, &qm_system(state));
+                        system_instance(qm_system(state)).dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_ClearVelocity;
                         vib.coord_modified = false;
                     }
 
@@ -7957,6 +7995,7 @@ struct QuantumChemistry : viamd::EventHandler {
         if (num_molecular_orbitals() == 0) return;
         ImGui::SetNextWindowSize({600, 300}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Orbital Grid", &orb.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_qm_system_combo(state);
 
             // The neutral names, which mdlib already aliases onto whatever the reader called them.
             // Every one of these is optional - a TREXIO file, for one, need not carry orbital energies -
@@ -7964,18 +8003,18 @@ struct QuantumChemistry : viamd::EventHandler {
             // only used when it covers all of those rows. Everything below reads a null as "show no
             // value", never as a column to index.
             const size_t num_mo_rows = num_molecular_orbitals();
-            const double* occ_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_occupation, 1, num_mo_rows).data;
-            const double* occ_beta  = attribute_view<double>(state.mold.sys, es_path::beta_occupation, 1,  num_mo_rows).data;
-            const double* ene_alpha = attribute_view<double>(state.mold.sys, es_path::alpha_energy, 1,     num_mo_rows).data;
-            const double* ene_beta  = attribute_view<double>(state.mold.sys, es_path::beta_energy, 1,      num_mo_rows).data;
+            const double* occ_alpha = attribute_view<double>(qm_system(state).data.sys, es_path::alpha_occupation, 1, num_mo_rows).data;
+            const double* occ_beta  = attribute_view<double>(qm_system(state).data.sys, es_path::beta_occupation, 1,  num_mo_rows).data;
+            const double* ene_alpha = attribute_view<double>(qm_system(state).data.sys, es_path::alpha_energy, 1,     num_mo_rows).data;
+            const double* ene_beta  = attribute_view<double>(qm_system(state).data.sys, es_path::beta_energy, 1,      num_mo_rows).data;
 
             const float TEXT_BASE_HEIGHT = ImGui::GetTextLineHeightWithSpacing();
 
             // The SCF type as the DATA states it - see es_has_distinct_beta_* in viamd.h. Two spin
             // channels of coefficients is what an unrestricted grid is actually about, and one set
             // of orbitals with two occupations is what makes a SOMO; neither needs a reader's enum.
-            const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
-            const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(state.mold.sys);
+            const bool unrestricted = es_has_distinct_beta_orbitals(qm_system(state).data.sys);
+            const bool open_shell   = !unrestricted && es_has_distinct_beta_occupations(qm_system(state).data.sys);
 
             int num_x = (unrestricted) ? 2 : orb.num_x;
             int num_y = orb.num_y;
@@ -8532,9 +8571,9 @@ struct QuantumChemistry : viamd::EventHandler {
                 render_hash = md_hash64(&state.settings.exact_isosurfaces, sizeof(state.settings.exact_isosurfaces), render_hash);
                 render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                 render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
-                render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
+                render_hash = md_hash64(&system_instance(qm_system(state)).gpu_buffers_version, sizeof(uint64_t), render_hash);
                 // Baked into the picking buffer, which hovering reads
-                const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
+                const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(qm_system(state)));
                 render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                 render_hash = render_hash ? render_hash : 1;
             }
@@ -8577,7 +8616,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(system_instance(state.system_context)),
+                    .picking_offset = gl_picking_offset(system_instance(qm_system(state))),
                 };
 
                 md_gl_draw(&draw_args);
@@ -8730,6 +8769,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void draw_export_window(ApplicationState& state) {
         if (!export_state.show_window) return;
         if (ImGui::Begin("Quantum Chemistry Export", &export_state.show_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            draw_qm_system_combo(state);
             if (ImGui::BeginCombo("Source", electronic_structure_source_str[(int)export_state.source])) {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
@@ -8775,7 +8815,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // Whether there is a beta density to offer is whether one is published. Restricted
                 // publishes it as an alias of alpha's, so the selector is offered there too - which
                 // is right: Total and Difference are still meaningful choices over the pair.
-                const bool has_beta_density = attribute_exists(state.mold.sys, es_path::beta_density);
+                const bool has_beta_density = attribute_exists(qm_system(state).data.sys, es_path::beta_density);
                 if (has_beta_density) {
                     const ElectronicStructureSpin spin_options[] = {
                         ElectronicStructureSpin::Total,
@@ -8829,7 +8869,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (show_mo_combo) {
-                const bool unrestricted = es_has_distinct_beta_orbitals(state.mold.sys);
+                const bool unrestricted = es_has_distinct_beta_orbitals(qm_system(state).data.sys);
                 // Only an unrestricted calculation has two distinct sets of coefficients. For
                 // restricted and restricted-openshell, scf.beta is a shallow copy of alpha that
                 // shares the very same coefficient buffer, and the beta attribute is published
@@ -8916,7 +8956,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 const double LAMBDA_CUTOFF = 1.0e-3;
                 double lambdas[4] = {0};
                 const bool nto_ready = es_nto_ready(&state, (size_t)export_state.nto.idx);
-                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), state.mold.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
+                size_t lambda_count = nto_ready ? es_nto_lambdas(lambdas, MD_COUNTOF(lambdas), qm_system(state).data.sys, (size_t)export_state.nto.idx, LAMBDA_CUTOFF) : 0;
                 if (!nto_ready) ImGui::TextDisabled("Lambda Idx: computing...");
                 if (lambda_count > 0) {
                     if ((size_t)export_state.nto.lambda_idx >= lambda_count) {
@@ -9052,7 +9092,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     // The geometry written into the cube and xyz headers is the one the calculation
                     // ran at, which is the QM domain's own - not wherever the system's atoms are now.
                     QmAtoms qm = {};
-                    es_qm_atoms(&qm, state.mold.sys);
+                    es_qm_atoms(&qm, qm_system(state).data.sys);
 
                     size_t              natoms = qm.count;
                     const md_double3_t* qm_coords  = qm.coordinate;
@@ -9167,7 +9207,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         
                         // XYZ
                         md_file_printf(xyz_file, "%zu\n", natoms);
-                        const FileEntry* system_file = file_list_system_file(&state.file_list);
+                        const FileEntry* system_file = file_list_system_file(&qm_system(state).files);
                         md_file_printf(xyz_file, "Geometry extracted from: '%s'\n", system_file ? system_file->path : "");
                         for (size_t i = 0; i < natoms; ++i) {
                             md_str_t sym = md_atomic_number_symbol(qm_numbers[i]);
@@ -9364,6 +9404,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 ImGui::EndMenuBar();
             }
+            draw_qm_system_combo(state);
 
             const ImVec2 outer_size = {300.f + edit_mode * 80, 0.f};
             ImGui::PushItemWidth(outer_size.x);
@@ -9463,7 +9504,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::TableGetHoveredRow() == (int)(row_n + show_unassigned)) {
                             nto.group.hovered_index = (int8_t)row_n;
                             {
-                                md_bitmask_t* hb = &state.system_context.selection.highlight_mask;
+                                md_bitmask_t* hb = &qm_system(state).selection.highlight_mask;
                                 md_bitmask_clear(hb);
                                 for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                     if (nto.atom_group_idx[j] == (uint32_t)row_n) {
@@ -9475,11 +9516,11 @@ struct QuantumChemistry : viamd::EventHandler {
 
                             //Selection
                             if (ImGui::IsKeyDown(ImGuiKey_MouseLeft) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                                md_bitmask_or(&qm_system(state).selection.selection_mask, md_bitmask_view(&qm_system(state).selection.highlight_mask));
                             }
                             //Deselect
                             else if (ImGui::IsKeyDown(ImGuiKey_MouseRight) && ImGui::IsKeyDown(ImGuiKey_LeftShift)) {
-                                md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                                md_bitmask_andnot(&qm_system(state).selection.selection_mask, md_bitmask_view(&qm_system(state).selection.highlight_mask));
                             }
                         }
                     }
@@ -9728,26 +9769,26 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (event.kind == InteractionSurfaceEventKind::ContextMenu) {
                             open_context_menu = true;
                         } else if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
-                            const md_bitset_t selected = md_bitmask_view(&state.system_context.selection.selection_mask);
+                            const md_bitset_t selected = md_bitmask_view(&qm_system(state).selection.selection_mask);
                             const md_bitset_t* candidate_mask = nullptr;
                             if (event.selection_mode == InteractionSelectionMode::Remove) {
                                 // When removing, only consider currently selected atoms as candidates for region selection
                                 candidate_mask = &selected;
                             }
-                            point_set_region_mask_compute(&state.system_context.selection.highlight_mask,
-                                system_instance(state.system_context).state.xyz, system_instance(state.system_context).state.num_atoms,
+                            point_set_region_mask_compute(&qm_system(state).selection.highlight_mask,
+                                system_instance(qm_system(state)).state.xyz, system_instance(qm_system(state)).state.num_atoms,
                                 candidate_mask, event.world_to_clip, event.region_min, event.region_max, event.surface_size);
 
-                            grow_mask_by_selection_granularity(&state.system_context.selection.highlight_mask, state.selection.granularity, state.mold.sys);
+                            grow_mask_by_selection_granularity(&qm_system(state).selection.highlight_mask, state.selection.granularity, qm_system(state).data.sys);
                             if (event.region_phase == InteractionSurfaceEventPhase::Commit) {
                                 // Merge highlight into selection
                                 if (event.selection_mode == InteractionSelectionMode::Append) {
-                                    md_bitmask_or(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                                    md_bitmask_or(&qm_system(state).selection.selection_mask, md_bitmask_view(&qm_system(state).selection.highlight_mask));
                                 }
                                 else if (event.selection_mode == InteractionSelectionMode::Remove) {
-                                    md_bitmask_andnot(&state.system_context.selection.selection_mask, md_bitmask_view(&state.system_context.selection.highlight_mask));
+                                    md_bitmask_andnot(&qm_system(state).selection.selection_mask, md_bitmask_view(&qm_system(state).selection.highlight_mask));
                                 }
-                                md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                                md_bitmask_clear(&qm_system(state).selection.highlight_mask);
                             }
                         } else {
                             viamd::event_system_broadcast_event(viamd::EventType_ViamdInteractionSurface, viamd::EventPayloadType_InteractionSurfaceEvent, &event);
@@ -9774,8 +9815,8 @@ struct QuantumChemistry : viamd::EventHandler {
                         // count is checked, because a selection can outlive the file it was made in.
                         size_t num_magn = 0;
                         size_t num_elec = 0;
-                        const md_double3_t* magnetic_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/magnetic_transition/vector")).get(&num_magn);
-                        const md_double3_t* electric_dp = attribute_view<md_double3_t>(state.mold.sys, MD_STR_LIT("dipole/electric_transition/vector")).get(&num_elec);
+                        const md_double3_t* magnetic_dp = attribute_view<md_double3_t>(qm_system(state).data.sys, MD_STR_LIT("dipole/magnetic_transition/vector")).get(&num_magn);
+                        const md_double3_t* electric_dp = attribute_view<md_double3_t>(qm_system(state).data.sys, MD_STR_LIT("dipole/electric_transition/vector")).get(&num_elec);
 
                         const bool has_dipoles = magnetic_dp && electric_dp && rsp.selected >= 0 &&
                                                  (size_t)rsp.selected < num_magn && (size_t)rsp.selected < num_elec;
@@ -9915,7 +9956,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         uint64_t key = md_hash64(id, sizeof(id), pos_hash);
                         key = key ? key : 1;
                         panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
-                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
+                            if (!td_cache_ensure(qm_system(state).data.sys, nto.sel_nto_idx)) return nullptr;
                             const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
                             return iso_field_create_density_matrix(&state, D, td_cache.dim);
                         });
@@ -9952,9 +9993,9 @@ struct QuantumChemistry : viamd::EventHandler {
                     render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
                     render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
                     render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-                    render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
+                    render_hash = md_hash64(&system_instance(qm_system(state)).gpu_buffers_version, sizeof(uint64_t), render_hash);
                     // Baked into the picking buffer, which hovering reads
-                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
+                    const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(qm_system(state)));
                     render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
                     render_hash = render_hash ? render_hash : 1;
                 }
@@ -9999,7 +10040,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 .proj_matrix = (const float*)proj_mat.elem,
                             },
 
-                            .picking_offset = gl_picking_offset(system_instance(state.system_context)),
+                            .picking_offset = gl_picking_offset(system_instance(qm_system(state))),
 
                             .atom_mask = atom_mask,
                         };
@@ -10010,7 +10051,7 @@ struct QuantumChemistry : viamd::EventHandler {
                     draw_rep(nto.gl_rep, state.gl.shaders, view_mat, proj_mat);
 
                     // The marks of the selection and the highlight, put over each panel as it is presented
-                    const bool draw_marks = !md_bitmask_empty(&state.system_context.selection.selection_mask) || !md_bitmask_empty(&state.system_context.selection.highlight_mask);
+                    const bool draw_marks = !md_bitmask_empty(&qm_system(state).selection.selection_mask) || !md_bitmask_empty(&qm_system(state).selection.highlight_mask);
                     if (draw_marks) {
                         PUSH_GPU_SECTION("Marks")
                         gbuffer_marks_begin(&gbuf);
@@ -10204,7 +10245,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
             }
             if (ImGui::IsWindowHovered() && nto.group.hovered_index == -1 && !viewport_hovered) {
-                md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                md_bitmask_clear(&qm_system(state).selection.highlight_mask);
             }
         }
         ImGui::End();
@@ -10214,7 +10255,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         if (ImGui::BeginPopup("Context Menu")) {
-			size_t count = md_bitmask_count(&state.system_context.selection.selection_mask);
+			size_t count = md_bitmask_count(&qm_system(state).selection.selection_mask);
 			if (count == 0) {
                 ImGui::Text("No atoms selected");
             } else {
@@ -10223,7 +10264,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         if (ImGui::MenuItem(nto.group.label[i])) {
                             for (size_t j = 0; j < md_array_size(nto.atom_group_idx); j++) {
                                 //Is the atom selected?
-                                if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, j)) {
+                                if (md_bitmask_test_bit(&qm_system(state).selection.selection_mask, j)) {
                                     //If so, set its group to the selected group index
                                     nto.atom_group_idx[j] = (uint32_t)i;
                                 }
@@ -10237,7 +10278,7 @@ struct QuantumChemistry : viamd::EventHandler {
                         //Create a new group and add an item to it
                         uint32_t group_idx = (uint32_t)(nto.group.count++);
                         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
-                            if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, i)) {
+                            if (md_bitmask_test_bit(&qm_system(state).selection.selection_mask, i)) {
                                 //If so, set its group to the selected group index
                                 nto.atom_group_idx[i] = group_idx;
                             }
@@ -10349,6 +10390,8 @@ struct QuantumChemistry : viamd::EventHandler {
         // assignment, both of which a user re-makes in a minute, and one name in the file beats a
         // compatibility branch that has to be carried forever.
         viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
+        // The system whose quantum chemistry is studied, when it is not the first
+        if (app && &qm_system(*app) != &app->system_context) viamd::write_int(ser, MD_STR_LIT("System"), (int)qm_system(*app).id);
 
         write_settings(ser);
 
@@ -10413,6 +10456,12 @@ struct QuantumChemistry : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
         viamd::Entries e = viamd::read_entries(deser, aliases, md_temp_allocator(temp));
         read_settings(e);
+        // The system it is of, chosen: of one the workspace does not load, the first with any (qm_system_update)
+        if (const md_str_t* v = viamd::get_value(e, MD_STR_LIT("System"))) {
+            int id = 0;
+            const SystemContext* sc = viamd::extract_int(id, *v) ? workspace_system_of(deser, id) : nullptr;
+            if (sc && app) qm_system_choose(app, sc->id);
+        }
 
         viamd::PathPrefix p;
         int count = 0;
@@ -11294,7 +11343,7 @@ struct QuantumChemistry : viamd::EventHandler {
     void flow_assign_selection_to_group(const ApplicationState& state, uint32_t group_idx) {
         if (group_idx >= nto.group.count) return;
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); ++i) {
-            if (md_bitmask_test_bit(&state.system_context.selection.selection_mask, flow_qm_to_sys((uint32_t)i))) {
+            if (md_bitmask_test_bit(&qm_system(state).selection.selection_mask, flow_qm_to_sys((uint32_t)i))) {
                 nto.atom_group_idx[i] = group_idx;
             }
         }
@@ -11347,14 +11396,14 @@ struct QuantumChemistry : viamd::EventHandler {
 
         const md_bitset_t mask = flow_node_atom_mask(cut_idx, md_temp_allocator(temp));
         if (selected) {
-            md_bitmask_or(&state.system_context.selection.selection_mask, mask);
+            md_bitmask_or(&qm_system(state).selection.selection_mask, mask);
         } else {
-            md_bitmask_andnot(&state.system_context.selection.selection_mask, mask);
+            md_bitmask_andnot(&qm_system(state).selection.selection_mask, mask);
         }
     }
 
     void flow_clear_selection(ApplicationState& state) {
-        md_bitmask_clear(&state.system_context.selection.selection_mask);
+        md_bitmask_clear(&qm_system(state).selection.selection_mask);
         md_array_shrink(flow.selected_orbital_keys, 0);
     }
 
@@ -11526,7 +11575,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // One state at a time: collect what finished, start the next (the selected one first). Asking for a
     // state's NTOs starts reading them on a worker (es_nto_ready); the strip job starts once they are in.
     void flow_step_strip(ApplicationState& state) {
-        flow_build_strip_inputs(state.mold.sys);
+        flow_build_strip_inputs(qm_system(state).data.sys);
         if (!flow.ao_unit || md_array_size(flow.strip) == 0) return;
 
         if (strip_job && strip_job->done.load(std::memory_order_acquire)) {
@@ -11552,7 +11601,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
         if (next < 0 || !es_nto_ready(&state, (size_t)next)) return;
-        strip_job = strip_job_start(state.mold.sys, lowdin, next, flow.ao_unit, flow.num_units, flow.atom_xyz);
+        strip_job = strip_job_start(qm_system(state).data.sys, lowdin, next, flow.ao_unit, flow.num_units, flow.atom_xyz);
         if (!strip_job) flow.strip[next].done = true;   // nothing to compute it from: not to be retried
     }
 
@@ -11563,8 +11612,8 @@ struct QuantumChemistry : viamd::EventHandler {
         const size_t S = md_array_size(flow.strip);
         if (S == 0) return;
         size_t num_f = 0, num_e = 0;
-        const double* osc = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/oscillator_strength")).get(&num_f);
-        const double* ene = attribute_view<double>(state.mold.sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_e);
+        const double* osc = attribute_view<double>(qm_system(state).data.sys, MD_STR_LIT("vlx/rsp/oscillator_strength")).get(&num_f);
+        const double* ene = attribute_view<double>(qm_system(state).data.sys, MD_STR_LIT("vlx/rsp/frequency")).get(&num_e);
         double f_max = 0.0;
         for (size_t s = 0; s < MD_MIN(S, num_f); ++s) f_max = MD_MAX(f_max, osc[s]);
 
@@ -11963,9 +12012,9 @@ struct QuantumChemistry : viamd::EventHandler {
             snprintf(e.info[0], sizeof(e.info[0]), "NTO %d", req.nto + 1);
             snprintf(e.info[1], sizeof(e.info[1]), "NTO %d", req.nto + 1);
             const md_attribute_slice_t slice = md_attribute_slice_2((uint32_t)rsp.selected, (uint32_t)req.nto);
-            const md_attribute_t* lam = md_attributes_find(&state.mold.sys.attributes, es_path::nto_lambda);
+            const md_attribute_t* lam = md_attributes_find(&qm_system(state).data.sys.attributes, es_path::nto_lambda);
             double lambda = 0.0;
-            if (lam && md_attribute_extract_f64(&lambda, 1, &state.mold.sys.attributes, lam, slice, md_unit_none()) == 1) {
+            if (lam && md_attribute_extract_f64(&lambda, 1, &qm_system(state).data.sys.attributes, lam, slice, md_unit_none()) == 1) {
                 snprintf(e.sub, sizeof(e.sub), "\xCE\xBB = %.3f", lambda);
             }
             e.field[0] = iso_field_create_orbital(&state, es_path::nto_hole, &slice);
@@ -12124,8 +12173,8 @@ struct QuantumChemistry : viamd::EventHandler {
             render_hash = md_hash64(&state.visuals.tonemapping, sizeof(state.visuals.tonemapping), render_hash);
             render_hash = md_hash64(&state.visuals.shading, sizeof(state.visuals.shading), render_hash);
             render_hash = md_hash64(&state.selection.color, sizeof(state.selection.color), render_hash);
-            render_hash = md_hash64(&system_instance(state.system_context).gpu_buffers_version, sizeof(uint64_t), render_hash);
-            const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(state.system_context));
+            render_hash = md_hash64(&system_instance(qm_system(state)).gpu_buffers_version, sizeof(uint64_t), render_hash);
+            const md_gl_picking_offset_t picking_offset = gl_picking_offset(system_instance(qm_system(state)));
             render_hash = md_hash64(&picking_offset, sizeof(picking_offset), render_hash);
             render_hash = render_hash ? render_hash : 1;
         }
@@ -12164,14 +12213,14 @@ struct QuantumChemistry : viamd::EventHandler {
                         .view_matrix = (const float*)view_mat.elem,
                         .proj_matrix = (const float*)proj_mat.elem,
                     },
-                    .picking_offset = gl_picking_offset(system_instance(state.system_context)),
+                    .picking_offset = gl_picking_offset(system_instance(qm_system(state))),
                     .atom_mask = atom_mask,
                 };
                 md_gl_draw(&draw_args);
             };
             draw_rep(ctv.gl_rep, state.gl.shaders, 0);
 
-            const bool draw_marks = !md_bitmask_empty(&state.system_context.selection.selection_mask) || !md_bitmask_empty(&state.system_context.selection.highlight_mask);
+            const bool draw_marks = !md_bitmask_empty(&qm_system(state).selection.selection_mask) || !md_bitmask_empty(&qm_system(state).selection.highlight_mask);
             if (draw_marks) {
                 gbuffer_marks_begin(&gbuf);
                 draw_rep(ctv.gl_rep, state.gl.shaders_marks, AtomBit_Marked);
@@ -12338,7 +12387,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // early and the LARGEST sub-threshold rows stay on screen, with nothing to tell the
             // reader why. A big "Others" is fine now that it opens.
             flow.cut.other_max = 1.0f;
-            flow_build_label_storage(state.mold.sys);
+            flow_build_label_storage(qm_system(state).data.sys);
         }
 
         // Rebuild only when the numbers behind the picture actually changed. Hashing the matrix
@@ -12357,9 +12406,9 @@ struct QuantumChemistry : viamd::EventHandler {
         bool lowdin_pending = false;
         bool ct_pending = false;
         if (flow.mode == FLOW_MODE_FRAGMENTS || flow.show_strip) {
-            flow_build_fragments(state.mold.sys);
+            flow_build_fragments(qm_system(state).data.sys);
             if (!lowdin && flow.num_qm_atoms > 0) {
-                lowdin = lowdin_job_start(state.mold.sys, basis, flow.num_qm_atoms);
+                lowdin = lowdin_job_start(qm_system(state).data.sys, basis, flow.num_qm_atoms);
             }
         }
         if (flow.show_strip) {
@@ -12370,7 +12419,7 @@ struct QuantumChemistry : viamd::EventHandler {
             if (lowdin_job_ready(lowdin) && rsp.selected >= 0 && !nto_pending && (!ct_job || ct_job->state != rsp.selected) &&
                 flow.ct_failed_state != rsp.selected) {
                 ct_state_job_destroy(ct_job);
-                ct_job = ct_state_job_start(state.mold.sys, lowdin, rsp.selected);
+                ct_job = ct_state_job_start(qm_system(state).data.sys, lowdin, rsp.selected);
                 if (!ct_job) flow.ct_failed_state = rsp.selected;   // no NTO pairs to read: do not ask every frame
             }
             ct_pending = ct_job && (!ct_job->done.load(std::memory_order_acquire) || ct_job->state != rsp.selected);
@@ -12387,7 +12436,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 md_temp_scope_t temp = md_temp_begin();
                 MD_DEFER { md_temp_end(temp); };
                 FlowData qm = {};
-                flow_qm_data_gather(&qm, temp, state.mold.sys);
+                flow_qm_data_gather(&qm, temp, qm_system(state).data.sys);
                 rebuild_flow_graph(&qm);
             } else {
                 rebuild_flow_graph(nullptr);
@@ -12466,6 +12515,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 ImGui::EndMenuBar();
             }
+            draw_qm_system_combo(state);
 
             ImGui::PushItemWidth(160.0f);
             int state_idx = rsp.selected + 1;
@@ -12725,8 +12775,8 @@ struct QuantumChemistry : viamd::EventHandler {
             for (size_t a = 0; a < num_atoms; ++a) {
                 const uint32_t g = nto.atom_group_idx[a] < MAX_NTO_GROUPS ? nto.atom_group_idx[a] : 0;
                 const uint32_t s = flow_qm_to_sys((uint32_t)a);
-                const bool sel = md_bitmask_test_bit(&state.system_context.selection.selection_mask, s);
-                const bool hi  = md_bitmask_test_bit(&state.system_context.selection.highlight_mask, s);
+                const bool sel = md_bitmask_test_bit(&qm_system(state).selection.selection_mask, s);
+                const bool hi  = md_bitmask_test_bit(&qm_system(state).selection.highlight_mask, s);
                 atom_sel[a] = sel;
                 atom_hi[a]  = hi;
                 group_total[g] += 1;
@@ -12879,9 +12929,9 @@ struct QuantumChemistry : viamd::EventHandler {
                             md_array(uint32_t) nodes = 0;
                             flow_nodes_in_region(&nodes, view, rect_min, rect_max, ralloc);
 
-                            md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                            md_bitmask_clear(&qm_system(state).selection.highlight_mask);
                             for (size_t i = 0; i < md_array_size(nodes); ++i) {
-                                md_bitmask_or(&state.system_context.selection.highlight_mask, flow_node_atom_mask(nodes[i], ralloc));
+                                md_bitmask_or(&qm_system(state).selection.highlight_mask, flow_node_atom_mask(nodes[i], ralloc));
                             }
                         }
                     } else {
@@ -12916,7 +12966,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (ImGui::BeginPopup("##flow_context")) {
-                const size_t num_selected = md_bitmask_count(&state.system_context.selection.selection_mask);
+                const size_t num_selected = md_bitmask_count(&qm_system(state).selection.selection_mask);
                 if (num_selected == 0) {
                     ImGui::TextDisabled("No atoms selected");
                     ImGui::Separator();
@@ -12993,7 +13043,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // is open it owns the preview, or the node under the cursor would keep overwriting
                 // what the band is about to do.
                 if (!region_preview) {
-                    md_bitmask_assign(&state.system_context.selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
+                    md_bitmask_assign(&qm_system(state).selection.highlight_mask, flow_node_atom_mask((uint32_t)hit.node, state.allocator.frame));
                 }
 
                 // Double click opens or closes a node - including an "Others", which opens by drawing
@@ -13024,7 +13074,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // the highlight mask is stale. Cleared only under those two conditions: clearing it
                 // unconditionally would stamp on the 3D viewport's own hover.
                 if (!region_preview) {
-                    md_bitmask_clear(&state.system_context.selection.highlight_mask);
+                    md_bitmask_clear(&qm_system(state).selection.highlight_mask);
                 }
 
                 // Empty space: double click reframes. A button for this would occupy toolbar room

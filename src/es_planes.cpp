@@ -153,8 +153,8 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
 }
 
 Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, PlaneFitInfo* info, md_float3_t* out_centre) {
-    const md_system_state_t& st = system_instance(state->system_context).state;
-    const size_t count = md_bitmask_count(&state->system_context.selection.selection_mask);
+    const md_system_state_t& st = system_instance(qm_system(*state)).state;
+    const size_t count = md_bitmask_count(&qm_system(*state).selection.selection_mask);
     if (count == 0 || !st.xyz) {
         if (info) *info = PlaneFitInfo{};
         return plane;
@@ -162,7 +162,7 @@ Plane es_plane_fit_selection(const ApplicationState* state, const Plane& plane, 
     md_temp_scope_t temp = md_temp_begin();
     md_float3_t* pts = (md_float3_t*)md_temp_alloc(temp, sizeof(md_float3_t) * count);
     size_t n = 0;
-    md_bitset_iter_t it = md_bitmask_iter(&state->system_context.selection.selection_mask);
+    md_bitset_iter_t it = md_bitmask_iter(&qm_system(*state).selection.selection_mask);
     while (md_bitset_iter_next(&it) && n < count) {
         if (it.idx < st.num_atoms) pts[n++] = st.xyz[it.idx];
     }
@@ -383,11 +383,11 @@ static inline bool project_ndc(md_float3_t* out, const md_float4x4_t& world_to_c
 }
 
 static Representation* gizmo_target(ApplicationState* state, uint32_t rep_id, int plane) {
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
+    for (size_t i = 0; i < md_array_size(qm_system(*state).representation.reps); ++i) {
+        Representation& rep = qm_system(*state).representation.reps[i];
         if (rep.node.id != rep_id) continue;
         const ElectronicStructureRepresentation& es = rep.electronic_structure;
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(state->system_context, rep) ||
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(qm_system(*state), rep) ||
             es.display == ElectronicStructureDisplay::Isosurface || plane < 0 || plane >= electronic_structure_planes(es).count) {
             return nullptr;
         }
@@ -479,8 +479,8 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
     const bool mouse_taken = ImGui::GetActiveID() != 0 && !dragging;
 
     // every slice with its rectangle, on its plane
-    for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
-        Representation& rep = state->representation.reps[r];
+    for (size_t r = 0; r < md_array_size(qm_system(*state).representation.reps); ++r) {
+        Representation& rep = qm_system(*state).representation.reps[r];
         if (rep.type == RepresentationType::ElectronicStructure) es_slices_conform(&rep.electronic_structure);
     }
 
@@ -505,9 +505,9 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
     float hover_dist = 6.0f;
     md_float3_t centre = md_float3_zero();
     bool centre_valid = false;
-    for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
-        const Representation& rep = state->representation.reps[r];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(state->system_context, rep) || !rep.type_is_valid) continue;
+    for (size_t r = 0; r < md_array_size(qm_system(*state).representation.reps); ++r) {
+        const Representation& rep = qm_system(*state).representation.reps[r];
+        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(qm_system(*state), rep) || !rep.type_is_valid) continue;
         const ElectronicStructureRepresentation& es = rep.electronic_structure;
         if (es.display == ElectronicStructureDisplay::Isosurface) continue;
         md_float4x4_t box;

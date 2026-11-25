@@ -1122,9 +1122,9 @@ static void update_representation(SystemContext& sc, Representation* rep) {
         rep->type_is_valid |= rep->sphere_fallback;
         break;
     case RepresentationType::ElectronicStructure:
-        // Evaluated from the quantum chemistry of the first system alone, until it is per system (the GPU data and the
-        // evaluations are of the first): of another, nothing is drawn rather than the first's orbitals on its atoms
-        rep->type_is_valid = &sc == &state->system_context && electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.shown.source);
+        // Evaluated of the quantum chemistry system alone (qm_system), whose is studied, one at a time: of another,
+        // nothing is drawn rather than that one's orbitals on its atoms
+        rep->type_is_valid = &sc == &qm_system(*state) && electronic_structure_source_supported(es_source_mask(sys), rep->electronic_structure.shown.source);
         if (rep->type_is_valid) {
             // what it waits for without blocking, asked again next frame
             again = !electronic_structure_representation_update(state, rep, colors);
@@ -1324,7 +1324,7 @@ void update_all_representations(SystemContext& sys) {
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_field_poll(rep);
         update_representation(sys, rep);
         // Its isosurfaces as meshes: taken over frames too, the view drawn or not (in the key of the view). Of the
-        // first system alone, as its evaluations are (type_is_valid)
+        // quantum chemistry system alone, as its evaluations are (type_is_valid)
         if (rep->type == RepresentationType::ElectronicStructure) electronic_structure_meshes_update(sys.app, rep);
         // The images of its planes follow them as they are moved, which is no update of the representation
         if (rep->type == RepresentationType::ElectronicStructure && rep->type_is_valid && representation_shown(sys, *rep)) {
@@ -2000,8 +2000,8 @@ void create_default_representations(SystemContext& sc) {
     size_t num_coarse_grained = 0;
     // Any electronic structure, not orbitals in particular: a file can carry density properties and
     // no SCF block, and its density properties are as much something to show as orbitals would be.
-    // Only the first system's quantum chemistry is evaluated so far (update_representation)
-    const bool electronic_structure_present = &sc == &state->system_context && es_source_mask(sc.data.sys) != 0;
+    // Only the quantum chemistry system's is evaluated (qm_system, update_representation)
+    const bool electronic_structure_present = &sc == &qm_system(*state) && es_source_mask(sc.data.sys) != 0;
 
 
     if (sc.data.sys.atom.count > 3'000'000) {
@@ -3232,7 +3232,7 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
     const md_float3_t centre = md_float3_set(c4.x, c4.y, c4.z);
     int remove = -1;
     const int count = set.count;
-    const size_t num_selected = md_bitmask_count(&state->system_context.selection.selection_mask);
+    const size_t num_selected = md_bitmask_count(&qm_system(*state).selection.selection_mask);
     for (int i = 0; i < count; ++i) {
         Plane& plane = set.items[i].plane;
         ImGui::PushID(i);
@@ -3358,6 +3358,16 @@ static bool draw_representations_window_electronic_structure(SystemContext& sys,
 
     bool update_rep = false;
     const bool mesh_mode = es_mesh_mode(state, es);
+
+    // The quantum chemistry of one system is studied at a time (qm_system): of another, this is not drawn
+    if (&sys != &qm_system(*state)) {
+        char studied[80];
+        system_label(studied, sizeof(studied), qm_system(*state));
+        prop::hint("Not drawn: the quantum chemistry studied is that of %s", studied);
+        if (qm_system_candidate(sys) && ImGui::SmallButton("Study this system's")) {
+            qm_system_choose(state, sys.id);
+        }
+    }
 
     if (prop::section("Field")) {
         prop::row("field", "The field over space that is drawn: its isosurfaces, its volume, or its values on planes.\n"
@@ -5199,43 +5209,46 @@ void draw_representations_window(ApplicationState* state) {
 // thing, and only while what it shows exists - a legend of nothing would mislead.
 // A legend is named by its representation's id, so it stays with the representation when they are reordered
 void draw_representation_legends(ApplicationState& state) {
-    const size_t num_reps = md_array_size(state.representation.reps);
     int slot = 0;
-    for (size_t i = 0; i < num_reps; ++i) {
-        Representation& rep = state.representation.reps[i];
-        // The value under the cursor of a legend is of this frame only: none unless its legend is drawn and hovered
-        rep.electronic_structure.field_isolines.hover = false;
-        if (!representation_shown(state.system_context, rep)) continue;
+    for (size_t s = 0; s < state.num_systems; ++s) {
+        SystemContext& sc = *state.systems[s];
+        const size_t num_reps = md_array_size(sc.representation.reps);
+        for (size_t i = 0; i < num_reps; ++i) {
+            Representation& rep = sc.representation.reps[i];
+            // The value under the cursor of a legend is of this frame only: none unless its legend is drawn and hovered
+            rep.electronic_structure.field_isolines.hover = false;
+            if (!representation_shown(sc, rep)) continue;
 
-        if (rep.type == RepresentationType::ElectronicStructure) {
-            ElectronicStructureRepresentation& es = rep.electronic_structure;
-            const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
-            const bool colored = es.display == ElectronicStructureDisplay::Isosurface && es.coloring == SurfaceColoring::Field;
-            if (colored && es.field_map.show_legend && has_field) {
-                color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
+            if (rep.type == RepresentationType::ElectronicStructure) {
+                ElectronicStructureRepresentation& es = rep.electronic_structure;
+                const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
+                const bool colored = es.display == ElectronicStructureDisplay::Isosurface && es.coloring == SurfaceColoring::Field;
+                if (colored && es.field_map.show_legend && has_field) {
+                    color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
+                    continue;
+                }
+            }
+
+            if (rep.type == RepresentationType::Glyphs && rep.type_is_valid && rep.glyphs.scale.show_legend && glyphs_span(rep.glyphs).valid) {
+                if (const md_attribute_t* a = rep.glyphs.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sc.data.sys.attributes, rep.glyphs.color) : nullptr) {
+                    const md_str_t nm = glyph_attribute_name(a);
+                    char unit[64];
+                    const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+                    char label[160];
+                    if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
+                    else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
+                    color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+                }
                 continue;
             }
-        }
 
-        if (rep.type == RepresentationType::Glyphs && rep.type_is_valid && rep.glyphs.scale.show_legend && glyphs_span(rep.glyphs).valid) {
-            if (const md_attribute_t* a = rep.glyphs.color != MD_ATTRIBUTE_INVALID ? md_attributes_get(&state.mold.sys.attributes, rep.glyphs.color) : nullptr) {
-                const md_str_t nm = glyph_attribute_name(a);
-                char unit[64];
-                const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
-                char label[160];
-                if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
-                else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
-                color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+            if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {
+                const md_attribute_t* attr = md_attributes_get(&sc.data.sys.attributes, rep.atom_attribute.key);
+                if (!attr) continue;
+                char label[128];
+                atom_attribute_legend_label(label, sizeof(label), attr, rep.atom_attribute.variant_idx);
+                color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)rep.node.id, slot++);
             }
-            continue;
-        }
-
-        if (representation_uses_atom_colors(rep) && rep.color_mapping == ColorMapping::Attribute && rep.atom_attribute.scale.show_legend) {
-            const md_attribute_t* attr = md_attributes_get(&state.mold.sys.attributes, rep.atom_attribute.key);
-            if (!attr) continue;
-            char label[128];
-            atom_attribute_legend_label(label, sizeof(label), attr, rep.atom_attribute.variant_idx);
-            color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)rep.node.id, slot++);
         }
     }
 }

@@ -2239,8 +2239,8 @@ void init_system_data(ApplicationState* data, SystemContext& sys) {
     data->script.compile_ir = true;
 
     // The first excited state's natural transition orbitals, read on a worker thread while the geometry is
-    // shown: the state a representation of them starts at. Of the first system, whose quantum chemistry is evaluated.
-    if (&sys == &data->system_context) {
+    // shown: the state a representation of them starts at. Of the quantum chemistry system, whose is evaluated.
+    if (&sys == &qm_system(*data)) {
         es_nto_ready(data, 0);
 
         // The SCF density the CPU paths read (the ESP, the critical points: the total density, the alpha one without
@@ -3170,13 +3170,17 @@ LoadResult load_data(ApplicationState* state, SystemContext& sys, md_str_t filep
         }
         if (result == LoadResult_Failed) return result;
 
+        // Of the system whose quantum chemistry is studied, when it is the first with any (before the representations
+        // are made, of which an electronic structure one is of that system alone)
+        qm_system_update(state);
+
 #if MD_ENABLE_GPU
         // The dataset's uploaded GTO basis, built here rather than by whichever component happens to
         // want it first: it is derived from the system's own basis/ attributes, every consumer of
         // that system wants the same one, and a system's GPU basis must not depend on which UI
         // component is compiled in. Returns false when the system publishes no basis, which is the
         // normal case rather than a failure.
-        system_gpu_data_update(state, DEFAULT_GTO_CUTOFF_VALUE);
+        system_gpu_data_update(sys, DEFAULT_GTO_CUTOFF_VALUE);
 #endif
 
         // The frames selected were of the run there was
@@ -3434,6 +3438,8 @@ static void workspace_reset(ApplicationState* data) {
         system_remove(*sc);
         system_release(data, sc);
     }
+    // The quantum chemistry of the one the workspace chooses ([QuantumChemistry] System=), else the first with any
+    data->qm = {};
     // The first's directory, as the workspace gives it ([SystemScene] Dir=), else the first number
     data->system_context.dir[0] = '\0';
     system_dir_number(data->system_context);
@@ -4675,8 +4681,8 @@ void system_gpu_data_free(SystemContext& sys) {
         sys.data.gpu_atoms = 0;
     }
     sys.data.gpu_atoms_hash = 0;
-    // What workers have under way is the first system's (these read state->mold): taken, then freed below
-    const bool first = &sys == &state->system_context;
+    // What workers have under way is the quantum chemistry system's (these read qm_system): taken, then freed below
+    const bool first = &sys == &qm_system(*state);
     if (first) dmat_build_take(state, true);
     if (sys.data.gpu_dmat) {
         md_gto_gpu_dmat_destroy(state->gpu_stream, sys.data.gpu_dmat);
@@ -4699,10 +4705,11 @@ void system_gpu_data_free(SystemContext& sys) {
 #endif
 }
 
-bool system_gpu_data_update(ApplicationState* state, double cutoff) {
+bool system_gpu_data_update(SystemContext& sys, double cutoff) {
+    ApplicationState* state = sys.app;
     MD_ASSERT(state);
 #if MD_ENABLE_GPU
-    system_gpu_data_free(state->system_context);
+    system_gpu_data_free(sys);
 
     if (!state->gpu_device) {
         return false;
@@ -4712,26 +4719,26 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     MD_DEFER { md_temp_end(temp); };
 
     md_gto_basis_t basis = {};
-    if (!md_gto_basis_extract_attributes(&basis, &state->mold.sys.attributes, md_temp_allocator(temp))) {
+    if (!md_gto_basis_extract_attributes(&basis, &sys.data.sys.attributes, md_temp_allocator(temp))) {
         // A system with no basis published is the normal case, not a failure.
         return false;
     }
 
     md_gto_gpu_basis_desc_t desc = { .basis = &basis, .cutoff = cutoff };
-    state->mold.gpu_basis = md_gto_gpu_basis_create(state->gpu_stream, &desc);
-    if (!state->mold.gpu_basis) {
+    sys.data.gpu_basis = md_gto_gpu_basis_create(state->gpu_stream, &desc);
+    if (!sys.data.gpu_basis) {
         MD_LOG_ERROR("Failed to upload the GTO basis to the device");
         return false;
     }
 
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(sys.data.gpu_basis);
+    const size_t num_atoms = md_gto_gpu_basis_num_atoms(sys.data.gpu_basis);
 
-    state->mold.gpu_atoms = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
-    state->mold.gpu_atoms_hash = 0;
+    sys.data.gpu_atoms = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
+    sys.data.gpu_atoms_hash = 0;
 
     // Density coefficients are the larger of the two packings, so one size covers both the density
-    // and the MO evaluation paths.
+    // and the MO evaluation paths (of whichever system is the quantum chemistry system: the largest).
     const size_t coeff_size = md_gto_gpu_coeff_size_density(num_cgtos);
     if (coeff_size > state->gpu_coeff_capacity) {
         if (state->gpu_coeff) {
@@ -4741,11 +4748,72 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
         state->gpu_coeff_capacity = state->gpu_coeff ? coeff_size : 0;
     }
 
-    return state->mold.gpu_atoms != 0 && state->gpu_coeff != 0;
+    return sys.data.gpu_atoms != 0 && state->gpu_coeff != 0;
 #else
-    (void)state; (void)cutoff;
+    (void)sys; (void)cutoff;
     return false;
 #endif
+}
+
+// --- THE QUANTUM CHEMISTRY SYSTEM ---
+
+static bool qm_system_carries(const SystemContext& sc) {
+    return system_loaded(sc) && es_source_mask(sc.data.sys) != 0;
+}
+
+SystemContext& qm_system(ApplicationState& app) {
+    return system_or_first(&app, app.qm.system_id);
+}
+
+const SystemContext& qm_system(const ApplicationState& app) {
+    return system_or_first(app, app.qm.system_id);
+}
+
+bool qm_system_candidate(const SystemContext& sc) {
+    return qm_system_carries(sc);
+}
+
+void qm_system_set(ApplicationState* app, uint32_t id) {
+    MD_ASSERT(app);
+    SystemContext& cur = qm_system(*app);
+    if (cur.id == id && app->qm.system_id == id) return;
+#if MD_ENABLE_GPU
+    // What the workers have under way is of the one it was (they read qm_system): taken before it is another
+    if (app->gpu_stream) gpu_density_jobs_cancel(app, 0);
+    gpu_volume_jobs_drain(app);
+    dmat_build_take(app, true);
+    dpack_build_take(app, true);
+    localization_gpu_free(app);
+#endif
+    app->qm.system_id = id;
+    // Its electronic structure representations are evaluated now, those of the one before no longer
+    flag_all_representations_as_dirty(cur);
+    flag_all_representations_as_dirty(qm_system(*app));
+}
+
+void qm_system_choose(ApplicationState* app, uint32_t id) {
+    qm_system_set(app, id);
+    app->qm.chosen = true;
+}
+
+void qm_system_update(ApplicationState* app, const SystemContext* going) {
+    MD_ASSERT(app);
+    const SystemContext& cur = qm_system(*app);
+    if (&cur == going) {
+        app->qm.chosen = false;
+    } else if (qm_system_carries(cur)) {
+        return;
+    } else if (app->qm.chosen && system_find(*app, app->qm.system_id) && !system_loaded(cur)) {
+        return;     // the one chosen (a workspace's) is still to be loaded
+    }
+    for (size_t i = 0; i < app->num_systems; ++i) {
+        const SystemContext& sc = *app->systems[i];
+        if (&sc != going && qm_system_carries(sc)) {
+            qm_system_set(app, sc.id);
+            app->qm.chosen = false;
+            return;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4932,19 +5000,19 @@ struct NtoWarm {
 
 bool es_nto_ready(ApplicationState* state, size_t state_idx) {
     MD_ASSERT(state);
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::nto_lambda);
     const size_t count = es_excited_state_count(sys);
     if (!attr || attr->data || state_idx >= count) {
         return true;
     }
-    NtoWarm* w = (NtoWarm*)state->mold.nto_warm;
+    NtoWarm* w = (NtoWarm*)qm_system(*state).data.nto_warm;
     if (!w) {
         w = new NtoWarm();
         w->count = count;
         w->status = new std::atomic<uint8_t>[count];
         for (size_t i = 0; i < count; ++i) w->status[i].store(NtoWarm::NotBegun);
-        state->mold.nto_warm = w;
+        qm_system(*state).data.nto_warm = w;
     }
     if (state_idx >= w->count) {
         return true;
@@ -4955,7 +5023,7 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
     }
     if (status == NtoWarm::NotBegun) {
         w->status[state_idx].store(NtoWarm::UnderWay, std::memory_order_relaxed);
-        const md_system_t* sys_ptr = &state->mold.sys;
+        const md_system_t* sys_ptr = &qm_system(*state).data.sys;
         const uint32_t idx = (uint32_t)state_idx;
         task_system::detach(MD_STR_LIT("Natural transition orbitals: reading"), [w, sys_ptr, idx]() {
             // the weights: the reader computes the state's orbitals with them, and keeps all three
@@ -4978,8 +5046,8 @@ bool es_nto_ready(ApplicationState* state, size_t state_idx) {
 
 DensityCache* density_cache_of(ApplicationState* state) {
     MD_ASSERT(state);
-    if (!state->mold.density_cache) state->mold.density_cache = density_cache_create();
-    return state->mold.density_cache;
+    if (!qm_system(*state).data.density_cache) qm_system(*state).data.density_cache = density_cache_create();
+    return qm_system(*state).data.density_cache;
 }
 
 void es_nto_warm_free(SystemContext& sys) {
@@ -5445,10 +5513,10 @@ static bool gpu_volume_readback_after(ApplicationState* state, uint32_t vol_tex,
 // safe and stages through a transient arena otherwise, so there is one path regardless of whether
 // the device is discrete.
 static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t& sys, const md_system_state_t& sys_state) {
-    if (!state->gpu_stream || !state->mold.gpu_basis || !state->mold.gpu_atoms) {
+    if (!state->gpu_stream || !qm_system(*state).data.gpu_basis || !qm_system(*state).data.gpu_atoms) {
         return false;
     }
-    const size_t num_atoms = md_gto_gpu_basis_num_atoms(state->mold.gpu_basis);
+    const size_t num_atoms = md_gto_gpu_basis_num_atoms(qm_system(*state).data.gpu_basis);
     const size_t sz = md_gto_gpu_atom_buffer_size(num_atoms);
 
     md_temp_scope_t temp = md_temp_begin();
@@ -5464,7 +5532,7 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
     // Gather first, then decide: the gather is what the comparison is ABOUT, and it is cheap next
     // to the transfer it may save.
     const uint64_t hash = md_hash64(xyz, sizeof(md_float3_t) * num_atoms, 0);
-    if (hash != 0 && hash == state->mold.gpu_atoms_hash) {
+    if (hash != 0 && hash == qm_system(*state).data.gpu_atoms_hash) {
         return true;
     }
 
@@ -5476,7 +5544,7 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
         xyzw[i] = md_float4_set(xyz[i].x, xyz[i].y, xyz[i].z, 1.0f);
     }
 
-    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->mold.gpu_atoms, sz);
+    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, qm_system(*state).data.gpu_atoms, sz);
     if (!dst) {
         MD_LOG_ERROR("Failed to upload the atom positions to the device");
         return false;
@@ -5486,7 +5554,7 @@ static bool gpu_atoms_ensure_uploaded(ApplicationState* state, const md_system_t
         return false;
     }
 
-    state->mold.gpu_atoms_hash = hash;
+    qm_system(*state).data.gpu_atoms_hash = hash;
     return true;
 }
 
@@ -5700,7 +5768,7 @@ static uint64_t density_dmat_key(const md_system_t& sys, md_str_t density_path);
 
 #if MD_ENABLE_GPU
 // What the kernel reads, made by a pool task on a stream of its own (destroyed by the task once its work is done:
-// what it made is then ready for any stream), kept in state->mold.gpu_localization
+// what it made is then ready for any stream), kept in qm_system(*state).data.gpu_localization
 struct LocalizationGpu {
     task_system::Job   task;            // a cancelled one (a load) made nothing to be taken
     uint64_t           key = 0;         // the orbitals and occupations it is made of (density_dmat_key)
@@ -5762,11 +5830,11 @@ static void localization_gpu_destroy(LocalizationGpu* L, md_gpu_stream_t gl_stre
 }
 
 static void localization_gpu_free(ApplicationState* state) {
-    if (state->mold.gpu_localization) {
-        localization_gpu_destroy((LocalizationGpu*)state->mold.gpu_localization, state->gpu_stream);
-        state->mold.gpu_localization = nullptr;
+    if (qm_system(*state).data.gpu_localization) {
+        localization_gpu_destroy((LocalizationGpu*)qm_system(*state).data.gpu_localization, state->gpu_stream);
+        qm_system(*state).data.gpu_localization = nullptr;
     }
-    state->mold.gpu_localization_failed_key = 0;
+    qm_system(*state).data.gpu_localization_failed_key = 0;
 }
 
 // Whether ELF and LOL can be evaluated on the GPU now: 1 when what the kernel reads is there for the orbitals and
@@ -5774,22 +5842,22 @@ static void localization_gpu_free(ApplicationState* state) {
 // could not be made (then on the CPU)
 static int localization_gpu_prepare(ApplicationState* state) {
     if (!gpu_evaluation_ready(state) || !state->gpu_device) return -1;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const uint64_t key = density_dmat_key(sys, MD_STR_LIT("localization"));
-    if (key == state->mold.gpu_localization_failed_key) return -1;
-    LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
+    if (key == qm_system(*state).data.gpu_localization_failed_key) return -1;
+    LocalizationGpu* L = (LocalizationGpu*)qm_system(*state).data.gpu_localization;
     if (L && L->task.running()) return 0;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(qm_system(*state)).state);
     if (!xyz) return -1;
     if (L && L->key == key) {
         if (L->task.status() != task_system::Status::Completed || !L->ok) {
             MD_LOG_ERROR("ELF and LOL: what their GPU kernel reads could not be made; evaluating them on the CPU");
             localization_gpu_free(state);
-            state->mold.gpu_localization_failed_key = key;
+            qm_system(*state).data.gpu_localization_failed_key = key;
             return -1;
         }
         bool valid = num_atoms == L->num_atoms;
@@ -5800,7 +5868,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
     if (L) localization_gpu_free(state);
     L = new LocalizationGpu();
     L->key = key;
-    L->sys = &state->mold.sys;
+    L->sys = &qm_system(*state).data.sys;
     L->t0 = md_tick_now();
     L->xyz = (md_float3_t*)malloc(sizeof(md_float3_t) * num_atoms);
     L->num_atoms = num_atoms;
@@ -5811,7 +5879,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
         return -1;
     }
     md_memcpy(L->xyz, xyz, sizeof(md_float3_t) * num_atoms);
-    state->mold.gpu_localization = L;
+    qm_system(*state).data.gpu_localization = L;
     L->task.start(MD_STR_LIT("ELF/LOL density matrices"), [L]() { localization_gpu_build(L); });
     return 0;
 }
@@ -5821,12 +5889,12 @@ static int localization_gpu_prepare(ApplicationState* state) {
 // every piece at once: minutes of GPU work ahead of the display for a protein), the pieces issued a few ahead of the
 // GPU over the frames (gpu_volume_jobs_poll). What it reads is there (localization_gpu_prepare).
 static bool localization_gpu_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool lol) {
-    LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
+    LocalizationGpu* L = (LocalizationGpu*)qm_system(*state).data.gpu_localization;
     if (!L || !L->ok || L->task.running()) return false;
     gpu_density_jobs_settle(state);     // the scratch volume is written below
-    if (!gpu_atoms_ensure_uploaded(state, state->mold.sys, system_instance(state->system_context).state)) return false;
+    if (!gpu_atoms_ensure_uploaded(state, qm_system(*state).data.sys, system_instance(qm_system(*state)).state)) return false;
     md_gto_gpu_localization_desc_t desc = {
-        .basis = L->gpu_basis, .atom_xyz = state->mold.gpu_atoms, .num_spins = L->num_spins,
+        .basis = L->gpu_basis, .atom_xyz = qm_system(*state).data.gpu_atoms, .num_spins = L->num_spins,
         .dmat = { L->dmat[0], L->num_spins > 1 ? L->dmat[1] : nullptr },
         .kind = lol ? MD_GTO_GPU_LOL : MD_GTO_GPU_ELF, .rho_min = ES_LOCALIZATION_RHO_MIN,
         .d_min = MD_QM_ELF_D_MIN,
@@ -5846,7 +5914,7 @@ static bool electronic_structure_evaluate(ApplicationState* state, Representatio
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
 
     md_grid_t grid = {};
-    if (!electronic_structure_grid_init(&grid, state->mold.sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+    if (!electronic_structure_grid_init(&grid, qm_system(*state).data.sys, system_instance(qm_system(*state)).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
         return false;
     }
     init_volume(&rep->electronic_structure.density_vol, grid, GL_R32F);
@@ -5894,7 +5962,7 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
     case ElectronicStructureSource::DensityProperty: {
         md_str_t path = {};
         md_attribute_slice_t slice = {};
-        if (!es_volume_density(&path, &slice, es, state->mold.sys)) {
+        if (!es_volume_density(&path, &slice, es, qm_system(*state).data.sys)) {
             return false;
         }
         // A spin difference is signed, so it is the one density the magnitude toggle applies to.
@@ -5926,8 +5994,8 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
 
-    const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = system_instance(state->system_context).state;
+    const md_system_t&       sys       = qm_system(*state).data.sys;
+    const md_system_state_t& sys_state = system_instance(qm_system(*state)).state;
 
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, md_temp_allocator(temp))) {
@@ -6024,7 +6092,7 @@ static bool volume_read_values(float* dst, ApplicationState* state, const Volume
 // False while the density it reads is still being evaluated (to be called again)
 static bool electronic_structure_field_update(ApplicationState* state, Representation* rep, const ElectronicStructureRepresentation& g) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     if (!surface_field_available(g.field_kind, sys)) {
         surface_field_free(&es.field_vol);
         return true;
@@ -6060,7 +6128,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     SurfaceFieldDesc desc = {};
     desc.kind        = g.field_kind;
     desc.sys         = &sys;
-    desc.state       = &system_instance(state->system_context).state;
+    desc.state       = &system_instance(qm_system(*state)).state;
     desc.grid        = &es.grid;
     desc.density     = density;
     desc.iso_values  = iso.values;
@@ -6070,7 +6138,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     desc.density_cache = density_cache_of(state);
     if (surface_field_uses_basis(g.field_kind)) {
         // The QM nuclei and basis where the density was drawn: the current frame, as for the density
-        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(state->system_context).state);
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(qm_system(*state)).state);
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
@@ -6168,7 +6236,7 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
 // True when the device scratch and this dataset's uploaded basis are both present, which is what
 // every GPU path below needs before it can start.
 static bool gpu_evaluation_ready(const ApplicationState* state) {
-    return state->gpu_stream && state->mold.gpu_basis && state->mold.gpu_atoms && state->gpu_coeff && state->gpu_volume;
+    return state->gpu_stream && qm_system(*state).data.gpu_basis && qm_system(*state).data.gpu_atoms && state->gpu_coeff && state->gpu_volume;
 }
 #endif
 
@@ -6189,7 +6257,7 @@ bool orbital_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t
     MD_DEFER { md_temp_end(temp); };
 
     size_t num_ao = 0;
-    const double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, state->mold.sys, coefficient_path, slice);
+    const double* ao_coeffs = orbital_coefficients_extract(&num_ao, temp, qm_system(*state).data.sys, coefficient_path, slice);
     if (!ao_coeffs) {
         return false;
     }
@@ -6203,10 +6271,10 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
 
 #if MD_ENABLE_GPU
     if (gpu_evaluation_ready(state)) {
-        const md_system_t&       sys       = state->mold.sys;
-        const md_system_state_t& sys_state = system_instance(state->system_context).state;
+        const md_system_t&       sys       = qm_system(*state).data.sys;
+        const md_system_state_t& sys_state = system_instance(qm_system(*state)).state;
 
-        const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+        const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis);
         if (num_cgtos != num_ao) {
             MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the orbital %zu", num_cgtos, num_ao);
             return false;
@@ -6225,8 +6293,8 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
         md_gpu_upload_end(state->gpu_stream);
 
         md_gto_gpu_orbital_desc_t desc = {
-            .basis        = state->mold.gpu_basis,
-            .atom_xyz     = state->mold.gpu_atoms,
+            .basis        = qm_system(*state).data.gpu_basis,
+            .atom_xyz     = qm_system(*state).data.gpu_atoms,
             .coeff        = state->gpu_coeff,
             .out_tex      = gpu_eval_target(state),
             .out_grad     = gpu_grad_target(state),
@@ -6257,10 +6325,10 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
         return false;
     }
 
-    const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = system_instance(state->system_context).state;
+    const md_system_t&       sys       = qm_system(*state).data.sys;
+    const md_system_state_t& sys_state = system_instance(qm_system(*state)).state;
 
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis);
     if (num_cgtos != dim) {
         MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
         return false;
@@ -6287,8 +6355,8 @@ bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_gri
 static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat, md_gto_gpu_job_t** out_job,
                                md_gpu_addr_t coeff) {
     md_gto_gpu_density_desc_t desc = {
-        .basis         = state->mold.gpu_basis,
-        .atom_xyz      = state->mold.gpu_atoms,
+        .basis         = qm_system(*state).data.gpu_basis,
+        .atom_xyz      = qm_system(*state).data.gpu_atoms,
         .coeff         = dmat ? 0 : (coeff ? coeff : state->gpu_coeff),
         .dmat          = dmat,
         .out_tex       = gpu_eval_target(state),
@@ -6383,22 +6451,22 @@ static void dmat_build_destroy(DmatBuild* b, md_gpu_stream_t gl_stream) {
 // The build under way, taken once it is done: its dmat becomes the one in use. wait: waited for if it is not
 // done. Returns false while it is under way.
 static bool dmat_build_take(ApplicationState* state, bool wait) {
-    DmatBuild* b = (DmatBuild*)state->mold.gpu_dmat_build;
+    DmatBuild* b = (DmatBuild*)qm_system(*state).data.gpu_dmat_build;
     if (!b) return true;
     if (wait) b->task.wait();
     if (b->task.running()) return false;
-    state->mold.gpu_dmat_build = nullptr;
+    qm_system(*state).data.gpu_dmat_build = nullptr;
     const bool made = b->task.status() == task_system::Status::Completed;
     if (made && b->dmat) {
         gpu_density_jobs_settle(state);     // one not yet issued reads the dmat in use
         // its build is done on the GPU: the task waited for it before it ended (destroying its stream)
-        if (state->mold.gpu_dmat) md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
-        state->mold.gpu_dmat = b->dmat;
-        state->mold.gpu_dmat_key = b->key;
+        if (qm_system(*state).data.gpu_dmat) md_gto_gpu_dmat_destroy(state->gpu_stream, qm_system(*state).data.gpu_dmat);
+        qm_system(*state).data.gpu_dmat = b->dmat;
+        qm_system(*state).data.gpu_dmat_key = b->key;
         b->dmat = nullptr;
         MD_LOG_DEBUG("The density matrix of '" MD_STR_FMT "' made in %.1f ms (on a worker thread)", MD_STR_ARG(b->path), md_tick_to_milliseconds(md_tick_now() - b->t0));
     } else if (made) {
-        state->mold.gpu_dmat_failed_key = b->key;     // made where it is asked for (density_dmat_ensure), which may fail as loudly
+        qm_system(*state).data.gpu_dmat_failed_key = b->key;     // made where it is asked for (density_dmat_ensure), which may fail as loudly
     }
     dmat_build_destroy(b, state->gpu_stream);
     return true;
@@ -6408,7 +6476,7 @@ static bool dmat_build_take(ApplicationState* state, bool wait) {
 // is made by its provider on every read (seconds for a protein: md_attributes.h, VIRTUAL ATTRIBUTES), a density
 // property read from its file, either on the GL thread a stall of the frame as long. Extracted on a worker thread
 // straight into a device buffer of its own (the upload's staging), on a GPU stream of its own, and kept for the
-// evaluations that follow (state->mold.gpu_dpack): a new resolution or frame of the same density reads it again
+// evaluations that follow (qm_system(*state).data.gpu_dpack): a new resolution or frame of the same density reads it again
 // from the device.
 struct DensityPackBuild {
     task_system::Job task;              // a cancelled one (a load) made nothing to be taken
@@ -6436,21 +6504,21 @@ static uint64_t density_pack_key(const md_system_t& sys, const md_attribute_t& a
 // The build under way, taken once it is done: its buffer becomes the one in use. wait: waited for if it is not
 // done. Returns false while it is under way.
 static bool dpack_build_take(ApplicationState* state, bool wait) {
-    DensityPackBuild* b = (DensityPackBuild*)state->mold.gpu_dpack_build;
+    DensityPackBuild* b = (DensityPackBuild*)qm_system(*state).data.gpu_dpack_build;
     if (!b) return true;
     if (wait) b->task.wait();
     if (b->task.running()) return false;
-    state->mold.gpu_dpack_build = nullptr;
+    qm_system(*state).data.gpu_dpack_build = nullptr;
     const bool made = b->task.status() == task_system::Status::Completed;
     if (made && b->ok) {
         gpu_density_jobs_settle(state);     // one not yet all issued reads the buffer in use
-        if (state->mold.gpu_dpack) md_gpu_free(state->gpu_stream, state->mold.gpu_dpack);
-        state->mold.gpu_dpack = b->buf;
-        state->mold.gpu_dpack_key = b->key;
+        if (qm_system(*state).data.gpu_dpack) md_gpu_free(state->gpu_stream, qm_system(*state).data.gpu_dpack);
+        qm_system(*state).data.gpu_dpack = b->buf;
+        qm_system(*state).data.gpu_dpack_key = b->key;
         b->buf = 0;
         MD_LOG_DEBUG("The density '" MD_STR_FMT "' extracted to the device in %.1f ms (on a worker thread)", MD_STR_ARG(b->path), md_tick_to_milliseconds(md_tick_now() - b->t0));
     } else if (made) {
-        state->mold.gpu_dpack_failed_key = b->key;   // extracted where it is asked for, which fails as loudly
+        qm_system(*state).data.gpu_dpack_failed_key = b->key;   // extracted where it is asked for, which fails as loudly
     }
     if (b->buf) md_gpu_free(state->gpu_stream, b->buf);
     if (b->stream) md_gpu_stream_destroy(b->stream);    // of a task cancelled before it ran: nothing on it
@@ -6467,26 +6535,26 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
         return true;
     }
     if (!dmat_build_take(state, false)) return false;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const uint64_t key = density_dmat_key(sys, density_path);
-    if (key == state->mold.gpu_dmat_failed_key) return true;
+    if (key == qm_system(*state).data.gpu_dmat_failed_key) return true;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
-    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(qm_system(*state)).state);
+    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(qm_system(*state).data.gpu_basis)) {
         return true;    // the evaluation fails as it would have
     }
-    if (state->mold.gpu_dmat && state->mold.gpu_dmat_key == key && md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(md_float3_t))) {
+    if (qm_system(*state).data.gpu_dmat && qm_system(*state).data.gpu_dmat_key == key && md_gto_gpu_dmat_pattern_valid(qm_system(*state).data.gpu_dmat, (const float*)xyz, sizeof(md_float3_t))) {
         return true;
     }
 
     DmatBuild* b = new DmatBuild();
     b->key = key;
     b->path = density_path;
-    b->sys = &state->mold.sys;
-    b->num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    b->sys = &qm_system(*state).data.sys;
+    b->num_cgtos = md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis);
     b->t0 = md_tick_now();
     b->xyz = (md_float3_t*)malloc(sizeof(md_float3_t) * num_atoms);
     b->stream = b->xyz ? md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "density matrix") : nullptr;
@@ -6506,31 +6574,31 @@ static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path)
         b->stream = nullptr;
         md_temp_trim();     // the orbitals were read into this worker's temp arenas
     });
-    state->mold.gpu_dmat_build = b;
+    qm_system(*state).data.gpu_dmat_build = b;
     return false;
 }
 
 // For the representations' evaluations, as density_dmat_prepare and for any density: true when the density at
 // density_path (sliced) can be issued now - an SCF density's dmat made, any other's packed triangle on the device
-// (state->mold.gpu_dpack) - or when it is not to be had this way (evaluated as it would have been); false while it
+// (qm_system(*state).data.gpu_dpack) - or when it is not to be had this way (evaluated as it would have been); false while it
 // is being made on a worker thread, which this begins when it is not.
 static bool density_pack_prepare(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice_ptr) {
     const md_attribute_slice_t s = slice_ptr ? *slice_ptr : md_attribute_slice_all();
     if (s.num_idx == 0 && density_is_scf(density_path)) {
         if (!density_dmat_prepare(state, density_path)) return false;
         // through the dmat, unless it could not be made of the orbitals (not published): through the packed triangle
-        if (state->mold.gpu_dmat_failed_key != density_dmat_key(state->mold.sys, density_path)) return true;
+        if (qm_system(*state).data.gpu_dmat_failed_key != density_dmat_key(qm_system(*state).data.sys, density_path)) return true;
     }
     if (!gpu_evaluation_ready(state) || !state->gpu_device) {
         return true;
     }
     if (!dpack_build_take(state, false)) return false;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
     if (!attr) return true;
     const uint64_t key = density_pack_key(sys, *attr, s);
-    if ((state->mold.gpu_dpack && key == state->mold.gpu_dpack_key) || key == state->mold.gpu_dpack_failed_key) return true;
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    if ((qm_system(*state).data.gpu_dpack && key == qm_system(*state).data.gpu_dpack_key) || key == qm_system(*state).data.gpu_dpack_failed_key) return true;
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis);
     if (md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr) != num_cgtos) {
         return true;    // the evaluation fails as it would have, and says why
     }
@@ -6539,7 +6607,7 @@ static bool density_pack_prepare(ApplicationState* state, md_str_t density_path,
     b->key = key;
     b->path = attr->path;
     b->slice = s;
-    b->sys = &state->mold.sys;
+    b->sys = &qm_system(*state).data.sys;
     b->num_cgtos = num_cgtos;
     b->t0 = md_tick_now();
     b->stream = md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "packed density");
@@ -6563,46 +6631,46 @@ static bool density_pack_prepare(ApplicationState* state, md_str_t density_path,
         b->stream = nullptr;
         md_temp_trim();     // what the provider made in this worker's temp arenas
     });
-    state->mold.gpu_dpack_build = b;
+    qm_system(*state).data.gpu_dpack_build = b;
     return false;
 }
 
-// The SCF density at density_path (orbital/{alpha,beta,total,difference}/density) in state->mold.gpu_dmat,
+// The SCF density at density_path (orbital/{alpha,beta,total,difference}/density) in qm_system(*state).data.gpu_dmat,
 // built on the device from its orbitals (md_qm_density_orbitals): on this thread unless a worker has made it
 // (density_dmat_prepare), and one under way is waited for. False for any other density, or one whose orbitals
 // are not published or that is zero: those go through the packed matrix.
 static bool density_dmat_ensure(ApplicationState* state, md_str_t density_path) {
-    if (!density_is_scf(density_path) || !state->gpu_stream || !state->mold.gpu_basis) {
+    if (!density_is_scf(density_path) || !state->gpu_stream || !qm_system(*state).data.gpu_basis) {
         return false;
     }
     dmat_build_take(state, true);
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const uint64_t key = density_dmat_key(sys, density_path);
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     size_t num_atoms = 0;
-    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(state->system_context).state);
-    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(state->mold.gpu_basis)) {
+    const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, system_instance(qm_system(*state)).state);
+    if (!xyz || num_atoms != md_gto_gpu_basis_num_atoms(qm_system(*state).data.gpu_basis)) {
         return false;
     }
     // A pattern made where the atoms were: kept while they stay within the margin, else made again
-    if (state->mold.gpu_dmat && !md_gto_gpu_dmat_pattern_valid(state->mold.gpu_dmat, (const float*)xyz, sizeof(md_float3_t))) {
-        md_gto_gpu_dmat_destroy(state->gpu_stream, state->mold.gpu_dmat);
-        state->mold.gpu_dmat = nullptr;
+    if (qm_system(*state).data.gpu_dmat && !md_gto_gpu_dmat_pattern_valid(qm_system(*state).data.gpu_dmat, (const float*)xyz, sizeof(md_float3_t))) {
+        md_gto_gpu_dmat_destroy(state->gpu_stream, qm_system(*state).data.gpu_dmat);
+        qm_system(*state).data.gpu_dmat = nullptr;
     }
-    if (!state->mold.gpu_dmat) {
-        state->mold.gpu_dmat = density_dmat_pattern(state->gpu_stream, sys, xyz);
-        state->mold.gpu_dmat_key = 0;
-        if (!state->mold.gpu_dmat) {
+    if (!qm_system(*state).data.gpu_dmat) {
+        qm_system(*state).data.gpu_dmat = density_dmat_pattern(state->gpu_stream, sys, xyz);
+        qm_system(*state).data.gpu_dmat_key = 0;
+        if (!qm_system(*state).data.gpu_dmat) {
             return false;
         }
     }
-    if (key != state->mold.gpu_dmat_key) {
-        if (!density_dmat_fill(state->gpu_stream, state->mold.gpu_dmat, sys, density_path, md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis))) {
+    if (key != qm_system(*state).data.gpu_dmat_key) {
+        if (!density_dmat_fill(state->gpu_stream, qm_system(*state).data.gpu_dmat, sys, density_path, md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis))) {
             return false;
         }
-        state->mold.gpu_dmat_key = key;
+        qm_system(*state).data.gpu_dmat_key = key;
     }
     return true;
 }
@@ -6625,8 +6693,8 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     }
     gpu_density_jobs_settle(state);     // the inputs are changed below
 
-    const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = system_instance(state->system_context).state;
+    const md_system_t&       sys       = qm_system(*state).data.sys;
+    const md_system_state_t& sys_state = system_instance(qm_system(*state)).state;
     const md_attribute_slice_t s = slice ? *slice : md_attribute_slice_all();
     const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
     if (!attr) {
@@ -6634,7 +6702,7 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
         return false;
     }
 
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
+    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(qm_system(*state).data.gpu_basis);
     const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr);
     if (dim == 0) {
         return false;
@@ -6650,14 +6718,14 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     // An SCF density through the dmat, built on the device from its orbitals: no matrix on the host, and
     // only the AO pairs the evaluation reads
     if (s.num_idx == 0 && density_dmat_ensure(state, density_path)) {
-        density_gpu_launch(state, grid, op, state->mold.gpu_dmat, out_job);
+        density_gpu_launch(state, grid, op, qm_system(*state).data.gpu_dmat, out_job);
         return true;
     }
 
     // Extracted on a worker thread for a representation (density_pack_prepare): on the device already
     dpack_build_take(state, false);
-    if (state->mold.gpu_dpack && state->mold.gpu_dpack_key == density_pack_key(sys, *attr, s)) {
-        density_gpu_launch(state, grid, op, nullptr, out_job, state->mold.gpu_dpack);
+    if (qm_system(*state).data.gpu_dpack && qm_system(*state).data.gpu_dpack_key == density_pack_key(sys, *attr, s)) {
+        density_gpu_launch(state, grid, op, nullptr, out_job, qm_system(*state).data.gpu_dpack);
         return true;
     }
 
@@ -6837,7 +6905,7 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
     // a density's matrix, made on a worker thread (an SCF density's dmat, another's packed triangle)
     md_str_t path = {};
     md_attribute_slice_t slice = {};
-    if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_pack_prepare(state, path, &slice)) return 0;
+    if (es_volume_density(&path, &slice, es, qm_system(*state).data.sys) && !density_pack_prepare(state, path, &slice)) return 0;
 #endif
     if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.shown.excited_state_idx)) return 0;
     if (electronic_structure_source_is_surface_field(es.shown.source)) return -1;   // as a surface field, into the volume
@@ -6870,7 +6938,7 @@ static void es_box_update(ApplicationState* state, Representation* rep) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(es)];
     md_grid_t grid = {};
-    if (!electronic_structure_grid_init(&grid, state->mold.sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
+    if (!electronic_structure_grid_init(&grid, qm_system(*state).data.sys, system_instance(qm_system(*state)).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) {
         es.has_box = false;
         return;
     }
@@ -6952,27 +7020,27 @@ bool electronic_structure_plane_images_update(ApplicationState* state, Represent
 // it cannot be made. g: what the volume is of.
 static int es_source_volume_poll(ApplicationState* state, Representation* rep, const ElectronicStructureRepresentation& g) {
     ElectronicStructureRepresentation& es = rep->electronic_structure;
-    const md_system_t& sys = state->mold.sys;
+    const md_system_t& sys = qm_system(*state).data.sys;
     const SurfaceFieldKind kind = electronic_structure_source_field_kind(g.shown.source);
     if (kind == SurfaceFieldKind::Count || !surface_field_available(kind, sys)) return -1;
 
     md_grid_t grid = {};
     const double samples_per_angstrom = volume_resolution_samples_per_angstrom[(int)electronic_structure_volume_resolution(g)];
-    if (!electronic_structure_grid_init(&grid, sys, system_instance(state->system_context).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
+    if (!electronic_structure_grid_init(&grid, sys, system_instance(qm_system(*state)).state, samples_per_angstrom * BOHR_TO_ANGSTROM)) return -1;
 
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     SurfaceFieldDesc desc = {};
     desc.kind        = kind;
     desc.sys         = &sys;
-    desc.state       = &system_instance(state->system_context).state;
+    desc.state       = &system_instance(qm_system(*state)).state;
     desc.grid        = &grid;               // no density: all of it
     // what the values are of (the field, the frame); the grid is the volume's own concern: a new one keeps what the
     // field is made of (an electrostatic potential's distribution) and evaluates again
     desc.source_hash = es_source_hash(state, g);
     desc.band_hash   = 1;
     if (surface_field_uses_basis(kind)) {
-        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(state->system_context).state);
+        desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, system_instance(qm_system(*state)).state);
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
@@ -7044,7 +7112,7 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             md_attribute_slice_t slice = {};
             if ((es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) || gpu_density_job_pending(state)) {
                 ready = false;
-            } else if (es_volume_density(&path, &slice, es, state->mold.sys)) {
+            } else if (es_volume_density(&path, &slice, es, qm_system(*state).data.sys)) {
                 ready = density_pack_prepare(state, path, &slice);
             }
         }

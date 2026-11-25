@@ -1677,7 +1677,7 @@ struct SystemScene {
     // state), which the script measures and the operations write, are not moved by it - unlike centering. Side by side,
     // and superposed on another by a fit of a selection of each, are placements. Applied wherever the instance's
     // coordinates meet the world: its draws (as a model matrix, under its copies), the box and dipoles drawn of it,
-    // region selection, framing; not yet to the isosurfaces of its electronic structure (of the first system alone).
+    // region selection, framing; not yet to its electronic structure (of the quantum chemistry system alone: qm_system).
     md_float4x4_t placement = MD_MAT4_IDENT_INIT;
 
     // DERIVED, NOT SAVED: the copies drawn of what is above, made from it every frame (update_view_param)
@@ -2087,6 +2087,13 @@ struct ApplicationState {
     SystemContext* systems[SYSTEM_MAX] = { &system_context };
     size_t         num_systems = 1;
     uint32_t       next_system_id = 1;      // The first is 0, as a workspace before several systems names it
+
+    // The quantum chemistry system (qm_system): its id, and whether it was chosen (by the user, a workspace) rather
+    // than taken for having electronic structure
+    struct {
+        uint32_t system_id = 0;
+        bool     chosen = false;
+    } qm;
 
     // The script property hovered in any view of it (a plot, the script editor), by identifier. A copy,
     // not a view: the identifiers live in the script IR, which is rebuilt when the script recompiles,
@@ -2975,6 +2982,22 @@ static inline const SystemContext& system_or_first(const ApplicationState& app, 
 // How many are loaded (system_loaded)
 size_t system_count(const ApplicationState& app);
 
+// THE QUANTUM CHEMISTRY SYSTEM: the one system whose quantum chemistry is studied, one at a time. The Quantum Chemistry
+// windows are of it, and its electronic structure representations are the ones evaluated (those of another system are
+// not). It is the one chosen (qm_system_choose: the windows' system, a workspace's [QuantumChemistry] System=) while it
+// has electronic structure, else the first loaded system that has (qm_system_update, as systems are loaded and freed).
+SystemContext& qm_system(ApplicationState& app);
+const SystemContext& qm_system(const ApplicationState& app);
+// Whether it could be: loaded, with electronic structure (es_source_mask)
+bool qm_system_candidate(const SystemContext& sc);
+// It is the system with the id from now on: what is under way of the one before is taken first, and the representations
+// of both are made again
+void qm_system_set(ApplicationState* app, uint32_t id);
+void qm_system_choose(ApplicationState* app, uint32_t id);
+// After a system was loaded, or before one goes (going): the one chosen while it has electronic structure or is still
+// to be loaded, else the first loaded one with electronic structure
+void qm_system_update(ApplicationState* app, const SystemContext* going = nullptr);
+
 // THE PALETTE: the colours things are given unless what they are of says otherwise (a type with a colour of its own, a
 // representation's): of the elements, of the standard monomers (the amino acids, the nucleotides) and of the secondary
 // structures. The user's, as they like to see things: kept as they set it (the .ini, settings.palette), never with a
@@ -3406,7 +3429,7 @@ static inline bool atom_attribute_value_absent(float v) {
 // Builds the per dataset GPU data - the uploaded GTO basis and the atom buffer - from the system's
 // own basis/ attributes, and grows the device coefficient scratch to fit. Returns false when the
 // system publishes no basis, which is the normal case rather than a failure.
-bool system_gpu_data_update(ApplicationState* state, double cutoff);
+bool system_gpu_data_update(SystemContext& sys, double cutoff);
 void system_gpu_data_free(SystemContext& sys);
 
 // One orbital's AO coefficient row, out of the attribute at coefficient_path narrowed by 'slice',
