@@ -39,6 +39,7 @@
 #include <event.h>
 #include <task_system.h>
 #include <serialization_utils.h>
+#include <system_scene.h>
 
 #include <imgui.h>
 #include <implot.h>
@@ -75,6 +76,7 @@ struct GroupResult {
 };
 
 struct Result {
+    uint32_t system_id = 0;     // Of the system (by id), whose groups they are
     bool   valid = false;
     bool   has_energy = false;
     double cutoff = 0;          // Å, between van der Waals surfaces
@@ -136,6 +138,10 @@ struct Contacts : viamd::EventHandler {
     bool show_window = false;
     ApplicationState* app_state = nullptr;
 
+    // Of which system (by id, system_or_first), at the coordinates of which of its instances (by id, instance_resolve)
+    uint32_t system_id = 0;
+    uint32_t instance_id = 0;
+
     // Settings
     GroupBy group_by = GroupBy_Residue;
     float cutoff = 1.0f;                // Å, gap between van der Waals surfaces
@@ -163,6 +169,8 @@ struct Contacts : viamd::EventHandler {
                 workspace_register_window("Contacts", &show_window);
                 break;
             case viamd::EventType_ViamdDeserializeBegin:
+                system_id = 0;
+                instance_id = 0;
                 group_by = GroupBy_Residue;
                 cutoff = 1.0f;
                 bond_separation = 4;
@@ -178,17 +186,26 @@ struct Contacts : viamd::EventHandler {
                 viamd::window_menu_add(e, "Analysis/Contacts", &show_window, {.order = 30});
                 break;
             case viamd::EventType_ViamdSystemInit:
-            case viamd::EventType_ViamdSystemFree:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
-                // A new system, or none: whatever was computed or loaded belongs to the old one, and the task reading
-                // it is stopped before it goes
+            case viamd::EventType_ViamdSystemFree: {
+                // Of the system computed or being computed: a new one, or none. Whatever was computed belongs to the
+                // old one, and the task reading it is stopped before it goes.
+                const SystemContext* es = event_system(e);
+                if (!es || (es->id != result.system_id && !(task.running() && es->id == pending.system_id))) break;
                 task.cancel_and_wait();
                 pending_ready = false;
+                if (highlighting) {
+                    md_bitmask_clear(&system_or_first(app_state, result.system_id).selection.highlight_mask);
+                    highlighting = false;
+                }
                 result = Result{};
                 break;
+            }
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, MD_STR_LIT("Contacts"));
+                // Of another system than the first, another instance than its first: by their ids
+                if (&system() != &app_state->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+                if (&instance() != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)instance().id);
                 viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
                 viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
                 viamd::write_int(state, MD_STR_LIT("BondSeparation"), bond_separation);
@@ -199,7 +216,15 @@ struct Contacts : viamd::EventHandler {
                 if (md_str_eq(viamd::section_header(state), MD_STR_LIT("Contacts"))) {
                     md_str_t ident, arg;
                     while (viamd::next_entry(ident, arg, state)) {
-                        if (md_str_eq(ident, MD_STR_LIT("GroupBy"))) {
+                        if (md_str_eq(ident, MD_STR_LIT("System"))) {
+                            // The first in place of one the workspace does not load
+                            int id = 0;
+                            const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
+                            system_id = sc ? sc->id : 0;
+                        } else if (md_str_eq(ident, MD_STR_LIT("Instance"))) {
+                            int id = 0;
+                            if (viamd::extract_int(id, arg)) instance_id = (uint32_t)MD_MAX(id, 0);
+                        } else if (md_str_eq(ident, MD_STR_LIT("GroupBy"))) {
                             viamd::extract_enum(group_by, arg, GroupBy_Count);
                         } else if (md_str_eq(ident, MD_STR_LIT("Cutoff"))) {
                             viamd::extract_flt(cutoff, arg);
@@ -217,10 +242,14 @@ struct Contacts : viamd::EventHandler {
         }
     }
 
+    SystemContext& system() const { return system_or_first(app_state, system_id); }
+    const SystemInstance& instance() const { return instance_resolve(system(), instance_id); }
+
     void compute() {
         if (task.running()) return;
-        const md_system_t& sys = app_state->mold.sys;
-        const md_system_state_t& cur = system_instance(app_state->system_context).state;
+        const SystemContext* sc = &system();
+        const md_system_t& sys = sc->data.sys;
+        const md_system_state_t& cur = instance().state;
         const size_t N = sys.atom.count;
         if (N == 0) return;
 
@@ -229,6 +258,7 @@ struct Contacts : viamd::EventHandler {
         if (!md_system_state_copy(&frame, &cur)) return;
 
         pending = Result{};
+        pending.system_id = sc->id;
         pending.group_by = group_by;
         pending.cutoff = cutoff;
         pending.bond_separation = bond_separation;
@@ -263,8 +293,7 @@ struct Contacts : viamd::EventHandler {
         }
         pending.groups.resize(off.size() - 1);
 
-        // The system it reads, taken now: what the application calls its system when the task runs need not be it
-        const SystemContext* sc = &app_state->system_context;
+        // The system it reads, taken now: the one picked when the task runs need not be it
         task.start(MD_STR_LIT("Contacts"), [this, sc]() {
             const md_system_t& sys = sc->data.sys;
             const size_t N = sys.atom.count;
@@ -345,7 +374,7 @@ struct Contacts : viamd::EventHandler {
     void highlight() {
         const Result& res = result;
         const int n = (int)res.groups.size();
-        md_bitmask_t* mask = &app_state->system_context.selection.highlight_mask;
+        md_bitmask_t* mask = &system_or_first(app_state, res.system_id).selection.highlight_mask;
         auto light = [&](int g) {
             for (uint32_t k = res.group_off[g]; k < res.group_off[g + 1]; ++k) md_bitmask_set_bit(mask, res.group_atom[k]);
         };
@@ -364,7 +393,7 @@ struct Contacts : viamd::EventHandler {
 
     // The groups there would be now, of the system as it is
     size_t num_groups_now() const {
-        const md_system_t& sys = app_state->mold.sys;
+        const md_system_t& sys = system().data.sys;
         switch (group_by) {
         case GroupBy_Residue:  return md_system_residue_count(&sys);
         case GroupBy_Molecule: return md_system_molecule_count(&sys);
@@ -393,9 +422,11 @@ struct Contacts : viamd::EventHandler {
     void draw_over_frames() {
         static const char* selector[GroupBy_Count] = { "residue", "molecule", "chain", "part" };
         const bool v2 = app_state->script.language == script::Language::V2;
+        // The script is of the first system
+        const bool first = &system() == &app_state->system_context;
         const size_t n = num_groups_now();
         const bool too_many = n > 5000;
-        ImGui::BeginDisabled(!v2 || too_many || n < 2);
+        ImGui::BeginDisabled(!v2 || !first || too_many || n < 2);
         if (ImGui::Button("Over frames")) {
             char args[128];
             int len = snprintf(args, sizeof(args), "%s", selector[group_by]);
@@ -409,6 +440,8 @@ struct Contacts : viamd::EventHandler {
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
             if (!v2) {
                 ImGui::SetTooltip("Over the frames, the map is contacts() of a VIAL script: the script is in v1");
+            } else if (!first) {
+                ImGui::SetTooltip("Over the frames, the map is contacts() of the script, which is of the first system");
             } else if (too_many) {
                 ImGui::SetTooltip("%zu groups: a map of %zu × %zu over the frames is too large.\n"
                                   "Write contacts() of fewer in the script, such as contacts(protein.residue).", n, n, n);
@@ -421,7 +454,7 @@ struct Contacts : viamd::EventHandler {
     }
 
     void group_label(char* buf, size_t cap, int g) const {
-        const md_system_t& sys = app_state->mold.sys;
+        const md_system_t& sys = system_or_first(app_state, result.system_id).data.sys;
         switch (result.group_by) {
         case GroupBy_Residue: {
             const md_str_t name = md_system_residue_name(&sys, (size_t)g);
@@ -515,9 +548,15 @@ struct Contacts : viamd::EventHandler {
             ImGui::SetItemTooltip("Groups joined by a path of at most this many bonds are in no contact. A residue is 1 bond from its\n"
                                   "neighbours along a protein and 4 from theirs, so 4 leaves out the two on either side; across a\n"
                                   "chain break nothing is left out. 0 counts every pair. Their energy is counted all the same."); 
+            // Of which system and instance, where there are several
+            if (system_combo("System", &system_id, *app_state)) instance_id = 0;
+            if (system().num_instances > 1) {
+                instance_combo("Instance", &instance_id, system());
+                ImGui::SetItemTooltip("The instance whose coordinates are computed: its run, at the frame it shows");
+            }
             ImGui::PopItemWidth();
 
-            if (const md_nb_forcefield_t* ff = app_state->mold.sys.nonbonded) {
+            if (const md_nb_forcefield_t* ff = system().data.sys.nonbonded) {
                 static const char* mod_lbl[]  = { "plain cut-off", "potential-shift", "potential-switch", "force-switch" };
                 static const char* coul_lbl[] = { "none", "cut-off", "reaction field", "Ewald real space" };
                 ImGui::TextDisabled("Energy: from the force field of the system: %zu particle types, LJ %s, Coulomb %s, pairs within %.2f nm",
