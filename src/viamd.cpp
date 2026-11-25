@@ -2557,7 +2557,6 @@ static void workspace_reset(ApplicationState* data) {
         data->visuals.background  = factory.background;
         data->visuals.shading     = factory.shading;
         data->visuals.tonemapping = factory.tonemapping;
-        data->visuals.dof         = factory.dof;
     }
     data->view.mode = CameraMode::Perspective;
     data->view.camera.fov_y = Camera{}.fov_y;
@@ -2707,14 +2706,12 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                 else if (md_str_eq(ident, MD_STR_LIT("ShadingSpecular")))      viamd::extract_flt(v.shading.specular, arg);
                 // The ambient occlusion and the anti-aliasing (Ssao*, Fxaa*, Taa*, MotionBlur*, Sharpen*) were written by
                 // earlier versions and are ignored: they are the computer's settings (the .ini), not the figure's. Without
-                // a radius of the scene, nothing of the ambient occlusion is the figure's. DofFocusScale belonged to the
-                // previous scale-dependent DOF and is ignored too.
+                // a radius of the scene, nothing of the ambient occlusion is the figure's. The depth of field (Dof*) is
+                // not drawn and is ignored too.
                 else if (md_str_eq(ident, MD_STR_LIT("TonemapEnabled")))       viamd::extract_bool(v.tonemapping.enabled, arg);
                 else if (md_str_eq(ident, MD_STR_LIT("Tonemapper")))           viamd::extract_enum(v.tonemapping.tonemapper, arg, (int)postprocess_pipeline::Tonemapper_Count);
                 else if (md_str_eq(ident, MD_STR_LIT("TonemapExposure")))      viamd::extract_flt(v.tonemapping.exposure, arg);
                 else if (md_str_eq(ident, MD_STR_LIT("TonemapGamma")))         viamd::extract_flt(v.tonemapping.gamma, arg);
-                else if (md_str_eq(ident, MD_STR_LIT("DofEnabled")))           viamd::extract_bool(v.dof.enabled, arg);
-                else if (md_str_eq(ident, MD_STR_LIT("DofAperture")))          viamd::extract_flt(v.dof.aperture, arg);
                 else if (md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
                     float n[3];
                     if (viamd::extract_flt_vec(n, 3, arg)) {
@@ -3170,8 +3167,6 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         viamd::write_int(state,  MD_STR_LIT("Tonemapper"), (int)v.tonemapping.tonemapper);
         viamd::write_flt(state,  MD_STR_LIT("TonemapExposure"), v.tonemapping.exposure);
         viamd::write_flt(state,  MD_STR_LIT("TonemapGamma"), v.tonemapping.gamma);
-        viamd::write_bool(state, MD_STR_LIT("DofEnabled"), v.dof.enabled);
-        viamd::write_flt(state,  MD_STR_LIT("DofAperture"), v.dof.aperture);
         {
             const float n[3] = { (float)app_state->view.periodic_images[0], (float)app_state->view.periodic_images[1], (float)app_state->view.periodic_images[2] };
             viamd::write_flt_vec(state, MD_STR_LIT("PeriodicImages"), n, 3);

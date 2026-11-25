@@ -430,24 +430,9 @@ static uint32_t jitter_count(const ApplicationState* state) {
     return MD_MIN(count, (uint32_t)JITTER_SEQUENCE_MAX);
 }
 
-// Which anti-aliasing passes run: the switch and the mode. Temporal carries more than the smoothing (the jitter,
-// motion blur, sharpening), all of it off with it.
-static inline bool fxaa_active(const ApplicationState* state) {
-    const auto& aa = state->visuals.anti_aliasing;
-    return aa.enabled && aa.mode == AntiAliasingMode::FXAA;
-}
+// Whether the anti-aliasing runs: the temporal (the jitter with it)
 static inline bool taa_active(const ApplicationState* state) {
-    const auto& aa = state->visuals.anti_aliasing;
-    return aa.enabled && aa.mode == AntiAliasingMode::TAA;
-}
-
-// The frames the shadows and the ambient occlusion take to settle when they are filtered over time: their histories,
-// twice through their sample patterns (shaders/ssao/ssao_temporal.frag)
-static constexpr uint32_t OCCLUSION_SETTLE_FRAMES = 32;
-
-static inline bool occlusion_temporal_active(const ApplicationState* state) {
-    const bool shadows = state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f;
-    return (shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal;
+    return state->visuals.anti_aliasing.enabled;
 }
 
 // A screenshot is the image as lazy rendering leaves it once it has settled (render()): with the GUI, the window as it
@@ -569,7 +554,6 @@ static void visual_look_save(ApplicationState* state) {
     state->settings.look.background  = state->visuals.background;
     state->settings.look.shading     = state->visuals.shading;
     state->settings.look.tonemapping = state->visuals.tonemapping;
-    state->settings.look.dof         = state->visuals.dof;
     app_settings::mark_dirty();
 }
 
@@ -577,7 +561,6 @@ static void visual_look_restore(ApplicationState* state) {
     state->visuals.background  = state->settings.look.background;
     state->visuals.shading     = state->settings.look.shading;
     state->visuals.tonemapping = state->settings.look.tonemapping;
-    state->visuals.dof         = state->settings.look.dof;
 }
 
 // Once the .ini is read: its enums within their ranges (a file can hold anything), and the session in the look saved
@@ -587,7 +570,6 @@ static void apply_visual_settings(void* user_data) {
     auto& v    = state->visuals;
     auto& look = state->settings.look;
     if (!(0 <= (int)v.ssao.mode && (int)v.ssao.mode < postprocess_pipeline::SsaoMode_Count)) v.ssao.mode = factory.ssao.mode;
-    if (!(0 <= (int)v.anti_aliasing.mode && (int)v.anti_aliasing.mode < (int)AntiAliasingMode::Count)) v.anti_aliasing.mode = factory.anti_aliasing.mode;
     v.temporal_aa.jitter_samples = jitter_samples_options[jitter_samples_index(v.temporal_aa.jitter_samples)];
     state->settings.render_scale = MD_CLAMP(state->settings.render_scale, RENDER_SCALE_MIN, 1.0f);
     v.shadows.softness = MD_CLAMP(v.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX);
@@ -717,16 +699,10 @@ int main(int argc, char** argv) {
     app_settings::bind(MD_STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(MD_STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(MD_STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
-    app_settings::bind(MD_STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
     app_settings::bind(MD_STR_LIT("anti_aliasing"), &state.visuals.anti_aliasing.enabled);
-    app_settings::bind_enum(MD_STR_LIT("anti_aliasing_mode"), &state.visuals.anti_aliasing.mode);
     app_settings::bind(MD_STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
     app_settings::bind(MD_STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(MD_STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
-    app_settings::bind(MD_STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
-    app_settings::bind(MD_STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
-    app_settings::bind(MD_STR_LIT("sharpen"), &state.visuals.sharpen.enabled);
-    app_settings::bind(MD_STR_LIT("sharpen_strength"), &state.visuals.sharpen.weight);
     // The look a session starts with (Visuals > Save as Default)
     {
         auto& look = state.settings.look;
@@ -741,8 +717,6 @@ int main(int argc, char** argv) {
         app_settings::bind_enum(MD_STR_LIT("look_tonemapper"), &look.tonemapping.tonemapper);
         app_settings::bind(MD_STR_LIT("look_exposure"), &look.tonemapping.exposure);
         app_settings::bind(MD_STR_LIT("look_gamma"), &look.tonemapping.gamma);
-        app_settings::bind(MD_STR_LIT("look_dof"), &look.dof.enabled);
-        app_settings::bind(MD_STR_LIT("look_dof_strength"), &look.dof.aperture);
     }
     app_settings::on_apply(apply_visual_settings, &state);
     app_settings::bind_enum(MD_STR_LIT("script_language"), &state.settings.script_language);
@@ -1082,7 +1056,6 @@ int main(int argc, char** argv) {
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
         camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
-        state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
         if (win && strcmp(win->Name, "Main interaction window") == 0) {
@@ -2077,68 +2050,21 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            // The visibilities of the two lights, found in what is on screen: the shadows (of the directional light) and
-            // the ambient occlusion (of the surroundings). Each has its switch and its own settings beside it, the header's
-            // switch is for both; they share the temporal filter and the time.
-            bool* occlusion_switches[2] = {&data->visuals.shadows.enabled, &data->visuals.ssao.enabled};
-            bool occlusion_toggled = false;
-            if (prop::section_toggle_all("Shadows & Occlusion", occlusion_switches, 2, &occlusion_toggled, false,
-                                         "Darken what less light reaches: the shadows of the directional light and the occlusion of the surroundings.\n"
-                                         "Turns both off, or on; each has its own switch in the section.")) {
-                const bool shadows_on = data->visuals.shadows.enabled;
-                const bool ao_on = data->visuals.ssao.enabled;
-
-                prop::row("shadows", "Shadows of the directional light: darken cavities and what lies behind other parts, where the light is blocked.\n"
-                                     "How dark they are is how strong the light is against the surroundings (Shading: Light, Environment).\n"
-                                     "Found in what is on screen: what is off screen, or hidden behind a surface, casts none.");
-                machine_dirty |= ImGui::Checkbox("##shadows", &data->visuals.shadows.enabled);
-                if (shadows_on) {
-                    ImGui::SameLine(0.0f, gap);
-                    ImGui::SetNextItemWidth(-FLT_MIN);
-                    machine_dirty |= ImGui::SliderFloat("##softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX,
-                                                        (const char*)u8"softness %.1f°", ImGuiSliderFlags_AlwaysClamp);
-                    ImGui::SetItemTooltip("The size of the light, as its angular radius. A larger light casts softer shadows,\n"
-                                          "whose edges blur more the further they fall from what casts them.");
+            // The visibility of the surroundings' light, found in what is on screen
+            if (prop::section_toggle("Ambient Occlusion", &data->visuals.ssao.enabled, nullptr, false,
+                                     "Darken creases and cavities, where less of the surroundings' light reaches (SSAO)")) {
+                const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
+                int mode = (int)data->visuals.ssao.mode;
+                prop::row("mode", "Performance: point samples.\n"
+                                  "Quality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
+                if (ImGui::Combo("##ssao_mode", &mode, modes, IM_ARRAYSIZE(modes))) {
+                    data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
+                    machine_dirty = true;
                 }
-
-                prop::row("ambient occlusion", "Darken creases and cavities, where less of the surroundings' light reaches (SSAO).\n"
-                                               "Performance: point samples.\n"
-                                               "Quality: screen-space slices with a visibility bitmask, finds creases and cavities more reliably and avoids halos behind small atoms.");
-                machine_dirty |= ImGui::Checkbox("##ssao", &data->visuals.ssao.enabled);
-                if (ao_on) {
-                    const char* modes[postprocess_pipeline::SsaoMode_Count] = {"Performance", "Quality"};
-                    int mode = (int)data->visuals.ssao.mode;
-                    ImGui::SameLine(0.0f, gap);
-                    ImGui::SetNextItemWidth(-FLT_MIN);
-                    if (ImGui::Combo("##ssao_mode", &mode, modes, IM_ARRAYSIZE(modes))) {
-                        data->visuals.ssao.mode = (postprocess_pipeline::SsaoMode)mode;
-                        machine_dirty = true;
-                    }
-                    prop::row("occlusion strength", "How much the ambient occlusion darkens. The shadows have no such setting: they are as dark as the light is strong.");
-                    machine_dirty |= ImGui::SliderFloat("##ssao_intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
-                }
-
-                if (shadows_on || ao_on) {
-                    prop::row("temporal filter", "Accumulate the shadows and the occlusion over frames: removes the flicker in crevasses and smooths the soft shadows.\n"
-                                                 "Off gives a fixed sample pattern instead.");
-                    machine_dirty |= ImGui::Checkbox("##occlusion_temporal", &data->visuals.occlusion_temporal);
-
-                    // Their GPU time in the main view (the component windows' have their own), with filtering
-                    const float shadow_ms = shadows_on ? profiler::gpu_ms("Shadows", "Render") : 0.0f;
-                    const float ao_ms = ao_on ? profiler::gpu_ms("SSAO", "Render") : 0.0f;
-                    if (shadow_ms + ao_ms > 0.0f) {
-                        prop::row("GPU time");
-                        ImGui::TextDisabled("%.2f ms", shadow_ms + ao_ms);
-                        ImGui::SetItemTooltip("GPU time per frame, with filtering\n"
-                                              "Shadows: %.3f ms (rays %.3f ms)\n"
-                                              "Ambient occlusion: %.3f ms (estimator %.3f ms)",
-                                              shadow_ms, shadows_on ? profiler::gpu_ms("Shadow Rays", "Render") : 0.0f,
-                                              ao_ms, ao_on ? profiler::gpu_ms("AO", "Render") : 0.0f);
-                    }
-                }
+                prop::row("strength", "How much the ambient occlusion darkens");
+                machine_dirty |= ImGui::SliderFloat("##ssao_intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
                 prop::section_end();
             }
-            machine_dirty |= occlusion_toggled;
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
             if (prop::section_toggle("Cone Traced AO", &data->visuals.cone_traced_ao.enabled)) {
                 prop::row("intensity");
@@ -2182,55 +2108,24 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::EndDisabled();
 
-            if (prop::section_toggle("Depth of Field", &data->visuals.dof.enabled, nullptr, false, "Blur what lies away from the focus")) {
-                prop::row("blur", "Blur of distant objects, in percent of the view height. Independent of zoom level");
-                ImGui::SliderFloat("##blur", &data->visuals.dof.aperture, 0.0f, 4.0f, "%.2f %%");
-                prop::section_end();
-            }
-
-            // The switch on the header, as the other effects', and the mode within; folded, as the switch is what is
-            // mostly wanted, the mode and the temporal resolve's settings seldom
+            // The switch on the header, as the other effects', and the temporal resolve's settings within; folded, as
+            // the switch is what is mostly wanted, the settings seldom
             bool aa_toggled = false;
             if (prop::section_toggle("Anti-Aliasing", &data->visuals.anti_aliasing.enabled, &aa_toggled, false,
-                                     "Smooth jagged edges.\nOff: screenshots are a single sample.")) {
-                const char* modes[(int)AntiAliasingMode::Count] = {"TAA", "FXAA"};
-                int mode = (int)data->visuals.anti_aliasing.mode;
-                prop::row("mode", "TAA: each frame blended with the ones before, rendered from slightly shifted views. The smoothest still image.\n"
-                                  "FXAA: one pass over each frame on its own. Nothing is carried over from frame to frame, but edges crawl in motion and detail finer than a pixel flickers.");
-                if (ImGui::Combo("##mode", &mode, modes, IM_ARRAYSIZE(modes))) {
-                    data->visuals.anti_aliasing.mode = (AntiAliasingMode)mode;
+                                     "Smooth jagged edges: each frame blended with the ones before, rendered from slightly shifted views (TAA).\n"
+                                     "Off: screenshots are a single sample.")) {
+                prop::row("jitter", "The positions the view is shifted through, a frame each, that the edges of a still view are smoothed over.\n"
+                                    "The image keeps a history of about its last 30 frames, so it gains little past 32. A still view takes longer to\n"
+                                    "settle past 32.");
+                int jitter = jitter_samples_index(data->visuals.temporal_aa.jitter_samples);
+                if (ImGui::Combo("##jitter_samples", &jitter, jitter_samples_names, IM_ARRAYSIZE(jitter_samples_names))) {
+                    data->visuals.temporal_aa.jitter_samples = jitter_samples_options[jitter];
                     machine_dirty = true;
                 }
-                if (taa_active(data)) {
-                    // The temporal resolve's settings
-                    prop::row("jitter", "The positions the view is shifted through, a frame each, that the edges of a still view are smoothed over.\n"
-                                        "The image keeps a history of about its last 30 frames, so it gains little past 32; the isosurface meshes and\n"
-                                        "transparent representations average 128 frames and gain up to 128. A still view takes longer to settle past 32.");
-                    int jitter = jitter_samples_index(data->visuals.temporal_aa.jitter_samples);
-                    if (ImGui::Combo("##jitter_samples", &jitter, jitter_samples_names, IM_ARRAYSIZE(jitter_samples_names))) {
-                        data->visuals.temporal_aa.jitter_samples = jitter_samples_options[jitter];
-                        machine_dirty = true;
-                    }
-                    prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
-                    machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
-                    prop::row("history max", "How much of the previous frames is kept where the image is still");
-                    machine_dirty |= ImGui::SliderFloat("##history_max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f, "%.2f");
-                    // On, and how much, on one row each: the amount means nothing while off
-                    prop::row("motion blur");
-                    machine_dirty |= ImGui::Checkbox("##motion_blur", &data->visuals.temporal_aa.motion_blur.enabled);
-                    if (data->visuals.temporal_aa.motion_blur.enabled) {
-                        ImGui::SameLine(0.0f, gap);
-                        ImGui::SetNextItemWidth(-FLT_MIN);
-                        machine_dirty |= ImGui::SliderFloat("##motion_blur_strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f, "strength %.2f");
-                    }
-                    prop::row("sharpen");
-                    machine_dirty |= ImGui::Checkbox("##sharpen", &data->visuals.sharpen.enabled);
-                    if (data->visuals.sharpen.enabled) {
-                        ImGui::SameLine(0.0f, gap);
-                        ImGui::SetNextItemWidth(-FLT_MIN);
-                        machine_dirty |= ImGui::SliderFloat("##sharpen_strength", &data->visuals.sharpen.weight, 0.0f, 4.0f, "strength %.2f");
-                    }
-                }
+                prop::row("history min", "How much of the previous frames is kept where the image changes: lower is sharper in motion, higher is smoother");
+                machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
+                prop::row("history max", "How much of the previous frames is kept where the image is still");
+                machine_dirty |= ImGui::SliderFloat("##history_max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f, "%.2f");
                 prop::section_end();
             }
             machine_dirty |= aa_toggled;
@@ -2266,17 +2161,17 @@ static void draw_main_menu(ApplicationState* data) {
                 app_settings::mark_dirty();
             }
 
-            // The look (View to Depth of Field but the camera, and the ambient occlusion) is the workspace's: a new
-            // session starts with the one saved here
+            // The look (the shading, the background, the tone mapping) is the workspace's: a new session starts with
+            // the one saved here
             ImGui::Separator();
             ImGui::PushID("Defaults");
             const float half_w = 0.5f * (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x);
             if (ImGui::Button("save as default", ImVec2(half_w, 0))) {
                 visual_look_save(data);
             }
-            ImGui::SetItemTooltip("Start new sessions with this look: the shading, the background, the tone mapping and\n"
-                                  "the depth of field. A workspace keeps its own and loads it. The rest of this menu is\n"
-                                  "this computer's, kept as it is set.");
+            ImGui::SetItemTooltip("Start new sessions with this look: the shading, the background and the tone mapping.\n"
+                                  "A workspace keeps its own and loads it. The rest of this menu is this computer's,\n"
+                                  "kept as it is set.");
             ImGui::SameLine();
             if (ImGui::Button("reset to default", ImVec2(-FLT_MIN, 0))) {
                 visual_look_restore(data);

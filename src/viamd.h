@@ -148,7 +148,6 @@ enum class SelectionGrowthMode { CovalentBond, Radial, Count };
 enum class CameraMode { Perspective, Orthographic, Count };
 enum class InterpolationMode { Nearest, Linear, CubicSpline, BSpline, Count };
 // TAA: each frame blended with the ones before; FXAA: each frame on its own (nothing carried over time)
-enum class AntiAliasingMode { TAA, FXAA, Count };
 
 // Stored in workspaces by value: append, never insert or reorder. The order shown is color_mapping_order.
 enum class ColorMapping {
@@ -1896,20 +1895,18 @@ struct ApplicationState {
             float specular = 0.25f;     // basic
         } shading;
 
-        // The visibilities of the two lights, found in screen space: the shadows of the directional light and the
-        // ambient occlusion of the surroundings. They share a temporal filter.
+        // The shadows of the directional light: kept as set, not drawn (md_compose has none yet, nor the menu a row)
         struct {
             bool enabled = true;
             float softness = 10.0f;     // the light's angular radius, degrees
         } shadows;
 
+        // The ambient occlusion of the surroundings' light (md_compose)
         struct { 
             bool enabled = true;
             float intensity = 5.0f;
             postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Performance;
         } ssao;
-
-        bool occlusion_temporal = true; // accumulate the shadows and the ambient occlusion over frames
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
         struct {
@@ -1926,17 +1923,9 @@ struct ApplicationState {
             float gamma = 2.2f;
         } tonemapping;
 
-        struct {
-            bool enabled = false;
-            float focus_depth = 10.0f;
-            float aperture = 1.0f;      // percent of the view height (CoC of an object at infinity)
-        } dof;
-
-        // Whether jagged edges are smoothed, and how: the mode is kept while off. Every mode smooths, so there is no
-        // being on with nothing applied. fxaa_active() and taa_active() say which pass runs.
+        // Whether jagged edges are smoothed: the temporal anti-aliasing (taa_active)
         struct {
             bool enabled = true;
-            AntiAliasingMode mode = AntiAliasingMode::TAA;
         } anti_aliasing;
 
         // The temporal resolve's settings, used in TAA mode
@@ -1946,17 +1935,7 @@ struct ApplicationState {
             int jitter_samples = 32;
             float feedback_min = 0.80f;
             float feedback_max = 0.95f;
-
-            struct {
-                bool enabled = true;
-                float motion_scale = 1.0f;
-            } motion_blur;
         } temporal_aa;
-
-        struct {
-            bool enabled = true;
-            float weight = 1.0f;
-        } sharpen;
 
         struct {
             bool draw_control_points = false;
@@ -2079,7 +2058,6 @@ struct ApplicationState {
             decltype(visuals.background)  background;
             decltype(visuals.shading)     shading;
             decltype(visuals.tonemapping) tonemapping;
-            decltype(visuals.dof)         dof;
         } look;
         int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
                                             // representation has its own: ElectronicStructureRepresentation::rendering)
