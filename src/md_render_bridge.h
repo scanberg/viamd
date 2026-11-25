@@ -1,15 +1,15 @@
 #pragma once
 
 // The main view, drawn on md_gpu (mdlib): md_render draws the representations it can and the shapes of the dipoles and
-// the cell (their arrows, its edges); md_compose shades what it drew (the ambient occlusion, the transparent layers)
-// with the electronic structure representations' volumes (gpu_volume.h: their raycast isosurfaces, volume renderings
-// and planes; their isosurfaces drawn as meshes are md_render's triangles); md_post makes the image of it (the display
-// transform, the temporal antialiasing at the size of the image shown) and presents it with the marks of the selection
-// and the highlight into a texture shared with OpenGL, which draws it into the framebuffer bound, under the GUI. OpenGL
-// draws nothing of the scene.
+// the cell (their arrows, its edges); md_compose shades what it drew (the ambient occlusion, the shadows, the
+// transparent layers) with the electronic structure representations' volumes (gpu_volume.h: their raycast isosurfaces,
+// volume renderings and planes; their isosurfaces drawn as meshes are md_render's triangles); md_post makes the image of
+// it (the display transform, the temporal antialiasing at the size of the image shown) and presents it with the marks
+// of the selection and the highlight into a texture shared with OpenGL, which draws it into the framebuffer bound,
+// under the GUI. OpenGL draws nothing of the scene.
 //
-// What is not in the main view yet: the glyphs, what a script shows, the components' drawings (the critical points);
-// the shadows. See render_scene (main.cpp).
+// What is not in the main view yet: the glyphs, what a script shows, the components' drawings (the critical points).
+// See render_scene (main.cpp).
 //
 // Needs a device that draws (md_gpu's graphics) and shares textures with the GL context (the same GPU,
 // GL_EXT_memory_object or IOSurface); otherwise md_render_bridge_status says why, and the main view is empty.

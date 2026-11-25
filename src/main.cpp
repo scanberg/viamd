@@ -2064,6 +2064,18 @@ static void draw_main_menu(ApplicationState* data) {
                 machine_dirty |= ImGui::SliderFloat("##ssao_intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
                 prop::section_end();
             }
+
+            // The shadows of the directional light, from a map of the scene seen from it
+            if (prop::section_toggle("Shadows", &data->visuals.shadows.enabled, nullptr, false,
+                                     "Darken what other parts hide from the directional light.\n"
+                                     "How dark they are is how strong the light is against the surroundings (Shading: light, environment).\n"
+                                     "Transparent surfaces and volumes neither cast nor take them.")) {
+                prop::row("softness", "The size of the light, as its angular radius. A larger light casts softer shadows,\n"
+                                      "whose edges blur more the further they fall from what casts them.");
+                machine_dirty |= ImGui::SliderFloat("##shadow_softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX,
+                                                    (const char*)u8"%.1f°", ImGuiSliderFlags_AlwaysClamp);
+                prop::section_end();
+            }
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
             if (prop::section_toggle("Cone Traced AO", &data->visuals.cone_traced_ao.enabled)) {
                 prop::row("intensity");
@@ -7313,7 +7325,7 @@ static uint64_t scene_key(const ApplicationState* state) {
 }
 
 // The settings of the post-processing as the visuals have them: what the main view's frame is made with (shading,
-// ambient occlusion, display transform, background, TAA; md_render_bridge_render)
+// ambient occlusion, shadows, display transform, background, TAA; md_render_bridge_render)
 static postprocess_pipeline::Settings frame_settings(const ApplicationState* state) {
     postprocess_pipeline::Settings settings = {};
     settings.background_color = state->visuals.background.color;
@@ -7328,6 +7340,9 @@ static postprocess_pipeline::Settings frame_settings(const ApplicationState* sta
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
     settings.ssao.mode = state->visuals.ssao.mode;
+
+    settings.shadows.enabled = state->visuals.shadows.enabled;
+    settings.shadows.softness = state->visuals.shadows.softness;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
