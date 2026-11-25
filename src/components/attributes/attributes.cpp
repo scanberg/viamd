@@ -15,7 +15,6 @@
 #include <event.h>
 #include <plot_series.h>
 #include <timeline_periods_ui.h>
-#include <system_scene.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -123,6 +122,9 @@ static bool matches_filter(md_str_t filter, md_str_t path, md_str_t label, const
 }
 
 struct Row {
+    const SystemContext* sys;   // whose it is
+    bool first;             // of the first system, the one the plots and the script are of
+    md_str_t path;          // as listed: under the system's directory (system_dir), the script's under its run
     SeriesSource source;
     uint32_t period;        // a timeline period the script is taken over, 0 for every frame
     const char* run;        // of the script's evaluation of another run (script.run_evals), else empty
@@ -134,8 +136,6 @@ struct Row {
 
 struct Attributes : viamd::EventHandler {
     bool show_window = false;
-    // Of which system (by id, system_or_first). The plots and the script are of the first: of another, its table alone
-    uint32_t system_id = 0;
     bool plottable_only = false;
     bool focus_filter = false;
     char filter[128] = "";
@@ -185,16 +185,6 @@ struct Attributes : viamd::EventHandler {
             focus_filter = false;
         }
 
-        // Of which system, where there are several
-        if (system_count(state) > 1) {
-            ImGui::SetNextItemWidth(180);
-            system_combo("##system", &system_id, state);
-            ImGui::SetItemTooltip("The system whose attributes are listed. The plots and the script are of the first.");
-            ImGui::SameLine();
-        }
-        const SystemContext& sc = system_or_first(state, system_id);
-        const bool first = &sc == &state.system_context;
-
         ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Plottable only").x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x * 2 - ImGui::GetStyle().ItemInnerSpacing.x);
         ImGui::InputTextWithHint("##filter", "Filter: words in the path, label or source, all must match", filter, sizeof(filter));
         ImGui::SameLine();
@@ -203,25 +193,34 @@ struct Attributes : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin();
         md_allocator_i* alloc = md_temp_allocator(temp);
 
-        // The tables there are right now, and the script's over each timeline period, with only what it has of its
-        // own over a period: the distributions and volumes, over the period's frames. Everything else in the table is
-        // the same over every frame.
-        // Of the first system, the script's evaluation of each other run its instances show too. Of another system, its
-        // table alone.
+        // Every table there is right now, of every system, each under the system's directory: its own, and of the first
+        // the script's evaluation of each run its instances show, under the run, and over each timeline period, with only
+        // what the evaluation has of its own over a period: the distributions and volumes, over the period's frames.
+        // Everything else in its table is the same over every frame. The plots and the script are of the first system:
+        // the rows of another are listed alone.
         struct Source {
+            const SystemContext* sys;
             SeriesSource source;
             uint32_t period;
-            const char* run;
+            const char* run;        // The run whose evaluation it is: of SeriesKey::run, empty for script.eval's
+            md_str_t prefix;        // "<dir>/", "<dir>/run/<name>/"
         };
         md_array(Source) sources = 0;
-        md_array_push(sources, (Source{ SeriesSource_System, 0, "" }), alloc);
-        if (first) {
-            md_array_push(sources, (Source{ SeriesSource_Script, 0, "" }), alloc);
+        for (size_t k = 0; k < state.num_systems; ++k) {
+            const SystemContext& sc = *state.systems[k];
+            if (!system_loaded(sc)) continue;
+            const md_str_t dir = md_alloc_printf(alloc, "%s/", sc.dir);
+            md_array_push(sources, (Source{ &sc, SeriesSource_System, 0, "", dir }), alloc);
+            if (&sc != &state.system_context || !state.script.eval) continue;
+            const char* eval_run = state.script.eval_run;
+            const md_str_t eval_prefix = eval_run[0] ? md_alloc_printf(alloc, "%s/%s/", sc.dir, eval_run) : dir;
+            md_array_push(sources, (Source{ &sc, SeriesSource_Script, 0, "", eval_prefix }), alloc);
             for (size_t i = 0; i < md_array_size(state.script.run_evals); ++i) {
-                md_array_push(sources, (Source{ SeriesSource_Script, 0, state.script.run_evals[i].run }), alloc);
+                const char* run = state.script.run_evals[i].run;
+                md_array_push(sources, (Source{ &sc, SeriesSource_Script, 0, run, md_alloc_printf(alloc, "%s/%s/", sc.dir, run) }), alloc);
             }
             for (int i = 0; i < state.timeline.periods.count; ++i) {
-                md_array_push(sources, (Source{ SeriesSource_Script, state.timeline.periods.items[i].id, "" }), alloc);
+                md_array_push(sources, (Source{ &sc, SeriesSource_Script, state.timeline.periods.items[i].id, "", eval_prefix }), alloc);
             }
         }
         const int num_sources = (int)md_array_size(sources);
@@ -229,24 +228,24 @@ struct Attributes : viamd::EventHandler {
         size_t total = 0;
         const md_str_t filter_str = md_str_from_cstr(filter);
         for (int si = 0; si < num_sources; ++si) {
-            const SeriesSource source = sources[si].source;
-            const uint32_t period = sources[si].period;
-            const char* run = sources[si].run;
-            SeriesKey table_key = series_key(source, md_str_t{}, SeriesVariant_Values, period);
-            snprintf(table_key.run, sizeof(table_key.run), "%s", run);
-            const md_attributes_t* table = !first ? &sc.data.sys.attributes : series_table(&state, table_key, md_str_t{});
+            const Source& src = sources[si];
+            const bool first = src.sys == &state.system_context;
+            SeriesKey table_key = series_key(src.source, md_str_t{}, SeriesVariant_Values, src.period);
+            snprintf(table_key.run, sizeof(table_key.run), "%s", src.run);
+            const md_attributes_t* table = src.source == SeriesSource_System ? &src.sys->data.sys.attributes : series_table(&state, table_key, md_str_t{});
             if (!table) continue;
-            if (period == 0) total += md_attributes_count(table);
+            if (src.period == 0) total += md_attributes_count(table);
             char src_label[96];
-            source_label(src_label, sizeof(src_label), state, source, period, run);
+            source_label(src_label, sizeof(src_label), state, src.source, src.period, src.run);
             for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
                 const md_attribute_t& attr = *it.attr;
-                if (period != 0 && !script_aggregate_path(state, attr.path)) continue;
-                if (period != 0) total += 1;
-                if (!matches_filter(filter_str, attr.path, attr.label, src_label)) continue;
-                Row row = { source, period, run, table, it.attr, 0, nullptr };
-                SeriesKey key = series_key(source, attr.path, SeriesVariant_Values, period);
-                snprintf(key.run, sizeof(key.run), "%s", run);
+                if (src.period != 0 && !script_aggregate_path(state, attr.path)) continue;
+                if (src.period != 0) total += 1;
+                const md_str_t path = md_alloc_printf(alloc, MD_STR_FMT MD_STR_FMT, MD_STR_ARG(src.prefix), MD_STR_ARG(attr.path));
+                if (!matches_filter(filter_str, path, attr.label, src_label)) continue;
+                Row row = { src.sys, first, path, src.source, src.period, src.run, table, it.attr, 0, nullptr };
+                SeriesKey key = series_key(src.source, attr.path, SeriesVariant_Values, src.period);
+                snprintf(key.run, sizeof(key.run), "%s", src.run);
                 if (first) {
                     row.views = series_views(&state, key, &row.reason);
                 } else {
@@ -258,8 +257,7 @@ struct Attributes : viamd::EventHandler {
         }
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        if (first) ImGui::TextWrapped("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
-        else       ImGui::TextWrapped("%zu of %zu attributes, listed: the plots and the script are of the first system.", md_array_size(rows), total);
+        ImGui::TextWrapped("%zu of %zu attributes, each under its system's directory. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
         ImGui::PopStyleColor();
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
@@ -310,20 +308,20 @@ struct Attributes : viamd::EventHandler {
                     // The path spans the row: it is what is hovered, dragged and right clicked
                     ImGui::TableSetColumnIndex(2);
                     char path_buf[512];
-                    md_str_copy_to_char_buf(path_buf, sizeof(path_buf), attr.path);
+                    md_str_copy_to_char_buf(path_buf, sizeof(path_buf), row.path);
                     ImGui::Selectable(path_buf, false, ImGuiSelectableFlags_SpanAllColumns);
                     const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort);
 
                     // An energy term of groups (Coul-SR:Protein-SOL) shows its groups while it is hovered, each in a colour of its own
                     md_edr_term_groups_t term_groups;
-                    const bool has_groups = first && row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
+                    const bool has_groups = row.first && row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
                     if (has_groups && ImGui::IsItemHovered()) {
                         highlight_energy_term_groups(&state, row.attr);
                     }
 
                     // How the script reads it, if it does: an attribute of the system the script is compiled against
                     char expr[sizeof(path_buf) + 16];
-                    const bool scriptable = first && row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
+                    const bool scriptable = row.first && row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
 
                     if ((row.views || scriptable) && ImGui::BeginDragDropSource()) {
                         if (row.views) {
@@ -354,7 +352,7 @@ struct Attributes : viamd::EventHandler {
                         ImGui::Separator();
                         if (ImGui::MenuItem("Copy path")) {
                             char buf[512];
-                            snprintf(buf, sizeof(buf), MD_STR_FMT, MD_STR_ARG(attr.path));
+                            snprintf(buf, sizeof(buf), MD_STR_FMT, MD_STR_ARG(row.path));
                             ImGui::SetClipboardText(buf);
                         }
                         if (scriptable && ImGui::MenuItem("Copy script expression", expr)) {
@@ -394,12 +392,12 @@ struct Attributes : viamd::EventHandler {
 
                     if (hovered) {
                         ImGui::BeginTooltip();
-                        ImGui::TextUnformatted(attr.path.ptr, attr.path.ptr + attr.path.len);
+                        ImGui::TextUnformatted(row.path.ptr, row.path.ptr + row.path.len);
                         if (has_groups) {
                             char text[160];
                             energy_term_groups_text(text, sizeof(text), &state, term_groups);
                             ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
-                        } else if (first && row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
+                        } else if (row.first && row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
                             ImGui::TextDisabled("Of groups the system does not have: load the run's .tpr or its index file (.ndx)");
                         }
                         if (row.period != 0) {
