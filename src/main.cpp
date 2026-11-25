@@ -472,13 +472,25 @@ static md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t r
     return enabled ? md_float4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_float4_set(0.78f, 0.78f, 0.78f, 0.4f);
 }
 
-// Where the view's focus is seen (ViewRegion): where the windows leave it uncovered, moved over in clip space by this. Not
-// in a screenshot without the windows, which shows it in the middle.
-static inline md_float2_t view_shift(const ApplicationState* state) {
-    return screenshot_offscreen(state) ? md_float2_t{0, 0} : state->view.shift;
-}
+// The main view in the framebuffer (view.screen_pos, view.screen_size at its pixels per point): its pixels, and where it
+// is for GL, from the framebuffer's bottom left. All of the framebuffer before the view has a size.
+struct ViewPixels {
+    int x = 0, y = 0;
+    uint32_t width = 0, height = 0;
+};
 
-static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas);
+static ViewPixels view_pixels(const ApplicationState* state) {
+    const int fb_w = (int)state->app.framebuffer.width, fb_h = (int)state->app.framebuffer.height;
+    const md_float2_t pos = state->view.screen_pos, size = state->view.screen_size;
+    if (!(size.x > 0.0f && size.y > 0.0f)) return {0, 0, (uint32_t)MD_MAX(fb_w, 0), (uint32_t)MD_MAX(fb_h, 0)};
+    const ImVec2 scl = ImGui::GetIO().DisplayFramebufferScale;
+    const ImVec2 org = ImGui::GetMainViewport()->Pos;
+    const int x0 = MD_CLAMP((int)roundf((pos.x - org.x) * scl.x), 0, fb_w);
+    const int y0 = MD_CLAMP((int)roundf((pos.y - org.y) * scl.y), 0, fb_h);
+    const int x1 = MD_CLAMP((int)roundf((pos.x + size.x - org.x) * scl.x), x0, fb_w);
+    const int y1 = MD_CLAMP((int)roundf((pos.y + size.y - org.y) * scl.y), y0, fb_h);
+    return {x0, fb_h - y1, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0)};
+}
 
 //static void update_density_volume_texture(ApplicationState* state);
 
@@ -562,7 +574,7 @@ static void draw_async_task_window(ApplicationState* state);
 static void draw_script_editor_window(ApplicationState* state);
 static void draw_script_reference_window(ApplicationState* state);
 static void open_script_reference(ApplicationState* state, md_str_t topic, bool take_focus = true);
-static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current);
+static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current, md_float2_t view_pos, md_float2_t view_size);
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_profiler_window(ApplicationState* state);
@@ -771,7 +783,6 @@ int main(int argc, char** argv) {
     app_settings::bind(MD_STR_LIT("keep_representations"), &state.settings.keep_representations);
     app_settings::bind(MD_STR_LIT("exact_isosurfaces"), &state.settings.exact_isosurfaces);
     app_settings::bind(MD_STR_LIT("isosurface_rendering"), &state.settings.isosurface_rendering);
-    app_settings::bind(MD_STR_LIT("focus_in_free_space"), &state.settings.focus_in_free_space);
     app_settings::bind(MD_STR_LIT("font_size"), &state.settings.font_size);
     app_settings::on_apply(apply_font_size, &state);
     // What the computer can handle, not what a figure looks like: kept per user as it is, never in a workspace
@@ -970,10 +981,12 @@ int main(int argc, char** argv) {
         PUSH_GPU_SECTION("Start");
         application::update(&state.app);
         
-        // This needs to happen first (in imgui events) to enable docking of imgui windows
-#if VIAMD_IMGUI_ENABLE_DOCKSPACE
-        ImGui::CreateDockspace();
-#endif
+        // First, so that windows dock into it. What they leave free is the main view (view.screen_pos)
+        {
+            const ImRect view_rect = ImGui::CreateDockspace();
+            state.view.screen_pos  = vec_cast(view_rect.Min);
+            state.view.screen_size = vec_cast(view_rect.GetSize());
+        }
 
         const size_t num_frames  = run_num_frames(&state);
         const size_t last_frame  = num_frames > 0 ? num_frames - 1 : 0;
@@ -1030,18 +1043,16 @@ int main(int argc, char** argv) {
 
         //ImGui::ShowDemoWindow();
 
-        draw_coordinate_system_widget_window(&state.view.target, state.view.camera);
+        draw_coordinate_system_widget_window(&state.view.target, state.view.camera, state.view.screen_pos, state.view.screen_size);
         draw_representation_legends(state);
         POP_GPU_SECTION();
 
         PUSH_GPU_SECTION("Viewport");
-        ImGui::BeginCanvas("Main interaction window", true);
-        const ImGuiWindow* canvas_window = ImGui::GetCurrentWindow();
+        // Over the main view, where the docked windows leave it (view.screen_pos)
+        ImGui::BeginCanvas("Main interaction window", ImRect(vec_cast(state.view.screen_pos), vec_cast(state.view.screen_pos + state.view.screen_size)), true);
         ImVec2 view_size = ImGui::GetContentRegionAvail();
         // The planes of the representations first (es_planes.h): while the mouse is theirs, the view neither turns nor picks
-        // (over the whole viewport, as the scene is drawn: the canvas's content starts under its menu bar)
-        const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
-        const bool planes_capture = es_planes_gizmo(&state, vec_cast(main_viewport->Pos), vec_cast(main_viewport->Size));
+        const bool planes_capture = es_planes_gizmo(&state, state.view.screen_pos, state.view.screen_size);
         if (planes_capture) ImGui::BeginDisabled();
         InteractionSurfaceState surface_state = interaction_surface(interaction_surface_main, vec_cast(view_size));
         if (planes_capture) ImGui::EndDisabled();
@@ -1060,7 +1071,7 @@ int main(int argc, char** argv) {
                 .width = state.gbuffer.width,
                 .height = state.gbuffer.height,
                 .clip_to_world = clip_to_world,
-                .pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(state.app.framebuffer.width, 1),
+                .pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(view_pixels(&state).width, 1u),
             };
 
             interaction_surface_hit_extract(&hit, surface_state, args);
@@ -1120,20 +1131,17 @@ int main(int argc, char** argv) {
         InteractionSurfaceViewTransformArgs view_args = {
             .camera = state.view.camera,
             .trackball_param = state.view.trackball_param,
-            .view_shift = state.view.shift,
         };
 
         InteractionSurfaceViewTransformResult view_result = interaction_surface_view_transform_apply(&state.view.target, surface_state, view_args);
         if (view_result.reset_requested) {
-            // What is focused on is seen in the middle of what the windows leave in view, rather than behind them
-            state.view.region = state.settings.focus_in_free_space ? main_view_uncovered_region(state, canvas_window) : ViewRegion{};
             ViewTransform reset_transform = {};
             if (hit.depth < 1.0f) {
                 reset_transform.distance = state.view.target.distance;
                 reset_transform.orientation = state.view.camera.orientation;
                 reset_transform.position = hit.world_pos + state.view.camera.orientation * md_float3_set(0, 0, state.view.target.distance);
             } else {
-                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, state.view.region,
+                reset_view(&reset_transform, state.mold.state, &state.representation.visibility_mask, state.view.camera.fov_y, view_aspect_ratio(state),
                            &state.mold.sys, state.view.assembly);
             }
             state.view.target = reset_transform;
@@ -1142,7 +1150,6 @@ int main(int argc, char** argv) {
         draw_context_popup(&state, state.context_menu_hit);
 
         camera_animate(&state.view.camera, state.view.target, state.app.timing.delta_s);
-        camera_animate_shift(&state.view.shift, view_region_center(state.view.region), state.app.timing.delta_s);
         state.visuals.dof.focus_depth = state.view.camera.distance;
 
         ImGuiWindow* win = ImGui::GetCurrentContext()->HoveredWindow;
@@ -1548,7 +1555,9 @@ int main(int argc, char** argv) {
                 ImDrawList* dl = window->DrawList;
                 MD_ASSERT(dl);
 
-                const md_float2_t res = { (float)state.app.window.width, (float)state.app.window.height };
+                // Over the main view (view.screen_pos)
+                const md_float2_t org = state.view.screen_pos;
+                const md_float2_t res = state.view.screen_size;
                 const md_float4x4_t mvp = state.view.param.matrix.curr.proj_no_jitter * state.view.param.matrix.curr.view;
 
                 // Script text
@@ -1582,7 +1591,7 @@ int main(int argc, char** argv) {
                     const ImVec2 text_size = ImGui::CalcTextSize(str.beg(), str.end());
 
                     if (-1 < c.x && c.x < 1 && -1 < c.y && c.y < 1 && -1 < c.z && c.z < 1) {
-                        ImVec2 tc = {(c.x * 0.5f + 0.5f) * res.x, (-c.y * 0.5f + 0.5f) * res.y};
+                        ImVec2 tc = {org.x + (c.x * 0.5f + 0.5f) * res.x, org.y + (-c.y * 0.5f + 0.5f) * res.y};
                         ImVec2 p0 = tc - text_size * 0.5f;
                         ImVec2 p1 = tc + text_size * 0.5f;
                         dl->AddRectFilled(p0 - rect_padding, p1 + rect_padding, rect_color, rect_rounding);
@@ -1649,7 +1658,7 @@ int main(int argc, char** argv) {
                 state.view.target.position = md_float4x4_mul_float3(state.mold.unitcell_transform, state.view.target.position, 1.0f);
             }
             else {
-                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, state.view.region, &state.mold.sys, state.view.assembly);
+                reset_view(&state.view.target, state.mold.state, (const md_bitset_t*)nullptr, state.view.camera.fov_y, view_aspect_ratio(state), &state.mold.sys, state.view.assembly);
             }
         }
 
@@ -1883,38 +1892,7 @@ static void update_view_param(ApplicationState* data) {
         param.matrix.curr.proj_no_jitter = param.matrix.curr.proj;
     }
 
-    // What the view is focused on is seen where the windows leave it uncovered (view_shift)
-    const md_float2_t shift = view_shift(data);
-    if (shift != md_float2_t{0, 0}) {
-        const md_float4x4_t to_shifted   = md_float4x4_translate( shift.x,  shift.y, 0.0f);
-        const md_float4x4_t from_shifted = md_float4x4_translate(-shift.x, -shift.y, 0.0f);
-        param.matrix.curr.proj           = to_shifted * param.matrix.curr.proj;
-        param.matrix.curr.proj_no_jitter = to_shifted * param.matrix.curr.proj_no_jitter;
-        param.matrix.inv.proj            = param.matrix.inv.proj * from_shifted;
-    }
-
     param.matrix.curr.norm = md_float4x4_transpose(param.matrix.inv.view);
-}
-
-// The part of the main view that the windows leave in view, as a region of it: the main view is drawn over all of
-// the main viewport, behind the windows. All of it when they leave too little to show anything in.
-static ViewRegion main_view_uncovered_region(const ApplicationState& state, const ImGuiWindow* canvas) {
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const ImRect bounds = ImRect(viewport->Pos, viewport->Pos + viewport->Size);
-    const ImRect rect = ImGui::LargestUncoveredRect(bounds, canvas);
-
-    ViewRegion region = {.aspect_ratio = (float)state.gbuffer.width / (float)state.gbuffer.height};
-
-    // Smallest side, relative to that of the viewport, that is still worth fitting into
-    const float MIN_SIDE = 0.25f;
-    if (ImMin(rect.GetWidth(), rect.GetHeight()) >= MIN_SIDE * ImMin(bounds.GetWidth(), bounds.GetHeight())) {
-        // Normalized device coordinates have y up
-        const ImVec2 p0 = (rect.Min - bounds.Min) / bounds.GetSize();
-        const ImVec2 p1 = (rect.Max - bounds.Min) / bounds.GetSize();
-        region.min = {p0.x * 2.0f - 1.0f, 1.0f - p1.y * 2.0f};
-        region.max = {p1.x * 2.0f - 1.0f, 1.0f - p0.y * 2.0f};
-    }
-    return region;
 }
 
 // ### DRAW WINDOWS ###
@@ -1997,7 +1975,8 @@ static void draw_main_menu(ApplicationState* data) {
                                         "FXAA, or no anti-aliasing, upscales each frame on its own: softer.\n"
                                         "Screenshots are rendered at the full resolution.");
                 uint32_t rw = 0, rh = 0;
-                render_size(data, data->app.framebuffer.width, data->app.framebuffer.height, &rw, &rh);
+                const ViewPixels vpx = view_pixels(data);
+                render_size(data, vpx.width, vpx.height, &rw, &rh);
                 char size_text[32];
                 snprintf(size_text, sizeof(size_text), "%u x %u", rw, rh);
                 ImGui::SetNextItemWidth(prop::control_width_before(size_text));
@@ -2024,7 +2003,7 @@ static void draw_main_menu(ApplicationState* data) {
                 ImGui::Combo("##camera", (int*)(&data->view.mode), "Perspective\0Orthographic\0");
                 ImGui::SameLine(0.0f, gap);
                 if (ImGui::Button(reset_label)) {
-                    reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region,
+                    reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, view_aspect_ratio(*data),
                                &data->mold.sys, data->view.assembly);
                 }
                 ImGui::SetItemTooltip("Frame what is shown again, from the default direction");
@@ -2084,7 +2063,7 @@ static void draw_main_menu(ApplicationState* data) {
                         // its extent: the view frames it
                         data->view.assembly = chosen;
                         assembly_transforms(&data->view.assembly_transforms, &data->view.assembly_copy_offset, data->mold.sys, chosen, persistent_alloc);
-                        reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, chosen);
+                        reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, view_aspect_ratio(*data), &data->mold.sys, chosen);
                         // Room to zoom out to all of it
                         data->view.trackball_param.max_distance = MD_MAX(data->view.trackball_param.max_distance, data->view.target.distance * 10.0f);
                     }
@@ -2419,10 +2398,13 @@ static void draw_main_menu(ApplicationState* data) {
                 }
 
                 switch (data->screenshot.resolution) {
-                case ScreenshotResolution::Window:
-                    data->screenshot.res_x = data->app.framebuffer.width;
-                    data->screenshot.res_y = data->app.framebuffer.height;
+                case ScreenshotResolution::View: {
+                    // The main view's, as it is shown
+                    const ViewPixels vpx = view_pixels(data);
+                    data->screenshot.res_x = (int)vpx.width;
+                    data->screenshot.res_y = (int)vpx.height;
                     break;
+                }
                 case ScreenshotResolution::FHD:
                     data->screenshot.res_x = 1920;
                     data->screenshot.res_y = 1080;
@@ -2744,15 +2726,6 @@ static void draw_main_menu(ApplicationState* data) {
             }
             ImGui::SetItemTooltip("Keep representations when loading new topology (does not apply for workspaces)\n");
 
-            if (ImGui::Checkbox("Focus in Free Space", &data->settings.focus_in_free_space)) {
-                if (!data->settings.focus_in_free_space) {
-                    // Back to the middle of the whole view
-                    data->view.region = {};
-                }
-                app_settings::mark_dirty();
-            }
-            ImGui::SetItemTooltip("Double clicking the view frames what it focuses on in the largest part of the view\nthat no window covers, rather than in the middle of the whole view");
-
             // Font
             int font_size_idx = nearest_font_size_index(data->settings.font_size);
             if (ImGui::Combo("Font Size", &font_size_idx, font_size_names, (int)MD_COUNTOF(font_size_names))) {
@@ -2984,7 +2957,7 @@ void draw_load_dataset_window(ApplicationState* data) {
                     create_default_representations(data);
                 }
                 data->animation = {};
-                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region);
+                reset_view(&data->view.target, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, view_aspect_ratio(*data));
             }
             [[fallthrough]];
         }
@@ -3801,9 +3774,9 @@ static void draw_async_task_window(ApplicationState* data) {
     any_task_label_visible |= num_invalid > 0;
     
     if (any_task_label_visible) {
-        ImGuiViewport* viewport = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(viewport->Pos + ImVec2(data->app.window.width - WIDTH - MARGIN,
-                                                       ImGui::GetCurrentContext()->FontSize + ImGui::GetStyle().FramePadding.y * 2.f + MARGIN));
+        // In the top right corner of the main view (view.screen_pos), not over the windows docked about it
+        const md_float2_t org = data->view.screen_pos, ext = data->view.screen_size;
+        ImGui::SetNextWindowPos(ImVec2(org.x + ext.x - WIDTH - MARGIN, org.y + MARGIN));
         ImGui::SetNextWindowSize(ImVec2(WIDTH, 0));
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.5f));
         ImGui::Begin("##Async Info", 0,
@@ -7378,7 +7351,9 @@ void create_screenshot(md_str_t path) {
     VIAMD_LOG_SUCCESS("Screenshot saved to: '" MD_STR_FMT "'", MD_STR_ARG(path));
 }
 
-static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current) {
+// In the main view, view_pos and view_size (view.screen_pos): where the user put it (with Alt), kept within the view, so that
+// a window docked beside the view does not hide it
+static void draw_coordinate_system_widget_window(ViewTransform* target, const ViewTransform& current, md_float2_t view_pos, md_float2_t view_size) {
     const int def_size = 150;
     const int min_size = 100;
     const int max_size = 500;
@@ -7396,6 +7371,14 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
     const bool editable = ImGui::IsKeyDown(ImGuiMod_Alt);
 
     int window_flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus;
+    if (!editable && view_size.x > 0.0f && view_size.y > 0.0f) {
+        if (const ImGuiWindow* last = ImGui::FindWindowByName("Coordinate Widget")) {
+            const ImVec2 lo = vec_cast(view_pos);
+            const ImVec2 hi = ImMax(lo, vec_cast(view_pos + view_size) - last->Size);
+            const ImVec2 pos = ImClamp(last->Pos, lo, hi);
+            if (pos.x != last->Pos.x || pos.y != last->Pos.y) ImGui::SetNextWindowPos(pos);
+        }
+    }
     if (!editable) {
         window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavFocus;
     }
@@ -7466,8 +7449,6 @@ static uint64_t scene_key(const ApplicationState* state) {
                               c.distance, c.near_plane, c.far_plane, c.fov_y};
     h = md_hash64(camera, sizeof(camera), h);
     h = md_hash64(&state->view.mode, sizeof(state->view.mode), h);
-    const md_float2_t shift = view_shift(state);
-    h = md_hash64(&shift, sizeof(shift), h);
     h = md_hash64(&state->mold.unitcell_transform, sizeof(state->mold.unitcell_transform), h);
 
     // How it looks
@@ -7711,10 +7692,11 @@ static void render(ApplicationState* state) {
     const bool screenshot = screenshot_pending(state);
     const bool offscreen  = screenshot_offscreen(state);
 
-    // The image shown, and the G-buffer it is made from: the render scale of it, upscaled in post-processing.
-    // A screenshot without the GUI is at its own resolution, in full.
-    uint32_t out_width  = state->app.framebuffer.width;
-    uint32_t out_height = state->app.framebuffer.height;
+    // The image shown, of the main view's size (view_pixels), and the G-buffer it is made from: the render scale of it,
+    // upscaled in post-processing. A screenshot without the GUI is at its own resolution, in full.
+    const ViewPixels vpx = view_pixels(state);
+    uint32_t out_width  = vpx.width;
+    uint32_t out_height = vpx.height;
     uint32_t gbuffer_target_width  = out_width;
     uint32_t gbuffer_target_height = out_height;
     if (offscreen) {
@@ -7783,8 +7765,8 @@ static void render(ApplicationState* state) {
         lazy.marks_key = 0;
     }
 
-    // The image kept, the marks over it, into the framebuffer bound
-    auto present = [&]() {
+    // The image kept, the marks over it, into the framebuffer bound, its viewport's corner at x, y
+    auto present_at = [&](int x, int y) {
         PUSH_GPU_SECTION("Present")
         postprocess_pipeline::Settings settings = {};
         if (draw_marks) {
@@ -7794,7 +7776,7 @@ static void render(ApplicationState* state) {
             const int outline_step = MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
             marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
         }
-        postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings);
+        postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings, x, y);
         POP_GPU_SECTION()
     };
 
@@ -7803,20 +7785,29 @@ static void render(ApplicationState* state) {
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
         glViewport(0, 0, state->gbuffer.width, state->gbuffer.height);
         glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        present();
+        present_at(0, 0);
         screenshot_save(state);
     }
 
-    // The window: the image, or while a screenshot without the GUI is made (at a size of its own), how far it has come
+    // The window: the image, in the main view (view_pixels), or while a screenshot without the GUI is made (at a size of
+    // its own), how far it has come
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
     glDrawBuffer(GL_BACK);
+    // About the view, under the windows docked there: the scene's background, so that they look as they do over the view
+    const md_float3_t bg = state->visuals.background.color;
+    GLfloat last_clear[4];
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, last_clear);
+    glClearColor(bg.x, bg.y, bg.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(last_clear[0], last_clear[1], last_clear[2], last_clear[3]);
     if (!offscreen) {
-        present();
+        glViewport(vpx.x, vpx.y, vpx.width, vpx.height);
+        present_at(vpx.x, vpx.y);
         // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
         es_planes_draw_outlines(state->gbuffer.tex.depth, state->gbuffer.width, state->gbuffer.height,
-                                state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
+                                vpx.x, vpx.y, (int)vpx.width, (int)vpx.height, ImGui::GetIO().DisplayFramebufferScale.x);
+        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
     } else {
         const uint32_t total = MD_MAX(settle_frames(state), 1u);
         float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
@@ -7972,12 +7963,12 @@ static void draw_simulation_box(ApplicationState* state, const Representation& r
     }
 
     // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection.
-    // A point likewise, with h the view's height in points: the view is the whole window, DisplaySize in points, and a
-    // screenshot at another resolution is the same view, its points as much larger as the image is.
+    // A point likewise, with h the view's height in points (view.screen_size), and a screenshot at another resolution is
+    // the same view, its points as much larger as the image is.
     const md_float4x4_t& V = state->view.param.matrix.curr.view;
     const md_float4x4_t& P = state->view.param.matrix.curr.proj;
     const float   h_px = (float)MD_MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
-    const float   h_pt = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
+    const float   h_pt = state->view.screen_size.y > 0.0f ? state->view.screen_size.y : h_px;
     const bool    ortho = P.elem[3][3] == 1.0f;
 
     // The radius of a tube in the world is k times the depth (k itself in an orthographic projection): its diameter the
@@ -8280,7 +8271,7 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
 // Pixels of the render target to a point of the UI, for what is sized in points over the view (the width of an
 // isoline): the framebuffer scale, and in a screenshot at another resolution as much larger as it is
 static float isoline_px_per_point(const ApplicationState* state) {
-    const float h = ImGui::GetIO().DisplaySize.y;
+    const float h = state->view.screen_size.y;
     return h > 0.0f ? (float)state->gbuffer.height / h : 1.0f;
 }
 
@@ -8429,7 +8420,7 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.slice_rect_from_model = slice ? rect_from_model : nullptr;
         desc.slice_edge = slice ? edges : nullptr;
         // the edges' width: a line of 1.5 points (as the outlines drawn over the view), in the target's pixels
-        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MD_MAX(state->app.framebuffer.width, 1);
+        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MD_MAX(view_pixels(state).width, 1u);
         volume::render_dvr(desc);
         written = true;
     }

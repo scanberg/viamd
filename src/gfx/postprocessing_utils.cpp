@@ -800,6 +800,7 @@ constexpr md_str_t f_shader_src_tex_dither = MD_STR_LIT(R"(
 
 uniform sampler2D u_texture;
 uniform float u_time;
+uniform vec2 u_origin;      // the viewport's corner in the target: the texture's first pixel
 
 out vec4 out_frag;
 
@@ -810,8 +811,9 @@ float hash(vec2 p) {
 }
 
 void main() {
-    vec4 c = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
-    vec2 p = gl_FragCoord.xy + u_time * 61.0;
+    vec2 px = gl_FragCoord.xy - u_origin;
+    vec4 c = texelFetch(u_texture, ivec2(px), 0);
+    vec2 p = px + u_time * 61.0;
     float d = hash(p) + hash(p + vec2(17.31, 41.17)) - 1.0;   // triangular in [-1, 1]
     out_frag = vec4(c.rgb + d / 255.0, c.a);
 }
@@ -835,6 +837,7 @@ uniform vec4  u_outline[2];
 uniform vec3  u_groups[7];          // the highlight's groups after the first
 uniform float u_highlight;          // how much of the highlight shows
 uniform int   u_outline_step;
+uniform vec2  u_origin;             // the viewport's corner in the target: the textures' first pixel
 
 out vec4 out_frag;
 
@@ -868,14 +871,15 @@ int group_about(vec2 px, vec2 inv_size) {
 }
 
 void main() {
-    vec4 c = texelFetch(u_texture, ivec2(gl_FragCoord.xy), 0);
+    vec2 px = gl_FragCoord.xy - u_origin;
+    vec4 c = texelFetch(u_texture, ivec2(px), 0);
     vec2 inv_size = 1.0 / vec2(textureSize(u_marks, 0));
 
     // The tent of the marks about the pixel, and for the outline, wider with the taps further out
-    vec4 m = marks_about(gl_FragCoord.xy, 0.5, inv_size);
+    vec4 m = marks_about(px, 0.5, inv_size);
     vec4 ring = m;
     if (u_outline_step > 1) {
-        ring = 0.5 * (m + marks_about(gl_FragCoord.xy, float(u_outline_step) - 0.5, inv_size));
+        ring = 0.5 * (m + marks_about(px, float(u_outline_step) - 0.5, inv_size));
     }
 
     if (max(max(ring.y, ring.w), max(m.y, m.w)) > 0.0) {
@@ -888,7 +892,7 @@ void main() {
         vec3 hidden_c[2] = vec3[2](u_hidden[0].rgb, u_hidden[1].rgb);
         vec3 outline[2] = vec3[2](u_outline[0].rgb, u_outline[1].rgb);
         if (max(ring.w, m.w) > 0.0) {
-            int g = group_about(gl_FragCoord.xy, inv_size);
+            int g = group_about(px, inv_size);
             if (g > 0) {
                 visible[1] = hidden_c[1] = outline[1] = u_groups[g - 1];
             }
@@ -901,7 +905,7 @@ void main() {
         }
     }
 
-    vec2 p = gl_FragCoord.xy + u_time * 61.0;
+    vec2 p = px + u_time * 61.0;
     float d = hash(p) + hash(p + vec2(17.31, 41.17)) - 1.0;   // triangular in [-1, 1]
     out_frag = vec4(c.rgb + d / 255.0, c.a);
 }
@@ -2298,13 +2302,14 @@ void blit_texture(GLuint tex) {
     glUseProgram(0);
 }
 
-static void blit_texture_dither(GLuint tex, float time) {
+static void blit_texture_dither(GLuint tex, float time, int origin_x = 0, int origin_y = 0) {
     MD_ASSERT(glIsTexture(tex));
     glUseProgram(blit::program_tex_dither);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, tex);
     glUniform1i(glGetUniformLocation(blit::program_tex_dither, "u_texture"), 0);
     glUniform1f(glGetUniformLocation(blit::program_tex_dither, "u_time"), time);
+    glUniform2f(glGetUniformLocation(blit::program_tex_dither, "u_origin"), (float)origin_x, (float)origin_y);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -2312,7 +2317,7 @@ static void blit_texture_dither(GLuint tex, float time) {
 }
 
 // The final copy, with the marks over it (Settings::marks)
-static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const postprocess_pipeline::Settings& settings, float time) {
+static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const postprocess_pipeline::Settings& settings, float time, int origin_x, int origin_y) {
     MD_ASSERT(glIsTexture(tex));
     MD_ASSERT(glIsTexture(marks));
     MD_ASSERT(glIsTexture(marks_group));
@@ -2334,6 +2339,7 @@ static void present_marks(GLuint tex, GLuint marks, GLuint marks_group, const po
     glUniform4fv(glGetUniformLocation(p, "u_outline"), 2, settings.marks.outline[0].elem);
     glUniform1f(glGetUniformLocation(p, "u_highlight"), settings.marks.highlight);
     glUniform1i(glGetUniformLocation(p, "u_outline_step"), MD_MAX(settings.marks.outline_step, 1));
+    glUniform2f(glGetUniformLocation(p, "u_origin"), (float)origin_x, (float)origin_y);
     glBindVertexArray(gl.vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
@@ -2774,7 +2780,7 @@ void execute(const postprocess_pipeline::Inputs& in, const postprocess_pipeline:
             blit_texture(src_texture);
         } else if (in.marks && in.marks_group) {
             PUSH_GPU_SECTION("Present marks")
-            present_marks(src_texture, in.marks, in.marks_group, settings, time);
+            present_marks(src_texture, in.marks, in.marks_group, settings, time, 0, 0);
             POP_GPU_SECTION()
         } else {
             blit_texture_dither(src_texture, time);
@@ -2836,7 +2842,7 @@ void execute(const Inputs& in, const Settings& settings, const ViewParam& view) 
     postprocessing::execute(in, settings, view);
 }
 
-void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings) {
+void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings, int origin_x, int origin_y) {
     MD_ASSERT(glIsTexture(image));
     // For the dither, as execute() seeds it
     static float time = 0.f;
@@ -2849,10 +2855,10 @@ void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& set
     glDepthMask(0);
     if (marks && marks_group) {
         PUSH_GPU_SECTION("Present marks")
-        postprocessing::present_marks(image, marks, marks_group, settings, time);
+        postprocessing::present_marks(image, marks, marks_group, settings, time, origin_x, origin_y);
         POP_GPU_SECTION()
     } else {
-        postprocessing::blit_texture_dither(image, time);
+        postprocessing::blit_texture_dither(image, time, origin_x, origin_y);
     }
     if (last_depth_test) glEnable(GL_DEPTH_TEST);
     glDepthMask(1);

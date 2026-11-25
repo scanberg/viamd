@@ -1865,7 +1865,7 @@ void init_system_data(ApplicationState* data) {
 
         // Calculate a default view transform to use later as a reset target
         ViewTransform default_view = {};
-        reset_view(&default_view, data->mold.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, data->view.region);
+        reset_view(&default_view, data->mold.state, (const md_bitset_t*)nullptr, data->view.camera.fov_y, view_aspect_ratio(*data));
 
         data->view.camera.near_plane = 1.0f;
         data->view.camera.far_plane = 100000.0f;
@@ -3073,7 +3073,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
 
     // The camera flies in: from the whole system to where the workspace looked from. Without a
     // stored camera, both are the whole system (or the assembly shown).
-    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, data->view.region, &data->mold.sys, data->view.assembly);
+    reset_view(&data->view.camera, data->mold.state, &data->representation.visibility_mask, data->view.camera.fov_y, view_aspect_ratio(*data), &data->mold.sys, data->view.assembly);
     if (data->view.assembly >= 0) {
         // Room to zoom out to all of the assembly
         data->view.trackball_param.max_distance = MD_MAX(data->view.trackball_param.max_distance, data->view.camera.distance * 10.0f);
@@ -7458,7 +7458,6 @@ InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(V
             input.screen_size = state.surface_size;
             input.dolly_delta = scroll_delta;
             input.fov_y = args.camera.fov_y;
-            input.ndc_center = args.view_shift;
 
             TrackballFlags flags = TrackballFlags_None;
             if (state.active) {
@@ -7670,7 +7669,7 @@ void file_queue_process(ApplicationState* state) {
                         recompute_atom_visibility_mask(state);
                         state->mold.interpolate_system_state = true;
                         state->mold.dirty_gpu_buffers |= MolBit_ClearVelocity;
-                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, state->view.region);
+                        reset_view(&state->view.camera, state->mold.state, &state->representation.visibility_mask, state->view.camera.fov_y, view_aspect_ratio(*state));
                     }
                 }
             }
@@ -7678,7 +7677,7 @@ void file_queue_process(ApplicationState* state) {
     }
 }
 
-void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, const ViewRegion& region, const md_system_t* sys, int assembly) {
+void reset_view(ViewTransform* transform, const md_system_state_t& state, const md_bitset_t* mask, float fov_y, float aspect_ratio, const md_system_t* sys, int assembly) {
     MD_ASSERT(transform);
     if (!state.num_atoms) return;
 
@@ -7725,7 +7724,7 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
             md_float3x3_t A = {};
             md_unitcell_A_extract(A.elem, &state.unitcell);
             const md_float3_t cell_offset = -md_float3x3_mul_float3(A, md_float3_set1(0.5f));
-            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, region);
+            *transform = camera_compute_default_view(xyz, n, nullptr, n, nullptr, fov_y, aspect_ratio);
             transform->position = transform->position + cell_offset;
             return;
         }
@@ -7760,13 +7759,13 @@ void reset_view(ViewTransform* transform, const md_system_state_t& state, const 
         md_float3_t aabb_min = {}, aabb_max = {};
         md_geom_aabb(aabb_min.elem, aabb_max.elem, (const float*)state.xyz, 0, indices, count);
         const md_float3_t center = (aabb_min + aabb_max) * 0.5f;
-        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, region);
+        transform->distance = camera_fit_distance(state.xyz, indices, count, center, transform->orientation, fov_y, aspect_ratio);
         transform->position = center + cell_offset + transform->orientation * md_float3_set(0, 0, transform->distance);
         return;
     }
 
     // See camera_compute_default_view for what it considers a good view of what
-    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, region);
+    *transform = camera_compute_default_view(state.xyz, state.num_atoms, indices, count, has_cell ? &A : nullptr, fov_y, aspect_ratio);
     transform->position = transform->position + cell_offset;
 }
 

@@ -33,10 +33,11 @@ bool es_volume_box(md_float4x4_t* box_to_world, const ElectronicStructureReprese
 // picking an outline), in which case the view is not to turn or pick with it.
 bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_t canvas_size);
 
-// The outlines es_planes_gizmo found this frame, drawn into the framebuffer bound (fb_width x fb_height pixels, the
-// window's: the image presented, before the GUI): hidden where the scene, depth_tex (the G-buffer's, of its size), is
-// in front of them. They write no depth. px_per_point: framebuffer pixels per ImGui point.
-void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int fb_width, int fb_height, float px_per_point);
+// The outlines es_planes_gizmo found this frame, drawn into the framebuffer bound, in the main view: its corner at view_x,
+// view_y, fb_width x fb_height pixels (the viewport set to it: the image presented, before the GUI). Hidden where the
+// scene, depth_tex (the G-buffer's, of its size), is in front of them. They write no depth. px_per_point: framebuffer
+// pixels per ImGui point.
+void es_planes_draw_outlines(uint32_t depth_tex, int depth_width, int depth_height, int view_x, int view_y, int fb_width, int fb_height, float px_per_point);
 void es_planes_shutdown();
 
 // A plane through the middle of the representation's box, facing away from the camera: as a cut it removes the half

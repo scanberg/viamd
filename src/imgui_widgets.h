@@ -11,14 +11,12 @@ IMGUI_API bool RangeSliderFloat(const char* label, float* v1, float* v2, float v
 
 // custom ImGui procedures
 bool DeleteButton(const char* label, const ImVec2& size = ImVec2(0, 0));
-void CreateDockspace();
-void BeginCanvas(const char* id, bool allow_inputs = false);
+// The dockspace over the main viewport, which windows dock into; its central node, which they leave free, is returned
+// (screen coordinates): where the main view is (BeginCanvas)
+ImRect CreateDockspace();
+// An invisible window over rect, behind every other, which takes the mouse where no window is over it
+void BeginCanvas(const char* id, const ImRect& rect, bool allow_inputs = false);
 void EndCanvas();
-
-// The largest rectangle of bounds that no window covers: what the windows leave in view of a canvas behind
-// them, such as the one of BeginCanvas, passed as ignore. Windows that show what is behind them (no background),
-// popups, tooltips and notifications do not count. An empty rectangle when the windows cover all of bounds.
-ImRect LargestUncoveredRect(const ImRect& bounds, const ImGuiWindow* ignore = nullptr);
 
 inline void PushInvalid() {
 	ImGui::PushStyleColor(ImGuiCol_FrameBg, 0xAA222299);
