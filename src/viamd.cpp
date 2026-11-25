@@ -1226,6 +1226,10 @@ static inline void init_frame_cache(FrameCache* cache, size_t num_atoms, md_allo
     size_t capacity = MD_ALIGN_TO(num_atoms, 16);
     for (size_t i = 0; i < FRAME_CACHE_SIZE; ++i) {
         md_array_resize(cache->states[i].xyz, capacity, alloc);
+        // Holding no frame yet. The count is that of the last frame read into it, which an extraction checks its own
+        // against (md_system_extract_frame): left over from a system of another count, every frame would be refused
+        // and the slot interpolated from as it is (a system removed and another loaded into its context)
+        cache->states[i].num_atoms = 0;
     }
 }
 
