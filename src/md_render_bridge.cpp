@@ -23,7 +23,10 @@
 
 #include <md_render.h>
 #include <md_render_mol.h>
+#include <md_compose.h>
+#include <md_post.h>
 #include <core/md_gpu_gl.h>
+#include <gfx/postprocessing_utils.h>
 
 // Pairs of atoms drawn as sticks (md_render_mol_rep_t.pairs): by kind, each with its id (what a pick of it reports)
 struct PairSet {
@@ -61,11 +64,14 @@ static void free_rep(md_gpu_stream_t s, BridgeRep* r) {
     free_pairs(s, &r->pairs);
 }
 
-// A texture md_render's targets are exported into, and the GL texture of it
+// A texture md_gpu writes and GL reads, and the GL texture of it. The two take turns with it: md_gpu writes it between
+// acquire and release, GL reads it between begin_read and end_read, and md_gpu writes it again only after GL said so
+// (gl_done)
 struct SharedTex {
     md_gpu_texture_t    tex = nullptr;
     md_gpu_gl_texture_t gl  = {};
     bool                imported = false;
+    bool                released = false;   // released by md_gpu, not yet read by GL
 };
 
 struct MdRenderBridge {
@@ -119,26 +125,33 @@ struct MdRenderBridge {
     int            parts_of = -1;           // the assembly, -1: none
     uint64_t       parts_topology = 0;
 
-    // The export, shared with GL
-    uint32_t  width = 0, height = 0;
-    SharedTex depth, color, surface;
-    bool      exported = false;     // the textures hold a frame
-    // GL reads the textures between its begin_read and end_read, md_gpu writes them between acquire and release, in
-    // turn: 0 nothing to read, 1 released by md_gpu (GL to begin), 2 GL reading (to end, before md_gpu acquires)
-    int       gl_read = 0;
+    // The frame: md_compose's scene and md_post's frame at the scene's size, the histories at the image's, the image
+    // kept (the frame, or the history written last); shared with GL, the image shown and the scene's depth
+    md_compose_ctx_t compose = nullptr;
+    md_post_ctx_t    post = nullptr;
+    uint32_t  width = 0, height = 0;            // the scene's (the G-buffer's)
+    uint32_t  out_width = 0, out_height = 0;    // the image's
+    md_gpu_texture_t scene = nullptr, frame = nullptr;
+    md_gpu_texture_t history[2] = {};
+    int       hist = 0;                         // the history written last
+    bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
+    md_gpu_texture_t image = nullptr;
+    SharedTex depth, out;
+    bool      exported = false;     // depth holds the scene drawn last
     bool      still = true;         // md_render did not rasterise this frame: nothing moved
-    md_render_frame_t last = {};    // the frame drawn last (its batches are `batches`), for the marks alone
+    md_render_frame_t last = {};    // the frame drawn last (its batches are `batches`), for the masks alone
     bool      has_last = false;
     int       last_ui_frame = -1;   // the ImGui frame it was drawn in
+    uint32_t  presents = 0;         // seeds the dither
 
-    // The GL merges: into the G-buffer, into the marks
-    GLuint program = 0;
-    GLuint vao = 0;
-    GLint  loc_depth = -1, loc_color = -1, loc_surface = -1, loc_size = -1, loc_dim = -1, loc_still = -1, loc_index = -1;
-    GLuint marks_program = 0;
-    GLint  mloc_depth = -1, mloc_color = -1, mloc_scene = -1, mloc_size = -1, mloc_out_size = -1;
+    // GL: the image shown into the framebuffer; the depth as GL reads it (depth_gl)
+    GLuint present_program = 0, depth_program = 0, vao = 0;
+    GLint  ploc_image = -1, ploc_size = -1, dloc_depth = -1, dloc_size = -1;
+    GLuint depth_fbo = 0, depth_tex = 0;
+    uint32_t depth_tex_w = 0, depth_tex_h = 0;
+    bool   depth_tex_valid = false;
 
-    // md_render's answers to the picks, the newest last, for the GL picking's hits of its index to find
+    // md_render's answers to the picks, the newest last
     static constexpr int PICKS = 8;
     md_render_pick_t picks[PICKS] = {};
     uint32_t         num_picks = 0;
@@ -158,8 +171,7 @@ static void set_status(MdRenderBridge* b, const char* fmt, const char* detail = 
 
 // ---- GL ----------------------------------------------------------------------------------------------------------
 
-// The G-buffer's encodings, as the snippet md_gl's shaders write with (main.cpp, shader_output_snippet)
-static const char* merge_vs = R"(
+static const char* fullscreen_vs = R"(
 #version 330 core
 void main() {
     vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
@@ -167,107 +179,49 @@ void main() {
 }
 )";
 
-static const char* merge_fs = R"(
+// The image shown, as md_post presented it (sRGB-encoded, dithered), into the framebuffer: its rows from the top, GL's
+// from the bottom
+static const char* present_fs = R"(
 #ifdef RECT
-uniform sampler2DRect u_depth;
-uniform sampler2DRect u_color;
-uniform sampler2DRect u_surface;
+uniform sampler2DRect u_image;
 #define FETCH(t, p) texelFetch(t, p)
 #else
-uniform sampler2D u_depth;
-uniform sampler2D u_color;
-uniform sampler2D u_surface;
+uniform sampler2D u_image;
 #define FETCH(t, p) texelFetch(t, p, 0)
 #endif
 uniform ivec2 u_size;
-uniform float u_dim;      // the saturation of what is not selected; 1 while nothing is
-uniform float u_still;    // 1: md_render did not rasterise this frame, nothing of it moved
-uniform vec4  u_index;    // the picking index of what md_render drew (PickingDomain_MdRender), as encode_index has it
-
-layout(location = 0) out vec4 out_color;
-layout(location = 1) out vec4 out_normal;
-layout(location = 2) out vec4 out_velocity;
-layout(location = 3) out vec4 out_atom_index;
-
-vec3 oct_decode(vec2 e) {
-    vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
-    if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return normalize(n);
-}
-
-vec2 encode_normal(vec3 n) {
-   float p = sqrt(n.z * 8.0 + 8.0);
-   return n.xy / p + 0.5;
-}
-
+out vec4 out_color;
 void main() {
-    // md_render's rows from the top, GL's from the bottom
     ivec2 p = ivec2(gl_FragCoord.xy);
     p.y = u_size.y - 1 - p.y;
-    float d = FETCH(u_depth, p).r;
-    if (d <= 0.0) discard;
-    vec4 c = FETCH(u_color, p);
-    vec4 s = FETCH(u_surface, p);
-    uint bits = uint(c.a * 255.0 + 0.5);
-    vec3 rgb = c.rgb;
-    // Not selected, of what can be (128: its batch has marks; the shapes have none)
-    if ((bits & 129u) == 128u) {
-        rgb = mix(vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722))), rgb, u_dim);
-    }
-    // md_render's projection is md_gl's with its depth reversed: d = (1 - ndc z) / 2
-    gl_FragDepth   = 1.0 - d;
-    out_color      = vec4(rgb, 1.0);
-    out_normal     = vec4(encode_normal(oct_decode(s.xy)), 0.0, 0.0);
-    // Pixels, y down, to the G-buffer's: of the uv, y up
-    out_velocity   = u_still > 0.5 ? vec4(0.0) : vec4(s.z / float(u_size.x), -s.w / float(u_size.y), 0.0, 0.0);
-    out_atom_index = u_index;
+    out_color = vec4(FETCH(u_image, p).rgb, 1.0);
 }
 )";
 
-// The marks as md_gl's marks pass has them (main.cpp, shader_output_snippet_marks), blended by max into its targets:
-// of the selected 1 in r in view and in g there at all, of the highlighted the same in b and a, and the highlight's
-// group + 1, 8 more in view. md_render's visible surface is in view where it is the scene's (the G-buffer's depth is
-// what the merge wrote there, or nearer). Of the size of the image presented: md_render's texel under each pixel.
-static const char* marks_fs = R"(
+// md_render's depth (reverse Z, 0 where nothing; rows from the top) as GL's window depth (rows from the bottom):
+// md_render's projection is md_gl's with its depth reversed, d = (1 - ndc z) / 2
+static const char* depth_fs = R"(
 #ifdef RECT
 uniform sampler2DRect u_depth;
-uniform sampler2DRect u_color;
 #define FETCH(t, p) texelFetch(t, p)
 #else
 uniform sampler2D u_depth;
-uniform sampler2D u_color;
 #define FETCH(t, p) texelFetch(t, p, 0)
 #endif
-uniform sampler2D u_scene;    // the G-buffer's depth
-uniform ivec2 u_size;         // md_render's, the G-buffer's
-uniform vec2  u_out_size;     // the marks'
-
-layout(location = 0) out vec4 out_marks;
-layout(location = 1) out vec4 out_group;
-
+uniform ivec2 u_size;
+out vec4 out_depth;
 void main() {
-    ivec2 p = clamp(ivec2(gl_FragCoord.xy / u_out_size * vec2(u_size)), ivec2(0), u_size - 1);
-    float scene = texelFetch(u_scene, p, 0).r;
+    ivec2 p = ivec2(gl_FragCoord.xy);
     p.y = u_size.y - 1 - p.y;
-    uint a = uint(FETCH(u_color, p).a * 255.0 + 0.5);
-    uint bits = a & 15u;
-    if (bits == 0u) discard;
     float d = FETCH(u_depth, p).r;
-    bool in_view = d > 0.0 && 1.0 - d <= scene + 1e-5;
-    float sel_view = (bits & 1u) != 0u && in_view ? 1.0 : 0.0;
-    float hl_view  = (bits & 4u) != 0u && in_view ? 1.0 : 0.0;
-    float sel_any  = (bits & 2u) != 0u ? 1.0 : 0.0;
-    float hl_any   = (bits & 8u) != 0u ? 1.0 : 0.0;
-    out_marks = vec4(sel_view, sel_any, hl_view, hl_any);
-    uint group = 1u + ((a >> 4u) & 7u) + (hl_view > 0.0 ? 8u : 0u);
-    out_group = vec4(hl_any > 0.0 ? float(group) / 255.0 : 0.0, 0.0, 0.0, 0.0);
+    out_depth = vec4(d > 0.0 ? 1.0 - d : 1.0);
 }
 )";
 
 static GLuint gl_program(const char* fs_body, bool rect) {
     char fs_src[4096];
     snprintf(fs_src, sizeof(fs_src), "#version 330 core\n%s%s", rect ? "#define RECT 1\n" : "", fs_body);
-    GLuint vs = gl::compile_shader_from_source(md_str_from_cstr(merge_vs), GL_VERTEX_SHADER);
+    GLuint vs = gl::compile_shader_from_source(md_str_from_cstr(fullscreen_vs), GL_VERTEX_SHADER);
     GLuint fs = gl::compile_shader_from_source(md_str_from_cstr(fs_src), GL_FRAGMENT_SHADER);
     GLuint program = 0;
     if (vs && fs) {
@@ -284,59 +238,63 @@ static GLuint gl_program(const char* fs_body, bool rect) {
 }
 
 static bool gl_init(MdRenderBridge* b, bool rect) {
-    b->program = gl_program(merge_fs, rect);
-    b->marks_program = gl_program(marks_fs, rect);
-    if (!b->program || !b->marks_program) return false;
-    b->loc_depth   = glGetUniformLocation(b->program, "u_depth");
-    b->loc_color   = glGetUniformLocation(b->program, "u_color");
-    b->loc_surface = glGetUniformLocation(b->program, "u_surface");
-    b->loc_size    = glGetUniformLocation(b->program, "u_size");
-    b->loc_dim     = glGetUniformLocation(b->program, "u_dim");
-    b->loc_still   = glGetUniformLocation(b->program, "u_still");
-    b->loc_index   = glGetUniformLocation(b->program, "u_index");
-    b->mloc_depth    = glGetUniformLocation(b->marks_program, "u_depth");
-    b->mloc_color    = glGetUniformLocation(b->marks_program, "u_color");
-    b->mloc_scene    = glGetUniformLocation(b->marks_program, "u_scene");
-    b->mloc_size     = glGetUniformLocation(b->marks_program, "u_size");
-    b->mloc_out_size = glGetUniformLocation(b->marks_program, "u_out_size");
+    b->present_program = gl_program(present_fs, rect);
+    b->depth_program   = gl_program(depth_fs, rect);
+    if (!b->present_program || !b->depth_program) return false;
+    b->ploc_image = glGetUniformLocation(b->present_program, "u_image");
+    b->ploc_size  = glGetUniformLocation(b->present_program, "u_size");
+    b->dloc_depth = glGetUniformLocation(b->depth_program, "u_depth");
+    b->dloc_size  = glGetUniformLocation(b->depth_program, "u_size");
     glGenVertexArrays(1, &b->vao);
+    glGenFramebuffers(1, &b->depth_fbo);
     return true;
 }
 
 // ---- Shared textures ---------------------------------------------------------------------------------------------
 
-// GL begins to read what md_gpu released
-static void begin_reads(MdRenderBridge* b) {
-    if (b->gl_read != 1) return;
-    SharedTex* t[3] = {&b->depth, &b->color, &b->surface};
-    for (SharedTex* s : t) md_gpu_gl_begin_read(&s->gl);
-    b->gl_read = 2;
+// Before md_gpu writes s again: GL is done with it (read or not)
+static void gl_done(SharedTex* s) {
+    if (!s->released) return;
+    md_gpu_gl_begin_read(&s->gl);
+    md_gpu_gl_end_read(&s->gl);
+    s->released = false;
 }
 
-// GL is done with what was exported (read or not): the two take turns with each texture, and md_gpu writes it again
-// only after GL said so. Before md_gpu acquires them again.
-static void settle_reads(MdRenderBridge* b) {
-    begin_reads(b);
-    if (b->gl_read != 2) return;
-    SharedTex* t[3] = {&b->depth, &b->color, &b->surface};
-    for (SharedTex* s : t) md_gpu_gl_end_read(&s->gl);
-    b->gl_read = 0;
+static void share_write_begin(MdRenderBridge* b, SharedTex* s) {
+    gl_done(s);
+    md_gpu_texture_share_acquire(b->stream, s->tex);
 }
 
-static void shared_free(MdRenderBridge* b, SharedTex* s) {
+static void share_write_end(MdRenderBridge* b, SharedTex* s) {
+    md_gpu_texture_share_release(b->stream, s->tex);
+    s->released = true;
+}
+
+// GL reads what md_gpu released: between gl_read_begin and gl_read_end
+static void gl_read_begin(SharedTex* s) {
+    if (s->released) md_gpu_gl_begin_read(&s->gl);
+}
+
+static void gl_read_end(SharedTex* s) {
+    if (!s->released) return;
+    md_gpu_gl_end_read(&s->gl);
+    s->released = false;
+}
+
+static void shared_free(SharedTex* s) {
+    gl_done(s);
     if (s->imported) md_gpu_gl_release(&s->gl);
     if (s->tex) md_gpu_texture_destroy(s->tex);
     *s = SharedTex{};
-    (void)b;
 }
 
-static bool shared_make(MdRenderBridge* b, SharedTex* s, md_gpu_format_t format, const char* label) {
+static bool shared_make(MdRenderBridge* b, SharedTex* s, md_gpu_format_t format, uint32_t width, uint32_t height, const char* label) {
     md_gpu_texture_desc_t d = {};
     d.type   = MD_GPU_TEX_2D;
     d.format = format;
     d.usage  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SHARED;
-    d.width  = b->width;
-    d.height = b->height;
+    d.width  = width;
+    d.height = height;
     d.label  = label;
     s->tex = md_gpu_texture_create(b->stream, &d);
     if (!s->tex) {
@@ -351,24 +309,51 @@ static bool shared_make(MdRenderBridge* b, SharedTex* s, md_gpu_format_t format,
     return true;
 }
 
-static bool shared_resize(MdRenderBridge* b, uint32_t width, uint32_t height) {
-    if (b->depth.tex && b->width == width && b->height == height) return true;
-    settle_reads(b);
-    shared_free(b, &b->depth);
-    shared_free(b, &b->color);
-    shared_free(b, &b->surface);
+static md_gpu_texture_t gpu_texture(MdRenderBridge* b, md_gpu_format_t format, md_gpu_tex_usage_t usage, uint32_t w, uint32_t h, const char* label) {
+    md_gpu_texture_desc_t d = {};
+    d.type = MD_GPU_TEX_2D; d.format = format; d.usage = usage; d.width = w; d.height = h; d.label = label;
+    return md_gpu_texture_create(b->stream, &d);
+}
+
+static void free_targets(MdRenderBridge* b) {
+    md_gpu_texture_t* t[] = {&b->scene, &b->frame, &b->history[0], &b->history[1]};
+    for (md_gpu_texture_t* x : t) {
+        if (*x) md_gpu_texture_destroy(*x);
+        *x = nullptr;
+    }
+    shared_free(&b->depth);
+    shared_free(&b->out);
+    b->image = nullptr;
+    b->hist_valid = false;
     b->exported = false;
-    b->width = width;
-    b->height = height;
-    if (!shared_make(b, &b->depth, MD_GPU_FORMAT_R32_FLOAT, "md_render export depth") ||
-        !shared_make(b, &b->color, MD_GPU_FORMAT_RGBA8_UNORM, "md_render export color") ||
-        !shared_make(b, &b->surface, MD_GPU_FORMAT_RGBA16_FLOAT, "md_render export surface")) {
+    b->width = b->height = b->out_width = b->out_height = 0;
+}
+
+// The frame's textures at the scene's size (width, height) and the image's (out_width, out_height)
+static bool ensure_targets(MdRenderBridge* b, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height) {
+    if (b->scene && b->width == width && b->height == height && b->out_width == out_width && b->out_height == out_height) return true;
+    free_targets(b);
+    const md_gpu_tex_usage_t SS = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED;
+    b->scene      = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, width, height, "main view scene");
+    b->frame      = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, width, height, "main view frame");
+    b->history[0] = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, out_width, out_height, "main view history 0");
+    b->history[1] = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, out_width, out_height, "main view history 1");
+    if (!b->scene || !b->frame || !b->history[0] || !b->history[1]) {
+        set_status(b, "Could not make the main view's targets: %s", md_gpu_last_error());
+        free_targets(b);
         return false;
     }
-    if (!b->program && !gl_init(b, b->depth.gl.target != GL_TEXTURE_2D)) {
-        set_status(b, "The merge shader did not compile%s");
+    if (!shared_make(b, &b->depth, MD_GPU_FORMAT_R32_FLOAT, width, height, "main view depth") ||
+        !shared_make(b, &b->out, MD_GPU_FORMAT_RGBA8_UNORM, out_width, out_height, "main view image")) {
+        free_targets(b);
         return false;
     }
+    if (!b->present_program && !gl_init(b, b->out.gl.target != GL_TEXTURE_2D)) {
+        set_status(b, "The main view's GL shaders did not compile%s");
+        free_targets(b);
+        return false;
+    }
+    b->width = width; b->height = height; b->out_width = out_width; b->out_height = out_height;
     return true;
 }
 
@@ -616,20 +601,19 @@ static bool type_drawn(RepresentationType t) {
 
 static bool active(const ApplicationState& state) {
     const MdRenderBridge* b = state.md_render_bridge;
-    return state.md_render.enabled && b && b->ok && b->has_topo;
+    return b && b->ok;
 }
 
-bool md_render_bridge_active(const ApplicationState& state) { return active(state); }
-
-// The shapes md_render draws (emit_shapes): as main.cpp has md_gl draw them
+// The shapes md_render draws (emit_shapes)
 static bool shape_shown(const ApplicationState& state, const Representation& rep) {
     if (rep.type == RepresentationType::DipoleMoment) return representation_shown(state, rep);
     if (rep.type == RepresentationType::SimulationBox) return representation_shown(state, rep) && rep.type_is_valid;
     return false;
 }
 
-bool md_render_bridge_draws(const ApplicationState& state, const Representation& rep) {
-    if (!active(state)) return false;
+// Whether md_render draws the representation (as it is now: shown, of the system's atoms)
+static bool draws(const ApplicationState& state, const Representation& rep) {
+    if (!active(state) || !state.md_render_bridge->has_topo) return false;
     if (rep.type == RepresentationType::DipoleMoment || rep.type == RepresentationType::SimulationBox) return shape_shown(state, rep);
     if (!type_drawn(rep.type) || !rep.type_is_valid || !representation_shown(state, rep)) return false;
     const BridgeRep* r = find_rep(state.md_render_bridge, rep.node.id);
@@ -648,7 +632,7 @@ static BridgeRep* find_or_add_rep(MdRenderBridge* b, uint32_t id, md_allocator_i
 void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& rep, const uint32_t* atom_a, const uint32_t* atom_b,
                                 const uint32_t* flags, size_t count) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!state->md_render.enabled || !b || !b->ok || !b->has_topo || rep.type != RepresentationType::Bonds) return;
+    if (!b || !b->ok || !b->has_topo || rep.type != RepresentationType::Bonds) return;
     BridgeRep* r = find_or_add_rep(b, rep.node.id, state->allocator.persistent);
     // Each pair's index the one it picks as (representation_weak_bond_draw_ops)
     upload_pairs(b, &r->pairs, atom_a, atom_b, flags, count, state->allocator.frame);
@@ -657,7 +641,7 @@ void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& r
 
 void md_render_bridge_rep_colors(ApplicationState* state, const Representation& rep, const uint32_t* colors, size_t count) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!state->md_render.enabled || !b || !b->ok || !type_drawn(rep.type)) return;
+    if (!b || !b->ok || !type_drawn(rep.type)) return;
     if (!b->has_topo || count != b->atom_count || !colors) return;
     BridgeRep* r = find_or_add_rep(b, rep.node.id, state->allocator.persistent);
     if (r->atom_count != count) {
@@ -1072,28 +1056,60 @@ static void emit_shapes(MdRenderBridge* b, ApplicationState* state, md_allocator
 
 // ---- The frame ---------------------------------------------------------------------------------------------------
 
-// The view's targets into the shared textures: md_gpu acquires them (after GL's last read, settle_reads), writes and
-// releases them to GL
-static void export_frame(MdRenderBridge* b) {
-    SharedTex* t[3] = {&b->depth, &b->color, &b->surface};
-    for (SharedTex* s : t) md_gpu_texture_share_acquire(b->stream, s->tex);
-    md_render_export_t ex = {b->depth.tex, b->color.tex, b->surface.tex};
-    b->exported = md_render_view_export(b->stream, b->view, &ex);
-    for (SharedTex* s : t) md_gpu_texture_share_release(b->stream, s->tex);
-    b->gl_read = 1;
+// md_compose's shading of the settings', the compose pass's that was (compose_deferred: its roughness and F0)
+static void shading_of(md_compose_shading_t* sh, const postprocess_pipeline::Settings& s) {
+    const postprocess_pipeline::Lighting l = postprocess_pipeline::lighting(s.shading.mode);
+    const float env = MD_MAX(s.shading.environment, 0.0f);
+    *sh = {};
+    sh->mode = s.shading.mode == postprocess_pipeline::ShadingMode_Basic ? MD_COMPOSE_SHADING_BASIC : MD_COMPOSE_SHADING_PBR;
+    sh->linear_colors = s.shading.colors == postprocess_pipeline::ColorSpace_Linear;
+    for (int k = 0; k < 3; ++k) {
+        sh->light_dir[k]       = l.light_dir.elem[k];
+        sh->dir_radiance[k]    = l.light_irradiance.elem[k];
+        sh->sky_radiance[k]    = l.sky_radiance.elem[k] * env;
+        sh->ground_radiance[k] = l.ground_radiance.elem[k] * env;
+    }
+    sh->light_strength = MD_MAX(s.shading.light, 0.0f);
+    sh->roughness = 0.4f;
+    sh->f0        = 0.04f;
+    sh->ambient   = MD_CLAMP(s.shading.ambient, 0.0f, 1.0f);
+    sh->specular  = MD_MAX(s.shading.specular, 0.0f);
 }
 
-void md_render_bridge_render(ApplicationState* state) {
+// md_post's display transform of the settings' (display::transform of the post-processing that was): basic shading
+// and no tone mapping are the encoding alone
+static void display_of(md_post_display_t* d, const postprocess_pipeline::Settings& s) {
+    d->curve = MD_POST_CURVE_NONE;
+    if (s.shading.mode != postprocess_pipeline::ShadingMode_Basic && s.tonemap.enabled) {
+        switch (s.tonemap.mode) {
+        case postprocess_pipeline::Tonemapper_Neutral: d->curve = MD_POST_CURVE_NEUTRAL; break;
+        case postprocess_pipeline::Tonemapper_ACES:    d->curve = MD_POST_CURVE_ACES;    break;
+        case postprocess_pipeline::Tonemapper_Filmic:  d->curve = MD_POST_CURVE_HABLE;   break;
+        default: break;
+        }
+    }
+    d->exposure = s.tonemap.exposure;
+    d->gamma    = s.tonemap.gamma;
+    for (int k = 0; k < 3; ++k) d->background[k] = s.background_color.elem[k];
+}
+
+void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline::Settings& settings) {
     MdRenderBridge* b = state->md_render_bridge;
     if (b) b->still = true;
-    if (!state->md_render.enabled || !b || !b->ok) return;
-    settle_reads(b);
+    if (!b || !b->ok) return;
     b->has_last = false;
     md_array_shrink(b->batches, 0);
+    const uint32_t width = state->gbuffer.width, height = state->gbuffer.height;
+    const uint32_t out_width = state->gbuffer.out_width ? state->gbuffer.out_width : width;
+    const uint32_t out_height = state->gbuffer.out_height ? state->gbuffer.out_height : height;
+    if (width == 0 || height == 0) return;
+    if (!ensure_targets(b, width, height, out_width, out_height)) {
+        b->ok = false;
+        return;
+    }
 
-    if (!ensure_system(b, state)) return;
-    if (!take_up(b, state)) return;
-
+    // The system's representations and shapes, when there is one (else the background alone)
+    if (ensure_system(b, state) && take_up(b, state)) {
     // Forget the representations that are no more
     for (size_t i = 0; i < md_array_size(b->reps); ++i) b->reps[i].seen = false;
     const md_render_mol_atoms_t atoms = atoms_of(b, state);
@@ -1103,15 +1119,18 @@ void md_render_bridge_render(ApplicationState* state) {
 
     md_render_mol_bond_style_t styles[64][MD_RENDER_MOL_BOND_KIND_COUNT];
     size_t num_styles = 0;
+    const float dim = md_bitmask_empty(&state->selection.selection_mask) ? 0.0f : 1.0f - MD_CLAMP(state->selection.color.saturation, 0.0f, 1.0f);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
         BridgeRep* r = find_rep(b, rep.node.id);
         if (r) r->seen = true;
-        if (!md_render_bridge_draws(*state, rep) || !r) continue;
+        if (!draws(*state, rep) || !r) continue;
 
         md_render_mol_rep_t mr = {};
         mr.key   = ((uint64_t)rep.node.id + 1) << 16;   // and the part of an assembly in the low bits (emit_placed)
         mr.color.mode = MD_RENDER_COLOR_POINTS;
+        // What is not selected, dimmed while something is (to the selection colour's saturation)
+        mr.color.desaturate_unmarked = dim;
         mr.color.sharpness = rep.bond_color == BondColorMode::SmoothAtom ? 1.0f - MD_CLAMP(rep.bond_sharpness, 0.0f, 1.0f) : 1.0f;
         mr.atom_color = r->color;
         mr.visible = r->visible;
@@ -1183,15 +1202,6 @@ void md_render_bridge_render(ApplicationState* state) {
         }
     }
     emit_shapes(b, state, alloc);
-
-    const uint32_t width = state->gbuffer.width, height = state->gbuffer.height;
-    if (width == 0 || height == 0 || md_array_size(b->batches) == 0) {
-        b->exported = false;
-        return;
-    }
-    if (!shared_resize(b, width, height)) {
-        b->ok = false;
-        return;
     }
 
     md_render_frame_t f = {};
@@ -1206,106 +1216,163 @@ void md_render_bridge_render(ApplicationState* state) {
     md_render_status_t st = {};
     if (!md_render_view_draw(b->stream, b->view, &f, &st)) {
         set_status(b, "md_render could not draw the frame (see the log)%s");
-        b->exported = false;
         return;
     }
     b->still = (st.work & MD_RENDER_WORK_RASTER) == 0;
     b->last = f;
     b->has_last = true;
     b->last_ui_frame = ImGui::GetFrameCount();
-    export_frame(b);
-    snprintf(b->status, sizeof(b->status), "Drawing %u batches, %u x %u", f.batch_count, width, height);
+
+    // Composed, the display transform, the TAA into the history at the image's size (the frame alone when there is
+    // none to go on from)
+    md_compose_desc_t cd = {};
+    cd.camera = f.camera;
+    shading_of(&cd.shading, settings);
+    cd.ao = settings.ssao.enabled ? MD_MAX(settings.ssao.intensity, 0.0f) : 0.0f;
+    cd.ao_mode = settings.ssao.mode == postprocess_pipeline::SsaoMode_Quality ? MD_COMPOSE_AO_QUALITY : MD_COMPOSE_AO_PERFORMANCE;
+    cd.frame  = (uint32_t)ImGui::GetFrameCount();
+    cd.target = b->scene;
+    md_post_display_t dd = {};
+    display_of(&dd, settings);
+    dd.scene  = b->scene;
+    dd.target = b->frame;
+    bool ok = md_compose(b->stream, b->compose, b->view, &cd) && md_post_display(b->stream, b->post, &dd);
+    if (ok && settings.taa.enabled) {
+        md_post_resolve_t rd = {};
+        rd.view = b->view;
+        rd.camera = f.camera;
+        rd.jitter[0] = st.jitter[0];
+        rd.jitter[1] = st.jitter[1];
+        rd.frame = b->frame;
+        rd.history_prev = b->hist_valid ? b->history[b->hist] : nullptr;
+        rd.history = b->history[b->hist ^ 1];
+        rd.feedback_min = settings.taa.feedback_min;
+        rd.feedback_max = settings.taa.feedback_max;
+        ok = md_post_resolve(b->stream, b->post, &rd);
+        b->hist ^= 1;
+        b->hist_valid = ok;
+        b->image = ok ? b->history[b->hist] : nullptr;
+    } else {
+        b->hist_valid = false;
+        b->image = ok ? b->frame : nullptr;
+    }
+    if (!ok) {
+        set_status(b, "The main view's frame could not be made (see the log)%s");
+        return;
+    }
+
+    // The depth, for GL to draw behind the scene (depth_gl)
+    share_write_begin(b, &b->depth);
+    md_render_export_t ex = {b->depth.tex, nullptr, nullptr};
+    b->exported = md_render_view_export(b->stream, b->view, &ex);
+    share_write_end(b, &b->depth);
+    b->depth_tex_valid = false;
+    snprintf(b->status, sizeof(b->status), "Drawing %u batches, %u x %u, shown at %u x %u", f.batch_count, width, height, out_width, out_height);
 }
 
-// The marks of the frame drawn last into md_gl's marks pass (render, after draw_representations_marks): drawn by md_render
-// again first when the scene was not made this frame (only its masks: the marks changed)
-void md_render_bridge_marks(ApplicationState* state) {
+bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!active(*state) || !b->has_last || !b->marks_program || b->last.width != b->width || b->last.height != b->height) return;
-    if (b->last_ui_frame != ImGui::GetFrameCount()) {
-        settle_reads(b);
-        if (!take_up(b, state)) return;
-        md_render_frame_t f = b->last;
-        for (int i = 0; i < MD_RENDER_CONTENT_COUNT; ++i) f.content[i] = b->content[i];
-        if (!md_render_view_draw(b->stream, b->view, &f, nullptr)) return;
-        b->last = f;
-        b->last_ui_frame = ImGui::GetFrameCount();
-        export_frame(b);
+    if (!b || !b->ok || !b->image || !b->out.tex) return false;
+    // The marks changed without the scene being made: md_render's masks again (only they are made)
+    if (marks && b->has_last && b->last_ui_frame != ImGui::GetFrameCount() && b->last.width == b->width && b->last.height == b->height) {
+        if (take_up(b, state)) {
+            md_render_frame_t f = b->last;
+            for (int i = 0; i < MD_RENDER_CONTENT_COUNT; ++i) f.content[i] = b->content[i];
+            if (md_render_view_draw(b->stream, b->view, &f, nullptr)) {
+                b->last = f;
+                b->last_ui_frame = ImGui::GetFrameCount();
+            }
+        }
     }
-    if (!b->exported) return;
-    begin_reads(b);
-
-    // Into the marks pass's targets, by max as it set (gbuffer_marks_begin)
-    glUseProgram(b->marks_program);
-    const SharedTex* t[2] = {&b->depth, &b->color};
-    const GLint locs[2] = {b->mloc_depth, b->mloc_color};
-    for (int i = 0; i < 2; ++i) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(t[i]->gl.target, t[i]->gl.name);
-        glUniform1i(locs[i], i);
+    md_post_marks_t m = {};
+    if (marks) {
+        const auto& mk = marks->marks;
+        for (int i = 0; i < 2; ++i) {
+            for (int k = 0; k < 4; ++k) {
+                m.visible[i][k] = mk.visible[i].elem[k];
+                m.hidden[i][k]  = mk.hidden[i].elem[k];
+                m.outline[i][k] = mk.outline[i].elem[k];
+            }
+        }
+        for (int g = 0; g < 7; ++g) for (int k = 0; k < 3; ++k) m.groups[g][k] = mk.groups[g].elem[k];
+        m.highlight  = mk.highlight;
+        m.outline_px = (uint32_t)MD_MAX(mk.outline_step, 1);
     }
-    glActiveTexture(GL_TEXTURE2);
-    glBindTexture(GL_TEXTURE_2D, state->gbuffer.tex.depth);
-    glUniform1i(b->mloc_scene, 2);
-    glUniform2i(b->mloc_size, (GLint)b->width, (GLint)b->height);
-    glUniform2f(b->mloc_out_size, (float)state->gbuffer.out_width, (float)state->gbuffer.out_height);
-    GLboolean cull = glIsEnabled(GL_CULL_FACE);
-    glDisable(GL_CULL_FACE);
-    glBindVertexArray(b->vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    if (cull) glEnable(GL_CULL_FACE);
-    for (int i = 2; i >= 0; --i) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(i < 2 ? t[i]->gl.target : GL_TEXTURE_2D, 0);
-    }
-    glUseProgram(0);
-}
+    md_post_present_t pd = {};
+    pd.image = b->image;
+    pd.marks_view = marks && b->has_last ? b->view : nullptr;
+    pd.marks  = marks ? &m : nullptr;
+    pd.target = b->out.tex;
+    pd.frame  = b->presents++;
+    share_write_begin(b, &b->out);
+    const bool ok = md_post_present(b->stream, b->post, &pd);
+    share_write_end(b, &b->out);
+    if (!ok) return false;
 
-void md_render_bridge_merge(ApplicationState* state) {
-    MdRenderBridge* b = state->md_render_bridge;
-    if (!state->md_render.enabled || !b || !b->ok || !b->program) return;
-    if (!b->exported) return;
-    // Read until md_gpu next writes them (settle_reads): the marks read them too
-    begin_reads(b);
-    SharedTex* t[3] = {&b->depth, &b->color, &b->surface};
-
-    const GLenum draw_buffers[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING};
-    glDrawBuffers((GLsizei)MD_COUNTOF(draw_buffers), draw_buffers);
-    glViewport(0, 0, (GLsizei)b->width, (GLsizei)b->height);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(GL_TRUE);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    // Into the framebuffer bound, over the viewport the caller set
+    gl_read_begin(&b->out);
+    const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), blend = glIsEnabled(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
-
-    glUseProgram(b->program);
-    const GLint units[3] = {0, 1, 2};
-    const GLint locs[3] = {b->loc_depth, b->loc_color, b->loc_surface};
-    for (int i = 0; i < 3; ++i) {
-        glActiveTexture(GL_TEXTURE0 + units[i]);
-        glBindTexture(t[i]->gl.target, t[i]->gl.name);
-        glUniform1i(locs[i], units[i]);
-    }
-    const bool selection = !md_bitmask_empty(&state->selection.selection_mask);
-    glUniform2i(b->loc_size, (GLint)b->width, (GLint)b->height);
-    glUniform1f(b->loc_dim, selection ? MD_CLAMP(state->selection.color.saturation, 0.0f, 1.0f) : 1.0f);
-    glUniform1f(b->loc_still, b->still ? 1.0f : 0.0f);
-    {
-        // Picked as what md_render found there (md_render_bridge_resolve_hit)
-        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-        const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_MdRender, 0) : nullptr;
-        const uint32_t idx = range ? range->beg : INVALID_PICKING_IDX;
-        glUniform4f(b->loc_index, (float)(idx & 0xFF) / 255.0f, (float)((idx >> 8) & 0xFF) / 255.0f, (float)((idx >> 16) & 0xFF) / 255.0f, (float)(idx >> 24) / 255.0f);
-    }
+    glUseProgram(b->present_program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(b->out.gl.target, b->out.gl.name);
+    glUniform1i(b->ploc_image, 0);
+    glUniform2i(b->ploc_size, (GLint)b->out_width, (GLint)b->out_height);
     glBindVertexArray(b->vao);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glBindVertexArray(0);
-    for (int i = 2; i >= 0; --i) {
-        glActiveTexture(GL_TEXTURE0 + units[i]);
-        glBindTexture(t[i]->gl.target, 0);
-    }
+    glBindTexture(b->out.gl.target, 0);
     glUseProgram(0);
+    if (depth_test) glEnable(GL_DEPTH_TEST);
+    if (blend) glEnable(GL_BLEND);
+    gl_read_end(&b->out);
+    return true;
+}
+
+uint32_t md_render_bridge_depth_gl(ApplicationState* state) {
+    MdRenderBridge* b = state->md_render_bridge;
+    if (!b || !b->ok || !b->exported || !b->depth_program) return 0;
+    if (b->depth_tex_valid) return b->depth_tex;
+    if (!b->depth_tex || b->depth_tex_w != b->width || b->depth_tex_h != b->height) {
+        if (b->depth_tex) glDeleteTextures(1, &b->depth_tex);
+        glGenTextures(1, &b->depth_tex);
+        glBindTexture(GL_TEXTURE_2D, b->depth_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, (GLsizei)b->width, (GLsizei)b->height, 0, GL_RED, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        b->depth_tex_w = b->width;
+        b->depth_tex_h = b->height;
+    }
+    GLint fbo = 0, viewport[4];
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
+    glGetIntegerv(GL_VIEWPORT, viewport);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, b->depth_fbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, b->depth_tex, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glViewport(0, 0, (GLsizei)b->width, (GLsizei)b->height);
+    const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), blend = glIsEnabled(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    gl_read_begin(&b->depth);
+    glUseProgram(b->depth_program);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(b->depth.gl.target, b->depth.gl.name);
+    glUniform1i(b->dloc_depth, 0);
+    glUniform2i(b->dloc_size, (GLint)b->width, (GLint)b->height);
+    glBindVertexArray(b->vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glBindTexture(b->depth.gl.target, 0);
+    glUseProgram(0);
+    gl_read_end(&b->depth);
+    if (depth_test) glEnable(GL_DEPTH_TEST);
+    if (blend) glEnable(GL_BLEND);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fbo);
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    b->depth_tex_valid = true;
+    return b->depth_tex;
 }
 
 // ---- Picking ------------------------------------------------------------------------------------------------------
@@ -1323,11 +1390,11 @@ static void collect_picks(MdRenderBridge* b) {
 
 void md_render_bridge_pick(ApplicationState* state, float x, float y) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!active(*state) || !b->exported) return;
+    if (!b || !b->ok || !b->has_last) return;
     collect_picks(b);
     const int px = (int)x, py = (int)y;
     if (px < 0 || py < 0 || px >= (int)b->width || py >= (int)b->height) return;
-    md_render_view_pick(b->stream, b->view, (uint32_t)px, b->height - 1 - (uint32_t)py);     // rows from the top
+    md_render_view_pick(b->stream, b->view, (uint32_t)px, (uint32_t)py);
 }
 
 // The hit as the domain's: its index in the domain's range of the frame
@@ -1357,36 +1424,33 @@ static bool pair_middle(const MdRenderBridge* b, const ApplicationState& state, 
     return t >= 0.25f && t <= 0.75f;
 }
 
-void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
-    if (!hit || hit->domain != PickingDomain_MdRender) return;
+bool md_render_bridge_hit(ApplicationState* state, PickingHit* hit) {
     MdRenderBridge* b = state->md_render_bridge;
-    const md_render_pick_t* found = nullptr;
-    if (active(*state)) {
-        collect_picks(b);
-        const uint32_t px = (uint32_t)hit->surface_coord.x, py = b->height - 1 - (uint32_t)hit->surface_coord.y;
-        for (uint32_t i = b->num_picks; i-- > 0;) {
-            if (b->picks[i].x == px && b->picks[i].y == py) { found = &b->picks[i]; break; }
-        }
-    }
+    if (!hit || !b || !b->ok) return false;
+    collect_picks(b);
+    if (b->num_picks == 0) return false;
+    // The newest answer, of the pixel asked about a frame or two ago (as the GL picking's readback was)
+    const md_render_pick_t* found = &b->picks[b->num_picks - 1];
+    *hit = {};
+    hit->frame_idx     = state->picking_handler.frame_idx;
+    hit->raw_idx       = INVALID_PICKING_IDX;
+    // Where, as the GL picking had it: the pixel's centre, rows from the bottom, and GL's window depth (md_render's
+    // is reversed)
+    hit->surface_coord = {(float)found->x + 0.5f, (float)b->height - (float)found->y - 0.5f};
+    hit->depth         = found->key ? 1.0f - found->depth : 1.0f;
+    if (!found->key) return true;
     // A dipole's arrow picks as md_gl's (its group's range, keyed by its vector attribute); the cells' edges as none
     if (found && is_shape_key(found->key)) {
         const uint32_t what = (uint32_t)((found->key >> 8) & 0xFF);
         if ((what == SHAPE_SHAFTS || what == SHAPE_HEADS) && found->element < md_array_size(b->dipoles)) {
             const MdRenderBridge::Dipole& d = b->dipoles[found->element];
             set_hit(*state, hit, PickingDomain_Dipole, d.key, d.index);
-            return;
         }
-        found = nullptr;
+        return true;     // the cells' edges as nothing to pick
     }
     md_render_mol_hit_t mh = {};
-    if (!found || !md_render_mol_decode_pick(found, &mh) || mh.kind == MD_RENDER_MOL_HIT_NONE) {
-        // Not known yet (or no more): nothing, rather than what md_render drew there taken for something else
-        hit->domain = 0;
-        hit->key = 0;
-        hit->local_idx = 0;
-        hit->raw_idx = INVALID_PICKING_IDX;
-        return;
-    }
+    // Of a system no more (or not known): nothing, rather than what md_render drew there taken for something else
+    if (!b->has_topo || !md_render_mol_decode_pick(found, &mh) || mh.kind == MD_RENDER_MOL_HIT_NONE) return true;
     const md_system_t& sys = state->mold.sys;
     switch (mh.kind) {
     case MD_RENDER_MOL_HIT_BOND: {
@@ -1446,6 +1510,7 @@ void md_render_bridge_resolve_hit(ApplicationState* state, PickingHit* hit) {
         set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
         break;
     }
+    return true;
 }
 
 void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty) {
@@ -1476,36 +1541,25 @@ static bool create(ApplicationState* state) {
     b->render = b->stream ? md_render_create(b->device, nullptr) : nullptr;
     b->mol    = b->render ? md_render_mol_create(b->device, nullptr) : nullptr;
     b->view   = b->mol ? md_render_view_create(b->render, "main view") : nullptr;
-    if (!b->view) {
-        set_status(b, "md_render could not be made: %s", md_gpu_last_error());
+    b->compose = b->view ? md_compose_create(b->device) : nullptr;
+    b->post    = b->compose ? md_post_create(b->device) : nullptr;
+    if (!b->post) {
+        set_status(b, "md_render, md_compose or md_post could not be made: %s", md_gpu_last_error());
         return false;
     }
-    // Whether GL can read what md_gpu writes: a texture made and imported once (and the merge's shader compiled)
-    if (!shared_resize(b, 16, 16)) return false;
+    // Whether GL can read what md_gpu writes: the targets made once (and GL's shaders compiled)
+    if (!ensure_targets(b, 16, 16, 16, 16)) return false;
     set_status(b, "Ready%s");
     return true;
 }
 
-bool md_render_bridge_enable(ApplicationState* state, bool enable) {
-    state->md_render.enabled = enable;
-    if (!enable) {
-        // Read what was exported, so that the textures can be written again when it is turned on
-        if (state->md_render_bridge) settle_reads(state->md_render_bridge);
-        flag_all_representations_as_dirty(state);
-        return true;
-    }
+bool md_render_bridge_create(ApplicationState* state) {
     if (!state->md_render_bridge) {
         state->md_render_bridge = new MdRenderBridge();
         state->md_render_bridge->ok = create(state);
-        if (!state->md_render_bridge->ok) {
-            MD_LOG_INFO("md_render bridge: %s", state->md_render_bridge->status);
-        }
     }
     MdRenderBridge* b = state->md_render_bridge;
-    if (!b->ok) {
-        state->md_render.enabled = false;
-        return false;
-    }
+    if (!b->ok) return false;
     b->pending |= MolBit_DirtyPosition | MolBit_DirtyFlags;
     b->updated = false;
     flag_all_representations_as_dirty(state);
@@ -1515,22 +1569,24 @@ bool md_render_bridge_enable(ApplicationState* state, bool enable) {
 void md_render_bridge_destroy(ApplicationState* state) {
     MdRenderBridge* b = state->md_render_bridge;
     if (!b) return;
-    settle_reads(b);
     if (b->stream) {
         free_system(b);
         if (b->shape_pos)   md_gpu_free(b->stream, b->shape_pos);
         if (b->shape_col)   md_gpu_free(b->stream, b->shape_col);
         if (b->shape_scale) md_gpu_free(b->stream, b->shape_scale);
-        shared_free(b, &b->depth);
-        shared_free(b, &b->color);
-        shared_free(b, &b->surface);
+        free_targets(b);
         if (b->view) md_render_view_destroy(b->stream, b->view);
         md_gpu_stream_sync(b->stream);
     }
+    if (b->post) md_post_destroy(b->post);
+    if (b->compose) md_compose_destroy(b->compose);
     if (b->mol) md_render_mol_destroy(b->mol);
     if (b->render) md_render_destroy(b->render);
-    if (b->program) glDeleteProgram(b->program);
+    if (b->present_program) glDeleteProgram(b->present_program);
+    if (b->depth_program) glDeleteProgram(b->depth_program);
     if (b->vao) glDeleteVertexArrays(1, &b->vao);
+    if (b->depth_fbo) glDeleteFramebuffers(1, &b->depth_fbo);
+    if (b->depth_tex) glDeleteTextures(1, &b->depth_tex);
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
     md_array_free(b->parts, state->allocator.persistent);
@@ -1544,24 +1600,22 @@ void md_render_bridge_destroy(ApplicationState* state) {
 
 const char* md_render_bridge_status(const ApplicationState& state) {
     const MdRenderBridge* b = state.md_render_bridge;
-    if (!b) return "Off";
-    return b->status[0] ? b->status : (state.md_render.enabled ? "On" : "Off");
+    if (!b) return "Not made";
+    return b->status[0] ? b->status : (b->ok ? "Ready" : "Failed");
 }
 
 #else
 
-bool md_render_bridge_enable(ApplicationState* state, bool enable) { (void)state; return !enable; }
+bool md_render_bridge_create(ApplicationState*) { return false; }
 void md_render_bridge_destroy(ApplicationState*) {}
-const char* md_render_bridge_status(const ApplicationState&) { return "Built without md_gpu (MD_ENABLE_GPU)"; }
-bool md_render_bridge_active(const ApplicationState&) { return false; }
-void md_render_bridge_marks(ApplicationState*) {}
-bool md_render_bridge_draws(const ApplicationState&, const Representation&) { return false; }
+const char* md_render_bridge_status(const ApplicationState&) { return "Built without md_gpu (MD_ENABLE_GPU): the main view is not drawn"; }
 void md_render_bridge_pick(ApplicationState*, float, float) {}
-void md_render_bridge_resolve_hit(ApplicationState*, PickingHit*) {}
+bool md_render_bridge_hit(ApplicationState*, PickingHit*) { return false; }
 void md_render_bridge_rep_colors(ApplicationState*, const Representation&, const uint32_t*, size_t) {}
 void md_render_bridge_rep_pairs(ApplicationState*, const Representation&, const uint32_t*, const uint32_t*, const uint32_t*, size_t) {}
 void md_render_bridge_buffers(ApplicationState*, uint32_t) {}
-void md_render_bridge_render(ApplicationState*) {}
-void md_render_bridge_merge(ApplicationState*) {}
+void md_render_bridge_render(ApplicationState*, const postprocess_pipeline::Settings&) {}
+bool md_render_bridge_present(ApplicationState*, const postprocess_pipeline::Settings*) { return false; }
+uint32_t md_render_bridge_depth_gl(ApplicationState*) { return 0; }
 
 #endif

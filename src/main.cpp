@@ -146,10 +146,6 @@ static md_allocator_i* frame_alloc = 0; // Linear allocator for scratch data whi
 static md_allocator_i* persistent_alloc = 0;
 
 
-// The main view's isosurface meshes (IsosurfaceRendering_Mesh): the running mean of their frames, and whether it has
-// converged (the view is made until it has)
-static isomesh::Target iso_mesh_target;
-static bool iso_mesh_converged = true;
 
 constexpr md_str_t shader_output_snippet = MD_STR_LIT(R"(
 layout(location = 0) out vec4 out_color;
@@ -199,7 +195,7 @@ static md_str_t output_snippet(const ApplicationState& state) {
     return md_alloc_printf(persistent_alloc, "#define DIMMED_SATURATION %.3f\n%.*s", MD_CLAMP(state.selection.color.saturation, 0.0f, 1.0f), MD_STR_ARG(shader_output_snippet));
 }
 
-// The marks of the selection and the highlight (the mark pass, draw_representations_marks): of the selected, 1 in r
+// The marks of the selection and the highlight (the mark pass of the components' views): of the selected, 1 in r
 // where the fragment is in view and 1 in g where it is there at all, in view or behind the scene; of the highlighted
 // the same in b and a; and in the second target, of the highlighted, the group they are in (AtomBit_GroupMask) + 1,
 // 8 more where in view, so that the group in view wins. Blended by max. In view is within a tolerance of the depth of
@@ -485,71 +481,7 @@ static ViewRegion main_view_uncovered_region(const ApplicationState& state, cons
 
 static void render(ApplicationState* state);
 
-// The geometry pass by the kind of what it draws: a profiler section each (gfx/profiler.h), around one md_gl_draw of
-// all the ops of that kind. The cartoon, the ribbons and the tubes include the evaluation of their spline, which
-// md_gl_draw does for each call that draws one.
-enum GeometryStage {
-    GeometryStage_SpaceFill,
-    GeometryStage_Licorice,
-    GeometryStage_BallAndStick,
-    GeometryStage_Ribbons,
-    GeometryStage_Cartoon,
-    GeometryStage_GlyphSpheres,     // Of the cartoon of lipids and nucleic acids: heads
-    GeometryStage_GlyphTubes,       // Tails, sterol skeletons, nucleic backbones
-    GeometryStage_GlyphSlabs,       // Sugars, bases, the sticks between them
-    GeometryStage_Other,
-    GeometryStage_Count
-};
-
-static const char* geometry_stage_name[GeometryStage_Count] = {
-    "Space fill", "Licorice", "Ball and stick", "Ribbons", "Cartoon", "Heads", "Tubes", "Slabs", "Other",
-};
-
-static GeometryStage geometry_stage(md_gl_rep_type_t type, bool glyphs) {
-    if (glyphs) {
-        switch (type) {
-        case MD_GL_REP_SPACE_FILL: return GeometryStage_GlyphSpheres;
-        case MD_GL_REP_TUBES:      return GeometryStage_GlyphTubes;
-        case MD_GL_REP_SLABS:      return GeometryStage_GlyphSlabs;
-        default:                   return GeometryStage_Other;
-        }
-    }
-    switch (type) {
-    case MD_GL_REP_SPACE_FILL:     return GeometryStage_SpaceFill;
-    case MD_GL_REP_LICORICE:       return GeometryStage_Licorice;
-    case MD_GL_REP_BALL_AND_STICK: return GeometryStage_BallAndStick;
-    case MD_GL_REP_RIBBONS:        return GeometryStage_Ribbons;
-    case MD_GL_REP_CARTOON:        return GeometryStage_Cartoon;
-    default:                       return GeometryStage_Other;
-    }
-}
-
-// Draws ops a kind at a time, in the order the kinds first appear, each a profiler section
-static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, size_t count, bool glyphs, md_allocator_i* alloc) {
-    bool done[16] = {};
-    md_array(md_gl_draw_op_t) group = 0;
-    for (size_t i = 0; i < count; ++i) {
-        const uint32_t type = (uint32_t)ops[i].type;
-        if (type < MD_COUNTOF(done) && done[type]) continue;
-        md_array_shrink(group, 0);
-        for (size_t k = i; k < count; ++k) {
-            if (ops[k].type == ops[i].type) md_array_push(group, ops[k], alloc);
-        }
-        if (type < MD_COUNTOF(done)) done[type] = true;
-        args.draw_operations = { .count = (uint32_t)md_array_size(group), .ops = group };
-        PUSH_GPU_SECTION(geometry_stage_name[geometry_stage(ops[i].type, glyphs)]);
-        md_gl_draw(&args);
-        POP_GPU_SECTION();
-    }
-}
-
-static void draw_representations_opaque(ApplicationState* state);
-// The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
-static void draw_representations_marks(ApplicationState* state);
-static void draw_glyph_marks(ApplicationState* state);
 static uint64_t opaque_scene_hash(const ApplicationState* state);
-// Returns true if anything was drawn into gbuffer.tex.transparency_hdr this frame
-static bool draw_representations_transparent(ApplicationState* state);
 
 static void draw_load_dataset_window(ApplicationState* state);
 static void draw_main_menu(ApplicationState* state);
@@ -858,10 +790,9 @@ int main(int argc, char** argv) {
         // Isosurface meshes (the mesh rendering mode): kernels made on the first extraction
         md_gto_iso_gpu_initialize(state.gpu_device);
 
-        // The representations drawn by md_render, when asked for from the start
-        const char* mdr = getenv("VIAMD_MD_RENDER");
-        if (mdr && mdr[0] && mdr[0] != '0' && !md_render_bridge_enable(&state, true)) {
-            VIAMD_LOG_ERROR("md_render: %s", md_render_bridge_status(state));
+        // The main view (md_render_bridge.h)
+        if (!md_render_bridge_create(&state)) {
+            VIAMD_LOG_ERROR("The main view cannot be drawn: %s", md_render_bridge_status(state));
         }
     }
 #endif
@@ -1060,24 +991,18 @@ int main(int argc, char** argv) {
         PickingHit hit = {};
 
         if (surface_state.hovered) {
-            InteractionSurfaceHitArgs args = {
-                .picking_surface = &state.picking_surface,
-                .picking_handler = state.picking_handler,
-                .fbo = state.gbuffer.fbo,
-                .width = state.gbuffer.width,
-                .height = state.gbuffer.height,
-                .clip_to_world = clip_to_world,
-                .pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(state.app.framebuffer.width, 1),
-            };
-
-            // md_render asked about the pixel the GL picking reads, and a hit of what it drew resolved to what is there
-            {
-                const ImVec2 px = ImVec2(surface_state.mouse_local.x, surface_state.surface_size.y - surface_state.mouse_local.y) *
-                                  ImGui::GetIO().DisplayFramebufferScale * args.pixel_scale;
-                md_render_bridge_pick(&state, px.x, px.y);
+            // md_render is asked about the pixel under the mouse (rows from the top of the scene drawn, which covers
+            // the window as the canvas's bottom does), and its newest answer is the hit
+            const float pixel_scale = (float)state.gbuffer.width / (float)MD_MAX(state.app.framebuffer.width, 1);
+            const ImVec2 px = ImVec2(surface_state.mouse_local.x, surface_state.surface_size.y - surface_state.mouse_local.y) *
+                              ImGui::GetIO().DisplayFramebufferScale * pixel_scale;
+            md_render_bridge_pick(&state, px.x, (float)state.gbuffer.height - px.y);
+            if (md_render_bridge_hit(&state, &hit)) {
+                hit.source = state.picking_surface.source;
+                hit.screen_coord = surface_state.mouse_local;
+                const md_float4_t viewport = {0, 0, (float)state.gbuffer.width, (float)state.gbuffer.height};
+                hit.world_pos = md_float4x4_unproject({hit.surface_coord.x, hit.surface_coord.y, hit.depth}, clip_to_world, viewport);
             }
-            interaction_surface_hit_extract(&hit, surface_state, args);
-            md_render_bridge_resolve_hit(&state, &hit);
 
             InteractionSurfaceEvent event = {};
             interaction_surface_event_extract(&event, surface_state, hit);
@@ -1779,7 +1704,6 @@ int main(int argc, char** argv) {
     postprocess_pipeline::shutdown();
     VIAMD_LOG_DEBUG("Shutting down volume...");
     volume::shutdown();
-    isomesh::target_free(&iso_mesh_target);
     for (size_t i = 0; i < md_array_size(state.representation.reps); ++i) {
         electronic_structure_mesh_free(&state, &state.representation.reps[i].electronic_structure);
         // what its field has under way holds the GPU stream and pool tasks: both still here
@@ -5741,15 +5665,6 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
     md_str_writer_fmt(sw, "viewport: %u x %u shown, render scale %.3f, %u x %u rendered\n",
                       (unsigned)state->gbuffer.out_width, (unsigned)state->gbuffer.out_height, state->settings.render_scale,
                       (unsigned)state->gbuffer.width, (unsigned)state->gbuffer.height);
-    if (iso_mesh_target.width) {
-        md_str_writer_fmt(sw, "isosurface meshes: %u x %u, %llu triangles, ", iso_mesh_target.width,
-                          iso_mesh_target.height, (unsigned long long)iso_mesh_target.triangles);
-        if (state->profiler_keep_isomeshes) {
-            md_str_writer_fmt(sw, "drawn every frame, %u frames since the view or the scene changed\n", iso_mesh_target.frame);
-        } else {
-            md_str_writer_fmt(sw, "%u of %u frames in the mean\n", iso_mesh_target.frame, isomesh::MAX_FRAMES);
-        }
-    }
 }
 
 // The profiler's times (profiler::write_csv) as a CSV file
@@ -5808,10 +5723,6 @@ static void draw_profiler_window(ApplicationState* data) {
         }
         ImGui::SetItemTooltip("The same, to the clipboard");
         ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::Checkbox("Isosurface meshes every frame", &data->profiler_keep_isomeshes);
-        ImGui::SetItemTooltip("Their passes run every frame, also once the image has settled: times to compare with the "
-                              "view kept still");
 
         profiler::draw_table();
     }
@@ -5836,12 +5747,8 @@ static void draw_debug_window(ApplicationState* data) {
         ImGuiID hover  = ImGui::GetHoveredID();
         ImGui::Text("Active ID: %u, Hover ID: %u", active, hover);
 
-        // The representations drawn by md_render (md_render_bridge.h)
-        bool mdr = data->md_render.enabled;
-        if (ImGui::Checkbox("Draw with md_render (experimental)", &mdr)) {
-            md_render_bridge_enable(data, mdr);
-        }
-        ImGui::TextDisabled("md_render: %s", md_render_bridge_status(*data));
+        // The main view (md_render_bridge.h)
+        ImGui::TextDisabled("Main view: %s", md_render_bridge_status(*data));
 
         ImGui::Text("Mouse Pos: (%.3f, %.3f)", ImGui::GetMousePos().x, ImGui::GetMousePos().y);
         ImGui::Text("Camera Position: (%g, %g, %g)", data->view.camera.position.x, data->view.camera.position.y, data->view.camera.position.z);
@@ -7460,17 +7367,13 @@ static bool input_activity() {
 }
 
 // The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
-// feedback on a still view) and twice through the jitter, the shadows and the ambient occlusion likewise when they are
-// filtered over time; else the one frame
+// feedback on a still view) and twice through the jitter; else the one frame
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
         const double feedback = MD_CLAMP((double)state->visuals.temporal_aa.feedback_max, 0.5, 0.99);
         n = (uint32_t)ceil(log(0.01) / log(feedback));
         n = MD_MAX(n, 2 * jitter_count(state));
-    }
-    if (occlusion_temporal_active(state)) {
-        n = MD_MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
     return MD_CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
 }
@@ -7514,146 +7417,10 @@ static uint64_t scene_key(const ApplicationState* state) {
     return rk.key ? rk.key : 1;
 }
 
-// The image of the scene: the G-buffer, made into the image kept (gbuffer.tex.image) by post-processing, which
-// render() presents
-static void render_scene(ApplicationState* state, bool do_screenshot) {
-    update_view_param(state);
-    // Issued first, to run beside what GL draws until it is merged
-    md_render_bridge_render(state);
-
-    gbuffer_clear(&state->gbuffer);
-
-    const GLenum draw_buffers_opaque[] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-        GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-    glEnable(GL_CULL_FACE);
-    glCullFace(GL_BACK);
-
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-
-    // Enable all draw buffers
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo);
-    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
-
-    PUSH_GPU_SECTION("G-Buffer fill")
-
-    {
-        immediate::Scope vis_scope(state->gfx.overlay, "visualization");
-        immediate::Scope vis_scope_depth(state->gfx.world, "visualization with depth");
-
-        static const script::Drawing nothing = {};
-        const script::Drawing& vis = state->script.vis_shown ? *state->script.vis_shown : nothing;
-
-        // The script's vertices are drawn as they are
-        static_assert(sizeof(script::Vertex) == sizeof(immediate::Vertex), "script::Vertex mirrors immediate::Vertex");
-
-        if (vis.points) {
-            immediate::points(vis_scope, (immediate::Vertex*)vis.points, md_array_size(vis.points), state->script.point_color);
-        }
-
-        if (vis.triangles) {
-            immediate::triangles(vis_scope, (immediate::Vertex*)vis.triangles, md_array_size(vis.triangles), state->script.triangle_color);
-        }
-
-        if (vis.lines) {
-            immediate::lines(vis_scope, (immediate::Vertex*)vis.lines, md_array_size(vis.lines), state->script.line_color);
-        }
-
-        const size_t num_matrices = md_array_size(vis.sdf.matrices);
-        const size_t num_structures = md_array_size(vis.sdf.structures);
-        const size_t num_sdf_items = MD_MIN(MD_MIN(num_matrices, num_structures), 100);
-
-        if (num_matrices != num_structures) {
-            VIAMD_LOG_DEBUG("SDF visualization returned mismatched matrix and structure counts (%zu, %zu)", num_matrices, num_structures);
-        }
-        if (num_sdf_items > 0) {
-            const md_float4_t col_x = { 1, 0, 0, 0.7f };
-            const md_float4_t col_y = { 0, 1, 0, 0.7f };
-            const md_float4_t col_z = { 0, 0, 1, 0.7f };
-            const float ext = vis.sdf.extent * 0.25f;
-            const md_float3_t box_ext = md_float3_set1(vis.sdf.extent);
-            for (size_t i = 0; i < num_sdf_items; ++i) {
-                const md_float4x4_t model_matrix = md_float4x4_inverse(vis.sdf.matrices[i]);
-                immediate::basis(vis_scope, model_matrix, ext, col_x, col_y, col_z);
-                immediate::box_wireframe(vis_scope_depth, -box_ext, box_ext, model_matrix);
-            }
-        }
-    }
-
-    // DRAW VELOCITY OF STATIC OBJECTS
-    PUSH_GPU_SECTION("Blit Static Velocity")
-    glDrawBuffer(GL_COLOR_ATTACHMENT_VELOCITY);
-    glDepthMask(0);
-    postprocessing::blit_static_velocity(state->gbuffer.tex.depth, state->view.param);
-    glDepthMask(1);
-    POP_GPU_SECTION()
-    glDepthMask(1);
-    glColorMask(1, 1, 1, 1);
-
-    // DRAW REPRESENTATIONS
-    PUSH_GPU_SECTION("Draw Opaque")
-    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
-    draw_representations_opaque(state);
-    md_render_bridge_merge(state);
-    glDrawBuffers((int)MD_COUNTOF(draw_buffers_opaque), draw_buffers_opaque);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderOpaque, viamd::EventPayloadType_ApplicationState, state);
-    POP_GPU_SECTION()
-
-    immediate::RenderParams params = {};
-    params.view = state->view.param.matrix.curr.view;
-    params.proj = state->view.param.matrix.curr.proj;
-
-    // standard alpha blending
-    PUSH_GPU_SECTION("Immediate world")
-    //glEnable(GL_BLEND);
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    immediate::render(state->gfx.world, params);
-    //glDisable(GL_BLEND);
-    POP_GPU_SECTION()
-
-    // The transparent representations test the depth of the opaque ones, but do not write it
-    glEnable(GL_DEPTH_TEST);
-    glDepthFunc(GL_LESS);
-    glDepthMask(0);
-    glColorMask(1, 1, 1, 1);
-    glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-
-    const bool transparency_hdr_written = draw_representations_transparent(state);
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdRenderTransparent, viamd::EventPayloadType_ApplicationState, state);
-
-    const GLenum draw_buffers_transparent[] = { GL_COLOR_ATTACHMENT_TRANSPARENCY, 0, GL_COLOR_ATTACHMENT_VELOCITY, GL_COLOR_ATTACHMENT_PICKING };
-	glDrawBuffers(MD_COUNTOF(draw_buffers_transparent), draw_buffers_transparent);
-
-    glDisable(GL_CULL_FACE);
-
-    // Blend colour only. glEnable(GL_BLEND) applies to every attachment, and
-    // this pass also writes velocity and picking: alpha-blending those means a
-    // translucent overlay fragment scales the velocity underneath it by
-    // (1 - alpha) and mixes the picking index with whatever was already there,
-    // neither of which is a meaningful operation on that data.
-    glEnablei(GL_BLEND, 0);
-    // The transparency buffer holds premultiplied colour: straight alpha sources, accumulated premultiplied
-    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glDisablei(GL_BLEND, 1);
-    glDisablei(GL_BLEND, 2);
-    glDisablei(GL_BLEND, 3);
-
-    PUSH_GPU_SECTION("Immediate overlay")
-    glDisable(GL_DEPTH_TEST);
-    immediate::render(state->gfx.overlay, params);
-    POP_GPU_SECTION()
-
-    glDisable(GL_BLEND);
-    glEnable(GL_CULL_FACE);
-
-    POP_GPU_SECTION()  // G-buffer
-
-    PUSH_GPU_SECTION("Postprocessing")
+// The settings of the post-processing as the visuals have them: what the main view's frame is made with (shading,
+// ambient occlusion, display transform, background, TAA; md_render_bridge_render)
+static postprocess_pipeline::Settings frame_settings(const ApplicationState* state) {
     postprocess_pipeline::Settings settings = {};
-    postprocess_pipeline::Inputs inputs = {};
-
     settings.background_color = state->visuals.background.color;
 
     settings.shading.mode = state->visuals.shading.mode;
@@ -7663,13 +7430,8 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     settings.shading.light = state->visuals.shading.light;
     settings.shading.environment = state->visuals.shading.environment;
 
-    settings.shadows.enabled = state->visuals.shadows.enabled;
-    settings.shadows.softness = state->visuals.shadows.softness;
-    settings.shadows.temporal = state->visuals.occlusion_temporal;
-
     settings.ssao.enabled = state->visuals.ssao.enabled;
     settings.ssao.intensity = state->visuals.ssao.intensity;
-    settings.ssao.temporal = state->visuals.occlusion_temporal;
     settings.ssao.mode = state->visuals.ssao.mode;
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
@@ -7677,53 +7439,19 @@ static void render_scene(ApplicationState* state, bool do_screenshot) {
     settings.tonemap.exposure = state->visuals.tonemapping.exposure;
     settings.tonemap.gamma = state->visuals.tonemapping.gamma;
 
-    settings.dof.enabled = state->visuals.dof.enabled;
-    settings.dof.focus_depth = state->visuals.dof.focus_depth;
-    settings.dof.aperture = state->visuals.dof.aperture * 0.01f;
-
-    settings.fxaa.enabled = fxaa_active(state);
-
-    constexpr float MOTION_BLUR_REFERENCE_DT = 1.0f / 60.0f;
-    const float dt_compensation = MOTION_BLUR_REFERENCE_DT / (float)state->app.timing.delta_s;
-    const float motion_scale = state->visuals.temporal_aa.motion_blur.motion_scale * dt_compensation;
     settings.taa.enabled = taa_active(state);
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
-    settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
-    settings.taa.motion_blur.motion_scale = motion_scale;
+    return settings;
+}
 
-    settings.sharpen.enabled = taa_active(state) && state->visuals.sharpen.enabled;
-    settings.sharpen.weight = state->visuals.sharpen.weight;
-
-    // Upscaled from the G-buffer's size to the viewport's (a screenshot is made at its size)
-    if (!do_screenshot) {
-        inputs.width  = (int)state->gbuffer.width;
-        inputs.height = (int)state->gbuffer.height;
-    }
-    inputs.depth = state->gbuffer.tex.depth;
-    inputs.color = state->gbuffer.tex.color;
-    inputs.normal = state->gbuffer.tex.normal;
-    inputs.velocity = state->gbuffer.tex.velocity;
-    inputs.transparency = state->gbuffer.tex.transparency;
-    inputs.transparency_hdr = transparency_hdr_written ? state->gbuffer.tex.transparency_hdr : 0;
-    inputs.history = settings.taa.enabled ? state->gbuffer.tex.history : 0;
-    inputs.history_prev = settings.taa.enabled ? state->gbuffer.tex.history_prev : 0;
-
-    // Kept, and presented after (render())
-    settings.present = false;
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, state->gbuffer.fbo_image);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, state->gbuffer.out_width, state->gbuffer.out_height);
-
-    postprocess_pipeline::execute(inputs, settings, state->view.param);
+// The image of the scene, on md_gpu (md_render_bridge.h): drawn, composed and made into the image kept, which render()
+// presents
+static void render_scene(ApplicationState* state) {
+    update_view_param(state);
+    PUSH_GPU_SECTION("Main view")
+    md_render_bridge_render(state, frame_settings(state));
     POP_GPU_SECTION()
-
-    if (settings.taa.enabled) {
-        // Ping-pong: what was written this frame is read as the previous history next frame (no copy needed)
-        uint32_t tmp = state->gbuffer.tex.history;
-        state->gbuffer.tex.history = state->gbuffer.tex.history_prev;
-        state->gbuffer.tex.history_prev = tmp;
-    }
 }
 
 // Saves the screenshot from the framebuffer bound (create_screenshot), and it is no longer pending
@@ -7756,62 +7484,34 @@ static void render(ApplicationState* state) {
          state->gbuffer.out_width != out_width || state->gbuffer.out_height != out_height) &&
         (gbuffer_target_width != 0 && gbuffer_target_height != 0 && out_width != 0 && out_height != 0)) {
         gbuffer_init(&state->gbuffer, gbuffer_target_width, gbuffer_target_height, out_width, out_height);
-        postprocess_pipeline::initialize(state->gbuffer.width, state->gbuffer.height, out_width, out_height);
         state->render.image_valid = false;
     }
 
-    // The scene is made when something in it changed, until it settles (and the isosurface meshes' mean has converged);
-    // else the image kept is shown again. Always without lazy rendering. Input may change what the key does not show, so
-    // it starts the settling again, but not while a screenshot waits for it.
+    // The scene is made when something in it changed, until it settles; else the image kept is shown again. Always
+    // without lazy rendering. Input may change what the key does not show, so it starts the settling again, but not
+    // while a screenshot waits for it.
     auto& lazy = state->render;
     const uint64_t key = scene_key(state);
     if (key != lazy.scene_key || !lazy.image_valid || (!screenshot && input_activity())) {
         lazy.scene_key = key;
         lazy.settle_frames = settle_frames(state);
     }
-    const bool scene = !state->settings.lazy_rendering || lazy.settle_frames > 0 || !lazy.image_valid || !iso_mesh_converged;
+    const bool scene = !state->settings.lazy_rendering || lazy.settle_frames > 0 || !lazy.image_valid;
     lazy.history = (lazy.history << 1) | (scene ? 1 : 0);
     if (scene) {
         PUSH_GPU_SECTION("Scene")
-        render_scene(state, offscreen);
+        render_scene(state);
         POP_GPU_SECTION()
         lazy.image_valid = true;
         if (lazy.settle_frames > 0) lazy.settle_frames -= 1;
     }
-    // Settled: as made as it gets. The meshes' mean that the profiler keeps drawing never converges: then its frames.
-    const bool meshes_settled = iso_mesh_converged || iso_mesh_target.frame >= isomesh::MAX_FRAMES;
-    const bool settled = lazy.image_valid && lazy.settle_frames == 0 && meshes_settled;
+    const bool settled = lazy.image_valid && lazy.settle_frames == 0;
 
-    // The marks of the selection and the highlight: the selected and highlighted atoms drawn once, both, into a target
-    // of the size of the image made, unjittered, each fragment marked in view or behind the scene (its depth, from the
-    // G-buffer); put over the image as it is presented. They are not part of the scene: changing them changes nothing in
-    // it, nor in its history. Drawn again when they change, or the scene was made.
-    const bool selection_empty = md_bitmask_empty(&state->selection.selection_mask);
-    const bool highlight_empty = md_bitmask_empty(&state->selection.highlight_mask);
-    const bool glyph_hovered = state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
-    const bool draw_marks = !selection_empty || !highlight_empty || glyph_hovered;
-    if (draw_marks) {
-        uint64_t marks_key = md_hash64(&lazy.selection_hash, sizeof(lazy.selection_hash), lazy.scene_key);
-        marks_key = md_hash64(&state->glyph_hover, sizeof(state->glyph_hover), marks_key);
-        marks_key = md_hash64(&state->glyph_hover_ui, sizeof(state->glyph_hover_ui), marks_key);
-        marks_key = md_hash64(&lazy.highlight_hash, sizeof(lazy.highlight_hash), marks_key);
-        marks_key = md_hash64(&state->selection.highlight_groups.key, sizeof(state->selection.highlight_groups.key), marks_key);
-        marks_key = marks_key ? marks_key : 1;
-        if (scene || marks_key != lazy.marks_key) {
-            PUSH_GPU_SECTION("Marks")
-            gbuffer_marks_begin(&state->gbuffer);
-            draw_representations_marks(state);
-            md_render_bridge_marks(state);
-            draw_glyph_marks(state);
-            gbuffer_marks_end(&state->gbuffer);
-            POP_GPU_SECTION()
-            lazy.marks_key = marks_key;
-        }
-    } else {
-        lazy.marks_key = 0;
-    }
+    // The marks of the selection and the highlight, over the image as it is presented (md_render's masks). They are
+    // not part of the scene: changing them changes nothing in it, nor in its history.
+    const bool draw_marks = !md_bitmask_empty(&state->selection.selection_mask) || !md_bitmask_empty(&state->selection.highlight_mask);
 
-    // The image kept, the marks over it, into the framebuffer bound
+    // The image kept, the marks over it, into the framebuffer bound at the size of the image
     auto present = [&]() {
         PUSH_GPU_SECTION("Present")
         postprocess_pipeline::Settings settings = {};
@@ -7822,7 +7522,7 @@ static void render(ApplicationState* state) {
             const int outline_step = MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x));
             marks_settings(&settings, *state, t * t * (3.0f - 2.0f * t), outline_step);
         }
-        postprocess_pipeline::present(state->gbuffer.tex.image, draw_marks ? state->gbuffer.tex.marks : 0, draw_marks ? state->gbuffer.tex.marks_group : 0, settings);
+        md_render_bridge_present(state, draw_marks ? &settings : nullptr);
         POP_GPU_SECTION()
     };
 
@@ -7839,16 +7539,17 @@ static void render(ApplicationState* state) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
     glDrawBuffer(GL_BACK);
+    glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
     if (!offscreen) {
         present();
         // The planes' outlines over it, behind what of the scene is in front of them (es_planes.h)
-        es_planes_draw_outlines(state->gbuffer.tex.depth, state->gbuffer.width, state->gbuffer.height,
+        es_planes_draw_outlines(md_render_bridge_depth_gl(state), state->gbuffer.width, state->gbuffer.height,
                                 state->app.framebuffer.width, state->app.framebuffer.height, ImGui::GetIO().DisplayFramebufferScale.x);
+        glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
     } else {
         const uint32_t total = MD_MAX(settle_frames(state), 1u);
-        float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
-        if (!meshes_settled) fraction = MD_MIN(fraction, (float)iso_mesh_target.frame / (float)isomesh::MAX_FRAMES);
+        const float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
         if (screenshot_pending(state)) ImGui::OpenPopup("Capturing Frame");
         ImVec2 size = ImGui::CalcTextSize("Capturing Frame");
         ImGui::SetNextWindowSize(size * ImVec2(2, 5), ImGuiCond_Always);
@@ -7867,43 +7568,6 @@ static void render(ApplicationState* state) {
     if (screenshot && !offscreen && settled) {
         screenshot_save(state);
     }
-}
-
-// The longest bond md_gl draws, covalent or weak (md_gl_draw_args_t max_bond_length): a longer one is taken to be across
-// a periodic boundary, from an atom to the far side of the cell, and is left out.
-//   In a cell: half its smallest width (the minimum image), at least 3 Å.
-//   Without a cell the boundary is not known, but the coordinates may still be wrapped (a periodic trajectory without
-//   its cell). Then: BOND_LENGTH_MARGIN times the longest bond of the system in the frame where its topology last
-//   changed (where its bonds were made, read or edited), at least BOND_LENGTH_MIN for the weak bonds, which are not of
-//   the topology. A bond stays near the length it had, one wrapped across a cell since is about as long as the cell.
-//   A bond already wrapped in that frame cannot be told from a long one, and lifts the limit with it.
-static constexpr float BOND_LENGTH_MARGIN = 1.5f;
-static constexpr float BOND_LENGTH_MIN    = 5.0f;
-
-static float bond_length_limit(ApplicationState* state) {
-    const md_unitcell_t& cell = state->mold.state.unitcell;
-    if (md_unitcell_flags(&cell) != 0) {
-        md_float3_t ext = {0};
-        md_unitcell_diag_extract_float(ext.elem, &cell);
-        return MD_MAX(3.0f, md_float3_reduce_min(ext) * 0.5f);
-    }
-
-    const md_system_t& sys = state->mold.sys;
-    if (state->mold.bond_length_limit_version != sys.topology_version || !(state->mold.bond_length_limit > 0.0f)) {
-        const md_system_state_t& frame = state->mold.state;
-        float max_d2 = 0.0f;
-        if (frame.xyz && frame.num_atoms == sys.atom.count) {
-            for (size_t i = 0; i < sys.bond.count; ++i) {
-                const md_atom_pair_t pair = sys.bond.pairs[i];
-                if ((size_t)pair.idx[0] < frame.num_atoms && (size_t)pair.idx[1] < frame.num_atoms) {
-                    max_d2 = MD_MAX(max_d2, md_float3_distance_squared(frame.xyz[pair.idx[0]], frame.xyz[pair.idx[1]]));
-                }
-            }
-        }
-        state->mold.bond_length_limit = MD_MAX(BOND_LENGTH_MIN, BOND_LENGTH_MARGIN * sqrtf(max_d2));
-        state->mold.bond_length_limit_version = sys.topology_version;
-    }
-    return state->mold.bond_length_limit;
 }
 
 // The copies of the scene the periodic images show (view.periodic_images): its own, as it is, then the translations of
@@ -7930,282 +7594,7 @@ static void compute_periodic_transforms(md_array(md_float4x4_t)* transforms, con
     }
 }
 
-// The copies a representation is drawn in without an assembly: the periodic images if it has them, by instancing.
-// md_gl culls those out of view on the CPU. Read from the view state, which outlives the draw.
-static md_gl_copies_t rep_copies(const ApplicationState& state, const Representation& rep) {
-    md_gl_copies_t copies = {};
-    const size_t n = md_array_size(state.view.periodic_transforms);
-    if (rep.periodic_images && n > 1) {
-        copies.transforms = &state.view.periodic_transforms[0].elem[0][0];
-        copies.prev_transforms = md_array_size(state.view.periodic_transforms_prev) == n ? &state.view.periodic_transforms_prev[0].elem[0][0] : NULL;
-        copies.count = (uint32_t)n;
-    }
-    return copies;
-}
-
-// The ops from beg on, of a representation, in the copies of the scene. With an assembly shown, each op once per part
-// of it: of the instances of the part (its subset, of the molecule or of the glyphs of the cartoon, assembly_subsets_update)
-// in the copies its operators make. Otherwise once, in the periodic images of the representation. Read from the system
-// and the view state, which outlive the draw.
-static void place_ops(md_array(md_gl_draw_op_t)* ops, size_t beg, const ApplicationState& state, const Representation& rep, bool glyphs, md_allocator_i* alloc) {
-    const size_t end = md_array_size(*ops);
-    const md_assembly_data_t& a = state.mold.sys.assembly;
-    const bool shown = state.view.assembly >= 0 && (size_t)state.view.assembly < a.count;
-    const size_t part_beg = shown ? a.group_offset[state.view.assembly] : 0;
-    const size_t part_end = shown ? a.group_offset[state.view.assembly + 1] : 0;
-    const size_t num_parts = md_array_size(state.view.assembly_copy_offset) > 0 ? md_array_size(state.view.assembly_copy_offset) - 1 : 0;
-    const md_gl_subset_t* subsets = glyphs ? state.view.assembly_glyph_subsets : state.view.assembly_subsets;
-    // Without an assembly, or its copies or subsets not of it (yet)
-    if (num_parts == 0 || num_parts != part_end - part_beg || state.view.assembly_subsets_of != state.view.assembly || md_array_size(subsets) != num_parts) {
-        const md_gl_copies_t copies = rep_copies(state, rep);
-        for (size_t i = beg; i < end; ++i) (*ops)[i].copies = copies;
-        return;
-    }
-    for (size_t p = 0; p < num_parts; ++p) {
-        const uint32_t c0 = state.view.assembly_copy_offset[p];
-        const uint32_t c1 = state.view.assembly_copy_offset[p + 1];
-        for (size_t i = beg; i < end; ++i) {
-            md_gl_draw_op_t op = (*ops)[i];
-            op.copies = {&state.view.assembly_transforms[c0].elem[0][0], NULL, c1 - c0};
-            op.subset = subsets[p];
-            if (p == 0) {
-                (*ops)[i] = op;
-            } else {
-                md_array_push(*ops, op, alloc);
-            }
-        }
-    }
-}
-
-// The edges of the unit cell of the frame shown (a SimulationBox representation), through the turn the coordinates
-// carry if the orientation is kept (the cell itself cannot hold one). Tubes of the thickness in points on the screen,
-// shaded as the rest of the scene (the world queue writes the G-buffer), never thinner than a pixel; or lines of a
-// pixel. With axes, the edges along a, b and c from the origin red, green and blue. The cells out of view are left out.
-static void draw_simulation_box(ApplicationState* state, const Representation& rep) {
-    const md_unitcell_t& cell = state->mold.state.unitcell;
-    if (md_unitcell_flags(&cell) == 0) return;
-
-    md_float3x3_t A = {0};
-    md_unitcell_A_extract_float(A.elem, &cell);
-    const md_float4x4_t M = state->operations.state_rotation * md_float4x4_from_float3x3(A);
-    const uint32_t color = convert_color(md_float4_set(rep.box.color.x, rep.box.color.y, rep.box.color.z, 1.0f));
-    const uint32_t axis_color[3] = { convert_color(md_float4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
-
-    immediate::Scope scope(state->gfx.world, "simulation box");
-
-    // The corners: bit b of i is the coordinate along cell vector b
-    md_float3_t corner[8];
-    for (int i = 0; i < 8; ++i) {
-        corner[i] = md_float3_from_float4(md_float4x4_mul_float4(M, md_float4_set((float)(i & 1), (float)((i >> 1) & 1), (float)((i >> 2) & 1), 1.0f)));
-    }
-
-    // A pixel at the depth d of view space: 2 d / (P11 h) in a perspective, 2 / (P11 h) in an orthographic projection.
-    // A point likewise, with h the view's height in points: the view is the whole window, DisplaySize in points, and a
-    // screenshot at another resolution is the same view, its points as much larger as the image is.
-    const md_float4x4_t& V = state->view.param.matrix.curr.view;
-    const md_float4x4_t& P = state->view.param.matrix.curr.proj;
-    const float   h_px = (float)MD_MAX(state->gbuffer.out_height, 1U);    // the pixels shown, whatever the render scale
-    const float   h_pt = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
-    const bool    ortho = P.elem[3][3] == 1.0f;
-
-    // The radius of a tube in the world is k times the depth (k itself in an orthographic projection): its diameter the
-    // thickness in points, and at least about a pixel. As the radius is linear in the depth, an edge drawn as a
-    // truncated cone from the radius at one end to that at the other is of the same width on screen all along it.
-    const float k = MD_MAX(0.5f * rep.box.thickness * 2.0f / (P.elem[1][1] * h_pt), 0.6f * 2.0f / (P.elem[1][1] * h_px));
-    // Where the depth is less than this, the tube is clipped to it: in front of the camera, and its radius still k d
-    const float min_depth = 1.0e-3f;
-    auto depth_of = [&](md_float3_t p) {
-        return ortho ? 1.0f : -md_float3_from_float4(md_float4x4_mul_float4(V, md_float4_from_float3(p, 1.0f))).z;
-    };
-
-    // The planes of the view volume, inward, and the sphere of a cell about its center: a cell wholly outside of one is
-    // out of view, the tubes' radius at the far side of the cell taken as the margin.
-    const md_float4x4_t PV = P * V;
-    md_float4_t plane[6];
-    for (int p = 0; p < 6; ++p) {
-        const int r = p / 2;
-        const float s = (p & 1) ? -1.0f : 1.0f;
-        const md_float4_t row_w = {PV.elem[0][3], PV.elem[1][3], PV.elem[2][3], PV.elem[3][3]};
-        const md_float4_t row_r = {PV.elem[0][r], PV.elem[1][r], PV.elem[2][r], PV.elem[3][r]};
-        plane[p] = md_float4_add(row_w, md_float4_mul1(row_r, s));
-        const float len = md_float3_length(md_float3_from_float4(plane[p]));
-        plane[p] = len > 0.0f ? md_float4_mul1(plane[p], 1.0f / len) : md_float4_t{0, 0, 0, 1};
-    }
-    const md_float3_t cell_center = (corner[0] + corner[7]) * 0.5f;
-    float cell_radius = 0.0f;
-    for (int i = 0; i < 8; ++i) cell_radius = MD_MAX(cell_radius, md_float3_length(corner[i] - cell_center));
-    cell_radius *= 1.01f;
-
-    // Its own cell, then those of the periodic images (whose shared edges are drawn twice); the axes in its own only
-    const md_array(md_float4x4_t) transforms = state->view.periodic_transforms;
-    const size_t num_cells = rep.periodic_images ? MD_MAX(md_array_size(transforms), (size_t)1) : 1;
-    for (size_t c = 0; c < num_cells; ++c) {
-        const md_float3_t t = c == 0 ? md_float3_t{0, 0, 0} : md_float3_from_float4(transforms[c].col[3]);
-        const float margin = rep.box.thickness > 0.0f ? k * MD_MAX(depth_of(cell_center + t) + cell_radius, 0.0f) : 0.0f;
-        const md_float4_t center = md_float4_from_float3(cell_center + t, 1.0f);
-        bool out_of_view = false;
-        for (int p = 0; p < 6 && !out_of_view; ++p) {
-            out_of_view = md_float4_dot(plane[p], center) < -(cell_radius + margin);
-        }
-        if (out_of_view) continue;
-
-        if (rep.box.thickness <= 0.0f) {
-            for (int i = 0; i < 8; ++i) {
-                for (int b = 0; b < 3; ++b) {
-                    if (i & (1 << b)) continue;
-                    const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
-                    immediate::line(scope, corner[i] + t, corner[i | (1 << b)] + t, col);
-                }
-            }
-            continue;
-        }
-
-        // The corners as spheres, one each, of the tubes' radius there: it closes the three tubes that meet in it. The
-        // origin's is of the box's colour too with axes, where the three axes start.
-        float depth[8];
-        for (int i = 0; i < 8; ++i) {
-            depth[i] = depth_of(corner[i] + t);
-            if (depth[i] >= min_depth) {
-                immediate::sphere(scope, corner[i] + t, k * depth[i], color, 0xFFFFFFFF, 16, 32);
-            }
-        }
-        for (int i = 0; i < 8; ++i) {
-            for (int b = 0; b < 3; ++b) {
-                if (i & (1 << b)) continue;
-                const int j = i | (1 << b);
-                const uint32_t col = (rep.box.axes && c == 0 && i == 0) ? axis_color[b] : color;
-                md_float3_t p0 = corner[i] + t, p1 = corner[j] + t;
-                float  d0 = depth[i],      d1 = depth[j];
-                if (d0 < min_depth && d1 < min_depth) continue;
-                // Clipped to min_depth where it passes behind the camera, so that the radius stays k times the depth
-                if (d0 < min_depth) { p0 = md_float3_lerp(p0, p1, (min_depth - d0) / (d1 - d0)); d0 = min_depth; }
-                if (d1 < min_depth) { p1 = md_float3_lerp(p1, p0, (min_depth - d1) / (d0 - d1)); d1 = min_depth; }
-                immediate::frustum(scope, p0, p1, k * d0, k * d1, col);
-            }
-        }
-    }
-}
-
-static void draw_representations_opaque(ApplicationState* state) {
-    MD_ASSERT(state);
-
-    if (state->mold.sys.atom.count == 0) {
-        return;
-    }
-
-    const size_t num_representations = md_array_size(state->representation.reps);
-    if (num_representations == 0) return;
-
-	glEnable(GL_DEPTH_TEST);
-
-    md_array(md_gl_draw_op_t) draw_ops = 0;
-    // The glyphs of the cartoon of the lipids and nucleic acids, a molecule of their own with picking of their own
-    md_array(md_gl_draw_op_t) glyph_ops = 0;
-    for (size_t i = 0; i < num_representations; ++i) {
-        const Representation& rep = state->representation.reps[i];
-        // md_render's (md_render_bridge_merge puts it into the G-buffer)
-        if (md_render_bridge_draws(*state, rep)) continue;
-
-        if (rep.type == RepresentationType::Cartoon && representation_shown(*state, rep) && rep.type_is_valid && !rep.sphere_fallback) {
-            const size_t beg = md_array_size(glyph_ops);
-            representation_glyph_draw_ops(&glyph_ops, *state, rep, frame_alloc);
-            place_ops(&glyph_ops, beg, *state, rep, true, frame_alloc);
-            // The cartoon of the proteins needs a protein backbone to draw
-            if (state->mold.sys.protein_backbone.range.count == 0) continue;
-        }
-
-        if (RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) {
-            if (representation_shown(*state, rep) && rep.type_is_valid) {
-                const md_gl_draw_op_t op = representation_draw_op(rep);
-                const size_t beg = md_array_size(draw_ops);
-                md_array_push(draw_ops, op, frame_alloc);
-                // The weak bonds it draws over its sticks (the interactions of the system), in its copies
-                representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
-                place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
-            }
-        } else if (rep.type == RepresentationType::Bonds) {
-            if (representation_shown(*state, rep) && rep.type_is_valid) {
-                const size_t beg = md_array_size(draw_ops);
-                representation_weak_bond_draw_ops(&draw_ops, *state, rep, frame_alloc);
-                place_ops(&draw_ops, beg, *state, rep, false, frame_alloc);
-            }
-        } else if (rep.type == RepresentationType::DipoleMoment) {
-            DipoleArrow arrow;
-            if (representation_shown(*state, rep) && representation_dipole_arrow(&arrow, *state, rep)) {
-                // The representation's own (key, index) IS the picking address: the group's range was reserved under
-                // that key this frame, and the shader adds the base to the per primitive index, so the element index
-                // is what goes on the primitive. A group that did not fit in the picking space draws with
-                // INVALID_PICKING_IDX, which the shader passes through untouched - visible, just not pickable.
-                const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-                const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Dipole, rep.dipole.dipole_key) : nullptr;
-
-                immediate::Scope scope(state->gfx.world, "debug_dipole_moment");
-                immediate::set_picking_base_idx(scope, range ? range->beg : 0);
-
-                const uint32_t color_u32   = convert_color(rep.dipole.color);
-                const uint32_t picking_idx = range ? rep.dipole.dipole_index : INVALID_PICKING_IDX;
-                const float    head_length = md_float3_length(arrow.tip - arrow.neck);
-                immediate::arrow(scope, arrow.beg, arrow.tip, arrow.shaft_radius, arrow.head_radius, head_length, color_u32, picking_idx);
-            }
-        } else if (rep.type == RepresentationType::SimulationBox) {
-            if (representation_shown(*state, rep) && rep.type_is_valid) {
-                draw_simulation_box(state, rep);
-            }
-        }
-    }
-
-    const float max_bond_length = bond_length_limit(state);
-
-    md_gl_draw_args_t args = {
-        .shaders = state->gl.shaders,
-        .draw_operations = {
-            .count = (uint32_t)md_array_size(draw_ops),
-            .ops = draw_ops,
-        },
-        .view_transform = {
-            .view_matrix = &state->view.param.matrix.curr.view.elem[0][0],
-            .proj_matrix = &state->view.param.matrix.curr.proj.elem[0][0],
-            // These two are for temporal anti-aliasing reprojection (optional)
-            .prev_view_matrix = &state->view.param.matrix.prev.view.elem[0][0],
-            .prev_proj_matrix = &state->view.param.matrix.prev.proj.elem[0][0],
-        },
-        .picking_offset = gl_picking_offset(*state),
-        .max_bond_length = max_bond_length,
-    };
-
-    draw_ops_timed(args, draw_ops, md_array_size(draw_ops), false, frame_alloc);
-
-    if (md_array_size(glyph_ops) > 0) {
-        args.picking_offset = gl_picking_offset_glyphs(*state);
-        draw_ops_timed(args, glyph_ops, md_array_size(glyph_ops), true, frame_alloc);
-    }
-
-    // The glyphs of the point sets, ray cast by a pass of their own, picking as their points
-    {
-        const PickingSpace* space = picking_handler_current_space(&state->picking_handler);
-        for (size_t i = 0; i < num_representations; ++i) {
-            const Representation& rep = state->representation.reps[i];
-            if (rep.type != RepresentationType::Glyphs || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-            const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Glyph, rep.node.id) : nullptr;
-            if (!range) continue;
-            glyphs_draw(rep.glyphs, state->view.param, range->beg);
-        }
-    }
-}
-
-// The glyph hovered, into the marks of the highlight
-static void draw_glyph_marks(ApplicationState* state) {
-    const bool ui = state->glyph_hover_ui.rep_id != 0;
-    const uint32_t rep_id = ui ? state->glyph_hover_ui.rep_id : state->glyph_hover.rep_id;
-    const uint32_t point  = ui ? state->glyph_hover_ui.point : state->glyph_hover.point;
-    if (!rep_id) return;
-    const Representation* rep = find_representation(state, rep_id);
-    if (!rep || rep->type != RepresentationType::Glyphs || !representation_shown(*state, *rep) || !rep->type_is_valid) return;
-    glyphs_draw_marks(rep->glyphs, point, state->gbuffer, state->view.param);
-}
-
-// What the opaque image under the isosurfaces depends on, as far as the mesh mode's accumulation is concerned:
-// the depth of what the representations draw (draw_representations_opaque): not what is highlighted or selected
+// What the representations show, for the scene's key (scene_key): not what is highlighted or selected
 static uint64_t opaque_scene_hash(const ApplicationState* state) {
     uint64_t h = md_hash64(&state->mold.gpu_scene_version, sizeof(state->mold.gpu_scene_version), state->representation.gl_version);
     h = md_hash64(&state->representation.visibility_mask_hash, sizeof(state->representation.visibility_mask_hash), h);
@@ -8281,320 +7670,3 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
     return h;
 }
 
-// Pixels of the render target to a point of the UI, for what is sized in points over the view (the width of an
-// isoline): the framebuffer scale, and in a screenshot at another resolution as much larger as it is
-static float isoline_px_per_point(const ApplicationState* state) {
-    const float h = ImGui::GetIO().DisplaySize.y;
-    return h > 0.0f ? (float)state->gbuffer.height / h : 1.0f;
-}
-
-// The isosurfaces of every electronic structure representation as meshes, in one composite
-static bool draw_representations_transparent_mesh(ApplicationState* state) {
-    static constexpr size_t MAX_SURFACES = 256;
-    isomesh::Surface surfaces[MAX_SURFACES];
-    size_t num_surfaces = 0;
-    uint64_t scene_hash = opaque_scene_hash(state);
-
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-        ElectronicStructureRepresentation& es = rep.electronic_structure;
-        if (es.display != ElectronicStructureDisplay::Isosurface) continue;
-        // the fields meshes are not made of: raycast (draw_representations_transparent)
-        if (!es_mesh_mode(state, es)) continue;
-
-        IsoDesc iso;
-        electronic_structure_iso_desc_init(&iso, es);
-        const size_t n = electronic_structure_mesh_surfaces(surfaces + num_surfaces, MAX_SURFACES - num_surfaces, state, &rep, iso);
-
-        // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
-        // the colour volume spans the box of the density volume
-        const md_float4x4_t world_to_volume = md_float4x4_inverse(es.density_vol.texture_to_world);
-        const bool use_field  = es.coloring == SurfaceColoring::Field;
-        const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
-        const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
-        const IsolineDesc isolines = color_scale_isoline_desc(es.field_isolines, isoline_px_per_point(state));
-        for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
-            isomesh::Surface& s = surfaces[j];
-            s.world_to_volume = world_to_volume;
-            if (s.coloring == isomesh::Coloring_VertexField) {
-                s.field_colormap = colormap;
-                s.field_range_beg = es.field_map.range_beg;
-                s.field_range_end = es.field_map.range_end;
-                s.isolines = isolines;
-            } else if (use_colors) {
-                s.coloring = isomesh::Coloring_ColorVolume;
-                s.color_volume = es.color_vol.tex_id;
-            }
-        }
-        // The contents of the colour volume (the vertex values are in the mesh's version)
-        if (use_colors) scene_hash = md_hash64(&es.col_hash, sizeof(es.col_hash), scene_hash);
-        if (use_field) scene_hash = md_hash64(&es.field_map.colormap, sizeof(es.field_map.colormap), scene_hash);
-        
-        num_surfaces += n;
-    }
-
-    const isomesh::RenderDesc desc = {
-        .render_target = {
-            .depth = state->gbuffer.tex.depth,
-            .color = state->gbuffer.tex.transparency_hdr,
-            .width = state->gbuffer.width,
-            .height = state->gbuffer.height,
-            .clear_color = true,
-        },
-        .matrix = {
-            .view = state->view.param.matrix.curr.view,
-            .proj = state->view.param.matrix.curr.proj,
-            .proj_no_jitter = state->view.param.matrix.curr.proj_no_jitter,
-        },
-        .surfaces = surfaces,
-        .num_surfaces = num_surfaces,
-        .shading = {
-            .roughness = 0.3f,
-            .ior = 1.5f,
-            .mode = state->visuals.shading.mode,
-            .ambient = state->visuals.shading.ambient,
-            .specular = state->visuals.shading.specular,
-            .colors = state->visuals.shading.colors,
-            .light = state->visuals.shading.light,
-            .environment = state->visuals.shading.environment,
-        },
-        .scene_hash = scene_hash,
-        .keep_drawing = state->profiler_keep_isomeshes,
-    };
-    if (num_surfaces == 0) {
-        isomesh::target_free(&iso_mesh_target);
-        return false;
-    }
-    return isomesh::render(&iso_mesh_target, desc, &iso_mesh_converged);
-}
-
-// The electronic structure representations drawn from their volumes, over what the isosurfaces drew into the same
-// (HDR) target: a volume display by direct volume rendering of the field through the colour map and alpha ramp of
-// each, cut by its planes; a planes display as the field on its planes through the colour map, each of its opacity. True when anything was
-// drawn.
-static bool draw_representations_volumes(ApplicationState* state, bool target_written) {
-    bool written = false;
-    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
-        Representation& rep = state->representation.reps[i];
-        if (rep.type != RepresentationType::ElectronicStructure || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-        ElectronicStructureRepresentation& es = rep.electronic_structure;
-        const bool slice = es.display == ElectronicStructureDisplay::Planes;
-        // the planes evaluated on themselves: each from its image where it is of the plane as it is, else the volume
-        const bool on_planes = slice && es_plane_images_supported(state, es);
-        if (!(es.display == ElectronicStructureDisplay::Volume || slice) || !es.has_box || (!on_planes && !es.density_vol.tex_id)) continue;
-        md_float4_t planes[ES_MAX_PLANES];
-        float  slice_opacity[ES_MAX_PLANES];
-        uint32_t images[ES_MAX_PLANES];
-        md_float4x4_t rect_from_model[ES_MAX_PLANES];
-        md_float4_t edges[ES_MAX_PLANES];
-        int num_planes = 0;
-        if (slice) {
-            es_slices_conform(&es);
-            const uint32_t rep_id = rep.node.id;
-            num_planes = es_volume_slices(planes, slice_opacity, rect_from_model, es);
-            bool any = false;
-            for (int k = 0; k < num_planes; ++k) {
-                images[k] = 0;
-                if (on_planes) {
-                    const ElectronicStructurePlaneImage& im = es.plane_images[k];
-                    const Volume& v = im.img[im.front];
-                    if (im.current && v.tex_id) images[k] = v.tex_id;
-                }
-                // nothing to draw it from yet: its edges only
-                if (!images[k] && !es.density_vol.tex_id) slice_opacity[k] = 0.0f;
-                edges[k] = es_slice_edge_color(state, rep_id, k, es.slices.items[k].enabled);
-                any |= slice_opacity[k] > 0.0f || edges[k].w > 0.0f;
-            }
-            if (!any) continue;
-        } else {
-            num_planes = es_volume_clip_planes(planes, es);
-        }
-        volume::DvrRenderDesc desc = {};
-        desc.render_target.depth = state->gbuffer.tex.depth;
-        desc.render_target.color = state->gbuffer.tex.transparency_hdr;
-        desc.render_target.width = state->gbuffer.width;
-        desc.render_target.height = state->gbuffer.height;
-        desc.render_target.clear_color = !(target_written || written);
-        desc.texture.density_volume = es.density_vol.tex_id;
-        desc.texture.transfer_function = es_volume_transfer_function(&es);
-        desc.matrix.model = es.box_to_world;
-        desc.matrix.view = state->view.param.matrix.curr.view;
-        desc.matrix.proj = state->view.param.matrix.curr.proj;
-        desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
-        desc.tf.min_value = es.volume.tf.range_beg;
-        desc.tf.max_value = es.volume.tf.range_end;
-        desc.planes.count = num_planes;
-        desc.planes.equations = planes;
-        desc.linear_output = true;
-        desc.slice = slice;
-        desc.slice_opacity = slice ? slice_opacity : nullptr;
-        desc.slice_images = slice && on_planes ? images : nullptr;
-        desc.slice_rect_from_model = slice ? rect_from_model : nullptr;
-        desc.slice_edge = slice ? edges : nullptr;
-        // the edges' width: a line of 1.5 points (as the outlines drawn over the view), in the target's pixels
-        desc.slice_edge_px = 0.75f * ImGui::GetIO().DisplayFramebufferScale.x * (float)state->gbuffer.width / (float)MD_MAX(state->app.framebuffer.width, 1);
-        volume::render_dvr(desc);
-        written = true;
-    }
-    return written;
-}
-
-static bool draw_representations_transparent(ApplicationState* state) {
-    MD_ASSERT(state);
-    if (state->mold.sys.atom.count == 0) return false;
-
-    const size_t num_representations = md_array_size(state->representation.reps);
-    if (num_representations == 0) return false;
-
-    iso_mesh_converged = true;
-    bool written = false;
-    // The isosurfaces drawn as meshes first, then those raycast through their volume over them: as each
-    // representation has it, and whatever meshes are not made of (es_mesh_mode)
-    bool any_mesh = false;
-    for (size_t i = 0; i < num_representations; ++i) {
-        const Representation& rep = state->representation.reps[i];
-        any_mesh |= representation_shown(*state, rep) && rep.type == RepresentationType::ElectronicStructure &&
-                    rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface && es_mesh_mode(state, rep.electronic_structure);
-    }
-    if (any_mesh) {
-        written = draw_representations_transparent_mesh(state);
-    } else {
-        isomesh::target_free(&iso_mesh_target);
-    }
-
-    for (size_t i = 0; i < num_representations; ++i) {
-        Representation& rep = state->representation.reps[i];
-        if (!representation_shown(*state, rep)) continue;
-        if (rep.type == RepresentationType::ElectronicStructure && rep.electronic_structure.display == ElectronicStructureDisplay::Isosurface &&
-            !es_mesh_mode(state, rep.electronic_structure)) {
-            const bool use_field = rep.electronic_structure.coloring == SurfaceColoring::Field && rep.electronic_structure.field_vol.tex_id;
-            IsoDesc iso;
-            electronic_structure_iso_desc_init(&iso, rep.electronic_structure);
-
-#if VIAMD_RECOMPUTE_ORBITAL_PER_FRAME
-            flag_representation_as_dirty(&state->representation.reps[i]);
-#endif
-
-            volume::IsoRenderDesc desc = {
-                .render_target = {
-                    .depth = state->gbuffer.tex.depth,
-                    .color = state->gbuffer.tex.transparency_hdr,
-                    .width = state->gbuffer.width,
-                    .height = state->gbuffer.height,
-                    .clear_color = !written,
-                },
-                .texture = {
-                    .density_volume = rep.electronic_structure.density_vol.tex_id,
-                    .color_volume = rep.electronic_structure.color_vol.tex_id,
-                    .field_volume = use_field ? rep.electronic_structure.field_vol.tex_id : 0,
-                    .field_colormap = use_field ? surface_field_colormap_texture(&rep.electronic_structure.field_vol, rep.electronic_structure.field_map.colormap) : 0,
-                    .normal_volume = es_normals_of(rep.electronic_structure.density_vol.tex_id),
-                },
-                .matrix = {
-                    .model = rep.electronic_structure.density_vol.texture_to_world,
-                    .view = state->view.param.matrix.curr.view,
-                    .proj = state->view.param.matrix.curr.proj,
-                    .inv_proj = state->view.param.matrix.inv.proj,
-                },
-                .clip_volume = {
-                    .min = {0,0,0},
-                    .max = {1,1,1},
-                },
-                .iso = {
-                    .count = iso.count,
-                    .values = iso.values,
-                    .colors = iso.colors,
-                    .optical_densities = iso.optical_densities,
-                    .use_color_volume = rep.electronic_structure.coloring == SurfaceColoring::AtomColors,
-                    .use_field = use_field,
-                    .exact = state->settings.exact_isosurfaces,
-                },
-                .field = {
-                    .range_beg = rep.electronic_structure.field_map.range_beg,
-                    .range_end = rep.electronic_structure.field_map.range_end,
-                },
-                .isolines = use_field ? color_scale_isoline_desc(rep.electronic_structure.field_isolines, isoline_px_per_point(state)) : IsolineDesc{},
-                .shading = {
-                    .roughness = 0.3f,
-                    .ior = 1.5f,
-                    .mode = state->visuals.shading.mode,
-                    .ambient = state->visuals.shading.ambient,
-                    .specular = state->visuals.shading.specular,
-                    .colors = state->visuals.shading.colors,
-                    .light = state->visuals.shading.light,
-                    .environment = state->visuals.shading.environment,
-                },
-            };
-
-            if (volume::render_isosurfaces(desc)) {
-                written = true;
-            }
-
-#if MD_DEBUG
-            {
-				immediate::Scope scope(state->gfx.world, "debug_electronic_structure");
-                immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
-            }
-#endif
-        }
-    }
-    return draw_representations_volumes(state, written) || written;
-}
-
-static void draw_representations_marks(ApplicationState* data) {
-    md_gl_draw_op_t* draw_ops = 0;
-    md_gl_draw_op_t* glyph_ops = 0;
-    // In the copies as the opaque pass draws them (the periodic images, an assembly), so the selected and highlighted
-    // atoms show in them too
-    for (size_t i = 0; i < md_array_size(data->representation.reps); ++i) {
-        const Representation& rep = data->representation.reps[i];
-
-        if (rep.type > RepresentationType::Cartoon && rep.type != RepresentationType::Bonds) continue;
-        // md_render's marks (md_render_bridge_marks)
-        if (md_render_bridge_draws(*data, rep)) continue;
-        if (rep.type == RepresentationType::Cartoon && representation_shown(*data, rep) && rep.type_is_valid && !rep.sphere_fallback) {
-            const size_t beg = md_array_size(glyph_ops);
-            representation_glyph_draw_ops(&glyph_ops, *data, rep, frame_alloc);
-            place_ops(&glyph_ops, beg, *data, rep, true, frame_alloc);
-            if (data->mold.sys.protein_backbone.range.count == 0) continue;
-        }
-
-        if (representation_shown(*data, rep) && rep.type_is_valid) {
-            // The op of the opaque pass: its depth tells the marks in view from those behind it, so the geometry must
-            // be the same, the bond orders too
-            const size_t beg = md_array_size(draw_ops);
-            if (rep.type != RepresentationType::Bonds) {
-                md_array_push(draw_ops, representation_draw_op(rep), frame_alloc);
-            }
-            representation_weak_bond_draw_ops(&draw_ops, *data, rep, frame_alloc);
-            place_ops(&draw_ops, beg, *data, rep, false, frame_alloc);
-        }
-    }
-
-    const float max_bond_length = bond_length_limit(data);
-
-    // Unjittered: the marks are put over the image made from the jittered frames, which shows the scene still
-    md_gl_draw_args_t args = {
-        .shaders = data->gl.shaders_marks,
-        .draw_operations = {
-            .count = md_array_size(draw_ops),
-            .ops = draw_ops,
-        },
-        .view_transform = {
-            .view_matrix = &data->view.param.matrix.curr.view.elem[0][0],
-            .proj_matrix = &data->view.param.matrix.curr.proj_no_jitter.elem[0][0],
-        },
-        .picking_offset = gl_picking_offset(*data),
-        .atom_mask = AtomBit_Marked | AtomBit_Visible,
-		.max_bond_length = max_bond_length,
-    };
-
-    md_gl_draw(&args);
-
-    if (md_array_size(glyph_ops) > 0) {
-        args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-        args.picking_offset = gl_picking_offset_glyphs(*data);
-        md_gl_draw(&args);
-    }
-}

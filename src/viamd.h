@@ -125,9 +125,6 @@ constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domai
 // A point of a point set drawn as glyphs (glyphs.h), keyed by the representation: what its glyph picks as. The index is
 // the point.
 constexpr PickingDomainID PickingDomain_Glyph = HASH_STR_LIT64("picking domain point glyph");
-// What md_render drew (md_render_bridge.h): one index, which its pixels in the G-buffer hold; a hit of it is resolved
-// to what is there (md_render_bridge_resolve_hit), an atom, a bond, a segment, ..., in their domains
-constexpr PickingDomainID PickingDomain_MdRender = HASH_STR_LIT64("picking domain md_render");
 
 // The domains whose hits stand for atoms of the system: hovering one highlights them, and a click commits the highlight
 // to the selection
@@ -1505,13 +1502,9 @@ struct ApplicationState {
     static constexpr int GPU_VOLUME_JOB_SLOTS = 8;
     GpuVolumeJob gpu_volume_jobs[GPU_VOLUME_JOB_SLOTS] = {};
 
-    // The molecular representations of the main view drawn by md_render instead of md_gl (md_render_bridge.h), when
-    // md_render.enabled and the device can share textures with the GL context; null until it is first enabled
+    // The main view, drawn on md_gpu (md_render_bridge.h); null until it is made at start
     struct MdRenderBridge* md_render_bridge = nullptr;
 #endif
-    struct {
-        bool enabled = false;       // Debug window: md_render draws what it can of the main view (experimental)
-    } md_render;
 
     struct {
         md_allocator_i* frame = nullptr;
@@ -2202,7 +2195,6 @@ struct ApplicationState {
     bool show_script_reference_window = false;
     bool show_debug_window = false;
     bool show_profiler_window = false;
-    bool profiler_keep_isomeshes = false;   // Windows > Profiler: the isosurface meshes drawn every frame (isomesh::RenderDesc::keep_drawing)
     bool show_property_export_window = false;
 
     // --- LAZY RENDERING ---
