@@ -3050,8 +3050,17 @@ void   clock_step(ApplicationState* app, double frames);
 // The mean time from frame to frame of the reference, on the clock: what one frame per second plays at
 double clock_frame_duration(const ApplicationState* app);
 // Once a frame: the time kept in the unit of the clock when the reference changes to a run in another (converted, or to
-// the clock's first time where it cannot be), and within the clock's span
+// the clock's first time where it cannot be), and within the clock's span. The view of the timeline and the periods,
+// which are on the clock too, are converted with it.
 void   clock_update(ApplicationState* app);
+// The frames [beg, end] of a run a timeline period covers at the clock's time (timeline_period_frames): those whose
+// times on the clock are within it; of a run not placed by its times, the reference's there, as far as it has them.
+// False when it covers none of the run.
+bool   run_period_frames(int* beg, int* end, const ApplicationState* app, const SystemContext& sys, const SystemRun* run, const TimelinePeriod& period);
+// Of the first system's run, which the tools read
+static inline bool period_frames(int* beg, int* end, const ApplicationState* app, const TimelinePeriod& period) {
+    return run_period_frames(beg, end, app, app->system_context, system_run(app->system_context), period);
+}
 
 // One frame of a run (the one shown, without it) into out: coordinates when out has storage for them, and the cell.
 // For a single frame now and then; anything that walks many frames keeps an extraction context of its own

@@ -24,7 +24,7 @@ enum DragKind {
     Drag_Move,
     Drag_Resize,
     Drag_Pan,       // Empty lane space, which pans the timeline
-    Drag_Scrub,     // Ctrl-drag, which moves the current frame
+    Drag_Scrub,     // Ctrl-drag, which moves the current time
     Drag_Out,       // A period pulled out of the lane, taken elsewhere as a drag and drop payload
 };
 
@@ -32,10 +32,10 @@ struct Drag {
     DragKind kind = Drag_None;
     uint32_t id = 0;
     bool     hold_beg = false;          // Resize: the end held is the one stored in beg, wherever it has been dragged to
-    int32_t  orig_beg = 0;
-    int32_t  orig_end = 0;
-    int      anchor = 0;                // The frame under the pointer when it was pressed
-    int      current = 0;               // Create: the frame under it now
+    double   orig_beg = 0;
+    double   orig_end = 0;
+    double   anchor = 0;                // The time under the pointer when it was pressed, at a frame (snap)
+    double   current = 0;               // Create: the time under it now
     float    press_x = 0;
     double   view_beg = 0;
     double   view_end = 0;
@@ -87,8 +87,27 @@ double frame_time(const TimelinePeriodAxis& a, double frame) {
     return time_at_frame(a.frame_times, (size_t)a.num_frames, frame);
 }
 
-int nearest_frame(const TimelinePeriodAxis& a, double time) {
-    return (int)(frame_at_time(a.frame_times, (size_t)a.num_frames, time) + 0.5);
+// The reference's frames, on the clock as they are
+ClockAxis reference(const TimelinePeriodAxis& a) {
+    ClockAxis c;
+    c.times = a.frame_times;
+    c.count = (size_t)a.num_frames;
+    return c;
+}
+
+// From frame to frame of the reference, on average
+double frame_step(const TimelinePeriodAxis& a) { return clock_axis_frame_duration(reference(a)); }
+
+// The time of the reference's frame nearest a time; beyond its frames, the nearest of the steps of its mean length from
+// its first or its last frame, which is where the clock steps to there (clock_step_time)
+double snap(const TimelinePeriodAxis& a, double t) {
+    const ClockAxis ref = reference(a);
+    const double step  = frame_step(a);
+    const double first = clock_axis_time(ref, 0.0);
+    const double last  = clock_axis_time(ref, (double)(a.num_frames - 1));
+    if (t < first) return first + round((t - first) / step) * step;
+    if (t > last)  return last  + round((t - last)  / step) * step;
+    return clock_axis_time(ref, floor(clock_axis_frame(ref, t) + 0.5));
 }
 
 float plot_width() { return MD_MAX(ui.plot_x1 - ui.plot_x0, 1.0f); }
@@ -102,7 +121,6 @@ float time_to_x(const TimelinePeriodAxis& a, double t) {
     return span > 0 ? ui.plot_x0 + (float)((t - *a.view_beg) / span) * plot_width() : ui.plot_x0;
 }
 
-float frame_x(const TimelinePeriodAxis& a, double frame) { return time_to_x(a, frame_time(a, frame)); }
 
 void add_dashed_rect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
     const float dash = 4.0f;
@@ -125,32 +143,41 @@ void add_dashed_rect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col) {
 // The end of a period which is lit: the one under the pointer, or the one held, wherever it has been dragged to
 TimelinePeriodPart lit_part(const TimelinePeriod& r) {
     if (ui.drag.kind == Drag_Resize && ui.drag.id == r.id) {
-        const int32_t held  = ui.drag.hold_beg ? r.beg : r.end;
-        const int32_t other = ui.drag.hold_beg ? r.end : r.beg;
+        const double held  = ui.drag.hold_beg ? r.beg : r.end;
+        const double other = ui.drag.hold_beg ? r.end : r.beg;
         return held <= other ? TimelinePeriodPart_Beg : TimelinePeriodPart_End;
     }
     if (ui.hover_id == r.id) return ui.hover.part;
     return TimelinePeriodPart_None;
 }
 
-void tooltip_frames(const TimelinePeriodAxis& a, bool marker, int beg, int end) {
-    if (marker) {
-        if (a.time_unit[0]) ImGui::Text("Frame %d (%.4g %s)", beg, a.frame_times[beg] * a.display_scale, a.time_unit);
-        else                ImGui::Text("Frame %d", beg);
-    } else {
-        if (a.time_unit[0]) ImGui::Text("Frames %d to %d, %d frames (%.4g to %.4g %s)", beg, end, end - beg + 1, a.frame_times[beg] * a.display_scale, a.frame_times[end] * a.display_scale, a.time_unit);
-        else                ImGui::Text("Frames %d to %d, %d frames", beg, end, end - beg + 1);
+// The time [beg, end] on the clock, and the frames of the reference's run in it: frames alone when they have no time
+void tooltip_span(const TimelinePeriodAxis& a, const TimelinePeriod& r, double current_time) {
+    double tb, te;
+    timeline_period_span(&tb, &te, r, current_time);
+    int beg = 0, end = -1;
+    const bool frames = timeline_period_frames(&beg, &end, r, current_time, reference(a));
+    const bool marker = timeline_period_is_marker(r);
+    if (a.time_unit[0]) {
+        if (marker) ImGui::Text("%.6g %s", tb * a.display_scale, a.time_unit);
+        else        ImGui::Text("%.6g to %.6g %s", tb * a.display_scale, te * a.display_scale, a.time_unit);
+        if (frames) {
+            if (beg == end) ImGui::TextDisabled("Frame %d of %s", beg, a.reference_name);
+            else            ImGui::TextDisabled("Frames %d to %d of %s, %d frames", beg, end, a.reference_name, end - beg + 1);
+        }
+    } else if (frames) {
+        if (beg == end) ImGui::Text("Frame %d", beg);
+        else            ImGui::Text("Frames %d to %d, %d frames", beg, end, end - beg + 1);
     }
 }
 
-void period_tooltip(const TimelinePeriod& r, const TimelinePeriodAxis& a, double current_frame) {
-    int beg, end;
-    if (!timeline_period_frames(&beg, &end, r, current_frame, a.num_frames)) return;
+void period_tooltip(const TimelinePeriod& r, const TimelinePeriodAxis& a, double current_time) {
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(r.name);
-    tooltip_frames(a, timeline_period_is_marker(r), beg, end);
+    tooltip_span(a, r, current_time);
     if (r.follow) {
-        ImGui::TextDisabled("Follows the current frame, %+d to %+d", MD_MIN(r.beg, r.end), MD_MAX(r.beg, r.end));
+        if (a.time_unit[0]) ImGui::TextDisabled("Follows the current time, %+.6g to %+.6g %s", MD_MIN(r.beg, r.end) * a.display_scale, MD_MAX(r.beg, r.end) * a.display_scale, a.time_unit);
+        else                ImGui::TextDisabled("Follows the current frame, %+.6g to %+.6g", MD_MIN(r.beg, r.end), MD_MAX(r.beg, r.end));
     }
     if (r.note[0]) {
         ImGui::Separator();
@@ -173,11 +200,11 @@ void end_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, bool commit) 
     switch (d.kind) {
     case Drag_Create:
         if (commit) {
-            // A click marks the frame, a drag the frames it went over
+            // A click marks the time, a drag the time it went over
             const ImGuiIO& io = ImGui::GetIO();
             const bool click = fabsf(io.MousePos.x - d.press_x) < io.MouseDragThreshold;
-            const int beg = click ? d.anchor : MD_MIN(d.anchor, d.current);
-            const int end = click ? d.anchor : MD_MAX(d.anchor, d.current);
+            const double beg = click ? d.anchor : MD_MIN(d.anchor, d.current);
+            const double end = click ? d.anchor : MD_MAX(d.anchor, d.current);
             if (TimelinePeriod* r = timeline_periods_add(rs, nullptr, beg, end, false)) {
                 request_rename(*r);
             }
@@ -205,7 +232,7 @@ void end_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, bool commit) 
 }
 
 // Follows the pointer with whatever is held, wherever the pointer is: it may leave the lane while it drags
-void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_frame) {
+void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_time) {
     Drag& d = ui.drag;
     if (d.kind == Drag_None) return;
     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
@@ -213,13 +240,12 @@ void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* cu
         return;
     }
 
-    const float mx = ImGui::GetIO().MousePos.x;
-    const int   f  = nearest_frame(axis, x_to_time(axis, mx));
-    const int   last = axis.num_frames - 1;
+    const float  mx = ImGui::GetIO().MousePos.x;
+    const double t  = snap(axis, x_to_time(axis, mx));
 
     switch (d.kind) {
     case Drag_Create:
-        d.current = f;
+        d.current = t;
         break;
     case Drag_Move:
         if (TimelinePeriod* r = timeline_periods_find(rs, d.id)) {
@@ -232,12 +258,12 @@ void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* cu
                 d.kind = Drag_Out;
                 break;
             }
-            int delta = f - d.anchor;
+            double delta = t - d.anchor;
             if (!r->follow) {
-                // A fixed period stops at the ends of the trajectory, as a whole
-                const int lo = MD_MIN(d.orig_beg, d.orig_end);
-                const int hi = MD_MAX(d.orig_beg, d.orig_end);
-                delta = MD_CLAMP(delta, MD_MIN(-lo, 0), MD_MAX(last - hi, 0));
+                // A fixed period stops at the ends of the clock's span, as a whole
+                const double lo = MD_MIN(d.orig_beg, d.orig_end);
+                const double hi = MD_MAX(d.orig_beg, d.orig_end);
+                delta = MD_CLAMP(delta, MD_MIN(axis.span_beg - lo, 0.0), MD_MAX(axis.span_end - hi, 0.0));
             }
             r->beg = d.orig_beg + delta;
             r->end = d.orig_end + delta;
@@ -245,7 +271,7 @@ void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* cu
         break;
     case Drag_Resize:
         if (TimelinePeriod* r = timeline_periods_find(rs, d.id)) {
-            const int32_t v = r->follow ? f - (int32_t)llround(*current_frame) : f;
+            const double v = r->follow ? t - *current_time : t;
             if (d.hold_beg) r->beg = v;
             else            r->end = v;
         }
@@ -257,7 +283,7 @@ void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* cu
         break;
     }
     case Drag_Scrub:
-        *current_frame = f;
+        *current_time = t;
         break;
     default:
         break;
@@ -268,11 +294,11 @@ void update_drag(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* cu
     }
 }
 
-void start_create(int frame) {
+void start_create(double time) {
     ui.drag = {};
     ui.drag.kind    = Drag_Create;
-    ui.drag.anchor  = frame;
-    ui.drag.current = frame;
+    ui.drag.anchor  = time;
+    ui.drag.current = time;
     ui.drag.press_x = ImGui::GetIO().MousePos.x;
 }
 
@@ -292,15 +318,16 @@ void timeline_periods_highlight(uint32_t id) {
     ui.highlight_frame = ImGui::GetFrameCount();
 }
 
-void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_frame) {
+void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double* current_time) {
     if (axis.num_frames <= 0 || !axis.frame_times) return;
 
     // First, so that the bars are drawn where the pointer has taken them
-    update_drag(rs, axis, current_frame);
+    update_drag(rs, axis, current_time);
 
     const ImGuiIO& io = ImGui::GetIO();
-    const double cur  = *current_frame;
-    const int    nf   = axis.num_frames;
+    const double cur  = *current_time;
+    const double sb   = axis.span_beg;
+    const double se   = axis.span_end;
     const float  font = ImGui::GetFontSize();
 
     const bool  one_lane = rs->layout != TimelinePeriodLayout_LanePerPeriod;
@@ -333,7 +360,7 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
                 ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()));
             ImGui::SameLine();
             ImGui::TextUnformatted(r->name);
-            ImGui::TextDisabled("Drop on a distribution to show it over these frames too");
+            ImGui::TextDisabled("Drop on a distribution to show it over this time too");
             ImGui::EndDragDropSource();
         }
     }
@@ -348,18 +375,18 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     int depth[TIMELINE_MAX_PERIODS];
     int top_first[TIMELINE_MAX_PERIODS];
     TimelinePeriodBar bars[TIMELINE_MAX_PERIODS];
-    const int n = timeline_periods_draw_order(order, rs, cur, nf);
-    timeline_periods_nesting(depth, order, n, rs, cur, nf);
+    const int n = timeline_periods_draw_order(order, rs, cur, sb, se);
+    timeline_periods_nesting(depth, order, n, rs, cur, sb, se);
     for (int k = 0; k < n; ++k) {
         const int i = order[k];
         const TimelinePeriod& r = rs->items[i];
-        int beg, end;
-        timeline_period_frames(&beg, &end, r, cur, nf);
+        double beg, end;
+        timeline_period_span(&beg, &end, r, cur);
         TimelinePeriodBar& b = bars[i];
         b.visible = true;
         b.marker  = timeline_period_is_marker(r);
-        b.x0 = frame_x(axis, beg);
-        b.x1 = frame_x(axis, end);
+        b.x0 = time_to_x(axis, MD_CLAMP(beg, sb, se));
+        b.x1 = time_to_x(axis, MD_CLAMP(end, sb, se));
         if (!b.marker && b.x1 - b.x0 < 4.0f) {
             const float mid = (b.x0 + b.x1) * 0.5f;
             b.x0 = mid - 2.0f;
@@ -387,18 +414,18 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
         ui.hover_id = hit ? hit->id : 0;
 
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            const int f = nearest_frame(axis, x_to_time(axis, io.MousePos.x));
+            const double t = snap(axis, x_to_time(axis, io.MousePos.x));
             if (io.KeyShift) {
-                start_create(f);
+                start_create(t);
             } else if (io.KeyCtrl) {
                 ui.drag.kind = Drag_Scrub;
-                *current_frame = f;
+                *current_time = t;
             } else if (hit) {
                 Drag d = {};
                 d.id       = hit->id;
                 d.orig_beg = hit->beg;
                 d.orig_end = hit->end;
-                d.anchor   = f;
+                d.anchor   = t;
                 d.press_x  = io.MousePos.x;
                 if (ui.hover.part == TimelinePeriodPart_Body) {
                     d.kind = Drag_Move;
@@ -491,7 +518,7 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
             dl->AddRectFilled(ImVec2(b.x0, b.y0), ImVec2(b.x1, b.y1), period_color(r, hot ? 0.5f : 0.28f));
             const ImU32 edge = period_color(r, hot ? 1.0f : 0.75f);
             if (r.follow) {
-                // Dashed: it moves with the current frame
+                // Dashed: it moves with the current time
                 add_dashed_rect(dl, ImVec2(b.x0 + 0.5f, b.y0 + 0.5f), ImVec2(b.x1 - 0.5f, b.y1 - 0.5f), edge);
             } else {
                 dl->AddRect(ImVec2(b.x0, b.y0), ImVec2(b.x1, b.y1), edge);
@@ -555,21 +582,21 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     }
 
     if (ui.drag.kind == Drag_Create) {
-        const float px0 = frame_x(axis, MD_MIN(ui.drag.anchor, ui.drag.current));
-        const float px1 = MD_MAX(frame_x(axis, MD_MAX(ui.drag.anchor, ui.drag.current)), px0 + 2.0f);
+        const float px0 = time_to_x(axis, MD_MIN(ui.drag.anchor, ui.drag.current));
+        const float px1 = MD_MAX(time_to_x(axis, MD_MAX(ui.drag.anchor, ui.drag.current)), px0 + 2.0f);
         dl->AddRectFilled(ImVec2(px0, y0), ImVec2(px1, y1), ImGui::GetColorU32(ImGuiCol_Text, 0.1f));
         add_dashed_rect(dl, ImVec2(px0 + 0.5f, y0 + 0.5f), ImVec2(px1 - 0.5f, y1 - 0.5f), ImGui::GetColorU32(ImGuiCol_Text, 0.8f));
     }
 
     {
-        const float px = frame_x(axis, cur);
+        const float px = time_to_x(axis, cur);
         dl->AddLine(ImVec2(px, y0 - 1.0f), ImVec2(px, y1 + 1.0f), IM_COL32(255, 255, 0, 128));
     }
 
     if (rs->count == 0 && ui.drag.kind != Drag_Create) {
         const float h = one_lane ? height : row_h;
         dl->AddText(ImVec2(x0 + 6.0f, y0 + (h - font) * 0.5f), ImGui::GetColorU32(ImGuiCol_TextDisabled),
-            "Shift-drag to mark a period, shift-click to mark a frame");
+            "Shift-drag to mark a period, shift-click to mark a time");
     }
 
     dl->PopClipRect();
@@ -577,11 +604,12 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     // Tooltips: what is under the pointer, or what is being dragged
     const bool editing = ui.edit_id != 0 || ui.rename_id != 0;
     if (ui.drag.kind == Drag_Create) {
-        const int beg = MD_MIN(ui.drag.anchor, ui.drag.current);
-        const int end = MD_MAX(ui.drag.anchor, ui.drag.current);
+        TimelinePeriod r = {};
+        r.beg = MD_MIN(ui.drag.anchor, ui.drag.current);
+        r.end = MD_MAX(ui.drag.anchor, ui.drag.current);
         ImGui::BeginTooltip();
-        ImGui::TextUnformatted(beg == end ? "New marker" : "New period");
-        tooltip_frames(axis, beg == end, beg, end);
+        ImGui::TextUnformatted(timeline_period_is_marker(r) ? "New marker" : "New period");
+        tooltip_span(axis, r, cur);
         ImGui::EndTooltip();
     } else if (ui.drag.kind == Drag_Move || ui.drag.kind == Drag_Resize) {
         if (const TimelinePeriod* r = timeline_periods_find(rs, ui.drag.id)) period_tooltip(*r, axis, cur);
@@ -593,9 +621,9 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
     if (ui.rename_request) {
         ui.rename_request = false;
         if (const TimelinePeriod* r = timeline_periods_find(rs, ui.rename_id)) {
-            int beg = 0, end = 0;
-            float x = x0;
-            if (timeline_period_frames(&beg, &end, *r, cur, nf)) x = MD_CLAMP(frame_x(axis, beg), x0, MD_MAX(x0, x1 - font * 16.0f));
+            double beg, end;
+            timeline_period_span(&beg, &end, *r, cur);
+            const float x = MD_CLAMP(time_to_x(axis, beg), x0, MD_MAX(x0, x1 - font * 16.0f));
             ImGui::SetNextWindowPos(ImVec2(x, y1 + 2.0f));
             ImGui::OpenPopup("##timeline_period_name");
             ui.rename_focus = true;
@@ -646,22 +674,29 @@ void timeline_periods_lane(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
             int follow = r->follow ? 1 : 0;
             bool mode_changed = ImGui::RadioButton("Fixed", &follow, 0);
             ImGui::SameLine();
-            mode_changed |= ImGui::RadioButton("Follows the current frame", &follow, 1);
-            if (mode_changed) timeline_period_set_follow(r, follow == 1, cur, nf);
+            mode_changed |= ImGui::RadioButton("Follows the current time", &follow, 1);
+            if (mode_changed) timeline_period_set_follow(r, follow == 1, cur, frame_step(axis), sb, se);
 
-            int ends[2] = { MD_MIN(r->beg, r->end), MD_MAX(r->beg, r->end) };
-            if (ImGui::InputInt2(r->follow ? "Offsets" : "Frames", ends)) {
+            // In the display unit; frames, when the clock counts frames
+            const bool timed = axis.time_unit[0] != '\0';
+            const double scale = timed && axis.display_scale > 0.0 ? axis.display_scale : 1.0;
+            double ends[2] = { MD_MIN(r->beg, r->end) * scale, MD_MAX(r->beg, r->end) * scale };
+            char label[64];
+            snprintf(label, sizeof(label), "%s%s%s%s", r->follow ? "Offsets" : (timed ? "Time" : "Frames"), timed ? " (" : "", timed ? axis.time_unit : "", timed ? ")" : "");
+            if (ImGui::InputScalarN(label, ImGuiDataType_Double, ends, 2, nullptr, nullptr, "%.6g")) {
+                ends[0] /= scale;
+                ends[1] /= scale;
                 if (!r->follow) {
-                    ends[0] = MD_CLAMP(ends[0], 0, nf - 1);
-                    ends[1] = MD_CLAMP(ends[1], 0, nf - 1);
+                    ends[0] = MD_CLAMP(ends[0], sb, se);
+                    ends[1] = MD_CLAMP(ends[1], sb, se);
                 }
                 r->beg = ends[0];
                 r->end = ends[1];
             }
             if (r->follow) {
-                ImGui::SetItemTooltip("From and to, in frames from the current frame: -60 0 is the last 60 frames, -25 25 is centered on it");
+                ImGui::SetItemTooltip("From and to, from the current time: -60 0 is the last 60, -25 25 is centered on it");
             } else {
-                ImGui::SetItemTooltip("The first and the last frame. Equal, it marks a single frame");
+                ImGui::SetItemTooltip("Where it begins and ends. Equal, it marks a single time: of each run the frame there");
             }
             ImGui::PopItemWidth();
 
@@ -691,7 +726,7 @@ bool timeline_plot_extent(float* x0, float* x1) {
     return ui.plot_x1 > ui.plot_x0;
 }
 
-void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double current_frame) {
+void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, double current_time) {
     if (axis.num_frames <= 0 || !axis.frame_times) return;
 
     const ImVec2 plot_pos  = ImPlot::GetPlotPos();
@@ -703,13 +738,12 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
         ui.plot_x1 = plot_pos.x + plot_size.x;
     }
 
-    const int nf = axis.num_frames;
     const float y0 = plot_pos.y;
     const float y1 = plot_pos.y + plot_size.y;
-    auto px = [&](double f) { return ImPlot::PlotToPixels(frame_time(axis, f), 0.0).x; };
+    auto px = [&](double t) { return ImPlot::PlotToPixels(t, 0.0).x; };
 
     int order[TIMELINE_MAX_PERIODS];
-    const int n = timeline_periods_draw_order(order, rs, current_frame, nf);
+    const int n = timeline_periods_draw_order(order, rs, current_time, axis.span_beg, axis.span_end);
 
     ImPlot::PushPlotClipRect();
     ImDrawList* dl = ImPlot::GetPlotDrawList();
@@ -717,8 +751,8 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
         const TimelinePeriod& r = rs->items[order[k]];
         const bool hot = is_hot(r.id);
         if (!(hot || rs->shade_all)) continue;
-        int beg, end;
-        timeline_period_frames(&beg, &end, r, current_frame, nf);
+        double beg, end;
+        timeline_period_span(&beg, &end, r, current_time);
         if (timeline_period_is_marker(r)) {
             const float x = px(beg);
             dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), period_color(r, hot ? 1.0f : 0.6f), hot ? 2.0f : 1.0f);
@@ -742,7 +776,7 @@ void timeline_periods_plot(TimelinePeriods* rs, const TimelinePeriodAxis& axis, 
 
     // Shift-press in a plot starts a period there; the lane follows it from the next frame on
     if (ui.drag.kind == Drag_None && plot_input_hovered() && ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        start_create(nearest_frame(axis, ImPlot::GetPlotMousePos().x));
+        start_create(snap(axis, ImPlot::GetPlotMousePos().x));
     }
 }
 
@@ -844,10 +878,10 @@ void timeline_periods_menu(TimelinePeriods* rs) {
             ImGui::TextDisabled("%s", action);
         };
         row("Shift-drag",   "mark a period");
-        row("Shift-click",  "mark a frame");
+        row("Shift-click",  "mark a time");
         row("Drag",         "move, or resize by a handle");
         row("Double-click", "rename");
-        row("Right-click",  "annotate, follow the current frame, delete");
+        row("Right-click",  "annotate, follow the current time, delete");
         row("Delete",       "remove the period under the mouse");
         row("Pull out",     "drag a period out of the lane onto a distribution");
         ImGui::EndTable();

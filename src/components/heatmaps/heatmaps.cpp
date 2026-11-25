@@ -313,7 +313,8 @@ struct Heatmaps : viamd::EventHandler {
         case Over_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, h.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), nf)) return false;
+            if (!p || !period_frames(&b, &e, app, *p) || b >= nf) return false;
+            e = MD_MIN(e, nf - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;

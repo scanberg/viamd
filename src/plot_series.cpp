@@ -143,13 +143,6 @@ size_t series_script_runs(md_str_t* out, size_t cap, const ApplicationState* app
     return n;
 }
 
-// The evaluation of the key is of another run than script.eval's: one over the frames of that run, which the periods
-// are not over
-static bool of_other_run(const ApplicationState* app, const SeriesKey& key) {
-    const script::Eval* eval = series_eval(app, key);
-    return eval && eval != app->script.eval;
-}
-
 // The run the evaluation of a script series is over, NULL when there is none
 static const SystemRun* series_run(const ApplicationState* app, const SeriesKey& key) {
     const md_str_t run = key.run[0] ? md_str_from_cstr(key.run) : md_str_from_cstr(app->script.eval_run);
@@ -1130,13 +1123,14 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
         *end = num_frames;
         return true;
     }
-    // The periods are over the frames of the first instance's run
-    if (of_other_run(app, key)) return false;
+    // The frames of the run on the clock within the period: of a script property the run evaluated over, of anything
+    // else the first system's
     const TimelinePeriod* r = timeline_periods_find(&app->timeline.periods, period);
+    const SystemRun* run = is_script(key.source) ? series_run(app, key) : system_run(app->system_context);
     int b = 0, e = 0;
-    if (!r || !timeline_period_frames(&b, &e, *r, clock_frame(app), (int)num_frames)) return false;
+    if (!r || !run_period_frames(&b, &e, app, app->system_context, run, *r) || (uint32_t)b >= num_frames) return false;
     *beg = (uint32_t)b;
-    *end = (uint32_t)e + 1;
+    *end = MD_MIN((uint32_t)e + 1, num_frames);
     return true;
 }
 

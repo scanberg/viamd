@@ -4393,8 +4393,9 @@ static void draw_timeline_window(ApplicationState* data) {
         num_subplots = MD_CLAMP(num_subplots, 1, PLOT_MAX_SUBPLOTS);
 
         // The plots are on the clock (clock.h), in its unit, the unit of its reference's run: the display unit is
-        // applied to the tick labels and the tooltips only, so changing it moves nothing. Over every run shown; the
-        // periods and the frames are of the reference's run, whose times are the clock's as they are.
+        // applied to the tick labels and the tooltips only, so changing it moves nothing. Over every run shown, and the
+        // periods on it too; the frames (the selection, the periods' snapping) are of the reference's run, whose times
+        // are the clock's as they are.
         const SystemInstance* ref = clock_reference(data);
         const double* frame_times = ref ? run_frame_times(*ref->sys, instance_run(*ref)) : nullptr;
         const int     num_frames  = ref ? (int)run_num_frames(*ref->sys, instance_run(*ref)) : 0;
@@ -4490,16 +4491,21 @@ static void draw_timeline_window(ApplicationState* data) {
             TimelinePeriodAxis range_axis;
             range_axis.frame_times   = frame_times;
             range_axis.num_frames    = num_frames;
+            range_axis.span_beg      = min_time;
+            range_axis.span_end      = max_time;
+            if (ref) {
+                const char* name = instance_run(*ref)->path;
+                range_axis.reference_name = strncmp(name, "run/", 4) == 0 ? name + 4 : name;
+            }
             range_axis.view_beg      = &data->timeline.view_range.beg_x;
             range_axis.view_end      = &data->timeline.view_range.end_x;
             range_axis.time_unit     = x_unit_str;
             range_axis.display_scale = x_scale;
-            // The lane moves the reference's frame (ctrl-drag in it): the clock to its time when it does
+            // The lane moves the clock (ctrl-drag in it), to the reference's frames
             {
-                const double frame = clock_frame(data);
-                double moved = frame;
+                double moved = data->animation.time;
                 timeline_periods_lane(&data->timeline.periods, range_axis, &moved);
-                if (moved != frame) clock_set_frame(data, moved);
+                if (moved != data->animation.time) data->animation.time = MD_CLAMP(moved, min_time, max_time);
             }
 
             // Where each instance's run is on the clock
@@ -4583,7 +4589,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     }
 
                     // The periods shaded below the series, and shift-press marking a new one
-                    timeline_periods_plot(&data->timeline.periods, range_axis, clock_frame(data));
+                    timeline_periods_plot(&data->timeline.periods, range_axis, data->animation.time);
                     // The frames selected (a temporal selection, as the Shapespace makes) and highlighted
                     timeline_frames_plot(&data->selection.frame_mask, &data->selection.frame_highlight_mask, range_axis,
                         ImGui::ColorConvertFloat4ToU32(vec_cast(data->selection.color.selection.outline)),
@@ -5124,11 +5130,10 @@ static void plot_periods_popup(ApplicationState* data, PlotSeries& s, bool* refi
         ImGui::PopID();
     };
 
-    // The key's own frames first, in the series' colour: every frame, or its period's
-    const int num_frames = (int)run_num_frames(data->system_context);
+    // The key's own frames first, in the series' colour: every frame, or its period's. Of the run it is of.
     auto frames_of = [&](char* buf, size_t cap, const TimelinePeriod& r) {
-        int beg, end;
-        if (timeline_period_frames(&beg, &end, r, clock_frame(data), num_frames)) snprintf(buf, cap, "%d to %d", beg, end);
+        uint32_t beg, end;
+        if (series_period_frames(&beg, &end, data, s.key, r.id)) snprintf(buf, cap, "frames %u to %u", beg, end - 1);
     };
     {
         char frames[48] = "";
@@ -5162,7 +5167,7 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
         series_for_each_script_property(data, SeriesSource_Script, kinds, [&](const SeriesKey& over_all) {
             SeriesKey property = over_all;
             property.period = period;
-            // Over every frame of each run it is evaluated over; a period is over the first instance's run's
+            // Of each run it is evaluated over: its frames, or those of it within the period
             auto list = [&](const SeriesKey& key) {
                 plot_series_list_item(data, DISTRIBUTION_SERIES_DND, first, key);
                 num_listed += 1;
@@ -5175,8 +5180,7 @@ static void draw_distribution_properties_menu(ApplicationState* data) {
                     ImGui::Unindent();
                 }
             };
-            if (period == 0) for_each_script_run(data, property, list);
-            else             list(property);
+            for_each_script_run(data, property, list);
         });
         return num_listed;
     };
@@ -7204,7 +7208,7 @@ void draw_structure_export_window(ApplicationState* data) {
                 } break;
                 case 2: { // A timeline period
                     int beg = 0, end = -1;
-                    if (!traj_period || !timeline_period_frames(&beg, &end, *traj_period, clock_frame(data), (int)run_num_frames(data->system_context))) {
+                    if (!traj_period || !period_frames(&beg, &end, data, *traj_period)) {
                         beg = 0;
                         end = -1;
                     }

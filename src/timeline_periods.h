@@ -1,17 +1,19 @@
 #pragma once
 
-// Named spans of frames on the timeline, which the user marks out, names and annotates: a period
-// covers frames [beg, end], a marker is a period of a single frame. The timeline owns them and they
-// are saved with the workspace. What is shown over a period refers to it by id: a script property
-// over its frames ("r (Production)"), a period of a distribution.
+// Named spans of time on the timeline, which the user marks out, names and annotates: a period covers the time [beg, end]
+// on the clock (clock.h), in its unit, a marker is a period of a single time. The timeline owns them and they are saved
+// with the workspace. What is shown over a period refers to it by id: a script property over its frames ("r
+// (Production)"), a period of a distribution. Each run takes the frames of its own the period covers on the clock
+// (timeline_period_frames): a run sampled every 800 ps the same stretch of time as one every 200 ps, not the same frames.
 //
-// A period is either fixed, its ends are frames, or it follows the current frame, its ends are
-// offsets from it: -60..0 is the last 60 frames, -25..25 is centered on the current frame. The two
-// ends are kept in whatever order they were dragged into, so an end dragged past the other keeps
-// going; everything that reads a period takes the lower one as the beginning.
+// A period is either fixed, its ends are times, or it follows the current time, its ends are offsets from it: -60..0
+// ns is the last 60 ns, -25..25 ns is centered on the current time. The two ends are kept in whatever order they were
+// dragged into, so an end dragged past the other keeps going; everything that reads a period takes the lower one as the
+// beginning.
 //
 // This unit is free of ImGui so that it can be tested; timeline_periods_ui.h draws and edits them.
 
+#include <clock.h>
 #include <core/md_vec_math.h>
 
 #include <stdint.h>
@@ -31,9 +33,9 @@ struct TimelinePeriod {
     char     name[TIMELINE_PERIOD_NAME_CAP] = "";
     char     note[TIMELINE_PERIOD_NOTE_CAP] = "";  // The annotation shown when it is hovered
     md_float4_t   color = md_float4_set(1, 1, 1, 1);
-    bool     follow = false;                    // The ends are offsets from the current frame
-    int32_t  beg = 0;
-    int32_t  end = 0;
+    bool     follow = false;                    // The ends are offsets from the current time
+    double   beg = 0.0;                         // On the clock, in its unit
+    double   end = 0.0;
 };
 
 enum TimelinePeriodLayout : int {
@@ -56,21 +58,29 @@ struct TimelinePeriods {
 
 static inline bool timeline_period_is_marker(const TimelinePeriod& r) { return r.beg == r.end; }
 
-// The frames [beg, end] the period covers with the current frame where it is, clamped to the
-// trajectory. False when it covers none of its frames: a window ahead of the last frame, or a
-// fixed period beyond the end of a shorter trajectory.
-bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_frame, int num_frames);
+// The time [beg, end] on the clock the period covers with the current time where it is, the lower end first
+void timeline_period_span(double* out_beg, double* out_end, const TimelinePeriod& r, double current_time);
+
+// The frames [beg, end] of a run the period covers, the run placed on the clock by its axis: those whose times lie
+// within the period, and of a period which lies between two of them (a marker), the one nearest its middle. False when
+// it covers none of the run: it is before its first frame or after its last, or the axis has no frames.
+bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_time, const ClockAxis& axis);
 
 // The lower end first
 void timeline_period_normalize(TimelinePeriod* r);
 
-// Fixed or following. Made to follow, it keeps its extent and is centered on the current frame (an offset of 0);
-// made fixed, it covers the frames it covers now (clamped to the trajectory)
-void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_frame, int num_frames);
+// Fixed or following. Made to follow, it keeps its extent and is centered on the current time, on a whole number of
+// steps (frames of the reference) to each side where it can be, the extra one on the side of the past; made fixed, it
+// covers the time it covers now, within the clock's span [span_beg, span_end].
+void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_time, double step, double span_beg, double span_end);
+
+// A period read from a workspace from before the clock, whose ends are frames of the reference's run (offsets in frames
+// of it, when it follows), taken into time on the clock by the reference's axis
+void timeline_period_frames_to_time(TimelinePeriod* r, const ClockAxis& reference);
 
 // Adds a period and returns it, NULL when there is no room for another. Without a name it gets one
 // of its own ("Period 2", "Marker 3"); its colour is the one of the palette the fewest periods have.
-TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, int32_t beg, int32_t end, bool follow);
+TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, double beg, double end, bool follow);
 void           timeline_periods_remove(TimelinePeriods* rs, uint32_t id);
 void           timeline_periods_clear(TimelinePeriods* rs);
 int            timeline_periods_index(const TimelinePeriods* rs, uint32_t id);
@@ -82,14 +92,14 @@ void timeline_periods_default_name(char* buf, size_t cap, const TimelinePeriods*
 
 // ## Lanes
 //
-// The order periods are drawn in, bottom first: the ones covering the most frames, and of two that
-// cover equally many the older one. Shorter periods, and markers, end up on top, where they can be
-// grabbed. Periods that cover no frames right now are left out. Returns how many were written.
-int timeline_periods_draw_order(int* out_indices, const TimelinePeriods* rs, double current_frame, int num_frames);
+// The order periods are drawn in, bottom first: the ones covering the most time, and of two that cover equally much the
+// older one. Shorter periods, and markers, end up on top, where they can be grabbed. Periods that cover none of the
+// clock's span [span_beg, span_end] right now are left out. Returns how many were written.
+int timeline_periods_draw_order(int* out_indices, const TimelinePeriods* rs, double current_time, double span_beg, double span_end);
 
 // How deep each period in the draw order is nested in one lane: how many periods drawn before it
 // overlap it. Written per position in the order.
-void timeline_periods_nesting(int* out_depth, const int* order, int count, const TimelinePeriods* rs, double current_frame, int num_frames);
+void timeline_periods_nesting(int* out_depth, const int* order, int count, const TimelinePeriods* rs, double current_time, double span_beg, double span_end);
 
 enum TimelinePeriodPart : int {
     TimelinePeriodPart_None = 0,
@@ -120,8 +130,10 @@ TimelinePeriodHit timeline_periods_hit_test(const TimelinePeriodBar* bars, const
 
 // ## Workspace
 //
-// One [TimelinePeriod] section per period, in the order of the list. A period keeps its id across a save and a load, so
-// what refers to it by id (a plotted series) finds it again.
-void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs);
-// Reads the section the state is at as one more period. False when there is no room for it.
-bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs);
+// One [TimelinePeriod] section per period, in the order of the list, its ends times in the unit given (Time, TimeUnit).
+// A period keeps its id across a save and a load, so what refers to it by id (a plotted series) finds it again.
+void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs, const char* time_unit);
+// Reads the section the state is at as one more period, returned. NULL when there is no room for it. Its ends as they
+// were written: times in the unit written to time_unit (cap bytes, empty for none), or, from a workspace from before
+// the clock, frames (Frames), which *in_frames says (timeline_period_frames_to_time).
+TimelinePeriod* timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs, char* time_unit, size_t cap, bool* in_frames);

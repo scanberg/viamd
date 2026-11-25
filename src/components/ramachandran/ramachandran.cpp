@@ -1074,7 +1074,8 @@ struct Ramachandran : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), num_frames)) return false;
+            if (!p || !period_frames(&b, &e, app, *p) || b >= num_frames) return false;
+            e = MD_MIN(e, num_frames - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;

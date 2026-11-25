@@ -1305,7 +1305,8 @@ struct Shapespace : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !timeline_period_frames(&b, &e, *p, clock_frame(app), num_frames)) return false;
+            if (!p || !period_frames(&b, &e, app, *p) || b >= num_frames) return false;
+            e = MD_MIN(e, num_frames - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
             return true;
@@ -2782,7 +2783,8 @@ struct Shapespace : viamd::EventHandler {
             for (int i = 0; i < rs.count; ++i) {
                 const TimelinePeriod& p = rs.items[i];
                 int b = 0, e = 0;
-                if (!timeline_period_frames(&b, &e, p, clock_frame(app), (int)nf)) continue;
+                if (!period_frames(&b, &e, app, p) || b >= (int)nf) continue;
+                e = MD_MIN(e, (int)nf - 1);
                 const double xb = frame_time(b), xe = frame_time(e);
                 if (xe < t0 || xb > t1) continue;
                 const bool hot = p.id == hot_period;
@@ -2810,7 +2812,8 @@ struct Shapespace : viamd::EventHandler {
         }
         if (const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, hot_period)) {
             int b = 0, e = 0;
-            if (timeline_period_frames(&b, &e, *p, clock_frame(app), (int)nf)) {
+            if (period_frames(&b, &e, app, *p) && b < (int)nf) {
+                e = MD_MIN(e, (int)nf - 1);
                 const ImVec4 col(p->color.x, p->color.y, p->color.z, 0.8f);
                 const ImVec4 fill(p->color.x, p->color.y, p->color.z, 0.10f);
                 slice("##period_beg", frame_time(b), col, fill);

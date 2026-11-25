@@ -1632,6 +1632,11 @@ void clock_update(ApplicationState* app) {
             app->animation.time *= f;
             app->timeline.view_range.beg_x *= f;
             app->timeline.view_range.end_x *= f;
+            TimelinePeriods& ps = app->timeline.periods;
+            for (int i = 0; i < ps.count; ++i) {
+                ps.items[i].beg *= f;
+                ps.items[i].end *= f;
+            }
         } else {
             app->animation.time = beg;
             app->timeline.view_range = {beg, end > beg ? end : beg + 1.0};
@@ -1639,6 +1644,20 @@ void clock_update(ApplicationState* app) {
         app->animation.time_unit = unit;
     }
     app->animation.time = MD_CLAMP(app->animation.time, beg, end);
+}
+
+bool run_period_frames(int* beg, int* end, const ApplicationState* app, const SystemContext& sys, const SystemRun* run, const TimelinePeriod& period) {
+    const int n = (int)run_num_frames(sys, run);
+    if (n == 0) return false;
+    const ClockAxis a = run_clock_axis(app, sys, run);
+    if (clock_axis_timed(a)) return timeline_period_frames(beg, end, period, app->animation.time, a);
+    // Frame by frame as the reference
+    const SystemInstance* ref = clock_reference(app);
+    int b, e;
+    if (!ref || !timeline_period_frames(&b, &e, period, app->animation.time, run_clock_axis(app, *ref->sys, instance_run(*ref))) || b > n - 1) return false;
+    *beg = b;
+    *end = MD_MIN(e, n - 1);
+    return true;
 }
 
 const SystemInstance& picking_hit_instance(const SystemContext& sc, const PickingHit& hit) {
@@ -3113,6 +3132,16 @@ struct WorkspacePending {
     bool   temporal_window_enabled;
     double temporal_window_extent;
     bool   has_periods;
+    // The ends of each period as read, by its id: times in a unit, or frames of the first system's run (offsets in its
+    // frames when it follows) of a workspace from before the clock, and of the filter made a period. Taken into the
+    // clock's time once every system is loaded.
+    struct PeriodEnds {
+        uint32_t  id;
+        bool      in_frames;
+        md_unit_t unit;
+    };
+    PeriodEnds period_ends[TIMELINE_MAX_PERIODS];
+    int        num_period_ends;
     // The timeline's view, ViewTime: in the run's time and its unit. ViewFrames, as workspaces before it wrote it, in frames.
     bool   has_view_range;
     bool   view_range_in_frames;
@@ -3144,8 +3173,11 @@ static void workspace_reset(ApplicationState* data) {
         system_release(data, sc);
     }
 
-    // The fields rather than the struct: whether the window is open is decided by [Windows]
+    // The fields rather than the struct: whether the window is open is decided by [Windows]. No unit to the time yet:
+    // what the workspace holds on the clock is taken into the clock's unit once its runs are loaded, not converted from
+    // the unit of what was loaded before (clock_update).
     data->animation.time = 0.0;
+    data->animation.time_unit = md_unit_none();
     data->animation.fps = 10.0f;
     data->animation.tension = 0.0f;
     data->animation.stride = 1;
@@ -3327,8 +3359,17 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             }
         } else if (md_str_eq(section, MD_STR_LIT("TimelinePeriod"))) {
             pending.has_periods = true;
-            if (!timeline_periods_deserialize_period(state, &data->timeline.periods)) {
+            char unit[64];
+            bool in_frames = false;
+            const TimelinePeriod* r = timeline_periods_deserialize_period(state, &data->timeline.periods, unit, sizeof(unit), &in_frames);
+            if (!r) {
                 VIAMD_LOG_ERROR("Workspace: more than %d timeline periods, the rest are left out", TIMELINE_MAX_PERIODS);
+            } else if (pending.num_period_ends < TIMELINE_MAX_PERIODS) {
+                WorkspacePending::PeriodEnds& e = pending.period_ends[pending.num_period_ends++];
+                e.id = r->id;
+                e.in_frames = in_frames;
+                e.unit = md_unit_none();
+                if (unit[0]) md_unit_parse(&e.unit, md_str_from_cstr(unit));
             }
         } else if (md_str_eq(section, MD_STR_LIT("RenderSettings"))) {
             auto& v = data->visuals;
@@ -3712,7 +3753,10 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
                     const double end = pending.has_filter_range ? MD_CLAMP(pending.filter_end_frame, beg, last) : last;
                     r = timeline_periods_add(&data->timeline.periods, "Filter", (int32_t)round(beg), (int32_t)round(end), false);
                 }
-                if (r) data->timeline.periods.legacy_filter_id = r->id;
+                if (r) {
+                    data->timeline.periods.legacy_filter_id = r->id;
+                    if (pending.num_period_ends < TIMELINE_MAX_PERIODS) pending.period_ends[pending.num_period_ends++] = { r->id, true, md_unit_none() };
+                }
             }
         }
 
@@ -3785,6 +3829,23 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
             b = MD_CLAMP(b, beg, end);
             e = MD_CLAMP(e, beg, end);
             if (e > b) data->timeline.view_range = {b, e};
+        }
+
+        // The periods on the clock: frames of the reference's run (the first system's, which the frames were of) at
+        // their times, times converted into the clock's unit. Left as they are where they cannot be.
+        const SystemInstance* ref = clock_reference(data);
+        const ClockAxis ref_axis = run_clock_axis(data, *ref->sys, instance_run(*ref));
+        for (int i = 0; i < pending.num_period_ends; ++i) {
+            const WorkspacePending::PeriodEnds& pe = pending.period_ends[i];
+            TimelinePeriod* r = timeline_periods_find(&data->timeline.periods, pe.id);
+            if (!r) continue;
+            double pf = 1.0;
+            if (pe.in_frames) {
+                timeline_period_frames_to_time(r, ref_axis);
+            } else if (md_unit_is_none(pe.unit) ? md_unit_is_none(unit) : (!md_unit_is_none(unit) && md_unit_conversion_factor(&pf, pe.unit, unit))) {
+                r->beg *= pf;
+                r->end *= pf;
+            }
         }
     }
 
@@ -3880,7 +3941,10 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
             const double view[2] = { tl.view_range.beg_x, tl.view_range.end_x };
             viamd::write_dbl_vec(state, MD_STR_LIT("ViewTime"), view, 2);
         }
-        timeline_periods_serialize(state, &tl.periods);
+        // On the clock, in its unit
+        char unit[64] = "";
+        md_unit_print(unit, sizeof(unit), clock_unit(app_state));
+        timeline_periods_serialize(state, &tl.periods, unit);
     }
 
     {

@@ -30,46 +30,67 @@ static bool same_color(md_float4_t a, md_float4_t b) {
     return fabsf(a.x - b.x) < 1e-3f && fabsf(a.y - b.y) < 1e-3f && fabsf(a.z - b.z) < 1e-3f;
 }
 
-bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_frame, int num_frames) {
-    if (num_frames <= 0) return false;
-    int64_t beg = MD_MIN(r.beg, r.end);
-    int64_t end = MD_MAX(r.beg, r.end);
-    if (r.follow) {
-        const int64_t cur = (int64_t)llround(current_frame);
-        beg += cur;
-        end += cur;
+void timeline_period_span(double* out_beg, double* out_end, const TimelinePeriod& r, double current_time) {
+    const double offset = r.follow ? current_time : 0.0;
+    *out_beg = MD_MIN(r.beg, r.end) + offset;
+    *out_end = MD_MAX(r.beg, r.end) + offset;
+}
+
+bool timeline_period_frames(int* out_beg, int* out_end, const TimelinePeriod& r, double current_time, const ClockAxis& axis) {
+    if (!clock_axis_timed(axis)) return false;
+    double beg, end;
+    timeline_period_span(&beg, &end, r, current_time);
+    const double last = (double)(axis.count - 1);
+    // A frame at an end is within: an end on a frame's time, as an end dragged onto a frame is, computed alike, may
+    // still differ from it in the last digits
+    const double eps = 1e-6 * clock_axis_frame_duration(axis);
+    if (end < clock_axis_time(axis, 0.0) - eps || beg > clock_axis_time(axis, last) + eps) return false;
+    double b = ceil(clock_axis_frame(axis, beg - eps));
+    double e = floor(clock_axis_frame(axis, end + eps));
+    if (b > e) {
+        // Between two frames
+        b = e = floor(clock_axis_frame(axis, 0.5 * (beg + end)) + 0.5);
     }
-    const int64_t last = num_frames - 1;
-    if (end < 0 || beg > last) return false;
-    if (out_beg) *out_beg = (int)MD_CLAMP(beg, (int64_t)0, last);
-    if (out_end) *out_end = (int)MD_CLAMP(end, (int64_t)0, last);
+    if (out_beg) *out_beg = (int)MD_CLAMP(b, 0.0, last);
+    if (out_end) *out_end = (int)MD_CLAMP(e, 0.0, last);
     return true;
 }
 
 void timeline_period_normalize(TimelinePeriod* r) {
     if (r->beg > r->end) {
-        const int32_t tmp = r->beg;
+        const double tmp = r->beg;
         r->beg = r->end;
         r->end = tmp;
     }
 }
 
-void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_frame, int num_frames) {
+void timeline_period_set_follow(TimelinePeriod* r, bool follow, double current_time, double step, double span_beg, double span_end) {
     if (r->follow == follow) return;
     timeline_period_normalize(r);
     if (follow) {
-        // Centered on the current frame (an offset of 0), as long as it was. When it cannot be exactly centered,
-        // the extra frame is on the side of the past.
-        const int32_t extent = r->end - r->beg;
-        r->beg = -(extent - extent / 2);
-        r->end = extent / 2;
+        // Centered on the current time (an offset of 0), as long as it was. A whole number of steps to the side of the
+        // future, the rest to the side of the past: when it cannot be exactly centered, the extra step is in the past.
+        const double extent = r->end - r->beg;
+        const double half = step > 0.0 ? floor(extent / step * 0.5 + 1e-9) * step : extent * 0.5;
+        r->end = half;
+        r->beg = half - extent;
     } else {
-        const int32_t cur  = (int32_t)llround(current_frame);
-        const int32_t last = MD_MAX(num_frames - 1, 0);
-        r->beg = MD_CLAMP(r->beg + cur, 0, last);
-        r->end = MD_CLAMP(r->end + cur, 0, last);
+        r->beg = MD_CLAMP(r->beg + current_time, span_beg, span_end);
+        r->end = MD_CLAMP(r->end + current_time, span_beg, span_end);
     }
     r->follow = follow;
+}
+
+void timeline_period_frames_to_time(TimelinePeriod* r, const ClockAxis& reference) {
+    if (!clock_axis_timed(reference)) return;
+    if (r->follow) {
+        const double d = clock_axis_frame_duration(reference);
+        r->beg *= d;
+        r->end *= d;
+    } else {
+        r->beg = clock_axis_time(reference, r->beg);
+        r->end = clock_axis_time(reference, r->end);
+    }
 }
 
 int timeline_periods_index(const TimelinePeriods* rs, uint32_t id) {
@@ -101,7 +122,7 @@ void timeline_periods_default_name(char* buf, size_t cap, const TimelinePeriods*
     }
 }
 
-TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, int32_t beg, int32_t end, bool follow) {
+TimelinePeriod* timeline_periods_add(TimelinePeriods* rs, const char* name, double beg, double end, bool follow) {
     if (rs->count >= TIMELINE_MAX_PERIODS) return nullptr;
 
     // The colour of the palette the fewest periods have, the first of those on a tie
@@ -149,12 +170,21 @@ void timeline_periods_clear(TimelinePeriods* rs) {
     rs->legacy_filter_id = 0;
 }
 
-int timeline_periods_draw_order(int* out, const TimelinePeriods* rs, double current_frame, int num_frames) {
-    int len[TIMELINE_MAX_PERIODS];
+// The part of the clock's span the period covers, false for none
+static bool clipped_span(double* beg, double* end, const TimelinePeriod& r, double current_time, double span_beg, double span_end) {
+    timeline_period_span(beg, end, r, current_time);
+    if (*end < span_beg || *beg > span_end) return false;
+    *beg = MD_MAX(*beg, span_beg);
+    *end = MD_MIN(*end, span_end);
+    return true;
+}
+
+int timeline_periods_draw_order(int* out, const TimelinePeriods* rs, double current_time, double span_beg, double span_end) {
+    double len[TIMELINE_MAX_PERIODS];
     int n = 0;
     for (int i = 0; i < rs->count; ++i) {
-        int beg, end;
-        if (!timeline_period_frames(&beg, &end, rs->items[i], current_frame, num_frames)) continue;
+        double beg, end;
+        if (!clipped_span(&beg, &end, rs->items[i], current_time, span_beg, span_end)) continue;
         len[i] = end - beg;
         out[n++] = i;
     }
@@ -171,10 +201,10 @@ int timeline_periods_draw_order(int* out, const TimelinePeriods* rs, double curr
     return n;
 }
 
-void timeline_periods_nesting(int* out_depth, const int* order, int count, const TimelinePeriods* rs, double current_frame, int num_frames) {
-    int beg[TIMELINE_MAX_PERIODS], end[TIMELINE_MAX_PERIODS];
+void timeline_periods_nesting(int* out_depth, const int* order, int count, const TimelinePeriods* rs, double current_time, double span_beg, double span_end) {
+    double beg[TIMELINE_MAX_PERIODS], end[TIMELINE_MAX_PERIODS];
     for (int k = 0; k < count; ++k) {
-        timeline_period_frames(&beg[k], &end[k], rs->items[order[k]], current_frame, num_frames);
+        clipped_span(&beg[k], &end[k], rs->items[order[k]], current_time, span_beg, span_end);
     }
     for (int k = 0; k < count; ++k) {
         int depth = 0;
@@ -238,7 +268,7 @@ TimelinePeriodHit timeline_periods_hit_test(const TimelinePeriodBar* bars, const
     return hit;
 }
 
-void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs) {
+void timeline_periods_serialize(viamd::serialization_state_t& state, const TimelinePeriods* rs, const char* time_unit) {
     for (int i = 0; i < rs->count; ++i) {
         const TimelinePeriod& r = rs->items[i];
         viamd::write_section_header(state, MD_STR_LIT("TimelinePeriod"));
@@ -249,14 +279,20 @@ void timeline_periods_serialize(viamd::serialization_state_t& state, const Timel
         }
         viamd::write_vec4(state, MD_STR_LIT("Color"), r.color);
         viamd::write_bool(state, MD_STR_LIT("Follow"), r.follow);
-        const int frames[2] = { r.beg, r.end };
-        viamd::write_int_vec(state, MD_STR_LIT("Frames"), frames, 2);
+        const double time[2] = { r.beg, r.end };
+        viamd::write_dbl_vec(state, MD_STR_LIT("Time"), time, 2);
+        if (time_unit && time_unit[0]) {
+            viamd::write_str(state, MD_STR_LIT("TimeUnit"), md_str_from_cstr(time_unit));
+        }
     }
 }
 
-bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs) {
+TimelinePeriod* timeline_periods_deserialize_period(viamd::deserialization_state_t& state, TimelinePeriods* rs, char* time_unit, size_t cap, bool* in_frames) {
     TimelinePeriod r = {};
     bool has_color = false;
+    if (cap > 0) time_unit[0] = '\0';
+    *in_frames = false;
+    bool has_time = false;
     md_str_t ident, arg;
     int id = 0;
     while (viamd::next_entry(ident, arg, state)) {
@@ -270,17 +306,29 @@ bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, 
             has_color = viamd::extract_vec4(r.color, arg);
         } else if (md_str_eq(ident, MD_STR_LIT("Follow"))) {
             viamd::extract_bool(r.follow, arg);
+        } else if (md_str_eq(ident, MD_STR_LIT("Time"))) {
+            double time[2];
+            if (viamd::extract_dbl_vec(time, 2, arg)) {
+                r.beg = time[0];
+                r.end = time[1];
+                has_time = true;
+                *in_frames = false;
+            }
+        } else if (md_str_eq(ident, MD_STR_LIT("TimeUnit"))) {
+            viamd::extract_to_char_buf(time_unit, cap, arg);
         } else if (md_str_eq(ident, MD_STR_LIT("Frames"))) {
+            // Before the clock; a workspace with both has its time
             int frames[2];
-            if (viamd::extract_int_vec(frames, 2, arg)) {
+            if (!has_time && viamd::extract_int_vec(frames, 2, arg)) {
                 r.beg = frames[0];
                 r.end = frames[1];
+                *in_frames = true;
             }
         }
     }
 
     TimelinePeriod* dst = timeline_periods_add(rs, r.name, r.beg, r.end, r.follow);
-    if (!dst) return false;
+    if (!dst) return nullptr;
     // The id it was saved with, which what refers to it was saved with too, unless another period has it already
     if (id > 0 && timeline_periods_index(rs, (uint32_t)id) == -1) {
         dst->id = (uint32_t)id;
@@ -288,5 +336,5 @@ bool timeline_periods_deserialize_period(viamd::deserialization_state_t& state, 
     }
     md_str_copy_to_char_buf(dst->note, sizeof(dst->note), md_str_from_cstr(r.note));
     if (has_color) dst->color = r.color;
-    return true;
+    return dst;
 }
