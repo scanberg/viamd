@@ -15,6 +15,7 @@
 #include <event.h>
 #include <plot_series.h>
 #include <timeline_periods_ui.h>
+#include <system_scene.h>
 
 #include <core/md_allocator.h>
 #include <core/md_array.h>
@@ -55,11 +56,14 @@ static const char* storage_name(const md_attribute_t& attr) {
     return "resident";
 }
 
-// "System", "Script", "Script (Production)": the script over a timeline period
-static void source_label(char* buf, size_t cap, const ApplicationState& state, SeriesSource source, uint32_t period) {
+// "System", "Script", "Script (Production)": the script over a timeline period, "Script · <run>": its evaluation of
+// another run than the first instance's
+static void source_label(char* buf, size_t cap, const ApplicationState& state, SeriesSource source, uint32_t period, const char* run) {
     const char* name = source == SeriesSource_System ? "System" : source == SeriesSource_Script ? "Script" : "?";
     if (period != 0) {
         snprintf(buf, cap, "%s (%s)", name, series_period_name(&state, period));
+    } else if (run && run[0]) {
+        snprintf(buf, cap, "%s \xc2\xb7 %s", name, strncmp(run, "run/", 4) == 0 ? run + 4 : run);
     } else {
         snprintf(buf, cap, "%s", name);
     }
@@ -121,6 +125,7 @@ static bool matches_filter(md_str_t filter, md_str_t path, md_str_t label, const
 struct Row {
     SeriesSource source;
     uint32_t period;        // a timeline period the script is taken over, 0 for every frame
+    const char* run;        // of the script's evaluation of another run (script.run_evals), else empty
     const md_attributes_t* table;
     const md_attribute_t* attr;  // valid for the frame: nothing publishes while the window draws
     uint32_t views;         // SeriesView_*
@@ -129,6 +134,8 @@ struct Row {
 
 struct Attributes : viamd::EventHandler {
     bool show_window = false;
+    // Of which system (by id, system_or_first). The plots and the script are of the first: of another, its table alone
+    uint32_t system_id = 0;
     bool plottable_only = false;
     bool focus_filter = false;
     char filter[128] = "";
@@ -178,6 +185,16 @@ struct Attributes : viamd::EventHandler {
             focus_filter = false;
         }
 
+        // Of which system, where there are several
+        if (system_count(state) > 1) {
+            ImGui::SetNextItemWidth(180);
+            system_combo("##system", &system_id, state);
+            ImGui::SetItemTooltip("The system whose attributes are listed. The plots and the script are of the first.");
+            ImGui::SameLine();
+        }
+        const SystemContext& sc = system_or_first(state, system_id);
+        const bool first = &sc == &state.system_context;
+
         ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Plottable only").x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x * 2 - ImGui::GetStyle().ItemInnerSpacing.x);
         ImGui::InputTextWithHint("##filter", "Filter: words in the path, label or source, all must match", filter, sizeof(filter));
         ImGui::SameLine();
@@ -189,43 +206,60 @@ struct Attributes : viamd::EventHandler {
         // The tables there are right now, and the script's over each timeline period, with only what it has of its
         // own over a period: the distributions and volumes, over the period's frames. Everything else in the table is
         // the same over every frame.
+        // Of the first system, the script's evaluation of each other run its instances show too. Of another system, its
+        // table alone.
         struct Source {
             SeriesSource source;
             uint32_t period;
+            const char* run;
         };
-        Source sources[2 + TIMELINE_MAX_PERIODS];
-        int num_sources = 0;
-        sources[num_sources++] = { SeriesSource_System, 0 };
-        sources[num_sources++] = { SeriesSource_Script, 0 };
-        for (int i = 0; i < state.timeline.periods.count; ++i) {
-            sources[num_sources++] = { SeriesSource_Script, state.timeline.periods.items[i].id };
+        md_array(Source) sources = 0;
+        md_array_push(sources, (Source{ SeriesSource_System, 0, "" }), alloc);
+        if (first) {
+            md_array_push(sources, (Source{ SeriesSource_Script, 0, "" }), alloc);
+            for (size_t i = 0; i < md_array_size(state.script.run_evals); ++i) {
+                md_array_push(sources, (Source{ SeriesSource_Script, 0, state.script.run_evals[i].run }), alloc);
+            }
+            for (int i = 0; i < state.timeline.periods.count; ++i) {
+                md_array_push(sources, (Source{ SeriesSource_Script, state.timeline.periods.items[i].id, "" }), alloc);
+            }
         }
+        const int num_sources = (int)md_array_size(sources);
         md_array(Row) rows = 0;
         size_t total = 0;
         const md_str_t filter_str = md_str_from_cstr(filter);
         for (int si = 0; si < num_sources; ++si) {
             const SeriesSource source = sources[si].source;
             const uint32_t period = sources[si].period;
-            const md_attributes_t* table = series_table(&state, source);
+            const char* run = sources[si].run;
+            SeriesKey table_key = series_key(source, md_str_t{}, SeriesVariant_Values, period);
+            snprintf(table_key.run, sizeof(table_key.run), "%s", run);
+            const md_attributes_t* table = !first ? &sc.data.sys.attributes : series_table(&state, table_key, md_str_t{});
             if (!table) continue;
             if (period == 0) total += md_attributes_count(table);
             char src_label[96];
-            source_label(src_label, sizeof(src_label), state, source, period);
+            source_label(src_label, sizeof(src_label), state, source, period, run);
             for (md_attribute_iter_t it = md_attributes_iter(table, {}); md_attributes_next(&it);) {
                 const md_attribute_t& attr = *it.attr;
                 if (period != 0 && !script_aggregate_path(state, attr.path)) continue;
                 if (period != 0) total += 1;
                 if (!matches_filter(filter_str, attr.path, attr.label, src_label)) continue;
-                Row row = { source, period, table, it.attr, 0, nullptr };
-                const SeriesKey key = series_key(source, attr.path, SeriesVariant_Values, period);
-                row.views = series_views(&state, key, &row.reason);
+                Row row = { source, period, run, table, it.attr, 0, nullptr };
+                SeriesKey key = series_key(source, attr.path, SeriesVariant_Values, period);
+                snprintf(key.run, sizeof(key.run), "%s", run);
+                if (first) {
+                    row.views = series_views(&state, key, &row.reason);
+                } else {
+                    row.reason = "the plots are of the first system";
+                }
                 if (plottable_only && !row.views) continue;
                 md_array_push(rows, row, alloc);
             }
         }
 
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-        ImGui::TextWrapped("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
+        if (first) ImGui::TextWrapped("%zu of %zu attributes. Drag a row marked " ICON_FA_CHART_LINE " or " ICON_FA_CHART_COLUMN " into a Timelines or Distributions subplot, one the script reads into the Script Editor.", md_array_size(rows), total);
+        else       ImGui::TextWrapped("%zu of %zu attributes, listed: the plots and the script are of the first system.", md_array_size(rows), total);
         ImGui::PopStyleColor();
 
         const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
@@ -260,7 +294,8 @@ struct Attributes : viamd::EventHandler {
                 for (int r = clipper.DisplayStart; r < clipper.DisplayEnd; ++r) {
                     const Row& row = rows[r];
                     const md_attribute_t& attr = *row.attr;
-                    const SeriesKey key = series_key(row.source, attr.path, SeriesVariant_Values, row.period);
+                    SeriesKey key = series_key(row.source, attr.path, SeriesVariant_Values, row.period);
+                    snprintf(key.run, sizeof(key.run), "%s", row.run);
                     const bool timeline = row.views & SeriesView_Timeline;
                     const bool distribution = row.views & SeriesView_Distribution;
 
@@ -281,14 +316,14 @@ struct Attributes : viamd::EventHandler {
 
                     // An energy term of groups (Coul-SR:Protein-SOL) shows its groups while it is hovered, each in a colour of its own
                     md_edr_term_groups_t term_groups;
-                    const bool has_groups = row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
+                    const bool has_groups = first && row.source == SeriesSource_System && energy_term_groups(&term_groups, &state, row.attr);
                     if (has_groups && ImGui::IsItemHovered()) {
                         highlight_energy_term_groups(&state, row.attr);
                     }
 
                     // How the script reads it, if it does: an attribute of the system the script is compiled against
                     char expr[sizeof(path_buf) + 16];
-                    const bool scriptable = row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
+                    const bool scriptable = first && row.source == SeriesSource_System && script_editor::attr_expression(expr, sizeof(expr), state.script.language, row.table, row.attr);
 
                     if ((row.views || scriptable) && ImGui::BeginDragDropSource()) {
                         if (row.views) {
@@ -352,7 +387,7 @@ struct Attributes : viamd::EventHandler {
                     ImGui::TableSetColumnIndex(7);
                     {
                         char buf[96];
-                        source_label(buf, sizeof(buf), state, row.source, row.period);
+                        source_label(buf, sizeof(buf), state, row.source, row.period, row.run);
                         ImGui::TextUnformatted(buf);
                         if (row.period != 0 && ImGui::IsItemHovered()) timeline_periods_highlight(row.period);
                     }
@@ -364,7 +399,7 @@ struct Attributes : viamd::EventHandler {
                             char text[160];
                             energy_term_groups_text(text, sizeof(text), &state, term_groups);
                             ImGui::Text("%s %s", term_groups.role == MD_GROUP_ROLE_ENERGY ? "Between" : "Of", text);
-                        } else if (row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
+                        } else if (first && row.source == SeriesSource_System && energy_term_names_groups(row.attr)) {
                             ImGui::TextDisabled("Of groups the system does not have: load the run's .tpr or its index file (.ndx)");
                         }
                         if (row.period != 0) {
