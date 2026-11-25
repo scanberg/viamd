@@ -152,6 +152,73 @@ UTEST(viamd_color, res_type) {
     md_arena_allocator_destroy(alloc);
 }
 
+// Secondary structure: each segment's atoms the colour of its class, of the palette's colour for each; a coil alone
+// between two of a group (a helix, a sheet) the colour of the class before it, as the cartoon draws it in that group;
+// the atoms of no segment (the water) that of what is not known
+UTEST(viamd_color, secondary_structure_classes) {
+    md_allocator_i* alloc = md_arena_allocator_create(md_get_heap_allocator(), MD_MEGABYTES(16));
+    md_system_t sys = { .alloc = alloc };
+    md_system_state_t st = { .alloc = alloc };
+    ASSERT_TRUE((md_pdb_system_load_from_file(&sys, &st, MD_STR_LIT(VIAMD_TEST_DATA_DIR "/1LAF.pdb"), NULL) == MD_LOAD_OK));
+    ASSERT_TRUE(md_system_infer(&sys, &st, NULL));
+    const md_protein_backbone_data_t& bb = sys.protein_backbone;
+    ASSERT_GE(bb.range.count, (size_t)1);
+    const uint32_t beg = bb.range.offset[0];
+    ASSERT_GE(bb.range.offset[1] - beg, 12u);
+
+    md_secondary_structure_t* ss = (md_secondary_structure_t*)md_alloc(alloc, bb.segment.count * sizeof(md_secondary_structure_t));
+    for (size_t i = 0; i < bb.segment.count; ++i) ss[i] = MD_SECONDARY_STRUCTURE_COIL;
+    const md_secondary_structure_t run[] = {
+        MD_SECONDARY_STRUCTURE_COIL,
+        MD_SECONDARY_STRUCTURE_HELIX_310, MD_SECONDARY_STRUCTURE_HELIX_310,
+        MD_SECONDARY_STRUCTURE_COIL,                                            // alone between two helices
+        MD_SECONDARY_STRUCTURE_HELIX_ALPHA, MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+        MD_SECONDARY_STRUCTURE_TURN, MD_SECONDARY_STRUCTURE_BEND,               // two: not filled
+        MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
+        MD_SECONDARY_STRUCTURE_TURN,                                            // alone between two of a sheet
+        MD_SECONDARY_STRUCTURE_BETA_SHEET,
+        MD_SECONDARY_STRUCTURE_UNKNOWN,
+    };
+    const md_secondary_structure_t drawn[] = {
+        MD_SECONDARY_STRUCTURE_COIL,
+        MD_SECONDARY_STRUCTURE_HELIX_310, MD_SECONDARY_STRUCTURE_HELIX_310,
+        MD_SECONDARY_STRUCTURE_HELIX_310,
+        MD_SECONDARY_STRUCTURE_HELIX_ALPHA, MD_SECONDARY_STRUCTURE_HELIX_ALPHA,
+        MD_SECONDARY_STRUCTURE_TURN, MD_SECONDARY_STRUCTURE_BEND,
+        MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
+        MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
+        MD_SECONDARY_STRUCTURE_BETA_SHEET,
+        MD_SECONDARY_STRUCTURE_UNKNOWN,
+    };
+    for (size_t k = 0; k < MD_COUNTOF(run); ++k) ss[beg + k] = run[k];
+
+    SecondaryStructurePalette palette;
+    for (int c = 0; c < SS_CLASS_COUNT; ++c) palette.color[c] = 0xFF000000u | (uint32_t)(c + 1);
+
+    const size_t n = sys.atom.count;
+    uint32_t* colors = (uint32_t*)md_alloc(alloc, n * sizeof(uint32_t));
+    for (size_t i = 0; i < n; ++i) colors[i] = 0x12345678u;  // What was there before: not left anywhere
+    color_atoms_secondary_structure(colors, n, sys, ss, palette);
+
+    for (size_t k = 0; k < MD_COUNTOF(drawn); ++k) {
+        const md_atom_idx_t ca = bb.segment.atoms[beg + k].ca;
+        ASSERT_GE(ca, 0);
+        EXPECT_EQ(palette.color[drawn[k]], colors[ca]);
+    }
+    size_t num_unknown = 0;
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_NE(0x12345678u, colors[i]);
+        num_unknown += colors[i] == palette.color[MD_SECONDARY_STRUCTURE_UNKNOWN] ? 1 : 0;
+    }
+    EXPECT_GE(num_unknown, (size_t)106);  // The water at least
+
+    // Without a secondary structure: all of it not known
+    color_atoms_secondary_structure(colors, n, sys, NULL, palette);
+    for (size_t i = 0; i < n; ++i) EXPECT_EQ(palette.color[MD_SECONDARY_STRUCTURE_UNKNOWN], colors[i]);
+
+    md_arena_allocator_destroy(alloc);
+}
+
 // The gamut mapping lowers the chroma of a color out of gamut, and keeps its lightness and hue
 UTEST(viamd_color, oklch_mapped_keeps_lightness_and_hue) {
     for (int i = 0; i < 36; ++i) {

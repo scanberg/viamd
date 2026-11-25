@@ -271,11 +271,44 @@ constexpr inline uint32_t convert_color(md_float4_t in) {
     return out;
 }
 
+// The groups of the classes of secondary structure (md_secondary_structure_t, as DSSP assigns them): the shapes of the
+// cartoon, and the colours of the palette, which a class has unless it has one of its own (Palette, viamd.h)
+enum SecondaryStructureGroup : uint8_t {
+    SS_GROUP_COIL,      // coil, turn, bend (and what is not known)
+    SS_GROUP_HELIX,     // alpha, 3-10, pi
+    SS_GROUP_SHEET,     // strand, bridge
+    SS_GROUP_COUNT
+};
+
+// How many classes there are, MD_SECONDARY_STRUCTURE_UNKNOWN the first
+#define SS_CLASS_COUNT ((int)MD_SECONDARY_STRUCTURE_BETA_BRIDGE + 1)
+
+static inline SecondaryStructureGroup ss_group(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_HELIX_310:
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:
+        return SS_GROUP_HELIX;
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
+        return SS_GROUP_SHEET;
+    default:
+        return SS_GROUP_COIL;
+    }
+}
+
+// The class a group stands for where it is all that is known of a segment: the alpha helix, the strand, the coil
+static inline md_secondary_structure_t ss_group_class(SecondaryStructureGroup g) {
+    switch (g) {
+    case SS_GROUP_HELIX: return MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
+    case SS_GROUP_SHEET: return MD_SECONDARY_STRUCTURE_BETA_SHEET;
+    default:             return MD_SECONDARY_STRUCTURE_COIL;
+    }
+}
+
+// The colour of each class, indexed by it: that of MD_SECONDARY_STRUCTURE_UNKNOWN is of what is not known
 struct SecondaryStructurePalette {
-    uint32_t unknown = 0xFF555555;
-    uint32_t coil    = 0xFFDDDDDD;
-    uint32_t helix   = 0xFF22DD22;
-    uint32_t sheet   = 0xFF2222DD;
+    uint32_t color[SS_CLASS_COUNT];
 };
 
 void color_atoms_uniform            (uint32_t* colors, size_t count, uint32_t color);
@@ -293,8 +326,10 @@ void color_atoms_chain_idx          (uint32_t* colors, size_t count, const md_sy
 // By the parts (md_part_data_t), their positions: each strand, ligand and water. An atom in no part is white.
 void color_atoms_part_idx           (uint32_t* colors, size_t count, const md_system_t& sys);
 // secondary_structure: one per segment of sys.protein_backbone, for the displayed state usually
-// displayed_secondary_structure (viamd.h); NULL colors everything as unknown
-void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette = SecondaryStructurePalette());
+// displayed_secondary_structure (viamd.h). Each segment's atoms the colour of its class, a coil alone between two
+// segments of one group that of the one before it, as the cartoon draws it; the atoms of no segment, and all of them
+// for a NULL secondary_structure, the colour of what is not known.
+void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette);
 
 static inline md_float4_t scale_saturation(md_float4_t rgba, float scale) {
     md_float3_t lab = linear_srgb_to_oklab(md_float3_from_float4(rgba));

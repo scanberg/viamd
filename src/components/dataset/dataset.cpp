@@ -4152,14 +4152,64 @@ struct Dataset : viamd::EventHandler {
         }
 
         ImGui::SeparatorText("Secondary structure");
+        ImGui::TextDisabled("A class has the colour of its group unless it has one of its own");
         const ImGuiColorEditFlags cflags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
-        changed |= ImGui::ColorEdit3("Coil##palette", pal.ss_coil.elem, cflags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit3("Helix##palette", pal.ss_helix.elem, cflags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit3("Sheet##palette", pal.ss_sheet.elem, cflags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit3("Not known##palette", pal.ss_unknown.elem, cflags);
+        if (ImGui::BeginTable("##palette_ss", 3, ImGuiTableFlags_SizingFixedFit)) {
+            ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("color");
+            ImGui::TableSetupColumn("own");
+            const SecondaryStructureGroup groups[] = {SS_GROUP_HELIX, SS_GROUP_SHEET, SS_GROUP_COIL};
+            const md_secondary_structure_t classes[] = {
+                MD_SECONDARY_STRUCTURE_HELIX_ALPHA, MD_SECONDARY_STRUCTURE_HELIX_310, MD_SECONDARY_STRUCTURE_HELIX_PI,
+                MD_SECONDARY_STRUCTURE_BETA_SHEET, MD_SECONDARY_STRUCTURE_BETA_BRIDGE,
+                MD_SECONDARY_STRUCTURE_COIL, MD_SECONDARY_STRUCTURE_TURN, MD_SECONDARY_STRUCTURE_BEND,
+            };
+            for (SecondaryStructureGroup g : groups) {
+                ImGui::PushID((int)g);
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(ss_group_label(g));
+                ImGui::TableSetColumnIndex(1);
+                changed |= ImGui::ColorEdit3("##group", pal.ss_group[g].elem, cflags);
+                for (md_secondary_structure_t c : classes) {
+                    if (ss_group(c) != g) continue;
+                    ImGui::PushID((int)c + 16);
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Indent();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted(ss_class_label(c));
+                    ImGui::Unindent();
+                    ImGui::TableSetColumnIndex(1);
+                    // Its group's colour until it is edited, which makes it its own, as editing a type unlinks it
+                    md_float4_t color = palette_ss_color(pal, c);
+                    if (ImGui::ColorEdit3("##class", color.elem, cflags)) {
+                        pal.ss_class[c] = color;
+                        pal.ss_class_own[c] = true;
+                        changed = true;
+                    }
+                    ImGui::TableSetColumnIndex(2);
+                    bool own = pal.ss_class_own[c];
+                    if (ImGui::Checkbox("own", &own)) {
+                        if (own) pal.ss_class[c] = pal.ss_group[g];
+                        pal.ss_class_own[c] = own;
+                        changed = true;
+                    }
+                    ImGui::SetItemTooltip(own ? "A colour of its own; off, that of %s again" : "The colour of %s; on, one of its own", ss_group_label(g));
+                    ImGui::PopID();
+                }
+                ImGui::PopID();
+            }
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Not known");
+            ImGui::SetItemTooltip("Of a residue whose structure is not known, as before it is computed, and of what is no protein");
+            ImGui::TableSetColumnIndex(1);
+            changed |= ImGui::ColorEdit3("##ss_unknown", pal.ss_unknown.elem, cflags);
+            ImGui::EndTable();
+        }
 
         ImGui::Separator();
         if (ImGui::Button("Reset all")) {

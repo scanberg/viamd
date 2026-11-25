@@ -187,65 +187,31 @@ void color_atoms_part_idx(uint32_t* colors, size_t count, const md_system_t& sys
 }
 
 void color_atoms_secondary_structure(uint32_t* colors, size_t count, const md_system_t& sys, const md_secondary_structure_t* secondary_structure, const SecondaryStructurePalette& palette) {
-    const uint32_t color_unknown = palette.unknown;
-    const uint32_t color_coil    = palette.coil;
-    const uint32_t color_helix   = palette.helix;
-    const uint32_t color_sheet   = palette.sheet;
+    auto color_of = [&](md_secondary_structure_t ss) {
+        return palette.color[(int)ss >= 0 && (int)ss < SS_CLASS_COUNT ? (int)ss : (int)MD_SECONDARY_STRUCTURE_UNKNOWN];
+    };
+    set_colors(colors, count, color_of(MD_SECONDARY_STRUCTURE_UNKNOWN));
+    if (!secondary_structure) return;
 
-    if (secondary_structure) {
-        for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
-            uint32_t range_beg = sys.protein_backbone.range.offset[i];
-            uint32_t range_end = sys.protein_backbone.range.offset[i+1];
-            uint32_t range_ext = range_end - range_beg;
-
-            md_temp_scope_t temp_scope = md_temp_begin();
-            MD_DEFER { md_temp_end(temp_scope); };
-
-            uint32_t* seg_colors = md_temp_alloc_array(temp_scope, uint32_t, range_ext);
-            for (size_t j = 0; j < range_ext; ++j) {
-                md_secondary_structure_t ss = secondary_structure[range_beg + j];
-                uint32_t color = color_unknown;
-                switch (ss) {
-                    case MD_SECONDARY_STRUCTURE_HELIX_310:
-                    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
-                    case MD_SECONDARY_STRUCTURE_HELIX_PI:
-                        color = color_helix;
-                        break;
-                    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
-                    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
-                        color = color_sheet;
-                        break;
-                    case MD_SECONDARY_STRUCTURE_COIL:
-                    case MD_SECONDARY_STRUCTURE_TURN:
-                    case MD_SECONDARY_STRUCTURE_BEND:
-                    case MD_SECONDARY_STRUCTURE_UNKNOWN:
-                    default:
-                        color = color_coil;
-                        break;
-                }
-                seg_colors[j] = color;
+    for (size_t i = 0; i < sys.protein_backbone.range.count; ++i) {
+        const uint32_t range_beg = sys.protein_backbone.range.offset[i];
+        const uint32_t range_end = sys.protein_backbone.range.offset[i+1];
+        for (uint32_t j = range_beg; j < range_end; ++j) {
+            md_secondary_structure_t ss = secondary_structure[j];
+            // A coil alone between two of a group is drawn as of the group (secondary_structure_weights_fill_isolated_coils)
+            if (ss_group(ss) == SS_GROUP_COIL && j > range_beg && j + 1 < range_end) {
+                const SecondaryStructureGroup prev = ss_group(secondary_structure[j - 1]);
+                if (prev != SS_GROUP_COIL && prev == ss_group(secondary_structure[j + 1])) ss = secondary_structure[j - 1];
             }
+            const uint32_t color = color_of(ss);
 
-            // Fill isolated coils within sheets to sheet color for better visualization
-            for (size_t j = 0; j < range_ext; ++j) {
-                uint32_t color = seg_colors[j];
-#if 1
-                if (j > 0 && j + 1 < range_ext) {
-                    if (color == color_coil && seg_colors[j-1] == color_sheet && seg_colors[j+1] == color_sheet) {
-                        color = color_sheet;
-                    }
-                }
-#endif
-                // The atoms of the segment: those of its residue, or of its amino acid by the roles of the atoms
-                md_atom_idx_t atoms[512];
-                const size_t n = MD_MIN(md_system_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, range_beg + j), MD_COUNTOF(atoms));
-                for (size_t k = 0; k < n; ++k) {
-                    if ((size_t)atoms[k] < count) colors[atoms[k]] = color;
-                }
+            // The atoms of the segment: those of its residue, or of its amino acid by the roles of the atoms
+            md_atom_idx_t atoms[512];
+            const size_t n = MD_MIN(md_system_protein_segment_atoms(atoms, MD_COUNTOF(atoms), &sys, j), MD_COUNTOF(atoms));
+            for (size_t k = 0; k < n; ++k) {
+                if ((size_t)atoms[k] < count) colors[atoms[k]] = color;
             }
         }
-    } else {
-        set_colors(colors, count, color_unknown);
     }
 }
 

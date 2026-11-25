@@ -2436,21 +2436,22 @@ static void draw_main_menu(ApplicationState* data) {
             if (prop::section("Palette", false)) {
                 Palette& pal = data->palette;
                 const ImGuiColorEditFlags cflags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
-                prop::row("secondary structure", "Coil, helix, sheet, and what is not known");
+                prop::row("secondary structure", "Coil, helix, sheet, and what is not known. Their classes (an \xCE\xB1 or a 3\xE2\x82\x81\xE2\x82\x80\n"
+                                                 "helix, a strand or a bridge...) have these unless given their own: Edit...");
                 bool ss_changed = false;
-                ss_changed |= ImGui::ColorEdit3("##ss_coil", pal.ss_coil.elem, cflags);
-                ImGui::SetItemTooltip("Coil");
-                ImGui::SameLine(0.0f, gap);
-                ss_changed |= ImGui::ColorEdit3("##ss_helix", pal.ss_helix.elem, cflags);
-                ImGui::SetItemTooltip("Helix");
-                ImGui::SameLine(0.0f, gap);
-                ss_changed |= ImGui::ColorEdit3("##ss_sheet", pal.ss_sheet.elem, cflags);
-                ImGui::SetItemTooltip("Sheet");
-                ImGui::SameLine(0.0f, gap);
+                const SecondaryStructureGroup groups[] = {SS_GROUP_COIL, SS_GROUP_HELIX, SS_GROUP_SHEET};
+                for (SecondaryStructureGroup g : groups) {
+                    ImGui::PushID((int)g);
+                    ss_changed |= ImGui::ColorEdit3("##ss_group", pal.ss_group[g].elem, cflags);
+                    ImGui::SetItemTooltip("%s", ss_group_label(g));
+                    ImGui::PopID();
+                    ImGui::SameLine(0.0f, gap);
+                }
                 ss_changed |= ImGui::ColorEdit3("##ss_unknown", pal.ss_unknown.elem, cflags);
                 ImGui::SetItemTooltip("Not known");
                 if (ss_changed) palette_changed(data);
-                prop::row("elements, monomers", "The colours of the elements and of the amino acids and nucleotides");
+                prop::row("elements, monomers", "The colours of the elements, of the amino acids and nucleotides, and of the classes of\n"
+                                                "secondary structure");
                 if (ImGui::Button("Edit...##palette")) data->show_palette_window = true;
                 ImGui::SameLine(0.0f, gap);
                 if (ImGui::Button("Reset all##palette")) {

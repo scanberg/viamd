@@ -973,13 +973,10 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContex
         break;
     case ColorMapping::SecondaryStructure: {
         // The palette's (ApplicationState::palette)
-        const Palette& pal = state->palette;
-        SecondaryStructurePalette palette = {
-            .unknown = convert_color(pal.ss_unknown),
-            .coil    = convert_color(pal.ss_coil),
-            .helix   = convert_color(pal.ss_helix),
-            .sheet   = convert_color(pal.ss_sheet),
-        };
+        SecondaryStructurePalette palette;
+        for (int c = 0; c < SS_CLASS_COUNT; ++c) {
+            palette.color[c] = convert_color(palette_ss_color(state->palette, (md_secondary_structure_t)c));
+        }
         color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(representation_instance(sc, *rep)), palette);
         break;
     }

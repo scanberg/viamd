@@ -1273,42 +1273,6 @@ void clear_system_frame_cache(SystemContext& sys) {
     for (size_t i = 0; i < sys.num_instances; ++i) clear_frame_cache(&sys.instances[i]->frame_cache);
 }
 
-enum class SecondaryStructureRenderClass : uint8_t {
-    Coil,
-    Helix,
-    Sheet,
-};
-
-static SecondaryStructureRenderClass secondary_structure_render_class(md_secondary_structure_t ss) {
-    switch (ss) {
-    case MD_SECONDARY_STRUCTURE_HELIX_310:
-    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA:
-    case MD_SECONDARY_STRUCTURE_HELIX_PI:
-        return SecondaryStructureRenderClass::Helix;
-    case MD_SECONDARY_STRUCTURE_BETA_SHEET:
-    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE:
-        return SecondaryStructureRenderClass::Sheet;
-    case MD_SECONDARY_STRUCTURE_COIL:
-    case MD_SECONDARY_STRUCTURE_TURN:
-    case MD_SECONDARY_STRUCTURE_BEND:
-    case MD_SECONDARY_STRUCTURE_UNKNOWN:
-    default:
-        return SecondaryStructureRenderClass::Coil;
-    }
-}
-
-static md_secondary_structure_t secondary_structure_from_render_class(SecondaryStructureRenderClass cls) {
-    switch (cls) {
-    case SecondaryStructureRenderClass::Helix:
-        return MD_SECONDARY_STRUCTURE_HELIX_ALPHA;
-    case SecondaryStructureRenderClass::Sheet:
-        return MD_SECONDARY_STRUCTURE_BETA_SHEET;
-    case SecondaryStructureRenderClass::Coil:
-    default:
-        return MD_SECONDARY_STRUCTURE_COIL;
-    }
-}
-
 // Fills an isolated coil between two segments of the same structure in with that structure, within each chain, to
 // keep the cartoon from flickering at the noise of the assignment. Presentation only.
 static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_structure_t* weights, const md_protein_backbone_data_t* backbone) {
@@ -1357,29 +1321,29 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
     md_temp_scope_t temp_scope = md_temp_begin();
     MD_DEFER { md_temp_end(temp_scope); };
 
-    SecondaryStructureRenderClass* classes  = md_temp_alloc_array(temp_scope, SecondaryStructureRenderClass, num_frames);
-    SecondaryStructureRenderClass* filtered = md_temp_alloc_array(temp_scope, SecondaryStructureRenderClass, num_frames);
+    SecondaryStructureGroup* classes  = md_temp_alloc_array(temp_scope, SecondaryStructureGroup, num_frames);
+    SecondaryStructureGroup* filtered = md_temp_alloc_array(temp_scope, SecondaryStructureGroup, num_frames);
 
     constexpr int window_radius = 2;
 
     for (size_t seg_idx = 0; seg_idx < stride; ++seg_idx) {
         for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-            classes[frame_idx] = secondary_structure_render_class(src[frame_idx * stride + seg_idx]);
+            classes[frame_idx] = ss_group(src[frame_idx * stride + seg_idx]);
         }
 
         for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-            int counts[3] = {0, 0, 0};
+            int counts[SS_GROUP_COUNT] = {};
             size_t beg = frame_idx > window_radius ? frame_idx - window_radius : 0;
             size_t end = MD_MIN(frame_idx + window_radius + 1, num_frames);
             for (size_t j = beg; j < end; ++j) {
                 counts[(int)classes[j]] += 1;
             }
 
-            SecondaryStructureRenderClass majority = classes[frame_idx];
+            SecondaryStructureGroup majority = classes[frame_idx];
             int majority_count = 0;
-            for (int j = 0; j < 3; ++j) {
+            for (int j = 0; j < SS_GROUP_COUNT; ++j) {
                 if (counts[j] > majority_count) {
-                    majority = (SecondaryStructureRenderClass)j;
+                    majority = (SecondaryStructureGroup)j;
                     majority_count = counts[j];
                 }
             }
@@ -1396,9 +1360,9 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
 
             size_t run_len = run_end - run_beg;
             if (run_beg > 0 && run_end < num_frames && filtered[run_beg - 1] == filtered[run_end]) {
-                SecondaryStructureRenderClass replacement = filtered[run_beg - 1];
+                SecondaryStructureGroup replacement = filtered[run_beg - 1];
                 bool replace_single = run_len <= 1;
-                bool replace_short_structured = run_len <= 2 && replacement != SecondaryStructureRenderClass::Coil;
+                bool replace_short_structured = run_len <= 2 && replacement != SS_GROUP_COIL;
                 if (replace_single || replace_short_structured) {
                     for (size_t j = run_beg; j < run_end; ++j) {
                         filtered[j] = replacement;
@@ -1409,8 +1373,11 @@ static void secondary_structure_render_denoise(md_secondary_structure_t* dst, co
             run_beg = run_end;
         }
 
+        // The frame's own class where it is of the group drawn (a 3-10 helix stays one, for its colour), else the
+        // class the group stands for
         for (size_t frame_idx = 0; frame_idx < num_frames; ++frame_idx) {
-            dst[frame_idx * stride + seg_idx] = secondary_structure_from_render_class(filtered[frame_idx]);
+            const md_secondary_structure_t own = src[frame_idx * stride + seg_idx];
+            dst[frame_idx * stride + seg_idx] = ss_group(own) == filtered[frame_idx] ? own : ss_group_class(filtered[frame_idx]);
         }
     }
 }
@@ -2469,37 +2436,90 @@ void palette_builtin(Palette* p) {
     MD_ASSERT(p);
     for (int z = 0; z < MD_Z_Count; ++z) p->element[z] = md_float4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
     for (int m = 0; m < MD_MONOMER_COUNT; ++m) p->monomer[m] = md_float4_from_u32(md_monomer_color((md_monomer_t)m));
-    // As the representations had them: an unknown structure the darker grey
+    // As the representations had them: an unknown structure the darker grey. The classes their group's.
     p->ss_unknown = md_float4_from_u32(0xFF555555);
-    p->ss_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
-    p->ss_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
-    p->ss_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+    p->ss_group[SS_GROUP_COIL]  = {0.86f, 0.86f, 0.86f, 1.0f};
+    p->ss_group[SS_GROUP_HELIX] = {0.12f, 0.86f, 0.12f, 1.0f};
+    p->ss_group[SS_GROUP_SHEET] = {0.12f, 0.12f, 0.86f, 1.0f};
+    for (int c = 0; c < SS_CLASS_COUNT; ++c) {
+        p->ss_class[c] = p->ss_group[ss_group((md_secondary_structure_t)c)];
+        p->ss_class_own[c] = false;
+    }
 }
 
-// Each entry of a palette by the name it is kept by, and where it is in it
+md_float4_t palette_ss_color(const Palette& p, md_secondary_structure_t ss) {
+    const int c = (int)ss;
+    if (c <= (int)MD_SECONDARY_STRUCTURE_UNKNOWN || c >= SS_CLASS_COUNT) return p.ss_unknown;
+    return p.ss_class_own[c] ? p.ss_class[c] : p.ss_group[ss_group(ss)];
+}
+
+const char* ss_group_label(SecondaryStructureGroup g) {
+    switch (g) {
+    case SS_GROUP_HELIX: return "Helix";
+    case SS_GROUP_SHEET: return "Sheet";
+    default:             return "Coil";
+    }
+}
+
+const char* ss_class_label(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_COIL:        return "coil";
+    case MD_SECONDARY_STRUCTURE_TURN:        return "turn";
+    case MD_SECONDARY_STRUCTURE_BEND:        return "bend";
+    case MD_SECONDARY_STRUCTURE_HELIX_310:   return "3\xE2\x82\x81\xE2\x82\x80 helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA: return "\xCE\xB1 helix";
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:    return "\xCF\x80 helix";
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:  return "strand";
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE: return "bridge";
+    default:                                 return "not known";
+    }
+}
+
+// The names the classes are kept by in the .ini ("ssc:alpha=...")
+static const char* ss_class_key(md_secondary_structure_t ss) {
+    switch (ss) {
+    case MD_SECONDARY_STRUCTURE_COIL:        return "coil";
+    case MD_SECONDARY_STRUCTURE_TURN:        return "turn";
+    case MD_SECONDARY_STRUCTURE_BEND:        return "bend";
+    case MD_SECONDARY_STRUCTURE_HELIX_310:   return "310";
+    case MD_SECONDARY_STRUCTURE_HELIX_ALPHA: return "alpha";
+    case MD_SECONDARY_STRUCTURE_HELIX_PI:    return "pi";
+    case MD_SECONDARY_STRUCTURE_BETA_SHEET:  return "strand";
+    case MD_SECONDARY_STRUCTURE_BETA_BRIDGE: return "bridge";
+    default:                                 return "";
+    }
+}
+
+// Each entry of a palette by the name it is kept by, and where it is in it. An entry with `own` (a class of secondary
+// structure) is kept where it is set, whatever its colour, and is set by being read.
 struct PaletteEntry {
     char         name[16];
     md_float4_t* color;
+    bool*        own;
 };
 
 static size_t palette_entries(PaletteEntry* out, size_t cap, Palette* p) {
     size_t n = 0;
-    auto add = [&](md_str_t prefix, md_str_t id, md_float4_t* c) {
+    auto add = [&](md_str_t prefix, md_str_t id, md_float4_t* c, bool* own = nullptr) {
         if (n >= cap || id.len == 0) return;
         snprintf(out[n].name, sizeof(out[n].name), MD_STR_FMT ":" MD_STR_FMT, MD_STR_ARG(prefix), MD_STR_ARG(id));
         out[n].color = c;
+        out[n].own = own;
         n += 1;
     };
     for (int z = 1; z < MD_Z_Count; ++z) add(MD_STR_LIT("e"), md_atomic_number_symbol((md_atomic_number_t)z), &p->element[z]);
     for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) add(MD_STR_LIT("m"), md_monomer_id((md_monomer_t)m), &p->monomer[m]);
     add(MD_STR_LIT("ss"), MD_STR_LIT("unknown"), &p->ss_unknown);
-    add(MD_STR_LIT("ss"), MD_STR_LIT("coil"),    &p->ss_coil);
-    add(MD_STR_LIT("ss"), MD_STR_LIT("helix"),   &p->ss_helix);
-    add(MD_STR_LIT("ss"), MD_STR_LIT("sheet"),   &p->ss_sheet);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("coil"),    &p->ss_group[SS_GROUP_COIL]);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("helix"),   &p->ss_group[SS_GROUP_HELIX]);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("sheet"),   &p->ss_group[SS_GROUP_SHEET]);
+    for (int c = 0; c < SS_CLASS_COUNT; ++c) {
+        add(MD_STR_LIT("ssc"), md_str_from_cstr(ss_class_key((md_secondary_structure_t)c)), &p->ss_class[c], &p->ss_class_own[c]);
+    }
     return n;
 }
 
-#define PALETTE_MAX_ENTRIES (MD_Z_Count + MD_MONOMER_COUNT + 4)
+#define PALETTE_MAX_ENTRIES (MD_Z_Count + MD_MONOMER_COUNT + 4 + SS_CLASS_COUNT)
 
 void palette_write(char* buf, size_t cap, const Palette& palette) {
     MD_ASSERT(buf && cap > 0);
@@ -2512,7 +2532,7 @@ void palette_write(char* buf, size_t cap, const Palette& palette) {
     buf[0] = '\0';
     for (size_t i = 0; i < n; ++i) {
         const uint32_t c = md_u32_from_float4(*cur[i].color);
-        if (c == md_u32_from_float4(*ref[i].color)) continue;
+        if (cur[i].own ? !*cur[i].own : c == md_u32_from_float4(*ref[i].color)) continue;
         // RGBA, as written: the bytes from the lowest
         const int w = snprintf(buf + len, cap - len, "%s%s=%02x%02x%02x%02x", len ? " " : "", cur[i].name,
                                c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, (c >> 24) & 0xFF);
@@ -2556,6 +2576,7 @@ void palette_read(Palette* palette, md_str_t text) {
         for (size_t i = 0; i < n; ++i) {
             if (md_str_eq_cstr(name, entries[i].name)) {
                 *entries[i].color = md_float4_from_u32(c);
+                if (entries[i].own) *entries[i].own = true;
                 break;
             }
         }

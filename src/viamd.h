@@ -8,6 +8,7 @@
 
 #include <md_system.h>
 #include <md_element.h>
+#include <color_utils.h>
 #include <md_run.h>
 #include <plane.h>
 #include <clock.h>
@@ -1928,10 +1929,12 @@ struct SystemContext {
 struct Palette {
     md_float4_t element[MD_Z_Count];
     md_float4_t monomer[MD_MONOMER_COUNT];
+    // The secondary structures: a colour of each group (SecondaryStructureGroup), which its classes have unless they
+    // have one of their own (ss_class_own: palette_ss_color), and of what is not known
     md_float4_t ss_unknown;
-    md_float4_t ss_coil;
-    md_float4_t ss_helix;
-    md_float4_t ss_sheet;
+    md_float4_t ss_group[SS_GROUP_COUNT];
+    md_float4_t ss_class[SS_CLASS_COUNT];
+    bool        ss_class_own[SS_CLASS_COUNT];
 };
 
 struct ApplicationState {
@@ -2984,6 +2987,11 @@ void palette_write(char* buf, size_t cap, const Palette& palette);
 void palette_read(Palette* palette, md_str_t text);
 // After an edit of it: its version moved, and what the .ini keeps of it written
 void palette_changed(ApplicationState* app);
+// The colour of a class of secondary structure: its own, else its group's; that of what is not known for UNKNOWN
+md_float4_t palette_ss_color(const Palette& palette, md_secondary_structure_t ss);
+// The names they are shown by: "Helix", and "α helix", "3₁₀ helix", "strand"... (UTF-8)
+const char* ss_group_label(SecondaryStructureGroup group);
+const char* ss_class_label(md_secondary_structure_t ss);
 
 // A system's directory (SystemContext::dir): the outermost layer of the paths of what is of it, as the Attributes window
 // lists them ("0/run/md/time", "mutant/atom/charge"). Unique among the systems: a number, the lowest free, given as it is
