@@ -166,7 +166,6 @@ endif()
 
 set(SRC_FILES
     src/app_settings.cpp
-    src/cartoon_glyphs.cpp
     src/color_scale.cpp
     src/color_utils.cpp
     src/density_map.cpp
@@ -224,7 +223,6 @@ set(SRC_FILES
     src/window_menu_draw.cpp
 
     src/app_settings.h
-    src/cartoon_glyphs.h
     src/color_scale.h
     src/color_utils.h
     src/display_units.h
@@ -271,24 +269,15 @@ set(APP_FILES
 
 set(GFX_FILES
     src/gfx/camera_utils.cpp
-    src/gfx/gbuffer.cpp
     src/gfx/gl_utils.cpp
-    src/gfx/immediate_draw_utils.cpp
-    src/gfx/postprocessing_utils.cpp
-    src/gfx/volumerender_utils.cpp
-    src/gfx/isomesh_utils.cpp
     src/gfx/profiler.cpp
 
     src/gfx/camera.h
     src/gfx/camera_utils.h
-    src/gfx/gbuffer.h
     src/gfx/gl.h
     src/gfx/gl_utils.h
-    src/gfx/immediate_draw_utils.h
     src/gfx/postprocessing_utils.h
     src/gfx/view_param.h
-    src/gfx/volumerender_utils.h
-    src/gfx/isomesh_utils.h
     src/gfx/profiler.h
 )
 
@@ -305,45 +294,6 @@ if (NOT VIAMD_ENABLE_QM)
     list(FILTER COMP_FILES EXCLUDE REGEX "/components/qm/")
 endif()
 
-set(SHADER_FILES 
-    src/shaders/compose_deferred.frag
-    src/shaders/temporal.frag
-    src/shaders/luma.frag
-    src/shaders/fxaa.frag
-    src/shaders/tonemap/display.frag
-    src/shaders/tonemap/fast_reversible.frag
-    src/shaders/dof/dof_prepass.frag
-    src/shaders/dof/dof_tile.frag
-    src/shaders/dof/dof_gather.frag
-    src/shaders/dof/dof_near_down.frag
-    src/shaders/dof/dof_near.frag
-    src/shaders/dof/dof_fill.frag
-    src/shaders/dof/dof_composite.frag
-    src/shaders/velocity/blit_velocity.frag
-    src/shaders/velocity/blit_velocity_dilate.frag
-    src/shaders/velocity/blit_tilemax.frag
-    src/shaders/velocity/blit_neighbormax.frag
-    src/shaders/volume/dvr.frag
-    src/shaders/volume/isosurface.frag
-    src/shaders/volume/isosurface_fast.frag
-    src/shaders/volume/block_minmax.frag
-    src/shaders/volume/cell_minmax.frag
-    src/shaders/volume/block_proxy.vert
-    src/shaders/volume/block_proxy.frag
-    src/shaders/volume/isomesh.vert
-    src/shaders/volume/isomesh.frag
-    src/shaders/volume/isomesh_accumulate.frag
-    src/shaders/ssao/depth_downsample.frag
-    src/shaders/ssao/ssao.frag
-    src/shaders/ssao/ssao_temporal.frag
-    src/shaders/ssao/ssao_bitmask.frag
-    src/shaders/ssao/blur.frag
-    src/shaders/ssao/upsample.frag
-    src/shaders/shadows/screen_space.frag
-)
-
-# Bake shaders into a single header file
-create_resources("${SHADER_FILES}" "gen/shaders.inl")
 
 # The script reference is plain Markdown that lives with the implementation in mdlib. It is baked into the executable
 # and shown in the Script Reference window. Re-run the configure step when it changes (handled by CMAKE_CONFIGURE_DEPENDS).
@@ -357,7 +307,6 @@ create_resources("${VIAL_REFERENCE_MD}" "gen/vial_reference.inl")
 source_group("src" FILES ${SRC_FILES})
 source_group("src/app" FILES ${APP_FILES})
 source_group("src/gfx" FILES ${GFX_FILES})
-source_group("shaders" FILES ${SHADER_FILES})
 source_group("src/component" FILES ${COMP_FILES})
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
@@ -365,7 +314,7 @@ if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set_source_files_properties(${MACOSX_ICON} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
 endif()
 
-add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${SHADER_FILES} ${COMP_FILES})
+add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${COMP_FILES})
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set_target_properties(viamd PROPERTIES

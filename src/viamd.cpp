@@ -41,8 +41,6 @@
 #include <serialization_utils.h>
 #include <plot_periodic.h>
 
-#include <gfx/gl_utils.h>
-#include <gfx/volumerender_utils.h>
 #include <gpu_volume.h>
 
 #include <imgui.h>
@@ -154,19 +152,99 @@ void init_volume_gpu(Volume* vol, const md_grid_t& grid) {
 #endif
 }
 
-void init_volume(Volume* vol, const md_grid_t& grid, GLenum format) {
-    MD_ASSERT(vol);
-    md_memcpy(vol->dim, grid.dim, sizeof(vol->dim));
+// Normalised Gaussian weights evaluated relative to the largest one, over the points that can matter in each 8^3
+// block of voxels.
+// The colours of points splatted into a volume of colours (RGBA8, x fastest), each a Gaussian of the width in its w,
+// sharpened by power; index_to_world places the voxels' centres
+static void splat_point_colors(uint32_t* result, const int volume_dim[3], const float index_to_world[4][4], const md_float4_t* point_xyzw, const uint32_t* point_color, size_t point_count, double power_d) {
+    const float power = (float)power_d;
+    const int dim_x = volume_dim[0];
+    const int dim_y = volume_dim[1];
+    const int dim_z = volume_dim[2];
+    if (dim_x <= 0 || dim_y <= 0 || dim_z <= 0 || point_count == 0) return;
 
-    // A grid is in BOHR and a Volume's transforms are in Angstrom; this is where the two meet.
-    const float scl = (float)BOHR_TO_ANGSTROM;
+    static constexpr int   BLOCK  = 8;
+    static constexpr float CUTOFF = 20.0f;  // a point weighing less than exp(-CUTOFF) of the best one is left out
 
-    md_float3_t extent = md_grid_extent(&grid);
-    vol->world_to_model   = compute_world_to_model_mat(grid.orientation, grid.origin * scl);
-    vol->texture_to_world = compute_texture_to_world_mat(grid.orientation, grid.origin * scl, extent * scl);
-    vol->voxel_size       = grid.spacing * scl;
-    gl::init_texture_3D(&vol->tex_id, vol->dim[0], vol->dim[1], vol->dim[2], format);
-    volume::notify_data_changed(vol->tex_id);
+    md_temp_scope_t temp_scope = md_temp_begin();
+    MD_DEFER { md_temp_end(temp_scope); };
+
+    md_float4_t*   points = (md_float4_t*)  md_temp_alloc(temp_scope, sizeof(md_float4_t) * point_count);    // xyz, power / (2 sigma^2)
+    md_float4_t*   colors = (md_float4_t*)  md_temp_alloc(temp_scope, sizeof(md_float4_t) * point_count);
+    uint32_t* cand   = (uint32_t*)md_temp_alloc(temp_scope, sizeof(uint32_t) * point_count);
+    if (!result || !points || !colors || !cand) return;
+
+    for (size_t i = 0; i < point_count; ++i) {
+        const float sigma = MD_MAX(point_xyzw[i].w, 0.1f);
+        points[i] = md_float4_set(point_xyzw[i].x, point_xyzw[i].y, point_xyzw[i].z, power / (2.0f * sigma * sigma));
+        colors[i] = convert_color(point_color[i]);
+    }
+
+    const md_float4x4_t M = md_float4x4_load((const float*)index_to_world);
+
+    for (int bz = 0; bz < dim_z; bz += BLOCK) {
+        for (int by = 0; by < dim_y; by += BLOCK) {
+            for (int bx = 0; bx < dim_x; bx += BLOCK) {
+                const int lo[3] = { bx, by, bz };
+                const int hi[3] = { MD_MIN(bx + BLOCK, dim_x) - 1, MD_MIN(by + BLOCK, dim_y) - 1, MD_MIN(bz + BLOCK, dim_z) - 1 };
+
+                // World space bounds of the voxel centres of the block (the volume may be rotated)
+                md_float3_t bmin = md_float3_set( FLT_MAX,  FLT_MAX,  FLT_MAX);
+                md_float3_t bmax = md_float3_set(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+                for (int c = 0; c < 8; ++c) {
+                    const md_float4_t idx = { (float)((c & 1) ? hi[0] : lo[0]), (float)((c & 2) ? hi[1] : lo[1]), (float)((c & 4) ? hi[2] : lo[2]), 1.0f };
+                    const md_float3_t p = md_float3_from_float4(md_float4x4_mul_float4(M, idx));
+                    bmin = md_float3_min(bmin, p);
+                    bmax = md_float3_max(bmax, p);
+                }
+
+                // The best exponent some point is guaranteed everywhere in the block, then the points that can matter
+                float e_best = -FLT_MAX;
+                for (size_t i = 0; i < point_count; ++i) {
+                    const md_float3_t p   = md_float3_from_float4(points[i]);
+                    const md_float3_t far = md_float3_max(md_float3_abs(md_float3_sub(p, bmin)), md_float3_abs(md_float3_sub(p, bmax)));
+                    e_best = MD_MAX(e_best, -md_float3_dot(far, far) * points[i].w);
+                }
+                uint32_t num_cand = 0;
+                for (size_t i = 0; i < point_count; ++i) {
+                    const md_float3_t p    = md_float3_from_float4(points[i]);
+                    const md_float3_t near = md_float3_sub(p, md_float3_clamp(p, bmin, bmax));
+                    if (-md_float3_dot(near, near) * points[i].w >= e_best - CUTOFF) {
+                        cand[num_cand++] = (uint32_t)i;
+                    }
+                }
+
+                for (int z = lo[2]; z <= hi[2]; ++z) {
+                    for (int y = lo[1]; y <= hi[1]; ++y) {
+                        for (int x = lo[0]; x <= hi[0]; ++x) {
+                            const md_float3_t xw = md_float3_from_float4(md_float4x4_mul_float4(M, md_float4_set((float)x, (float)y, (float)z, 1.0f)));
+                            // Streamed log-sum-exp: weights relative to the largest exponent so far
+                            float  m   = -FLT_MAX;
+                            float  sum = 0.0f;
+                            md_float4_t acc = {0, 0, 0, 0};
+                            for (uint32_t j = 0; j < num_cand; ++j) {
+                                const uint32_t i = cand[j];
+                                const md_float3_t d = md_float3_sub(xw, md_float3_from_float4(points[i]));
+                                const float  e = -md_float3_dot(d, d) * points[i].w;
+                                if (e > m) {
+                                    const float scale = expf(m - e);
+                                    sum = sum * scale + 1.0f;
+                                    acc = md_float4_add(md_float4_mul1(acc, scale), colors[i]);
+                                    m = e;
+                                } else {
+                                    const float w = expf(e - m);
+                                    sum += w;
+                                    acc = md_float4_add(acc, md_float4_mul1(colors[i], w));
+                                }
+                            }
+                            const md_float4_t color = (sum > 0.0f) ? md_float4_mul1(acc, 1.0f / sum) : md_float4_set(1.0f, 1.0f, 1.0f, 0.0f);
+                            result[(size_t)x + (size_t)y * dim_x + (size_t)z * dim_x * dim_y] = convert_color(color);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 // PICKING TOOLTIP
@@ -834,7 +912,7 @@ static void tooltip_backbone_segment(PickingTooltipTextRequest* req, const Appli
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
-// The gap of a chain over a break after the residue res_idx (md_gl_mol_set_chain_gaps): the residues on either side,
+// The gap of a chain over a break after the residue res_idx: the residues on either side,
 // how many residues are missing between them by their numbering, and how far apart the atoms a link would join are in
 // the current frame. The numbering is that of the residues of the sequence in an mmCIF file, which counts the missing
 // ones exactly, but the author's in a PDB file, which may skip where nothing is missing; a model built in pieces may
@@ -1018,45 +1096,6 @@ static void tooltip_ring(PickingTooltipTextRequest* req, const ApplicationState&
     tooltip_row_list(req, MD_STR_LIT("index"), index);
 }
 
-// A point of the cartoon of the lipids and nucleic acids stands for its residue: the residue, and what part of it
-// the point is
-static void tooltip_cartoon_glyph(PickingTooltipTextRequest* req, const ApplicationState& state, uint32_t point_idx) {
-    const md_system_t& sys = state.mold.sys;
-    const CartoonGlyphs& glyphs = state.mold.cartoon_glyphs;
-    // Indexed by CartoonGlyphKind
-    static const char* parts[] = { "head", "backbone", "tail", "sterol skeleton", "backbone", "sugar", "base" };
-    static_assert(MD_COUNTOF(parts) == CartoonGlyph_Count, "A name for every kind of glyph");
-
-    const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
-    if (res_idx < 0 || (size_t)res_idx >= sys.residue.count) {
-        // No residue (a nucleic backbone found from the bonds alone, as for an XYZ file): only what part it is
-        if (glyphs.point_kind[point_idx] < MD_COUNTOF(parts)) tooltip_title(req, "nucleotide" TOOLTIP_SEP "%s", parts[glyphs.point_kind[point_idx]]);
-        return;
-    }
-    const md_urange_t range = md_system_residue_atom_range(&sys, res_idx);
-    const TooltipPlace place = tooltip_place_of_residue(sys, res_idx);
-
-    // The title says what part of the residue the point is, which no keyword selects: "residue · DPPC 12 · head"
-    md_str_writer_t title = md_str_writer_create(req->alloc);
-    title += MD_STR_LIT("residue");
-    tooltip_append_place(&title, sys, place);
-    if (glyphs.point_kind[point_idx] < MD_COUNTOF(parts)) {
-        title += TOOLTIP_SEP;
-        title += md_str_from_cstr(parts[glyphs.point_kind[point_idx]]);
-    }
-    tooltip_title(req, "%s", md_str_writer_to_cstr(&title));
-
-    tooltip_residue_rows(req, sys, res_idx);
-
-    tooltip_row(req, MD_STR_LIT("atoms"), "%u", range.end - range.beg);
-
-    tooltip_part_and_molecule_rows(req, sys, place);
-
-    md_str_writer_t index = md_str_writer_create(req->alloc);
-    tooltip_append_index(&index, sys, place, state.script.language);
-    tooltip_row_list(req, MD_STR_LIT("index"), index);
-}
-
 // The hit names the group and the element outright - its range was reserved against that group's attribute - so there
 // is no list to rebuild and nothing to look the index up in.
 static void tooltip_dipole(PickingTooltipTextRequest* req, const ApplicationState& state, const PickingHit& hit) {
@@ -1141,9 +1180,6 @@ static void fill_picking_tooltip(PickingTooltipTextRequest* req, const Applicati
         if (hit.local_idx < sys.protein_backbone.segment.count && sys.protein_backbone.segment.res_idx) tooltip_backbone_segment(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Ring) {
         tooltip_ring(req, state, hit.local_idx);
-    } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const uint32_t point_idx = cartoon_glyphs_picked_point(state.mold.cartoon_glyphs, hit.local_idx);
-        if (point_idx < state.mold.cartoon_glyphs.num_points) tooltip_cartoon_glyph(req, state, point_idx);
     } else if (hit.domain == PickingDomain_ChainGap) {
         if ((size_t)hit.local_idx + 1 < sys.residue.count) tooltip_chain_gap(req, state, hit.local_idx);
     } else if (hit.domain == PickingDomain_Dipole) {
@@ -1324,43 +1360,6 @@ static md_secondary_structure_t secondary_structure_from_render_class(SecondaryS
     default:
         return MD_SECONDARY_STRUCTURE_COIL;
     }
-}
-
-// Fills an isolated coil between two segments of the same structure in with that structure, within each chain, to
-// keep the cartoon from flickering at the noise of the assignment. Presentation only.
-static void secondary_structure_weights_fill_isolated_coils(md_gl_secondary_structure_t* weights, const md_protein_backbone_data_t* backbone) {
-    auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-        return a.helix == b.helix && a.sheet == b.sheet;
-    };
-    const md_gl_secondary_structure_t ss_coil  = { 0, 0 };
-    const md_gl_secondary_structure_t ss_helix = { .helix = 1.0f };
-    const md_gl_secondary_structure_t ss_sheet = { .sheet = 1.0f };
-    for (size_t r = 0; r < backbone->range.count; ++r) {
-        for (size_t j = backbone->range.offset[r] + 1; j + 1 < backbone->range.offset[r + 1]; ++j) {
-            if (!is_eq(weights[j], ss_coil)) continue;
-            if (is_eq(weights[j - 1], ss_helix) && is_eq(weights[j + 1], ss_helix)) weights[j] = ss_helix;
-            if (is_eq(weights[j - 1], ss_sheet) && is_eq(weights[j + 1], ss_sheet)) weights[j] = ss_sheet;
-        }
-    }
-}
-
-// The cartoon's secondary structure for the displayed state's own labels, uploaded directly: the weights are renderer
-// input and are kept nowhere but on the GPU. Without a run there is nothing to blend between; interpolate_system_state
-// uploads its own blend of the frames around the displayed one.
-static void upload_secondary_structure_weights(ApplicationState* data) {
-    const md_system_t& sys = data->mold.sys;
-    const size_t num_segments = sys.protein_backbone.segment.count;
-    const md_secondary_structure_t* ss = md_system_state_secondary_structure(&data->mold.state, &sys);
-    if (!ss || num_segments == 0) return;
-
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    md_gl_secondary_structure_t* weights = md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments);
-    for (size_t i = 0; i < num_segments; ++i) {
-        weights[i] = md_gl_secondary_structure_convert(ss[i]);
-    }
-    secondary_structure_weights_fill_isolated_coils(weights, &sys.protein_backbone);
-    md_gl_mol_set_backbone_secondary_structure(data->mold.gl_mol, 0, (uint32_t)num_segments, weights, 0);
 }
 
 static void secondary_structure_render_denoise(md_secondary_structure_t* dst, const md_secondary_structure_t* src, size_t num_frames, size_t stride) {
@@ -1775,63 +1774,6 @@ void assembly_transforms(md_array(md_float4x4_t)* transforms, md_array(uint32_t)
     }
 }
 
-void assembly_subsets_free(ApplicationState* app) {
-    MD_ASSERT(app);
-    for (size_t i = 0; i < md_array_size(app->view.assembly_subsets); ++i) {
-        if (app->view.assembly_subsets[i].id) md_gl_subset_destroy(app->view.assembly_subsets[i]);
-    }
-    for (size_t i = 0; i < md_array_size(app->view.assembly_glyph_subsets); ++i) {
-        if (app->view.assembly_glyph_subsets[i].id) md_gl_subset_destroy(app->view.assembly_glyph_subsets[i]);
-    }
-    md_array_shrink(app->view.assembly_subsets, 0);
-    md_array_shrink(app->view.assembly_glyph_subsets, 0);
-    app->view.assembly_subsets_of  = -1;
-    app->view.assembly_subsets_mol = 0;
-}
-
-void assembly_subsets_update(ApplicationState* app) {
-    MD_ASSERT(app);
-    const int assembly = app->view.assembly;
-    const uint32_t mol_id = app->mold.gl_mol.id;
-    if (assembly == app->view.assembly_subsets_of && mol_id == app->view.assembly_subsets_mol) return;
-    assembly_subsets_free(app);
-    const md_system_t& sys = app->mold.sys;
-    if (assembly < 0 || (size_t)assembly >= sys.assembly.count || !mol_id) return;
-    app->view.assembly_subsets_of  = assembly;
-    app->view.assembly_subsets_mol = mol_id;
-
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    md_allocator_i* alloc = app->allocator.persistent;
-    const md_assembly_data_t& a = sys.assembly;
-    const CartoonGlyphs& glyphs = app->mold.cartoon_glyphs;
-    const bool has_glyphs = cartoon_glyphs_valid(glyphs);
-    uint32_t* atoms = md_temp_alloc_array(temp, uint32_t, MD_MAX(sys.atom.count, (size_t)1));
-    // The groups and their instances from the offsets as they are (assembly_group), not from a range of them
-    for (size_t p = a.group_offset[assembly]; p < a.group_offset[assembly + 1]; ++p) {
-        const AssemblyGroup group = assembly_group(a, p);
-        md_gl_subset_t subset = {};
-        md_gl_subset_t glyph_subset = {};
-        // A group of all instances (each once) shows the whole system
-        if ((size_t)(group.inst_end - group.inst) < sys.instance.count) {
-            uint32_t count = 0;
-            for (const md_instance_idx_t* k = group.inst; k < group.inst_end; ++k) {
-                const md_urange_t r = md_system_instance_atom_range(&sys, (size_t)*k);
-                const uint32_t num = r.end > r.beg ? r.end - r.beg : 0;
-                for (uint32_t i = 0; i < num; ++i) atoms[count++] = r.beg + i;
-            }
-            subset = md_gl_subset_create(app->mold.gl_mol);
-            md_gl_subset_set_atoms(subset, atoms, count);
-            if (has_glyphs) {
-                glyph_subset = md_gl_subset_create(glyphs.gl_mol);
-                md_gl_subset_set_derived(glyph_subset, subset);
-            }
-        }
-        md_array_push(app->view.assembly_subsets, subset, alloc);
-        md_array_push(app->view.assembly_glyph_subsets, glyph_subset, alloc);
-    }
-}
-
 void init_system_data(ApplicationState* data) {
     if (data->mold.sys.atom.count) {
         md_bitset_free(&data->operations.recenter_query.mask, data->allocator.persistent);
@@ -1856,19 +1798,14 @@ void init_system_data(ApplicationState* data) {
             bt.scope_dirty = true;
         }
 
-        data->mold.gl_mol = md_gl_mol_create(&data->mold.sys);
-        // A new system is shown as it is: the subsets of the parts of an assembly are made when one is shown
+        // A new system is shown as it is
         data->view.assembly = -1;
         md_array_shrink(data->view.assembly_transforms, 0);
         md_array_shrink(data->view.assembly_copy_offset, 0);
-        // Before the representations, which each make a representation of the glyphs
-        cartoon_glyphs_init(&data->mold.cartoon_glyphs, data->mold.sys, data->mold.gl_mol, data->allocator.persistent);
 
         // The backbone of the loaded coordinates, carried by the state, which stands until a run replaces it frame by
         // frame (interpolate_system_state)
-        if (md_system_state_backbone_compute(&data->mold.state, &data->mold.sys)) {
-            upload_secondary_structure_weights(data);
-        }
+        md_system_state_backbone_compute(&data->mold.state, &data->mold.sys);
 
         md_float3x3_t A;
 		md_unitcell_A_extract_float(A.elem, &data->mold.state.unitcell);
@@ -1948,15 +1885,7 @@ void free_system_data(ApplicationState* data) {
     data->operations.initial_frame.rel_xyzw = nullptr;
     data->operations.initial_frame.valid = false;
 
-    // The subsets of the parts of an assembly are of the molecule
-    assembly_subsets_free(data);
-    md_gl_mol_destroy(data->mold.gl_mol);
-    // Not left naming the destroyed one: what runs before the next system is loaded (a workspace creating its
-    // representations, a frame after a load that failed) sees no molecule rather than a stale one
-    data->mold.gl_mol = {};
-    cartoon_glyphs_free(&data->mold.cartoon_glyphs);
-
-    // The dataset's GPU data goes with the dataset, for the same reason gl_mol does.
+    // The dataset's GPU data goes with the dataset
     system_gpu_data_free(data);
 
     // Everything loaded was loaded onto the system
@@ -2096,28 +2025,11 @@ bool system_inference_pending(const ApplicationState& app) {
     return app.mold.inference.pending;
 }
 
-// What the system shown is built of, made again of the inferred one: the molecule on the GPU (its bonds, backbones and
-// chain gaps), the glyphs of the cartoon, the secondary structure of the coordinates shown, the representations of
-// them, and what the components derived from the system (ViamdSystemInit)
+// What the system shown is built of, made again of the inferred one: the secondary structure of the coordinates shown,
+// the representations of them, and what the components derived from the system (ViamdSystemInit). The bridge plans
+// the molecule again of its new topology (its version).
 static void system_inferred_refresh(ApplicationState* app) {
-    for (size_t i = 0; i < md_array_size(app->representation.reps); ++i) {
-        md_gl_rep_destroy(app->representation.reps[i].md_rep);
-        app->representation.reps[i].md_rep = {};
-    }
-    assembly_subsets_free(app);
-    cartoon_glyphs_free(&app->mold.cartoon_glyphs);
-    // Made again in place: the handle stays, so what components made of the molecule when the system was loaded (the
-    // representations of the QM windows) stays valid without their knowing it was. Destroyed and created, it had a new
-    // id, and those were left drawing a molecule which no longer existed. The atoms are those it was made of; should
-    // they not be, it is a new molecule after all.
-    if (!md_gl_mol_rebuild(app->mold.gl_mol, &app->mold.sys)) {
-        md_gl_mol_destroy(app->mold.gl_mol);
-        app->mold.gl_mol = md_gl_mol_create(&app->mold.sys);
-    }
-    cartoon_glyphs_init(&app->mold.cartoon_glyphs, app->mold.sys, app->mold.gl_mol, app->allocator.persistent);
-    if (md_system_state_backbone_compute(&app->mold.state, &app->mold.sys)) {
-        upload_secondary_structure_weights(app);
-    }
+    md_system_state_backbone_compute(&app->mold.state, &app->mold.sys);
     app->mold.dirty_gpu_buffers |= MolBit_DirtyPosition | MolBit_DirtyRadius | MolBit_DirtyFlags | MolBit_DirtyBonds | MolBit_ClearVelocity;
     app->mold.interpolate_system_state = true;
     app->mold.last_interpolated_nearest_frame = -1;
@@ -3554,9 +3466,8 @@ void atom_attribute_select(AtomAttributeColoring* coloring, md_attribute_id_t ke
 // Per dataset GPU data
 // ---------------------------------------------------------------------------
 // Built from the system's own basis/ attributes, so it needs no loader and no residue - which is
-// the point of publishing the basis in the first place. Lives beside gl_mol because it is the same
-// kind of thing: derived FROM the system so that something can draw or evaluate it, and never read
-// back by mdlib.
+// the point of publishing the basis in the first place. Derived FROM the system so that something can
+// draw or evaluate it, and never read back by mdlib.
 //
 // The device scratch is grown here rather than allocated per dataset. A wider basis loaded later
 // grows it; a narrower one leaves it alone, because it is scratch and only the maximum matters.
@@ -4002,26 +3913,11 @@ static size_t basis_atom_positions_gather(md_float3_t* dst, size_t cap, const md
 // ---------------------------------------------------------------------------
 // Volume readback
 // ---------------------------------------------------------------------------
-// Getting an evaluated volume out of the device scratch texture and into the GL texture a
-// representation draws. Nothing about it is specific to what was evaluated or to who asked, and
-// every handle it touches is on the ApplicationState above - which is why it lives here and not in
-// whichever component happened to need it first.
+// Getting an evaluated volume out of the device scratch texture and into the volume (gpu_volume.h) it was evaluated
+// for, on the GPU. Nothing about it is specific to what was evaluated or to who asked, and every handle it touches is
+// on the ApplicationState above - which is why it lives here and not in whichever component happened to need it first.
 
 #if MD_ENABLE_GPU
-
-// Prefers a pixel unpack buffer: one write into memory the GPU already sees, and the transfer
-// overlaps instead of blocking. Falls back to the plain client pointer upload when no buffer is
-// available.
-static void gpu_volume_upload_to_gl(uint32_t vol_tex, const void* src, size_t size) {
-    if (!src) return;
-    // The isosurface renderer's empty space grid follows the texels
-    volume::notify_data_changed(vol_tex);
-    if (void* dst = gl::pbo_upload_begin(size)) {
-        md_memcpy(dst, src, size);
-        if (gl::pbo_upload_end_texture_3D(vol_tex, 0, GL_R32F)) return;
-    }
-    gl::set_texture_3D_data(vol_tex, 0, src, GL_R32F);
-}
 
 // The scratch the evaluations write now (ApplicationState::gpu_eval_target)
 static inline md_gpu_texture_t gpu_eval_target(const ApplicationState* state) {
@@ -4108,17 +4004,13 @@ static void gpu_volume_job_complete(void* user) {
         // the copies done: the volume holds them
         gpu_volume_set(job->tex_id, job->gpu_tex, job->gpu_normals, job->gpu_model, job->gpu_ready);
         job->gpu_tex = job->gpu_normals = nullptr;
-    } else if (self && job->tex_id) {
-        gpu_volume_upload_to_gl(job->tex_id, job->rb.cpu, job->size);
     }
-    if (self && job->rb.gpu) md_gpu_free(self->gpu_stream, job->rb.gpu);
     if (job->issued_job) {
         MD_LOG_DEBUG("Density volume %dx%dx%d: %.1f ms from the request to the texture, on the GPU in pieces over the frames (" MD_GTO_GPU_GEMM_PIECES_REVISION ")",
                      (int)job->grid.dim[0], (int)job->grid.dim[1], (int)job->grid.dim[2], md_tick_to_milliseconds(md_tick_now() - (md_tick_t)job->t0));
         md_gto_gpu_job_end((md_gto_gpu_job_t*)job->issued_job);
         job->issued_job = nullptr;
     }
-    job->rb        = {};
     job->in_flight = false;
 }
 
@@ -4126,25 +4018,12 @@ static void gpu_volume_job_complete(void* user) {
 static bool gpu_volume_copy_make(ApplicationState* state, md_gpu_texture_t src, const md_grid_t& grid, bool normals,
                                  md_gpu_texture_t* out_tex, md_gpu_texture_t* out_normals);
 
-static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, size_t size, bool normals) {
-    if (gpu_volume_is(vol_tex)) {
-        // a representation's: the copies, held by the volume at once (what draws it waits for them)
-        md_gpu_texture_t tex = nullptr, nrm = nullptr;
-        if (!gpu_volume_copy_make(state, gpu_eval_target(state), grid, normals, &tex, &nrm)) return false;
-        gpu_volume_set(vol_tex, tex, nrm, grid_texture_to_world(grid), md_gpu_stream_record(state->gpu_stream));
-        return true;
-    }
-    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
-    if (!rb.cpu) return false;
-    const md_gpu_tex_region_t region = {
-        .offset = {0, 0, 0},
-        .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-    };
-    bool ok = md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, gpu_eval_target(state), &region);
-    md_gpu_stream_sync(state->gpu_stream);
-    if (ok) gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
-    md_gpu_free(state->gpu_stream, rb.gpu);
-    return ok;
+// The copies, held by the volume at once (what draws it waits for them)
+static bool gpu_volume_readback_blocking(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, bool normals) {
+    md_gpu_texture_t tex = nullptr, nrm = nullptr;
+    if (!gpu_volume_copy_make(state, gpu_eval_target(state), grid, normals, &tex, &nrm)) return false;
+    gpu_volume_set(vol_tex, tex, nrm, grid_texture_to_world(grid), md_gpu_stream_record(state->gpu_stream));
+    return true;
 }
 
 static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid);
@@ -4186,7 +4065,7 @@ static void gpu_density_jobs_settle(ApplicationState* state) {
 }
 
 // The density jobs not yet all issued, of vol_tex (0: every one), dropped: what they have in flight completes,
-// nothing more is issued, and no readback is queued (the texture keeps what it held). True when any was.
+// nothing more is issued, and no readback is queued (the volume keeps what it held). True when any was.
 static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex) {
     bool any = false;
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
@@ -4202,16 +4081,19 @@ static bool gpu_density_jobs_cancel(ApplicationState* state, uint32_t vol_tex) {
     return any;
 }
 
-// Queues a readback of the evaluated region of gpu_volume. Returns once the copy is recorded; the
-// GL texture is filled later, from gpu_volume_job_complete(), which md_gpu_device_poll() calls on
-// the GL thread.
+// Queues the copy of the evaluated region of gpu_volume into the volume vol_tex (gpu_volume.h). Returns once the copy is
+// recorded; the volume holds it later, from gpu_volume_job_complete(), which md_gpu_device_poll() calls on the main
+// thread.
 //
-// Returns true when the work was QUEUED -- not that the texture holds data.
+// Returns true when the work was QUEUED -- not that the volume holds data.
 static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid) {
     if (!state->gpu_stream || !gpu_eval_target(state)) {
         return false;
     }
-    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
+    if (!gpu_volume_is(vol_tex)) {
+        MD_LOG_ERROR("An evaluation into %u, which is not a volume (gpu_volume.h)", vol_tex);
+        return false;
+    }
     const bool normals = gpu_normals_take(state);
 
     // Never allow two outstanding readbacks for the same texture. Two reasons, both of which
@@ -4234,7 +4116,7 @@ static bool gpu_volume_readback(ApplicationState* state, uint32_t vol_tex, const
         job = gpu_volume_job_acquire(state);
     }
     if (!job) {
-        return gpu_volume_readback_blocking(state, vol_tex, grid, size, normals);
+        return gpu_volume_readback_blocking(state, vol_tex, grid, normals);
     }
     job->src = gpu_eval_target(state);
     job->normals = normals;
@@ -4280,58 +4162,23 @@ static bool gpu_volume_copy_make(ApplicationState* state, md_gpu_texture_t src, 
     return true;
 }
 
-// The copy of gpu_volume into job's staging and its completion, queued; job is acquired. Of a representation's volume
-// (gpu_volume.h): copied into textures of its own on the GPU, which the volume holds once the copies are done.
+// The copies of gpu_volume into textures of the volume's own on the GPU and their completion, queued (the volume holds
+// them once the copies are done); job is acquired
 static bool gpu_volume_readback_issue(ApplicationState* state, ApplicationState::GpuVolumeJob* job, uint32_t vol_tex, const md_grid_t& grid) {
-    if (gpu_volume_is(vol_tex)) {
-        if (!gpu_volume_copy_make(state, job->src ? job->src : state->gpu_volume, grid, job->normals, &job->gpu_tex, &job->gpu_normals)) {
-            job->in_flight = false;
-            return false;
-        }
-        job->tex_id    = vol_tex;
-        job->gpu_model = grid_texture_to_world(grid);
-        job->gpu_ready = md_gpu_stream_record(state->gpu_stream);
-        if (!md_gpu_sync_on_complete(state->gpu_device, job->gpu_ready, gpu_volume_job_complete, job)) {
-            // held at once: what draws it waits for the copies
-            MD_LOG_ERROR("Failed to queue the volume completion; the volume is held before its copies are done");
-            gpu_volume_set(vol_tex, job->gpu_tex, job->gpu_normals, job->gpu_model, job->gpu_ready);
-            job->gpu_tex = job->gpu_normals = nullptr;
-            job->in_flight = false;
-        }
-        return true;
-    }
-    const size_t size = sizeof(float) * (size_t)grid.dim[0] * (size_t)grid.dim[1] * (size_t)grid.dim[2];
-    md_gpu_mem_t rb = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_HOST_READ, size);
-    if (!rb.cpu) {
-        MD_LOG_ERROR("Failed to allocate volume readback staging (%zu bytes)", size);
+    if (!gpu_volume_is(vol_tex) ||
+        !gpu_volume_copy_make(state, job->src ? job->src : state->gpu_volume, grid, job->normals, &job->gpu_tex, &job->gpu_normals)) {
         job->in_flight = false;
         return false;
     }
-
-    const md_gpu_tex_region_t region = {
-        .offset = {0, 0, 0},
-        .extent = { (uint32_t)grid.dim[0], (uint32_t)grid.dim[1], (uint32_t)grid.dim[2] },
-    };
-    if (!md_gpu_copy_from_texture(state->gpu_stream, rb.gpu, job->src ? job->src : state->gpu_volume, &region)) {
-        MD_LOG_ERROR("Failed to record the volume readback");
-        md_gpu_free(state->gpu_stream, rb.gpu);
+    job->tex_id    = vol_tex;
+    job->gpu_model = grid_texture_to_world(grid);
+    job->gpu_ready = md_gpu_stream_record(state->gpu_stream);
+    if (!md_gpu_sync_on_complete(state->gpu_device, job->gpu_ready, gpu_volume_job_complete, job)) {
+        // held at once: what draws it waits for the copies
+        MD_LOG_ERROR("Failed to queue the volume completion; the volume is held before its copies are done");
+        gpu_volume_set(vol_tex, job->gpu_tex, job->gpu_normals, job->gpu_model, job->gpu_ready);
+        job->gpu_tex = job->gpu_normals = nullptr;
         job->in_flight = false;
-        return false;
-    }
-
-    job->tex_id = vol_tex;
-    job->rb     = rb;
-    job->size   = size;
-
-    if (!md_gpu_sync_on_complete(state->gpu_device, md_gpu_stream_record(state->gpu_stream), gpu_volume_job_complete, job)) {
-        // No callback means nothing would ever free rb or fill the texture, so finish this one
-        // synchronously instead of leaking it.
-        MD_LOG_ERROR("Failed to queue the volume completion; falling back to a blocking readback");
-        md_gpu_stream_sync(state->gpu_stream);
-        gpu_volume_upload_to_gl(vol_tex, rb.cpu, size);
-        md_gpu_free(state->gpu_stream, rb.gpu);
-        job->in_flight = false;
-        return true;
     }
     return true;
 }
@@ -4471,8 +4318,8 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
     md_gpu_stream_sync(state->gpu_stream);
     md_gpu_device_poll(state->gpu_device);   // this is what actually runs the callbacks
 
-    // Backstop: if a callback somehow did not fire, release the staging block here rather than
-    // leaking it, since the pool may be about to go.
+    // Backstop: if a callback somehow did not fire, release the copies here rather than leaking
+    // them, since the pool may be about to go.
     for (int i = 0; i < ApplicationState::GPU_VOLUME_JOB_SLOTS; ++i) {
         ApplicationState::GpuVolumeJob& j = state->gpu_volume_jobs[i];
         if (j.in_flight) {
@@ -4480,8 +4327,6 @@ void gpu_volume_jobs_drain(ApplicationState* state) {
             if (j.issued_job) md_gto_gpu_job_end((md_gto_gpu_job_t*)j.issued_job);
             j.density_job = nullptr;
             j.issued_job = nullptr;
-            if (j.rb.gpu) md_gpu_free(state->gpu_stream, j.rb.gpu);
-            j.rb = {};
             if (j.gpu_tex) md_gpu_texture_destroy(j.gpu_tex);
             if (j.gpu_normals) md_gpu_texture_destroy(j.gpu_normals);
             j.gpu_tex = j.gpu_normals = nullptr;
@@ -4908,7 +4753,7 @@ static void electronic_structure_color_volume_update(ApplicationState* state, Re
     free(es.color_rgba);
     es.color_rgba = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)dim[0] * dim[1] * dim[2]);
     if (!es.color_rgba) return;
-    volume::splat_point_colors(es.color_rgba, dim, index_to_world.elem, point_xyzw, point_colors, num_points, es.gaussian_splatting_power);
+    splat_point_colors(es.color_rgba, dim, index_to_world.elem, point_xyzw, point_colors, num_points, es.gaussian_splatting_power);
     gpu_volume_ensure(&es.color_vol.gpu);
     gpu_volume_upload(es.color_vol.gpu, MD_GPU_FORMAT_RGBA8_UNORM, dim, es.color_rgba, es.color_vol.texture_to_world);
 #endif
@@ -6180,10 +6025,9 @@ void interpolate_system_state(ApplicationState* app) {
         md_system_state_t* src_states[4];
 		md_system_state_t* dst_state;
 
-        // The backbone of the destination state, and the cartoon's weights for it (temporary, uploaded at the end)
+        // The backbone of the destination state
         md_backbone_angles_t*        dst_angle;
         md_secondary_structure_t*    dst_ss;
-        md_gl_secondary_structure_t* ss_weights;
 
         md_float4x4_t recenter_transform;
     };
@@ -6224,7 +6068,6 @@ void interpolate_system_state(ApplicationState* app) {
     }
     if (num_segments > 0 && app->trajectory_data.secondary_structure.data) {
         payload.dst_ss = md_system_state_secondary_structure_write(&app->mold.state, &app->mold.sys);
-        payload.ss_weights = payload.dst_ss ? md_temp_alloc_array(temp, md_gl_secondary_structure_t, num_segments) : nullptr;
     }
 
     // Stamp the destination with the frame it is about to represent. The interpolated state is not
@@ -6443,107 +6286,11 @@ void interpolate_system_state(ApplicationState* app) {
     }
 
     if (payload.dst_ss) {
-        task_system::parallel_for((uint32_t)num_segments, 1, [data = &payload, mode](uint32_t range_beg, uint32_t range_end) {
-            // The state carries the secondary structure of the nearest frame as it was assigned. The cartoon blends the
-            // denoised copy (a presentation smoothing, see secondary_structure_render) where it exists.
-            const md_secondary_structure_t* label_nearest = data->app->trajectory_data.secondary_structure.data +
-                data->app->trajectory_data.secondary_structure.stride * (data->t < 0.5f ? data->frames[1] : data->frames[2]);
-            const md_secondary_structure_t* ss_data = data->app->trajectory_data.secondary_structure_render.data ?
-                data->app->trajectory_data.secondary_structure_render.data :
-                data->app->trajectory_data.secondary_structure.data;
-            const size_t ss_stride = data->app->trajectory_data.secondary_structure_render.data ?
-                data->app->trajectory_data.secondary_structure_render.stride :
-                data->app->trajectory_data.secondary_structure.stride;
-            const md_secondary_structure_t* src_ss[4] = {
-                ss_data + ss_stride * data->frames[0],
-                ss_data + ss_stride * data->frames[1],
-                ss_data + ss_stride * data->frames[2],
-                ss_data + ss_stride * data->frames[3],
-            };
-            const md_secondary_structure_t* src_ss_nearest = data->t < 0.5f ? src_ss[1] : src_ss[2];
-            auto normalize_ss = [](md_gl_secondary_structure_t ss) {
-                ss.helix = MD_CLAMP(ss.helix, 0.0f, 1.0f);
-                ss.sheet = MD_CLAMP(ss.sheet, 0.0f, 1.0f);
-                float sum = ss.helix + ss.sheet;
-                if (sum > 1.0f) {
-                    ss.helix /= sum;
-                    ss.sheet /= sum;
-                }
-                return ss;
-            };
-            auto blend_ss = [normalize_ss](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b, float t) {
-                md_gl_secondary_structure_t ss = {
-                    .helix = lerp(a.helix, b.helix, t),
-                    .sheet = lerp(a.sheet, b.sheet, t),
-                };
-                return normalize_ss(ss);
-            };
-            auto smoothstep5 = [](float t) {
-                t = MD_CLAMP(t, 0.0f, 1.0f);
-                return t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f);
-            };
-            auto is_eq = [](md_gl_secondary_structure_t a, md_gl_secondary_structure_t b) {
-                return a.helix == b.helix && a.sheet == b.sheet;
-            };
-            switch (mode) {
-            default:
-                MD_LOG_DEBUG("Unsupported interpolation mode for secondary structure interpolation");
-                [[fallthrough]];
-            case InterpolationMode::Nearest: {
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    data->dst_ss[i] = label_nearest[i];
-                    data->ss_weights[i] = md_gl_secondary_structure_convert(src_ss_nearest[i]);
-                }
-                break;
-            }
-            case InterpolationMode::Linear: {
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss[2] = { src_ss[1][i], src_ss[2][i] };
-                    md_gl_secondary_structure_t ss_gl[2] = { md_gl_secondary_structure_convert(ss[0]), md_gl_secondary_structure_convert(ss[1]) };
-                    data->dst_ss[i] = label_nearest[i];
-                    data->ss_weights[i] = blend_ss(ss_gl[0], ss_gl[1], data->t);
-                }
-                break;
-            }
-            case InterpolationMode::CubicSpline:
-            case InterpolationMode::BSpline: {
-                
-                for (size_t i = range_beg; i < range_end; ++i) {
-                    md_secondary_structure_t ss[4] = { src_ss[0][i], src_ss[1][i], src_ss[2][i], src_ss[3][i] };
-                    
-                    md_gl_secondary_structure_t ss_gl[4] = {
-                        md_gl_secondary_structure_convert(ss[0]),
-                        md_gl_secondary_structure_convert(ss[1]),
-                        md_gl_secondary_structure_convert(ss[2]),
-                        md_gl_secondary_structure_convert(ss[3]),
-                    };
-
-                    // Cleanup isolated temporal assignments to reduce noise during transitions.
-                    if (is_eq(ss_gl[0], ss_gl[2]) && !is_eq(ss_gl[1], ss_gl[0])) {
-                        ss_gl[1] = ss_gl[0];
-                    }
-                    if (is_eq(ss_gl[1], ss_gl[3]) && !is_eq(ss_gl[2], ss_gl[1])) {
-                        ss_gl[2] = ss_gl[1];
-                    }
-
-                    data->dst_ss[i] = label_nearest[i];
-                    data->ss_weights[i] = blend_ss(ss_gl[1], ss_gl[2], smoothstep5(data->t));
-                }
-                break;
-            }
-            }
-        });
-
-        // Isolated coils between matching structured segments are filled in, to reduce the noise during transitions.
-        // A non temporal filtering step, after the blend above.
-        {
-            secondary_structure_weights_fill_isolated_coils(data->ss_weights, &data->app->mold.sys.protein_backbone);
-        }
-    }
-
-    // The weights are the renderer's input and nothing else's: straight to the GPU, from the temporary memory above
-    if (payload.ss_weights) {
-        md_gl_mol_set_backbone_secondary_structure(app->mold.gl_mol, 0, (uint32_t)num_segments, payload.ss_weights, 0);
+        // The state carries the secondary structure of the nearest frame as it was assigned (the cartoon draws the
+        // denoised copy where there is one: displayed_secondary_structure)
+        const md_secondary_structure_t* label_nearest = app->trajectory_data.secondary_structure.data +
+            app->trajectory_data.secondary_structure.stride * (payload.t < 0.5f ? payload.frames[1] : payload.frames[2]);
+        md_memcpy(payload.dst_ss, label_nearest, num_segments * sizeof(md_secondary_structure_t));
     }
 
     // unitcell transform is essentially just a translation to place the center of the unitcell at the origin
@@ -7169,94 +6916,6 @@ const PickingSpace* picking_handler_find_space(const PickingHandler& handler, ui
     return nullptr;
 }
 
-void picking_surface_init(PickingSurface* surface, PickingSourceID source) {
-    MD_ASSERT(surface);
-
-    *surface = PickingSurface{};
-    surface->source = source;
-
-    for (size_t i = 0; i < MD_COUNTOF(surface->slots); ++i) {
-        auto& slot = surface->slots[i];
-        glGenBuffers(1, &slot.color_pbo);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_DYNAMIC_READ);
-
-        glGenBuffers(1, &slot.depth_pbo);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4, nullptr, GL_DYNAMIC_READ);
-    }
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-}
-
-void picking_surface_free(PickingSurface* surface) {
-    MD_ASSERT(surface);
-
-    for (size_t i = 0; i < MD_COUNTOF(surface->slots); ++i) {
-        auto& slot = surface->slots[i];
-        if (slot.color_pbo) glDeleteBuffers(1, &slot.color_pbo);
-        if (slot.depth_pbo) glDeleteBuffers(1, &slot.depth_pbo);
-    }
-
-    *surface = PickingSurface{};
-}
-
-bool picking_surface_submit_readback(
-    PickingSurface* surface,
-    uint32_t fbo,
-    uint32_t width,
-    uint32_t height,
-    uint32_t submitted_frame_idx,
-    md_float2_t surface_coord,
-    md_float2_t screen_coord,
-    const md_float4x4_t& clip_to_world
-) {
-    MD_ASSERT(surface);
-
-    if (!fbo || width == 0 || height == 0) {
-        return false;
-    }
-
-    const int x = (int)surface_coord.x;
-    const int y = (int)surface_coord.y;
-    if (x < 0 || y < 0 || x >= (int)width || y >= (int)height) {
-        return false;
-    }
-
-    const uint32_t queue_idx = surface->slot_cursor % MD_COUNTOF(surface->slots);
-    surface->slot_cursor += 1;
-
-    auto& slot = surface->slots[queue_idx];
-    if (slot.color_pbo == 0 || slot.depth_pbo == 0) {
-        MD_LOG_ERROR("Invalid PBOs in picking surface slot");
-        return false;
-    }
-
-    slot.submitted_frame_idx = submitted_frame_idx;
-    slot.pending = true;
-    slot.viewport_width = width;
-    slot.viewport_height = height;
-    slot.surface_coord = surface_coord;
-    slot.screen_coord = screen_coord;
-    slot.clip_to_world = clip_to_world;
-
-    PUSH_GPU_SECTION("QUEUE PICKING READBACK")
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glReadBuffer(GL_COLOR_ATTACHMENT_PICKING);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
-    glReadPixels(x, y, 1, 1, GL_BGRA, GL_UNSIGNED_BYTE, 0);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
-    glReadPixels(x, y, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, 0);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    POP_GPU_SECTION()
-
-    return true;
-}
-
 const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key) {
     for (size_t i = 0; i < space.num_ranges; ++i) {
         if (space.ranges[i].domain == domain && space.ranges[i].key == key) {
@@ -7265,105 +6924,6 @@ const PickingRange* picking_space_find_range(const PickingSpace& space, PickingD
     }
 
     return nullptr;
-}
-
-static const PickingRange* find_picking_range(const PickingSpace* space, uint32_t raw_idx) {
-    MD_ASSERT(space);
-
-    for (size_t i = 0; i < space->num_ranges; ++i) {
-        const PickingRange* range = &space->ranges[i];
-        if (range->beg <= raw_idx && raw_idx < range->end) {
-            return range;
-        }
-    }
-
-    return nullptr;
-}
-
-bool picking_surface_poll_hit(
-    PickingHit* out_hit,
-    PickingSurface* surface,
-    const PickingHandler& handler
-) {
-    MD_ASSERT(out_hit);
-    MD_ASSERT(surface);
-
-    *out_hit = {};
-
-    if (surface->slot_cursor < MD_COUNTOF(surface->slots)) {
-        return false;
-    }
-
-    const uint32_t read_idx = surface->slot_cursor % MD_COUNTOF(surface->slots);
-    auto& slot = surface->slots[read_idx];
-    if (!slot.pending) {
-        return false;
-    }
-
-    uint8_t color[4] = {};
-    float depth = 1.0f;
-
-    PUSH_GPU_SECTION("POLL PICKING READBACK")
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.color_pbo);
-    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(color), color);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, slot.depth_pbo);
-    glGetBufferSubData(GL_PIXEL_PACK_BUFFER, 0, sizeof(depth), &depth);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    POP_GPU_SECTION()
-
-    slot.pending = false;
-
-    const uint32_t raw_idx = (color[0] << 16) | (color[1] << 8) | (color[2] << 0) | (color[3] << 24);
-
-    const PickingSpace* space = picking_handler_find_space(handler, slot.submitted_frame_idx);
-    if (!space) {
-        return false;
-    }
-
-    PickingRange range = {0};
-    if (const PickingRange* space_range = find_picking_range(space, raw_idx)) {
-        range = *space_range;
-    }
-
-    out_hit->source = surface->source;
-    out_hit->domain = range.domain;
-    out_hit->key = range.key;
-    out_hit->frame_idx = slot.submitted_frame_idx;
-    out_hit->raw_idx = raw_idx;
-    out_hit->local_idx = raw_idx - range.beg;
-    out_hit->surface_coord = slot.surface_coord;
-    out_hit->screen_coord = slot.screen_coord;
-    out_hit->depth = depth;
-
-    const md_float4_t viewport = {0, 0, (float)slot.viewport_width, (float)slot.viewport_height};
-    out_hit->world_pos = md_float4x4_unproject({slot.surface_coord.x, slot.surface_coord.y, depth}, slot.clip_to_world, viewport);
-
-    return true;
-}
-
-bool picking_surface_submit_readback_and_poll_hit(
-    PickingHit* out_hit,
-    PickingSurface* surface,
-    const PickingHandler& handler,
-    const PickingReadbackRequest& request
-) {
-    MD_ASSERT(out_hit);
-    MD_ASSERT(surface);
-
-    picking_surface_submit_readback(
-        surface,
-        request.fbo,
-        request.width,
-        request.height,
-        handler.frame_idx,
-        request.surface_coord,
-        request.screen_coord,
-        request.clip_to_world
-    );
-
-    return picking_surface_poll_hit(out_hit, surface, handler);
 }
 
 InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const md_float2_t& size, InteractionSurfaceFlags flags) {
@@ -7440,25 +7000,6 @@ InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const md_fl
     }
 
     return state;
-}
-
-bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args) {
-    MD_ASSERT(out_hit);
-    if (state.hovered && args.fbo && args.width && args.height) {
-        const ImVec2 local_coord = ImVec2(state.mouse_local.x, state.surface_size.y - state.mouse_local.y) * ImGui::GetIO().DisplayFramebufferScale * args.pixel_scale;
-
-        PickingReadbackRequest request = {
-            .fbo = args.fbo,
-            .width = args.width,
-            .height = args.height,
-            .surface_coord = {local_coord.x, local_coord.y},
-            .screen_coord = {state.mouse_local.x, state.mouse_local.y},
-            .clip_to_world = args.clip_to_world,
-        };
-
-        return picking_surface_submit_readback_and_poll_hit(out_hit, args.picking_surface, args.picking_handler, request);
-    }
-    return false;
 }
 
 InteractionSurfaceViewTransformResult interaction_surface_view_transform_apply(ViewTransform* target, const InteractionSurfaceState& state, const InteractionSurfaceViewTransformArgs& args) {
@@ -7841,19 +7382,6 @@ void picking_hit_mask_set(md_bitmask_t* mask, const ApplicationState& app, const
             mask_set_residue_by_selection_granularity(mask, res_idx,        granularity, app.mold.sys);
             mask_set_residue_by_selection_granularity(mask, res_idx + 1, granularity, app.mold.sys);
         }
-    } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        // A point of the cartoon of a lipid or a nucleic acid stands for its residue, as a cartoon segment does
-        const uint32_t point_idx = cartoon_glyphs_picked_point(app.mold.cartoon_glyphs, hit.local_idx);
-        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
-        const int32_t res_idx = cartoon_glyphs_point_residue(glyphs, point_idx);
-        if (res_idx >= 0 && (size_t)res_idx < app.mold.sys.residue.count) {
-            mask_set_residue_by_selection_granularity(mask, (size_t)res_idx, granularity, app.mold.sys);
-        } else if (point_idx < glyphs.num_points) {
-            // Without one (a nucleic backbone found from the bonds alone) for the atoms of the point
-            for (uint32_t k = glyphs.point_offset[point_idx]; k < glyphs.point_offset[point_idx + 1]; ++k) {
-                mask_set_atom_by_selection_granularity(mask, (size_t)glyphs.point_atom[k], granularity, app.mold.sys);
-            }
-        }
     }
 }
 
@@ -7873,15 +7401,12 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
             size_t num_bonds = state->mold.sys.bond.count + (delta ? MD_MAX(delta->num_formed, state->operations.bond_tracking.formed_capacity) : 0);
             picking_range_reserve(&state->picking_range_atom, space, PickingDomain_Atom, num_atoms);
             picking_range_reserve(&state->picking_range_bond, space, PickingDomain_Bond, num_bonds);
-            // One index per segment, in the order md_gl draws them: the cartoon of segment i writes beg + i
+            // One index per segment: a hit on the cartoon of segment i is beg + i
             picking_range_reserve(&state->picking_range_backbone, space, PickingDomain_BackboneSegment, state->mold.sys.protein_backbone.segment.count);
             // One index per ring of the system, which the circle of an aromatic ring writes (only those are drawn), then
             // the rings of the frame's chemistry where its bonds changed, reserved for as the bonds formed are
             const size_t num_frame_rings = delta ? state->operations.bond_tracking.ring_capacity : 0;
             picking_range_reserve(&state->picking_range_ring, space, PickingDomain_Ring, md_ring_data_count(&state->mold.sys.ring) + num_frame_rings);
-            // One index per point of the cartoon of the lipids and nucleic acids, which its spheres and capsules write, and
-            // one per control point of its tubes after them (cartoon_glyphs_picked_point)
-            picking_range_reserve(&state->picking_range_glyph, space, PickingDomain_CartoonGlyph, cartoon_glyphs_picking_count(state->mold.cartoon_glyphs));
             // One index per residue, which the gap over a break after it writes: only those are drawn
             picking_range_reserve(&state->picking_range_gap, space, PickingDomain_ChainGap, state->mold.sys.residue.count);
 

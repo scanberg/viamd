@@ -1028,8 +1028,8 @@ static void emit_shapes(MdRenderBridge* b, ApplicationState* state, md_allocator
         const uint32_t axis_color[3] = { convert_color(md_float4_set(0.85f, 0.15f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.70f, 0.15f, 1.0f)), convert_color(md_float4_set(0.15f, 0.30f, 0.90f, 1.0f)) };
         // The thickness in points, as md_gl's: the view is the whole window, DisplaySize in points; never thinner than
         // 1.2 pixels shown (0.6 a radius), whatever the render scale; 0: a pixel
-        const float h_render = (float)MD_MAX(state->gbuffer.height, 1U);
-        const float h_px     = (float)MD_MAX(state->gbuffer.out_height, 1U);
+        const float h_render = (float)MD_MAX(state->target.height, 1U);
+        const float h_px     = (float)MD_MAX(state->target.out_height, 1U);
         const float h_pt     = ImGui::GetIO().DisplaySize.y > 0.0f ? ImGui::GetIO().DisplaySize.y : h_px;
         const size_t num_xf  = md_array_size(state->view.periodic_transforms);
         for (size_t i = 0; i < num_reps; ++i) {
@@ -1830,9 +1830,9 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     if (!b || !b->ok) return;
     b->has_last = false;
     md_array_shrink(b->batches, 0);
-    const uint32_t width = state->gbuffer.width, height = state->gbuffer.height;
-    const uint32_t out_width = state->gbuffer.out_width ? state->gbuffer.out_width : width;
-    const uint32_t out_height = state->gbuffer.out_height ? state->gbuffer.out_height : height;
+    const uint32_t width = state->target.width, height = state->target.height;
+    const uint32_t out_width = state->target.out_width ? state->target.out_width : width;
+    const uint32_t out_height = state->target.out_height ? state->target.out_height : height;
     if (width == 0 || height == 0) return;
     if (!ensure_targets(b, width, height, out_width, out_height)) {
         b->ok = false;
@@ -1980,7 +1980,7 @@ static md_post_overlay_item_t* overlay_items(const OverlayItem* src, size_t n, m
         md_post_overlay_item_t& x = items[i];
         x = {};
         x.kind   = it.shape == OverlayShape::Disc ? MD_POST_OVERLAY_DISC : it.shape == OverlayShape::Segment ? MD_POST_OVERLAY_SEGMENT : MD_POST_OVERLAY_TRIANGLE;
-        x.flags  = (it.pixels ? MD_POST_OVERLAY_PIXELS : 0u) | (it.depth ? MD_POST_OVERLAY_DEPTH : 0u);
+        x.flags  = (it.pixels ? (uint32_t)MD_POST_OVERLAY_PIXELS : 0u) | (it.depth ? (uint32_t)MD_POST_OVERLAY_DEPTH : 0u);
         md_memcpy(x.p0, &it.p[0], sizeof(x.p0));
         md_memcpy(x.p1, &it.p[1], sizeof(x.p1));
         md_memcpy(x.p2, &it.p[2], sizeof(x.p2));
@@ -2528,7 +2528,7 @@ static uint64_t panel_transfer_key(const uint32_t* transfer) {
 // Whether a panel's meshes are there to draw
 static bool panel_has_meshes(const PanelSurfaces& s) {
     const IsoMeshes* m = s.meshes;
-    return m && m->gpu_mesh && m->gpu_xyz && m->gpu_normal && m->gpu_index && m->num_vertices && s.sheet_count && s.sheets;
+    return m && m->gpu_xyz && m->gpu_normal && m->gpu_index && m->num_vertices && s.sheet_count && s.sheets;
 }
 
 // What a panel's surfaces are: its image made again when it changed
@@ -3066,11 +3066,17 @@ const char* md_render_bridge_status(const ApplicationState& state) {
     return b->status[0] ? b->status : (b->ok ? "Ready" : "Failed");
 }
 
+uint32_t md_render_bridge_split_heads(const ApplicationState* state) {
+    const MdRenderBridge* b = state->md_render_bridge;
+    return b && b->has_topo ? b->topo.lipid_sphere_count[1] : 0;
+}
+
 #else
 
 bool md_render_bridge_create(ApplicationState*) { return false; }
 void md_render_bridge_destroy(ApplicationState*) {}
 const char* md_render_bridge_status(const ApplicationState&) { return "Built without md_gpu (MD_ENABLE_GPU): the main view is not drawn"; }
+uint32_t md_render_bridge_split_heads(const ApplicationState*) { return 0; }
 void md_render_bridge_pick(ApplicationState*, float, float) {}
 bool md_render_bridge_hit(ApplicationState*, PickingHit*) { return false; }
 void md_render_bridge_rep_colors(ApplicationState*, const Representation&, const uint32_t*, size_t) {}

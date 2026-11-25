@@ -134,7 +134,7 @@ void update_all_representations(ApplicationState* app);
 
 void flag_representation_as_dirty(Representation* rep);
 
-// The weak bonds md_gl draws for a representation (md_gl_rep_set_weak_bonds), with their kinds, which give their
+// The weak bonds a representation draws (md_render_bridge_rep_pairs), with their kinds, which give their
 // dashes: of a licorice or a ball and stick, the interactions of the system among its atoms; of a Bonds
 // representation, the bonds its filter picked.
 // Set again whenever the bonds of the system change.
@@ -158,27 +158,19 @@ void recompute_atom_visibility_mask(ApplicationState* app);
 
 // --- Representations of atoms, wherever they are drawn ---
 // What the Representations window and others (the reference structures of the Density Volume window) share of the
-// representations md_gl draws, SpaceFill to Cartoon: whether one can be drawn, its draw op, its colours, its
-// properties in the window and in a workspace.
+// representations of atoms, SpaceFill to Cartoon: whether one can be drawn, its colours, its properties in the
+// window and in a workspace.
 
 // Whether the system has what a type draws: atoms, bonds, a backbone
 bool representation_particle_type_valid(const ApplicationState& app, RepresentationType type);
 
-// The draw op of a representation of atoms: its type, arguments and colours (md_rep). The copies and the subset are
-// the caller's.
-md_gl_draw_op_t representation_draw_op(const Representation& rep);
-// The draw ops of the glyphs of a Cartoon, the lipids and nucleic acids (cartoon_glyphs.h), pushed to ops: their
-// spheres, tubes and slabs, thickened by the w of its scale, in its colours of the glyphs (glyph_rep). None while it
-// shows none or their positions are not derived (cartoon_glyphs_update_positions). The copies and the subset (of the
-// glyphs) are the caller's.
-void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
-// The weak bonds a representation draws (md_gl_rep_set_weak_bonds), pushed to ops: the bonds of a Bonds representation,
-// dashed as it says (BondDashes), and the interactions of the system, dashed by kind, over the sticks of a
-// licorice or a ball and stick. They pick as bonds of the representation, in the range reserved for it this frame
-// (PickingDomain_Bond, keyed by its id), as long as that holds them all; otherwise as their atoms.
-// Nothing for the others. The copies and the subset are the caller's.
-void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& app, const Representation& rep, md_allocator_i* alloc);
-// How many weak bonds it draws (representation_weak_bond_draw_ops), 0 for none: what its picking range is reserved for
+// Whether the system has what a cartoon draws besides proteins (md_render_mol's): lipids, nucleic acids
+static inline bool system_has_glyph_cartoon(const md_system_t& sys) {
+    return sys.lipid.count > 0 || (sys.nucleic_backbone.segment.atoms && sys.nucleic_backbone.segment.count > 0);
+}
+
+// How many weak bonds it draws (representation_set_weak_bonds), 0 for none: what its picking range is reserved for. They
+// pick as bonds of the representation (PickingDomain_Bond, keyed by its id).
 size_t representation_weak_bond_count(const ApplicationState& app, const Representation& rep);
 // The atoms of weak bond i of the representation of id rep_id, as it draws them; false when there is none such
 bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState& app, uint32_t rep_id, size_t i);

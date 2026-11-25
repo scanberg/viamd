@@ -34,20 +34,23 @@ bool md_render_bridge_create(ApplicationState* state);
 void md_render_bridge_destroy(ApplicationState* state);
 // What it is doing, or why it is not
 const char* md_render_bridge_status(const ApplicationState& state);
+// Of the system as it planned it: how many heads of lipids split at their phosphate (a cartoon's two head spheres:
+// Representation::two_head_spheres). 0 before it has a system.
+uint32_t md_render_bridge_split_heads(const ApplicationState* state);
 
 // Picking: md_render is asked about the pixel under the mouse (x, y in the pixels of the scene drawn, rows from the
 // top), and its answer, a frame or two later, is the hit (hit): an atom, a bond, a segment of the cartoon, a ring, a
-// gap, a dipole, a glyph, in their domains as md_gl's were, or nothing (the background, the cell's edges). An item of
+// gap, a dipole, a glyph, in their domains, or nothing (the background, the cell's edges). An item of
 // the overlay drawn last that picks is the hit at once, wherever it is over the scene. Its surface_coord
 // and depth are as the GL picking's were (rows from the bottom, GL's window depth); the caller sets the rest (source,
 // screen_coord, world_pos). False: no answer (yet).
 void md_render_bridge_pick(ApplicationState* state, float x, float y);
 bool md_render_bridge_hit(ApplicationState* state, PickingHit* hit);
 
-// The colours of a representation's atoms as md_gl gets them, which also say which it shows (alpha 0: not shown)
+// The colours of a representation's atoms, which also say which it shows (alpha 0: not shown)
 void md_render_bridge_rep_colors(ApplicationState* state, const Representation& rep, const uint32_t* colors, size_t count);
 
-// The pairs of a Bonds representation as md_gl gets them (representation_set_weak_bonds): their atoms and their bonds'
+// The pairs of a Bonds representation (representation_set_weak_bonds): their atoms and their bonds'
 // flags (md_bond_flags_t, for the kind; null: covalent)
 void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& rep, const uint32_t* atom_a, const uint32_t* atom_b,
                                 const uint32_t* flags, size_t count);
@@ -55,8 +58,8 @@ void md_render_bridge_rep_pairs(ApplicationState* state, const Representation& r
 // From update_md_buffers: what changed (MolBit_ flags), taken up when the scene is next made
 void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty);
 
-// The scene (render_scene, after update_view_param): drawn by md_render at the G-buffer's size, composed and made into
-// the image kept, at the size of the image shown (gbuffer.out_width, out_height): the temporal antialiasing's history
+// The scene (render_scene, after update_view_param): drawn by md_render at the scene's size (target), composed and made into
+// the image kept, at the size of the image shown (target.out_width, out_height): the temporal antialiasing's history
 // when it is on (settings.taa), else the frame itself. The settings' shading, ambient occlusion, display transform,
 // background and TAA are used; the rest are not done.
 void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline::Settings& settings);

@@ -14,7 +14,6 @@
 #include <core/md_grid.h>
 #include <script_engine.h>
 #include <string>
-#include <md_gl.h>
 #include <md_infer.h>
 #include <md_chem.h>
 #include <md_edr.h>
@@ -28,14 +27,12 @@
 #include <app/application.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
-#include <gfx/gbuffer.h>
 #include <gfx/view_param.h>
 #include <gfx/postprocessing_utils.h>
 
 #include <task_system.h>
 #include <surface_field.h>
 #include <glyphs.h>
-#include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
 #include <load_order.h>
@@ -114,11 +111,7 @@ constexpr PickingDomainID PickingDomain_BackboneSegment = HASH_STR_LIT64("pickin
 // A ring of the system (md_system_t::ring): what the circle of an aromatic ring picks as (licorice, ball and stick with
 // bond orders). A hit names the ring, ring(local_idx + 1) in the script, and resolves to its atoms.
 constexpr PickingDomainID PickingDomain_Ring = HASH_STR_LIT64("picking domain ring");
-// A point of the cartoon of the lipids and nucleic acids (CartoonGlyphs): a head, a point along a tail or a backbone, or
-// the part of a tube around a control point. A hit names the point (cartoon_glyphs_picked_point) and resolves to the
-// residue it stands for.
-constexpr PickingDomainID PickingDomain_CartoonGlyph = HASH_STR_LIT64("picking domain cartoon glyph");
-// The gap of a chain over a break (md_gl_mol_set_chain_gaps): the dashed line where residues are missing. A hit names
+// The gap of a chain over a break: the dashed line where residues are missing. A hit names
 // the residue before the break (MD_RESIDUE_FLAG_BREAK_AFTER) and resolves to it and the one after it.
 constexpr PickingDomainID PickingDomain_ChainGap = HASH_STR_LIT64("picking domain chain gap");
 // A point of a point set drawn as glyphs (glyphs.h), keyed by the representation: what its glyph picks as. The index is
@@ -129,7 +122,7 @@ constexpr PickingDomainID PickingDomain_Glyph = HASH_STR_LIT64("picking domain p
 // to the selection
 static inline bool picking_domain_resolves_to_atoms(PickingDomainID domain) {
     return domain == PickingDomain_Atom || domain == PickingDomain_Bond || domain == PickingDomain_BackboneSegment || domain == PickingDomain_Ring ||
-           domain == PickingDomain_CartoonGlyph || domain == PickingDomain_ChainGap;
+           domain == PickingDomain_ChainGap;
 }
 
 constexpr uint64_t interaction_surface_main = HASH_STR_LIT64("interaction surface main"); // This is the main interaction surface which corresponds to the main interaction window, but we want to keep it separate from the picking source and domain ids as we may want to have different picking sources/domains for different interaction surfaces in the future
@@ -217,20 +210,6 @@ enum class ElectronicStructureSpin {
     Count
 };
 
-// These bits are a compressed form of flags which are passed onto rendering as the rendering only supports 8-bits
-enum AtomBit_ {
-    AtomBit_None        = 0,
-    AtomBit_Highlighted = 1u << 0,
-    AtomBit_Selected    = 1u << 1,
-    AtomBit_Visible     = 1u << 2,
-    AtomBit_Marked      = 1u << 3,  // Highlighted or selected: the atoms the mark pass draws (md_gl's atom mask takes all its bits)
-    AtomBit_Dimmed      = 1u << 4,  // Not selected while something is: drawn with less of its colour (selection.color.saturation)
-    // The group of the highlight an atom is in, of HIGHLIGHT_GROUP_COLORS (selection.highlight_groups): which colour it
-    // is marked in. 0 when the highlight has no groups.
-    AtomBit_GroupShift  = 5,
-    AtomBit_GroupMask   = 7u << AtomBit_GroupShift,
-};
-
 // The colours the groups of the highlight are marked in, in turn: two groups fewer than this apart differ in colour
 #define HIGHLIGHT_GROUP_COLORS 8
 
@@ -241,15 +220,21 @@ enum MolBit_ {
     MolBit_DirtyFlags               = 1u << 3,
     MolBit_DirtyBonds               = 1u << 4,
     MolBit_ClearVelocity            = 1u << 5,
-    MolBit_ResetBackboneHistory     = 1u << 6,  // The positions jumped: the backbone orientation starts over (md_gl_mol_reset_backbone_history)
+    MolBit_ResetBackboneHistory     = 1u << 6,  // The positions jumped: the backbone orientation starts over
 };
 
+// The radii of the cartoon of a nucleic acid, Å, by default (Representation): of the band of its backbone, half its
+// thickness, and of the rims of the rings of its sugars and bases and the sticks from each sugar to its base
+static constexpr float CARTOON_NUCLEIC_BAND_RADIUS = 0.25f;
+static constexpr float CARTOON_NUCLEIC_RING_RADIUS = 0.2f;
+
+// The values are those of the workspaces (Type=)
 enum class RepresentationType {
-    SpaceFill = MD_GL_REP_SPACE_FILL,
-    Licorice = MD_GL_REP_LICORICE,
-    BallAndStick = MD_GL_REP_BALL_AND_STICK,
-    Ribbons = MD_GL_REP_RIBBONS,
-    Cartoon = MD_GL_REP_CARTOON,
+    SpaceFill = 0,
+    Licorice = 1,
+    BallAndStick = 2,
+    Ribbons = 3,
+    Cartoon = 4,
     ElectronicStructure,
     DipoleMoment,
     SimulationBox,
@@ -583,7 +568,7 @@ enum class BondColorMode {
     Count,
 };
 
-// Which bonds a Bonds representation draws dashed, each in the style of its kind (md_gl_dashes_t, BOND DASHES in md_gl.h)
+// Which bonds a Bonds representation draws dashed, each in the style of its kind (md_render_mol_bond_style_t)
 enum class BondDashes {
     ByKind,     // Those which are not covalent: coordinate bonds, hydrogen bonds, interactions
     None,
@@ -689,22 +674,18 @@ struct Volume {
     md_float4x4_t texture_to_world = {};   // Texture space [0,1] to world coordinates
     md_float3_t voxel_size  = {1,1,1};   // Size of each voxel in world units
     int dim[3] = {128, 128, 128};
-    uint32_t tex_id = 0;    // a GL 3D texture (the component windows')
-    uint32_t gpu = 0;       // or a volume on md_gpu (gpu_volume.h): a representation's, which the main view draws
+    uint32_t gpu = 0;       // a volume on md_gpu (gpu_volume.h)
 };
 
-// Sizes and allocates the GL 3D texture for a grid, and fills in the transforms that place it in
-// the world. Defined in viamd.cpp because it is the half that touches GL.
-void init_volume(Volume* vol, const md_grid_t& grid, GLenum format = GL_R16F);
-// The same for a volume on md_gpu: its transforms, and its id (made if it has none). What it holds is replaced when an
-// evaluation into it is done (gpu_volume.h), with where that is.
+// A volume on md_gpu for a grid: its transforms that place it in the world, and its id (made if it has none). What it
+// holds is replaced when an evaluation into it is done (gpu_volume.h), with where that is.
 void init_volume_gpu(Volume* vol, const md_grid_t& grid);
 
 // How isosurfaces are drawn: a Field representation's (ElectronicStructureRepresentation::rendering), and the
 // panels of the Orbital Grid and Transition Analysis windows (Settings::isosurface_rendering)
 enum IsosurfaceRendering {
-    IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (volume::render_isosurfaces)
-    IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h, isomesh::render)
+    IsosurfaceRendering_Raycast = 0,    // through the evaluated volume (md_compose)
+    IsosurfaceRendering_Mesh    = 1,    // meshes extracted from the field itself (iso_meshes.h)
 };
 
 // The meshes of an electronic structure representation (iso_meshes.cpp)
@@ -1228,11 +1209,6 @@ struct Representation {
     // What it shows: what its filter picked when it was last valid, kept while the filter or its context is not
     // (representation_filter_invalid); empty when it has not been valid since the system was loaded
     md_bitset_t atom_mask = {};
-    md_gl_rep_t md_rep = {};
-    // The representation of the cartoon of the lipids and nucleic acids (CartoonGlyphs), drawn by a Cartoon, and whether
-    // it shows any of them (a cartoon of proteins alone draws none)
-    md_gl_rep_t glyph_rep = {};
-    bool glyphs_shown = false;
 
     bool enabled = true;            // its own switch: it is shown when every group around it is too (representation_shown)
 	bool needs_update = true;
@@ -1265,8 +1241,8 @@ struct Representation {
 	BondColorMode bond_color = BondColorMode::NearestAtom;
     float  bond_sharpness = 0.5f; // 0 = sharper, 1 = smoother
 	md_float4_t bond_base_color = { 1.0f, 1.0f, 1.0f, 1.0f };
-    bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds (md_gl_mol_set_bond_orders)
-    bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain (md_gl_mol_set_chain_gaps)
+    bool   bond_orders = true;    // Licorice, ball and stick: double and triple bonds, aromatic and delocalized bonds
+    bool   chain_gaps = true;     // Cartoon, ribbons, licorice, ball and stick: a dashed line over each break of a chain
     bool   elastic_bonds = false; // Licorice, ball and stick: the elastic bonds (MD_BOND_KIND_ELASTIC), springs of the force field such as an elastic network, which are not bonds of the molecules
     bool   interaction_bonds = true; // Licorice, ball and stick: the interactions of the system among its atoms, dashed and thinner than its sticks. Off where a Bonds representation is to draw them instead
     bool   coordinate_bonds_dashed = true; // Licorice, ball and stick: the coordinate bonds (MD_BOND_KIND_COORDINATE) dashed, rather than sticks
@@ -1278,7 +1254,7 @@ struct Representation {
     BondDashes bond_dashes = BondDashes::ByKind;
     bool   open_properties = false; // The window opens its properties the next time it lists it (one made from the context menu, to be styled)
     double invalid_since = 0.0;     // ImGui::GetTime() when its filter was found not valid, for the notice in the viewport; 0 while valid
-    bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone (CartoonGlyphs)
+    bool   two_head_spheres = false;  // Cartoon: the head of a phospholipid as its head group and its backbone
     // Cartoon of nucleic acids, Å (before the scale of the lipids and nucleic acids): the radius of the band of the
     // backbone, half its thickness, and that of the rims of the rings of the sugars and bases and of the sticks between them
     float  nucleic_band_radius = CARTOON_NUCLEIC_BAND_RADIUS;
@@ -1336,27 +1312,6 @@ struct PickingSpace {
     PickingRange ranges[64] = {};
 };
 
-struct PickingReadbackSlot {
-    uint32_t color_pbo = 0;
-    uint32_t depth_pbo = 0;
-    
-    uint32_t submitted_frame_idx = 0;
-    bool pending = false;
-    
-    uint32_t viewport_width = 0;
-    uint32_t viewport_height = 0;
-    
-    md_float2_t surface_coord = {0};
-    md_float2_t screen_coord  = {0};
-    md_float4x4_t clip_to_world = MD_MAT4_IDENT_INIT;
-};
-
-struct PickingSurface {
-    PickingSourceID source = 0;
-    uint32_t slot_cursor = 0;
-    PickingReadbackSlot slots[2] = {};
-};
-
 struct PickingHandler {
     uint32_t frame_idx = 0;
 
@@ -1382,15 +1337,6 @@ struct PickingHit {
     md_float2_t screen_coord = {0};
     md_float3_t world_pos = {0};
     float depth = 1.0f;
-};
-
-struct PickingReadbackRequest {
-    uint32_t fbo = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    md_float2_t surface_coord = {0};
-    md_float2_t screen_coord = {0};
-    md_float4x4_t clip_to_world = MD_MAT4_IDENT_INIT;
 };
 
 // The key of the script evaluation's slot of a distribution or a volume over a timeline period, by its id
@@ -1472,17 +1418,15 @@ struct ApplicationState {
     md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
-    // One in-flight readback of gpu_volume into a GL texture. A slot must outlive the call that
+    // One in-flight copy of gpu_volume into a volume (gpu_volume.h). A slot must outlive the call that
     // queued it, so these live here rather than in the frame arena - and here specifically because
     // every one of them references gpu_volume and gpu_stream above. Whoever destroys
     // those drains these first.
     struct GpuVolumeJob {
         bool              in_flight = false;
         ApplicationState* owner     = nullptr;
-        uint32_t          tex_id    = 0;        // GL texture to receive the data, or a representation's volume (gpu_volume.h)
+        uint32_t          tex_id    = 0;        // the volume to receive the data (gpu_volume.h)
         md_gpu_texture_t  src       = nullptr;  // the scratch it is read from (gpu_volume or gpu_plane)
-        md_gpu_mem_t      rb        = {};       // HOST_READ block; the data is read through rb.cpu
-        size_t            size      = 0;
         bool              normals   = false;    // the normals of its gradient with it (gpu_eval_normals)
         // A representation's volume: what the scratch is copied into on the GPU (and the normals), where it is, the
         // point of the stream after the copies; the volume holds them once that is reached (gpu_volume_job_complete)
@@ -1558,7 +1502,7 @@ struct ApplicationState {
         // the representations which have periodic_images (all, unless they opt out). The figure's: in the workspace.
         int periodic_images[3] = {0, 0, 0};
 
-        // The copies of the scene those representations are drawn in, by instancing (md_gl_copies_t): its own first,
+        // The copies of the scene those representations are drawn in, by instancing: its own first,
         // then the periodic images, none without a cell or images, or with an assembly shown. As of this frame and as of
         // the last, so that an image which moves with the cell (a trajectory of changing cells) shows as moving. Set by
         // update_view_param.
@@ -1576,14 +1520,6 @@ struct ApplicationState {
         // [assembly_copy_offset[g], assembly_copy_offset[g + 1]). Empty when none is shown.
         md_array(md_float4x4_t)   assembly_transforms  = 0;
         md_array(uint32_t) assembly_copy_offset = 0;
-
-        // Of the assembly shown, the instances of each group as a subset of the molecule (md_gl_subset_t), which its
-        // copies draw, and the subset of the cartoon glyphs which that makes. A group of all instances has none (0): the
-        // whole molecule. Made when another assembly is shown, or another system (assembly_subsets_update).
-        md_array(md_gl_subset_t) assembly_subsets       = 0;
-        md_array(md_gl_subset_t) assembly_glyph_subsets = 0;
-        int      assembly_subsets_of  = -1;     // The assembly they are of, of the molecule
-        uint32_t assembly_subsets_mol = 0;      // (md_gl_mol_t id)
     } view;
 
     struct {
@@ -1594,23 +1530,11 @@ struct ApplicationState {
         md_str_t path_to_file = {};    // Being made: saved once the image has settled (render())
     } screenshot;
 
-    struct {
-        md_gl_shaders_t shaders = {};
-        md_gl_shaders_t shaders_marks = {};    // The marks of the selection and the highlight (the mark pass)
-    } gl;
-
     // --- MDLIB DATA ---
     struct {
         // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
         // created once at startup and survives every load: free_system_data rewinds it and puts the
         // handle back, because zeroing a system also zeroes the allocator it was using.
-        // The cartoon's secondary structure (blend weights between coil, helix and sheet) lives on the GPU only: it is
-        // computed where it is produced and uploaded straight away (upload_secondary_structure_weights,
-        // interpolate_system_state), never read back and kept nowhere else.
-        md_gl_mol_t         gl_mol = {};
-        // The spheres, tubes and capsules of the cartoon of the lipids and nucleic acids, built from sys beside gl_mol
-        // and derived from its atoms on the GPU (see cartoon_glyphs.h)
-        CartoonGlyphs       cartoon_glyphs = {};
         md_system_t         sys = {};
         SystemInference     inference;
 
@@ -1656,7 +1580,7 @@ struct ApplicationState {
         // against to know when the displayed state has to be made again.
         int                 last_interpolated_stride = 1;
         uint32_t            dirty_gpu_buffers = 0;
-        uint64_t            gpu_buffers_version = 0;    // bumped whenever gl_mol is updated, for views that cache what they render from it
+        uint64_t            gpu_buffers_version = 0;    // bumped whenever the atoms on the GPU are updated (update_md_buffers), for views that cache what they render from them
         uint64_t            gpu_scene_version = 0;      // bumped as gpu_buffers_version is, but for an update of the atom flags
                                                         // alone: the image of the scene depends on them only through the
                                                         // visible and the selected atoms (representation.visibility_mask_hash,
@@ -1670,7 +1594,7 @@ struct ApplicationState {
         struct DensityCache* density_cache = nullptr;
 
 #if MD_ENABLE_GPU
-        // GPU side data derived from sys, sitting beside gl_mol and for the same reason: it is
+        // GPU side data derived from sys: it is
         // built FROM the system so that something can draw or evaluate it, and mdlib never reads it
         // back. The test is simple - no mdlib function takes an md_system_t* and touches these -
         // which is what keeps them out of md_system_t itself, unlike the trajectory it does read.
@@ -1743,7 +1667,7 @@ struct ApplicationState {
         // How the selected and the highlighted atoms are marked over the image, in display colours (see render()): a
         // tint where they are in view, a fainter fill where they are behind something else, and the outline of their
         // silhouette, in view or not. The alpha is how much of the colour. While something is selected, the atoms that
-        // are not keep 'saturation' of their colour (AtomBit_Dimmed): the scene, not what is drawn over it.
+        // are not keep 'saturation' of their colour (md_render_bridge.cpp): the scene, not what is drawn over it.
         struct {
             struct {
                 md_float4_t visible = {0.15f, 0.40f, 1.00f, 0.35f};
@@ -1770,13 +1694,13 @@ struct ApplicationState {
                 {0.95f, 0.20f, 0.20f},  // red
             };
 
-            float saturation = 0.3f;        // Taken into the G-buffer's shaders as they are made (output_snippet)
+            float saturation = 0.3f;        // Of the atoms not selected while something is (md_render_bridge.cpp)
         } color;
 
         double highlight_time = 0.0;        // when a highlight last appeared where there was none (ImGui::GetTime()): it fades in from there
 
         // The groups of the highlight, when what set it has them: the elements of the expression hovered, residue(:) a
-        // group per residue. Group i is marked in colour i % HIGHLIGHT_GROUP_COLORS (AtomBit_GroupMask): 0 is the
+        // group per residue. Group i is marked in colour i % HIGHLIGHT_GROUP_COLORS (md_render_marks_tag): 0 is the
         // highlight's own, k > 0 color.highlight_groups[k - 1]. Not owned: set with the highlight every frame
         // (script_vis_update), cleared at its start. key: what they are, 0 for none.
         struct {
@@ -1807,18 +1731,22 @@ struct ApplicationState {
         } grow;
     } selection;
 
-    // --- GBUFFER ---
-    // Primary gbuffer
-    GBuffer gbuffer {};
+    // --- MAIN VIEW ---
+    // Its image: the scene made at width x height (the render scale's), shown at out_width x out_height (the window's,
+    // or a screenshot's); and the GL target a screenshot without the GUI is presented into, at the image's size
+    struct {
+        uint32_t width = 0, height = 0;
+        uint32_t out_width = 0, out_height = 0;
+        uint32_t fbo = 0, tex = 0;
+        uint32_t fbo_width = 0, fbo_height = 0;
+    } target;
 
     // --- PICKING ---
-    PickingSurface picking_surface {};      // Surface for main viewport picking
 
     PickingRange   picking_range_atom {};   // Reserved picking range for atoms
     PickingRange   picking_range_bond {};   // Reserved picking range for bonds
     PickingRange   picking_range_backbone {};   // Reserved picking range for protein backbone segments (cartoon, ribbons)
     PickingRange   picking_range_ring {};   // Reserved picking range for rings (circles of aromatic rings)
-    PickingRange   picking_range_glyph {};  // Reserved picking range for the points of the cartoon of lipids and nucleic acids
     PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
 
     // The glyph under the cursor (PickingDomain_Glyph): its representation's id and its point. Marked in the marks of the
@@ -1953,7 +1881,7 @@ struct ApplicationState {
         md_bitmask_t visibility_mask = {};     // the union of the masks of the shown representations
         uint64_t visibility_mask_hash = 0;
         bool atom_visibility_mask_dirty = false;
-        uint64_t gl_version = 0;    // bumped whenever what a representation draws is uploaded, for views that cache their image
+        uint64_t version = 0;       // bumped whenever what a representation draws is uploaded, for views that cache their image
         bool show_window = false;
         // The plane the gizmo in the view edits: of the representation of this id (its node id), at this index
         struct {
@@ -2049,7 +1977,7 @@ struct ApplicationState {
     // Persisted in the ImGui .ini; see app_settings.h. Bound in main().
     struct {
         bool keep_representations = false;
-        bool exact_isosurfaces = false;     // volume::IsoRenderDesc::iso.exact for every isosurface view
+        bool exact_isosurfaces = false;     // the exact intersection for every ray cast isosurface (not in md_compose yet)
         // The look a session starts with (Visuals > Save as Default), as the factory sets it until saved. A workspace
         // has its own, and loading one leaves these be. What depends on the computer rather than on the figure
         // (ambient occlusion, anti-aliasing, VSync) is bound to the .ini as it is, in visuals.
@@ -2177,13 +2105,13 @@ struct ApplicationState {
     // --- LAZY RENDERING ---
     // The main view's image is made again only when what it is made from changes (scene_key), and for as many frames
     // after as it takes to settle (the TAA's history, the temporal ambient occlusion, the meshed isosurfaces); else the
-    // image made last (gbuffer.tex.image) is shown again. Input (a click, a drag, a key, the wheel) counts as a change:
+    // image made last (md_render_bridge's) is shown again. Input (a click, a drag, a key, the wheel) counts as a change:
     // what it edits need not be in the key. The marks are drawn again when they change, the scene or not.
     struct {
         uint64_t scene_key = 0;         // of the image kept
         uint64_t marks_key = 0;         // of the marks kept, 0 for none
         uint32_t settle_frames = 0;     // still to make after the last change
-        bool image_valid = false;       // gbuffer.tex.image holds the scene (not after the G-buffer is made anew)
+        bool image_valid = false;       // the image kept holds the scene (not after the target is made anew)
         uint64_t version = 0;           // render_invalidate()
 
         // Of the main loop's: for the keys
@@ -2631,8 +2559,6 @@ static inline uint64_t generate_fingerprint() {
 }
 
 void draw_picking_tooltip_window(const PickingHit& hit, const ApplicationState& state);
-
-//void extract_picking_data(PickingData& out_picking, GBuffer& gbuffer, const md_float2_t& coord, const md_float4x4_t& inv_MVP);
 
 void interrupt_async_tasks(ApplicationState* state);
 
@@ -3237,30 +3163,6 @@ bool picking_range_reserve(PickingRange* out_range, PickingSpace* space, Picking
 // The range a keyed object was given this frame, or NULL when it was not reserved one.
 const PickingRange* picking_space_find_range(const PickingSpace& space, PickingDomainID domain, uint64_t key);
 
-// The picking offsets for drawing the system with md_gl, one per reserved range. Every md_gl_draw of the system takes
-// them from here: a base left at 0 makes that kind write into the atom range and pick as the wrong atoms.
-static inline md_gl_picking_offset_t gl_picking_offset(const ApplicationState& state) {
-    return {
-        .atom_base     = state.picking_range_atom.beg,
-        .bond_base     = state.picking_range_bond.beg,
-        .backbone_base = state.picking_range_backbone.beg,
-        .ring_base     = state.picking_range_ring.beg,
-        .gap_base      = state.picking_range_gap.beg,
-    };
-}
-
-// The picking offsets for drawing the glyphs of the cartoon of the lipids and nucleic acids (CartoonGlyphs), a molecule of
-// their own: their spheres and capsules write the index of a point, their tubes that of a control point after the points,
-// their slabs their index after those (cartoon_glyphs_picked_point)
-static inline md_gl_picking_offset_t gl_picking_offset_glyphs(const ApplicationState& state) {
-    return {
-        .atom_base     = state.picking_range_glyph.beg,
-        .bond_base     = state.picking_range_glyph.beg,
-        .backbone_base = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points,
-        .ring_base     = state.picking_range_glyph.beg + state.mold.cartoon_glyphs.num_points + state.mold.cartoon_glyphs.num_tube_points,
-    };
-}
-
 // The marks of the selection and the highlight as post-processing puts them over the image (Settings::marks, from
 // selection.color). highlight: how much of the highlight shows; outline_step: the outline's width, about half of it
 static inline void marks_settings(postprocess_pipeline::Settings* settings, const ApplicationState& state, float highlight, int outline_step) {
@@ -3297,38 +3199,6 @@ static inline void panel_view_settings(postprocess_pipeline::Settings* settings,
     marks_settings(settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
 }
 
-void picking_surface_init(PickingSurface* surface, PickingSourceID source);
-void picking_surface_free(PickingSurface* surface);
-
-// Submits a picking readback request for the given surface. The readback will be performed asynchronously, and the result can be polled using picking_surface_poll_hit.
-bool picking_surface_submit_readback(
-    PickingSurface* surface,
-    uint32_t fbo,
-    uint32_t width,
-    uint32_t height,
-    uint32_t submitted_frame_idx,
-    md_float2_t surface_coord,
-    md_float2_t screen_coord,
-    const md_float4x4_t& inv_mvp
-);
-
-// Polls for the result of a picking readback request. If a hit is detected, out_hit will be filled with the details of the hit and the function will return true.
-// If no hit is detected the function will return false.
-bool picking_surface_poll_hit(
-    PickingHit* out_hit,
-    PickingSurface* surface,
-    const PickingHandler& handler
-);
-
-// Convenience wrapper for the common frame loop path.
-// Preserves the existing pipeline ordering by submitting the current frame readback and then polling the previous completed one.
-bool picking_surface_submit_readback_and_poll_hit(
-    PickingHit* out_hit,
-    PickingSurface* surface,
-    const PickingHandler& handler,
-    const PickingReadbackRequest& request
-);
-
 enum InteractionSurfaceFlags : uint32_t {
     InteractionSurfaceFlags_None = 0,
     InteractionSurfaceFlags_NoRegionSelect  = 1 << 0,
@@ -3336,18 +3206,6 @@ enum InteractionSurfaceFlags : uint32_t {
 
 // Creates an invisible interactive surface which forms the basis for picking and interaction.
 InteractionSurfaceState interaction_surface(InteractionSurfaceID id, const md_float2_t& size, InteractionSurfaceFlags flags = InteractionSurfaceFlags_None);
-
-struct InteractionSurfaceHitArgs {
-    PickingSurface* picking_surface;
-    const PickingHandler& picking_handler;
-    uint32_t fbo;
-    uint32_t width;
-    uint32_t height;
-    const md_float4x4_t& clip_to_world;
-    float pixel_scale = 1.0f;   // the fbo's pixels per framebuffer pixel: the render scale, where it is upscaled
-};
-
-bool interaction_surface_hit_extract(PickingHit* out_hit, const InteractionSurfaceState& state, const InteractionSurfaceHitArgs& args);
 
 struct InteractionSurfaceViewTransformArgs {
     const Camera& camera;

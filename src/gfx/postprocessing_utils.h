@@ -1,23 +1,14 @@
 ﻿#pragma once
 
-#include "gl.h"
-#include "view_param.h"
+#include <core/md_vec_math.h>
 
-#include <core/md_vec.h>
-
-namespace postprocessing {
-// Legacy utility helpers used by callsites that manipulate the current bound target.
-
-void blit_static_velocity(GLuint tex_depth, const ViewParam& view_param);
-
-void blit_texture(GLuint tex);
-
-}  // namespace postprocessing
+// THE LOOK of a view: how md_render_bridge.cpp shades what md_render drew (md_compose), and how md_post shows it (the
+// display transform, the temporal antialiasing, the marks of the selection and the highlight). The main view takes it
+// from the visuals (main.cpp's frame_settings), the components' views from the same (panel_view_settings).
 
 namespace postprocess_pipeline {
 
-// The curve of the display transform (shaders/tonemap/display.frag). Stored in workspaces by value: new ones go at
-// the end.
+// The curve of the display transform (md_post_display). Stored in workspaces by value: new ones go at the end.
 enum Tonemapper {
     Tonemapper_Passthrough,     // no curve: clipped to the display
     Tonemapper_ExposureGamma,   // the same as Passthrough (exposure and gamma apply to every curve), kept for workspaces
@@ -27,15 +18,14 @@ enum Tonemapper {
     Tonemapper_Count
 };
 
-// How the compose pass, the first step of the pipeline, lights the colours of the geometry
+// How the colours of the geometry are lit
 enum ShadingMode {
     // A simplified Cook-Torrance model of the colours (sRGB, decoded to linear albedo) under a key light and an
     // environment of sky and ground (lighting()), then tone mapped (Settings::tonemap)
     ShadingMode_PhysicallyBased,
     // The colours as given where a surface faces the light, darkened away from it, with an optional white
     // highlight (Settings::shading). Shown through the display transform without a curve or exposure, the exact
-    // sRGB encoding (Settings::tonemap is not used), so a colour in full light appears as it was picked (to within
-    // the precision of the HDR targets: one or two steps of 8 bits).
+    // sRGB encoding (Settings::tonemap is not used), so a colour in full light appears as it was picked.
     ShadingMode_Basic,
     ShadingMode_Count
 };
@@ -52,39 +42,17 @@ enum ColorSpace {
     ColorSpace_Count
 };
 
-// Estimator of the ambient occlusion. Both feed the same temporal filter, blur and upsample.
+// Estimator of the ambient occlusion (md_compose's ao_mode)
 enum SsaoMode {
-    SsaoMode_Performance,   // point samples (shaders/ssao/ssao.frag)
-    SsaoMode_Quality,       // screen-space slices with a visibility bitmask (shaders/ssao/ssao_bitmask.frag)
+    SsaoMode_Performance,
+    SsaoMode_Quality,
     SsaoMode_Count
-};
-
-struct Inputs {
-    // The G-buffer's size, when it is smaller than the image made (the viewport's size): upscaled to it, by the TAA
-    // where it is on, else a frame on its own. 0: the viewport's size.
-    int    width = 0;
-    int    height = 0;
-    GLuint depth = 0;
-    GLuint color = 0;
-    GLuint normal = 0;
-    GLuint velocity = 0;
-    GLuint transparency = 0;        // LDR premultiplied colour, blended over the tone mapped image (overlays, DVR)
-    GLuint transparency_hdr = 0;    // optional: premultiplied linear radiance, blended over the HDR image before tone mapping (isosurfaces); its alpha is part of the coverage that puts the scene over the background
-    GLuint history = 0;         // TAA history target, written this frame, at the size of the image made
-    GLuint history_prev = 0;    // optional: last frame's history (ping-pong). If 0, history is copied internally
-    // optional: the marks of the selection and the highlight at the size of the image made, put over it as it is presented
-    // (Settings::marks), filtered linearly: the selection in view (r), there at all (g), the highlight the same (b, a)
-    GLuint marks = 0;
-    // with marks: the group of the highlight (Settings::marks.groups) at the same size, R8 in units of 1/255: 1 + the
-    // group, 8 more where it is in view, 0 none
-    GLuint marks_group = 0;
 };
 
 struct Settings {
     // The background (sRGB). Not part of the scene: it lights nothing and is not tone mapped. The scene is put over
-    // it after the display transform, by its coverage (the geometry, through the depth of field, and the
-    // isosurfaces), so it shows as picked in every mode and with every curve, and a translucent surface over it is
-    // blended with it.
+    // it after the display transform, by its coverage, so it shows as picked in every mode and with every curve, and
+    // a translucent surface over it is blended with it.
     md_float3_t background_color = {1.f, 1.f, 1.f};
 
     struct {
@@ -108,57 +76,33 @@ struct Settings {
         float gamma = 2.2f;
     } tonemap;
 
-    // Shadows of the directional light (both modes), found in screen space: the visibility of the light, as the
-    // ambient occlusion is the visibility of the surroundings. Scale-free as it is, with a longer reach. The light is
-    // a disk: softness is its angular radius (degrees), which sets how the shadows soften with distance.
+    // Shadows of the directional light (both modes): the visibility of the light, as the ambient occlusion is the
+    // visibility of the surroundings. The light is a disk: softness is its angular radius (degrees), which sets how
+    // the shadows soften with distance.
     struct {
         bool enabled = true;
         float softness = 10.0f;
-        bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
     } shadows;
 
-    // The visibility of the surroundings, which darkens their light (physically based) or all of it (basic).
-    // Scale-free: there is no world-space radius. The sampling range is a fixed fraction of the viewport.
+    // The visibility of the surroundings, which darkens their light (physically based) or all of it (basic)
     struct {
         bool enabled = true;
         float intensity = 5.0f;
-        bool temporal = true;       // accumulate over frames (needs Inputs::velocity); off gives a fixed sample pattern
         SsaoMode mode = SsaoMode_Performance;
     } ssao;
 
-    struct {
-        bool enabled = true;
-        float focus_depth = 0.5f;   // view-space distance to the focus plane
-        float aperture = 0.01f;     // CoC of an object at infinity, as a fraction of the viewport height
-    } dof;
-
-    struct {
-        bool enabled = true;
-    } fxaa;
-
+    // The temporal antialiasing (md_post_resolve): how much of the history is kept, from where the image moves to
+    // where it is still
     struct {
         bool enabled = true;
         float feedback_min = 0.80f;
         float feedback_max = 0.95f;
-        struct {
-            bool enabled = true;
-            float motion_scale = 0.5f;
-        } motion_blur;
     } taa;
 
-    struct {
-        bool enabled = true;
-        float weight = 1.0f;
-    } sharpen;
-
-    // The image made presented as it is made (dithered to 8 bits, with the marks), or kept as it is, to be presented
-    // later (present())
-    bool present = true;
-
-    // The marks (Inputs::marks), put over the finished image as it is presented, in display colours: [0] of the
-    // selection, [1] of the highlight. A tint where they are in view, a fill where they are behind something, and the
-    // outline of where they are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours,
-    // group k > 0 the colour groups[k - 1] with their alphas.
+    // The marks, put over the finished image as it is presented, in display colours: [0] of the selection, [1] of the
+    // highlight. A tint where they are in view, a fill where they are behind something, and the outline of where they
+    // are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours, group k > 0 the colour
+    // groups[k - 1] with their alphas.
     struct {
         md_float4_t visible[2] = {};
         md_float4_t hidden[2]  = {};
@@ -169,20 +113,7 @@ struct Settings {
     } marks;
 };
 
-
-// width / height: the G-buffer's size; out_width / out_height: the image made, when it is upscaled to it (0: the same)
-void initialize(int width, int height, int out_width = 0, int out_height = 0);
-// Makes the image into the framebuffer bound, over the viewport (the size of the image made): presented (dithered to
-// 8 bits, with the marks) or, without Settings::present, as it is, to be presented later
-void execute(const Inputs& in, const Settings& settings, const ViewParam& view);
-// Presents an image execute() made without presenting it (its size: the viewport's) into the framebuffer bound:
-// dithered, with the marks of the selection and the highlight over it when there are any (Inputs::marks,
-// Settings::marks). For showing the image again while nothing in it has changed.
-void present(GLuint image, GLuint marks, GLuint marks_group, const Settings& settings);
-void shutdown();
-
-// The lights of the compose pass for a shading mode, in view space: they move with the camera. The isosurfaces
-// (volume::render_isosurfaces) are lit by the same. They do not depend on the background.
+// The lights for a shading mode, in view space: they move with the camera. They do not depend on the background.
 // Units: radiance in units of reference white, the radiance of a white Lambertian surface under irradiance pi
 // (BRDF 1/pi, so its radiance is the irradiance over pi). The physically based lights are scaled so that the diffuse
 // reflection of a white surface facing the viewer is 1: the display transform at exposure 1 then shows a colour on a
@@ -194,6 +125,26 @@ struct Lighting {
     md_float3_t sky_radiance;        // the environment above the horizon of the view (view space y > 0)
     md_float3_t ground_radiance;     // the environment below it
 };
-Lighting lighting(ShadingMode mode);
+
+// Physically based: the key light from the upper right, 55 degrees off the view axis, which models the shapes, and
+// light from all around, nearly uniform: a sky a little brighter than the ground, which keeps a hint of up and down.
+// The side away from the key light keeps about 0.37 of the lit side. A white surface facing the viewer:
+//   key: 0.87 * cos(55 deg) = 0.50, environment: (0.59 + 0.49) / 2 = 0.54
+// which, less what the specular reflection takes off the diffuse (Fresnel, about 3.5%), is a diffuse reflection of 1:
+// reference white. Facing the key light it is about 1.4. Settings::shading.light and .environment scale the two.
+// Basic: from the upper right too, but 27 degrees off the view axis, so the surfaces facing the viewer keep close to
+// their full colour. The radiances are not used.
+static inline Lighting lighting(ShadingMode mode) {
+    Lighting l = {
+        .light_dir        = md_float3_normalize(md_float3_set(1.0f, 1.0f, 1.0f)),
+        .light_irradiance = md_float3_set1(0.87f * (float)MD_PI),
+        .sky_radiance     = md_float3_set1(0.59f),
+        .ground_radiance  = md_float3_set1(0.49f),
+    };
+    if (mode == ShadingMode_Basic) {
+        l.light_dir = md_float3_normalize(md_float3_set(0.3f, 0.4f, 1.0f));
+    }
+    return l;
+}
 
 }  // namespace postprocess_pipeline

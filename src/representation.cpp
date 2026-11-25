@@ -18,9 +18,7 @@
 #include <imgui_widgets.h>
 #include <property_grid.h>
 
-#include <gfx/gl_utils.h>
 #include <es_planes.h>
-#include <gfx/volumerender_utils.h>
 #include <gpu_volume.h>
 #include <iso_meshes.h>
 #include <script_suggestions.h>
@@ -286,10 +284,6 @@ bool representation_move(ApplicationState* app, bool group, uint32_t id, bool ta
 // ---------------------------------------------------------------------------------------------------------
 
 static void init_representation(ApplicationState* state, Representation* rep) {
-    rep->md_rep = md_gl_rep_create(state->mold.gl_mol);
-    // Of the glyphs of the system loaded now: one of a system before it goes
-    md_gl_rep_destroy(rep->glyph_rep);
-    rep->glyph_rep = cartoon_glyphs_rep_create(state->mold.cartoon_glyphs);
     rep->atom_mask = md_bitset_empty_set();
 
     // Default to the first per atom field the system offers, if it offers any - unless the
@@ -322,8 +316,6 @@ static void init_representation(ApplicationState* state, Representation* rep) {
 // What a copy must not share with its original: the GPU side of it and the evaluated atoms. The clone
 // evaluates its own, and must neither write into nor free the original's (each frees its own on removal).
 static void clear_owned(Representation* rep) {
-    rep->md_rep = {};
-    rep->glyph_rep = {};
     rep->atom_mask = {};
     rep->bond_pairs = nullptr;
     rep->bond_flags = nullptr;
@@ -401,8 +393,6 @@ void remove_representation(ApplicationState* state, size_t idx) {
     md_bitset_free(&rep.atom_mask, state->allocator.persistent);
     md_array_free(rep.bond_pairs, state->allocator.persistent);
     md_array_free(rep.bond_flags, state->allocator.persistent);
-    md_gl_rep_destroy(rep.md_rep);
-    md_gl_rep_destroy(rep.glyph_rep);
     // Its evaluation not yet all issued is dropped, and what is in flight run out: the volumes go below (what lands in
     // one no more is released, gpu_volume.h)
     gpu_volume_job_cancel(state, rep.electronic_structure.density_vol.gpu);
@@ -679,114 +669,9 @@ bool representation_particle_type_valid(const ApplicationState& state, Represent
     case RepresentationType::Licorice:      return sys.bond.count > 0;
     case RepresentationType::BallAndStick:  return sys.atom.count > 0;
     case RepresentationType::Ribbons:       return sys.protein_backbone.range.count > 0;
-    // Proteins, and the lipids and nucleic acids of the glyphs
-    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || cartoon_glyphs_valid(state.mold.cartoon_glyphs);
+    // Proteins, lipids and nucleic acids
+    case RepresentationType::Cartoon:       return sys.protein_backbone.range.count > 0 || system_has_glyph_cartoon(sys);
     default:                                return false;
-    }
-}
-
-md_gl_draw_op_t representation_draw_op(const Representation& rep) {
-    md_gl_draw_op_t op = {
-        .type = (md_gl_rep_type_t)rep.type,
-        .args = {},
-        .rep = rep.md_rep,
-    };
-    if (rep.sphere_fallback) {
-        op.type = (md_gl_rep_type_t)RepresentationType::SpaceFill;
-        op.args.space_fill.radius_scale = 1.0f;
-        return op;
-    }
-    switch (rep.type) {
-    case RepresentationType::SpaceFill:
-        op.args.space_fill.radius_scale = rep.scale.x;
-        break;
-    case RepresentationType::Licorice:
-        op.args.licorice.radius = rep.scale.x;
-        op.args.licorice.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-        op.args.licorice.sharpness = rep.bond_sharpness;
-        op.args.licorice.uniform_color = convert_color(rep.bond_base_color);
-        op.args.licorice.bond_orders = rep.bond_orders;
-        op.args.licorice.chain_gaps = rep.chain_gaps;
-        op.args.licorice.elastic_bonds = rep.elastic_bonds;
-        op.args.licorice.solid_coordinate_bonds = !rep.coordinate_bonds_dashed;
-        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-            tint_colors(&op.args.licorice.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-        }
-        break;
-    case RepresentationType::BallAndStick:
-        op.args.ball_and_stick.ball_scale = rep.scale.x;
-        op.args.ball_and_stick.stick_radius = rep.scale.y;
-        op.args.ball_and_stick.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-        op.args.ball_and_stick.sharpness = rep.bond_sharpness;
-        op.args.ball_and_stick.uniform_color = convert_color(rep.bond_base_color);
-        op.args.ball_and_stick.bond_orders = rep.bond_orders;
-        op.args.ball_and_stick.chain_gaps = rep.chain_gaps;
-        op.args.ball_and_stick.elastic_bonds = rep.elastic_bonds;
-        op.args.ball_and_stick.solid_coordinate_bonds = !rep.coordinate_bonds_dashed;
-        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-            tint_colors(&op.args.ball_and_stick.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-        }
-        break;
-    case RepresentationType::Ribbons:
-        op.args.ribbons.width_scale = rep.scale.x;
-        op.args.ribbons.thickness_scale = rep.scale.y;
-        op.args.ribbons.chain_gaps = rep.chain_gaps;
-        break;
-    case RepresentationType::Cartoon:
-        op.args.cartoon.coil_scale = rep.scale.x;
-        op.args.cartoon.sheet_scale = rep.scale.y;
-        op.args.cartoon.helix_scale = rep.scale.z;
-        op.args.cartoon.chain_gaps = rep.chain_gaps;
-        break;
-    default:
-        MD_ASSERT(false);
-        break;
-    }
-    return op;
-}
-
-// The draws of the glyphs of a Cartoon (see representation.h)
-void representation_glyph_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
-    if (!cartoon_glyphs_valid(state.mold.cartoon_glyphs) || !rep.glyph_rep.id || !rep.glyphs_shown || !state.mold.cartoon_glyphs.positions_valid) return;
-    const float scale = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
-
-    // The heads; the other points (control points, corners of slabs) have no sphere, and nucleic acids none at all
-    if (state.mold.cartoon_glyphs.num_spheres > 0) {
-        md_gl_draw_op_t spheres = {
-            .type = MD_GL_REP_SPACE_FILL,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        spheres.args.space_fill.radius_scale = scale;
-        md_array_push(*ops, spheres, alloc);
-    }
-
-    if (state.mold.cartoon_glyphs.num_tubes > 0) {
-        md_gl_draw_op_t tubes = {
-            .type = MD_GL_REP_TUBES,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        tubes.args.tubes.radius_scale = scale;
-        // The bands of the nucleic acids are made with the default radius, a representation has its own
-        tubes.args.tubes.band_scale = MD_MAX(rep.nucleic_band_radius, 0.01f) / CARTOON_NUCLEIC_BAND_RADIUS;
-        md_array_push(*ops, tubes, alloc);
-    }
-
-    if (state.mold.cartoon_glyphs.num_slabs > 0) {
-        md_gl_draw_op_t slabs = {
-            .type = MD_GL_REP_SLABS,
-            .args = {},
-            .rep = rep.glyph_rep,
-            .copies = {},
-        };
-        // The rims (and the sticks, slabs of two corners) of the radius of the representation, the plate within a rim
-        // recessed to 60% of its thickness
-        slabs.args.slabs.radius = MD_MAX(rep.nucleic_ring_radius, 0.01f) * scale;
-        slabs.args.slabs.plate  = 0.6f;
-        md_array_push(*ops, slabs, alloc);
     }
 }
 
@@ -1007,14 +892,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         // a tint) applies to what is shown
         filter_colors(colors, num_atoms, rep->atom_mask);
         state->representation.atom_visibility_mask_dirty = true;
-        md_gl_rep_set_atom_colors(rep->md_rep, 0, (uint32_t)num_atoms, colors, 0);
         md_render_bridge_rep_colors(state, *rep, colors, num_atoms);
         representation_set_weak_bonds(state, rep);
-        rep->glyphs_shown = false;
-        if (rep->type == RepresentationType::Cartoon) {
-            rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
-        }
-        state->representation.gl_version += 1;
+        state->representation.version += 1;
     }
 
     rep->needs_update = again;
@@ -1022,8 +902,8 @@ static void update_representation(ApplicationState* state, Representation* rep) 
 
 void representation_set_weak_bonds(ApplicationState* state, Representation* rep) {
     MD_ASSERT(state && rep);
-    if (!rep->md_rep.id) return;
     const md_system_t& sys = state->mold.sys;
+    if (sys.atom.count == 0) return;
 
     const md_atom_pair_t* pairs = nullptr;
     const md_bond_flags_t* flags = nullptr;   // Of the bonds, which give their dashes
@@ -1087,7 +967,6 @@ void representation_set_weak_bonds(ApplicationState* state, Representation* rep)
         }
         flags = found;
     }
-    md_gl_rep_set_weak_bonds(rep->md_rep, (uint32_t)count, atom_a, atom_b, nullptr, flags);
     static_assert(sizeof(md_bond_flags_t) == sizeof(uint32_t), "the flags as words");
     md_render_bridge_rep_pairs(state, *rep, atom_a, atom_b, (const uint32_t*)flags, count);
 }
@@ -1123,46 +1002,6 @@ bool representation_weak_bond_pair(md_atom_pair_t* pair, const ApplicationState&
     // Those of a licorice are the interactions of the system, all of them in order
     *pair = rep.type == RepresentationType::Bonds ? rep.bond_pairs[i] : state.mold.sys.bond.pairs[state.mold.sys.bond.count + i];
     return true;
-}
-
-void representation_weak_bond_draw_ops(md_array(md_gl_draw_op_t)* ops, const ApplicationState& state, const Representation& rep, md_allocator_i* alloc) {
-    MD_ASSERT(ops);
-    const size_t count = representation_weak_bond_count(state, rep);
-    if (count == 0) return;
-    // The range reserved for its weak bonds as the frame began: they may have changed since (a filter evaluated in the
-    // frame), and those past its end would pick as what follows it
-    const PickingSpace* space = picking_handler_find_space(state.picking_handler, state.picking_handler.frame_idx);
-    const PickingRange* range = space ? picking_space_find_range(*space, PickingDomain_Bond, rep.node.id) : nullptr;
-    md_gl_draw_op_t op = {
-        .type = MD_GL_REP_WEAK_BONDS,
-        .args = {},
-        .rep = rep.md_rep,
-    };
-    if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick) {
-        // The interactions of the system among its atoms, in their colours: thinner than its sticks, each in the
-        // style of its kind (md_gl), between the joints or the balls
-        const md_gl_draw_op_t sticks = representation_draw_op(rep);
-        const bool licorice = rep.type == RepresentationType::Licorice;
-        op.args.weak_bonds.radius = 0.2f * (licorice ? rep.scale.x : rep.scale.y);
-        op.args.weak_bonds.dashes = MD_GL_DASHES_BY_KIND;
-        op.args.weak_bonds.end_radius = op.args.weak_bonds.radius;
-        op.args.weak_bonds.end_radius_scale = licorice ? 0.0f : 0.2f * rep.scale.x;
-        op.args.weak_bonds.color_mode    = licorice ? sticks.args.licorice.color_mode    : sticks.args.ball_and_stick.color_mode;
-        op.args.weak_bonds.sharpness     = licorice ? sticks.args.licorice.sharpness     : sticks.args.ball_and_stick.sharpness;
-        op.args.weak_bonds.uniform_color = licorice ? sticks.args.licorice.uniform_color : sticks.args.ball_and_stick.uniform_color;
-    } else {
-        // As thick as the sticks of a licorice of the same scale, the dashed ones as its dashed bonds are relative to them
-        op.args.weak_bonds.radius = 0.2f * rep.scale.x;
-        op.args.weak_bonds.dashes = (md_gl_dashes_t)rep.bond_dashes;
-        op.args.weak_bonds.color_mode = (md_gl_bond_mode_t)rep.bond_color;
-        op.args.weak_bonds.sharpness = rep.bond_sharpness;
-        op.args.weak_bonds.uniform_color = convert_color(rep.bond_base_color);
-        if (rep.tint_scale > 0.0f || rep.saturation < 1.0f) {
-            tint_colors(&op.args.weak_bonds.uniform_color, 1, convert_color(rep.tint_color), rep.tint_scale, rep.saturation);
-        }
-    }
-    op.args.weak_bonds.picking_base = range && range->end - range->beg >= count ? range->beg : UINT32_MAX;
-    md_array_push(*ops, op, alloc);
 }
 
 void update_all_representations(ApplicationState* state) {
@@ -1479,13 +1318,19 @@ void target_suggest(RepresentationTarget* t, const ApplicationState& app) {
         const md_atom_idx_t ca = bb.segment.atoms[i].ca;
         num_backbone += ca >= 0 && md_bitset_test(atoms, (uint32_t)ca);
     }
+    // The lipids and nucleic acids the cartoon draws (md_render_mol's): of their residues
     size_t num_glyphs = 0;
-    const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
-    if (cartoon_glyphs_valid(glyphs)) {
-        for (uint32_t i = 0; i < glyphs.num_points; ++i) {
-            const int32_t a = glyphs.point_color_atom[i];
-            num_glyphs += a >= 0 && md_bitset_test(atoms, (uint32_t)a);
+    const md_lipid_data_t& lip = sys.lipid;
+    for (size_t i = 0; i < lip.count && num_glyphs == 0 && lip.residue_offset; ++i) {
+        for (uint32_t k = lip.residue_offset[i]; k < lip.residue_offset[i + 1] && num_glyphs == 0; ++k) {
+            const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)lip.residue_idx[k]);
+            num_glyphs += r.beg < r.end && md_bitset_test_any_range(atoms, r.beg, r.end);
         }
+    }
+    const md_nucleic_backbone_data_t& nb = sys.nucleic_backbone;
+    for (size_t i = 0; i < nb.segment.count && num_glyphs == 0 && nb.segment.res_idx; ++i) {
+        const md_urange_t r = md_system_residue_atom_range(&sys, (size_t)nb.segment.res_idx[i]);
+        num_glyphs += r.beg < r.end && md_bitset_test_any_range(atoms, r.beg, r.end);
     }
     t->ribbons = num_backbone > 0 && representation_particle_type_valid(app, RepresentationType::Ribbons);
     t->cartoon = (num_backbone > 0 || num_glyphs > 0) && representation_particle_type_valid(app, RepresentationType::Cartoon);
@@ -1609,15 +1454,6 @@ bool representation_targets_from_hit(RepresentationTarget* target, Representatio
         if (hit.local_idx < bb.segment.count) {
             cartoon = true;
             push(bb.segment.atoms[hit.local_idx].ca);
-        }
-    } else if (hit.domain == PickingDomain_CartoonGlyph) {
-        const CartoonGlyphs& glyphs = app.mold.cartoon_glyphs;
-        const uint32_t point = cartoon_glyphs_picked_point(glyphs, hit.local_idx);
-        if (point < glyphs.num_points) {
-            cartoon = true;
-            const int32_t res = cartoon_glyphs_point_residue(glyphs, point);
-            if (res >= 0) push_residue(res);
-            else push(glyphs.point_color_atom[point]);
         }
     } else if (hit.domain == PickingDomain_ChainGap) {
         cartoon = true;
@@ -1904,7 +1740,7 @@ void create_default_representations(ApplicationState* state) {
         for (size_t i = 0; i < lipids.count; ++i) {
             if (lipids.head_offset[i + 1] > lipids.head_offset[i]) num_known += md_lipid_residue_count(&lipids, i);
         }
-        lipid_cartoon = num_known > 0 && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        lipid_cartoon = num_known > 0;
         if (!lipid_cartoon || num_known < num_lipid_residues) ligand_present = true;
     }
     if (lipid_cartoon) {
@@ -1921,7 +1757,7 @@ void create_default_representations(ApplicationState* state) {
         // membrane are most of it. The rest as beads.
         const bool protein_trace = amino_acid_present && state->mold.sys.protein_backbone.segment.count > 0;
         const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
-        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        const bool nucleic_cartoon = nucleic_present && num_on_backbone >= 10 && num_on_backbone == num_nucleotides;
         if (protein_trace) {
             Representation* prot = create_representation(state, RepresentationType::Cartoon, ColorMapping::SecondaryStructure, MD_STR_LIT("protein"));
             snprintf(prot->name, sizeof(prot->name), "protein");
@@ -1987,7 +1823,7 @@ void create_default_representations(ApplicationState* state) {
         // A cartoon where every nucleotide is on a backbone (and there are some of them), else atom by atom: the cartoon
         // shows nothing of a nucleotide off a backbone
         const size_t num_on_backbone = num_nucleotides_on_backbone(state->mold.sys);
-        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides && cartoon_glyphs_valid(state->mold.cartoon_glyphs);
+        const bool cartoon = num_on_backbone >= 10 && num_on_backbone == num_nucleotides;
         Representation* nucl = create_representation(state, cartoon ? RepresentationType::Cartoon : RepresentationType::BallAndStick, cartoon ? ColorMapping::ResType : ColorMapping::Type, MD_STR_LIT("nucleic"));
         snprintf(nucl->name, sizeof(nucl->name), "nucleic");
     }
@@ -4131,18 +3967,18 @@ bool draw_representation_geometry(ApplicationState* state, Representation& rep) 
         update_rep |= ImGui::SliderFloat("##sheet", &rep.scale[1], 0.1f, 3.f, scale_fmt);
         prop::row("helix");
         update_rep |= ImGui::SliderFloat("##helix", &rep.scale[2], 0.1f, 3.f, scale_fmt);
-        if (cartoon_glyphs_valid(state->mold.cartoon_glyphs)) {
+        if (system_has_glyph_cartoon(state->mold.sys)) {
             prop::row("lipid, nucleic", "Thickness of the heads and tails of the lipids and of the backbones and bases of the nucleic acids");
             update_rep |= ImGui::SliderFloat("##lipid_nucleic", &rep.scale[3], 0.1f, 3.f, scale_fmt);
             if (state->mold.sys.nucleic_backbone.range.count > 0) {
                 prop::row("nucleic backbone", "Radius of the band along the backbone of the nucleic acids: half its thickness, its width stays (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_backbone", &rep.nucleic_band_radius, 0.1f, 1.5f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (state->mold.cartoon_glyphs.num_slabs > 0) {
+            if (state->mold.sys.nucleic_backbone.segment.count > 0) {
                 prop::row("nucleic rings", "Radius of the rims of the sugar and base rings, and of the stick from each sugar to its base (Å, times the lipid, nucleic scale)");
                 update_rep |= ImGui::SliderFloat("##nucleic_rings", &rep.nucleic_ring_radius, 0.1f, 1.0f, "%.2f Å", ImGuiSliderFlags_AlwaysClamp);
             }
-            if (state->mold.cartoon_glyphs.num_split_heads > 0) {
+            if (md_render_bridge_split_heads(state) > 0) {
                 prop::row("two head spheres", "The head of a phospholipid as two spheres, split at its phosphate: the head group with the phosphate, and the backbone the tails hang off");
                 update_rep |= ImGui::Checkbox("##two_head_spheres", &rep.two_head_spheres);
             }
@@ -4376,7 +4212,7 @@ static bool draw_representation_properties(ApplicationState* state, Representati
 
     update_rep |= draw_representation_type(state, rep, false);
 
-    // Of what md_gl draws and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
+    // Of the representations of atoms and the box, where there is a cell to repeat in. Drawn so every frame: not an update.
     const bool bonds = rep.type == RepresentationType::Bonds;
     const bool periodic = ((RepresentationType::SpaceFill <= rep.type && rep.type <= RepresentationType::Cartoon) || rep.type == RepresentationType::SimulationBox || bonds) &&
                           md_unitcell_flags(&state->mold.state.unitcell) != 0;

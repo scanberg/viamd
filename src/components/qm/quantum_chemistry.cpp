@@ -13,7 +13,6 @@
 #include <iso_meshes.h>
 #include <md_render_bridge.h>
 #include <gpu_volume.h>
-#include <gfx/gl_utils.h>
 
 #include <md_gto.h>
 #include <md_gto_iso.h>
@@ -76,8 +75,6 @@
 // than what exists - a file with more pairs than this simply stops at this many columns.
 #define MAX_NTO_LABELS 32
 #define NTO_LAMBDA_CUTOFF_VALUE 0.1
-
-#define FORCE_CPU_PATH 0
 
 #define USE_AABB_GRID 0
 
@@ -586,11 +583,6 @@ static void panel_meshes_update(PanelMeshes* pm, ApplicationState* state, int co
             slots[n++] = {pm->field[i], iso, sheets};
             key = md_hash64(&pm->field_key[i], sizeof(pm->field_key[i]), key);
         }
-    }
-    // on md_gpu, where the panels draw them
-    if (!pm->meshes.gpu_mesh) {
-        iso_meshes_free(&pm->meshes, state);
-        pm->meshes.gpu_mesh = true;
     }
     iso_meshes_update(&pm->meshes, state, slots, n, iso_meshes_cell_size(VolumeResolution::Mid), key);
 }
@@ -1350,7 +1342,6 @@ static StripJob* strip_job_start(const md_system_t& sys, const LowdinJob* lowdin
 struct QuantumChemistry : viamd::EventHandler {
     QuantumChemistry() { viamd::event_system_register_handler(*this); }
 
-    bool use_gpu_path = false;
 #if MD_ENABLE_GPU
     // No GPU handles are kept here any more. The device, its stream, its pools and the evaluation
     // scratch belong to the application; the uploaded basis and the atom buffer belong to the
@@ -1608,7 +1599,7 @@ struct QuantumChemistry : viamd::EventHandler {
     // the particle density beside its particle column, one camera for both. Optional (they take room).
     //
     // The surfaces are meshes (md_gto_iso, iso_meshes.h): extracted from the fields themselves, sharp however close
-    // the camera comes, and drawn with the stochastic transparency of isomesh_utils.h.
+    // the camera comes, and drawn by md_render (md_render_bridge.h's panels).
     //
     // Nothing here waits. A state's two density fields are made from its NTO pairs on a worker (CtFieldJob), their
     // meshes extracted on the GPU as a job over frames. Fields and meshes are kept per state in a cache of a set
@@ -1719,7 +1710,7 @@ struct QuantumChemistry : viamd::EventHandler {
         d.count = count;
         d.columns = columns;
         d.panels = surfaces;
-        // As md_gl's ball and stick of the windows had it
+        // The ball and stick the windows have always had
         static const Representation ball_and_stick = [] {
             Representation r = {};
             r.type = RepresentationType::BallAndStick;
@@ -2112,10 +2103,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 // 4096) plus the XAS panel, so this is generous by a wide margin.
                 rixs.alloc = md_vm_arena_create(MD_MEGABYTES(512));
 
-                int gl_major, gl_minor;
-                glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
-                glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
-                use_gpu_path = (!FORCE_CPU_PATH && gl_major >= 4 && gl_minor >= 3);
 #if MD_ENABLE_GPU
                 // (md_gto's GPU evaluation is the application's: main.cpp)
                 md_topo_gpu_initialize(state.gpu_device);
@@ -2130,7 +2117,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 panels_free();
                 ctv_free();
 #if MD_ENABLE_GPU
-                gl::pbo_upload_shutdown();
                 md_topo_gpu_shutdown();
                 // Nothing is freed here: the device scratch and the dataset's uploaded basis are
                 // both the application's, and it destroys them.
@@ -11124,7 +11110,6 @@ struct QuantumChemistry : viamd::EventHandler {
         if (n == 0) return;
         if (!e->meshes) {
             e->meshes = new IsoMeshes();
-            e->meshes->gpu_mesh = true;     // on md_gpu, where the views draw them
         }
         iso_meshes_update(e->meshes, &state, slots, n, ctv_cell_size(), e->key);
     }

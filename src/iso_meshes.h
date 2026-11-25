@@ -1,10 +1,10 @@
 #pragma once
 
 // Isosurface meshes of the electronic structure, extracted from the fields themselves (md_gto_iso) rather than
-// from a volume, for the mesh rendering mode (Settings::isosurface_rendering, isomesh_utils.h for the drawing).
+// from a volume, for the mesh rendering mode (Settings::isosurface_rendering), drawn by md_render (md_render_bridge.h).
 //
 // A set of meshes is up to ISO_MESHES_MAX_SLOTS slots, each a field at an isovalue (one or both sheets), all in
-// one GL mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
+// one mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
 // a field in several slots costs its functions once - and the result is read back once; without a GPU device
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
 // job (md_gto_iso_gpu_job_t, run as a GpuJob: gpu_job.h) advanced once a frame: the mesh shown stays the
@@ -19,7 +19,6 @@
 // Positions are in bohr, at the atoms of the current frame: the meshes go to world space by a scale of
 // BOHR_TO_ANGSTROM (iso_meshes_model_matrix).
 
-#include <gfx/isomesh_utils.h>
 #include <color_scale.h>
 #include <core/md_vec.h>
 #include <core/md_str.h>
@@ -54,11 +53,9 @@ struct IsoFieldGeometry {
 };
 
 struct IsoMeshes {
-    isomesh::Mesh mesh = {};    // on GL, for the windows' panels (gpu_mesh false)
-    // Or on md_gpu, for the main view (a representation's: md_render_bridge.cpp): gpu_xyz its positions (below), these
-    // its normals (float4 per vertex) and its triangles (uint32 per corner), ready once the stream it was made on is
-    // past gpu_ready (to wait for on another). Freed after what the main view's stream has issued.
-    bool          gpu_mesh = false;
+    // On md_gpu, for the views (md_render_bridge.cpp): gpu_xyz its positions (below), these its normals (float4 per
+    // vertex) and its triangles (uint32 per corner), ready once the stream it was made on is past gpu_ready (to wait
+    // for on another). Freed after what the views' stream has issued.
     md_gpu_addr_t gpu_normal = 0, gpu_index = 0;
     md_gpu_sync_t gpu_ready = {};
     uint32_t num_vertices = 0, num_indices = 0;
@@ -71,12 +68,12 @@ struct IsoMeshes {
     bool     on_gpu = false;    // which path made it
     double   seconds = 0.0;     // what the last extraction took
     // The vertices, bohr, where a field is evaluated (surface_field_evaluate_points): on the host, packed
-    // float3, and after a GPU extraction (or of gpu_mesh) also on the device (float4 per vertex), so the evaluation
+    // float3, and on the device (float4 per vertex), so the evaluation
     // reads them there instead of uploading them again
     float*   xyz = nullptr;
     uint32_t xyz_count = 0;
     uint32_t* tri_index = nullptr;  // the triangles on the host too, three per triangle, for the field's gradient
-    uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
+    uint32_t tri_index_count = 0;   // along the surface
     md_gpu_addr_t gpu_xyz = 0;
 
     // The GPU extraction under way (a GpuJob of an md_gto_iso_gpu_job_t: gpu_job.h, listed in the overlay while it

@@ -449,12 +449,12 @@ static void keep_index(IsoMeshes* m, const uint32_t* idx, uint32_t count) {
 }
 
 // The device copies of the mesh, which go with the mesh they are of: freed after what may read them, the evaluations'
-// stream (the field at the vertices) and, of gpu_mesh, the main view's (the device's graphics stream)
+// stream (the field at the vertices) and the views' (the device's graphics stream)
 static void drop_gpu_xyz(IsoMeshes* m, ApplicationState* state) {
 #if MD_ENABLE_GPU
     md_gpu_stream_t s = state->gpu_stream;
     if (s && (m->gpu_xyz || m->gpu_normal || m->gpu_index)) {
-        if (m->gpu_mesh) md_gpu_stream_wait(s, md_gpu_stream_record(md_gpu_stream_default(state->gpu_device, MD_GPU_STREAM_GRAPHICS)));
+        md_gpu_stream_wait(s, md_gpu_stream_record(md_gpu_stream_default(state->gpu_device, MD_GPU_STREAM_GRAPHICS)));
         if (m->gpu_xyz) md_gpu_free(s, m->gpu_xyz);
         if (m->gpu_normal) md_gpu_free(s, m->gpu_normal);
         if (m->gpu_index) md_gpu_free(s, m->gpu_index);
@@ -486,21 +486,14 @@ static md_gpu_addr_t upload_float4(md_gpu_stream_t s, const float* src, size_t s
 }
 #endif
 
-// The mesh made (positions and normals stride floats apart; the GPU path's device buffers, taken where given): into
-// GL for the windows' panels, onto md_gpu for the main view (gpu_mesh). The positions on the device either way, where
-// the GPU path has them (for the field at the vertices). False when it cannot be.
+// The mesh made (positions and normals stride floats apart; the GPU path's device buffers, taken where given), onto
+// md_gpu for the views. False when it cannot be.
 static bool mesh_publish(IsoMeshes* m, ApplicationState* state, const float* pos, const float* nrm, size_t stride, uint32_t nv,
                          const uint32_t* idx, uint32_t ni, md_gpu_addr_t* dev_pos, md_gpu_addr_t* dev_nrm, md_gpu_addr_t* dev_idx) {
     m->version = ++mesh_version_count;
     if (dev_pos) {
         m->gpu_xyz = *dev_pos;
         *dev_pos = 0;
-    }
-    if (!m->gpu_mesh) {
-        const bool ok = isomesh::mesh_upload(&m->mesh, pos, nrm, stride, nv, idx, ni);
-        m->num_vertices = ok ? nv : 0;
-        m->num_indices = ok ? ni : 0;
-        return ok;
     }
 #if MD_ENABLE_GPU
     md_gpu_stream_t s = state->gpu_stream;
@@ -533,14 +526,9 @@ void iso_meshes_free(IsoMeshes* m, ApplicationState* state) {
     release_extraction_state(m, state);
     build_orphan((IsoBuild*)m->set_build);
     drop_gpu_xyz(m, state);
-    isomesh::mesh_free(&m->mesh);
     free(m->xyz);
     free(m->tri_index);
-    const uint64_t version = m->mesh.version;
-    const bool gpu_mesh = m->gpu_mesh;
     *m = {};
-    m->mesh.version = version;
-    m->gpu_mesh = gpu_mesh;
 }
 
 static void set_ranges(IsoMeshes* m, uint32_t num_slots, const uint32_t offset[][2], const uint32_t count[][2]) {
@@ -653,7 +641,7 @@ static int job_poll(IsoMeshes* m, ApplicationState* state) {
     m->job_slots = 0;
     if (!done) return 0;
     drop_gpu_xyz(m, state);
-    // the positions stay on the device for what is evaluated at them (and the mesh for the main view: gpu_mesh)
+    // the positions stay on the device for what is evaluated at them (and the mesh for the views)
     const bool ok = mesh_publish(m, state, gm.host_position, gm.host_normal, 4, gm.vertex_count, gm.host_index, gm.index_count,
                                  &gm.position, &gm.normal, &gm.index);
     if (ok) {
@@ -1088,7 +1076,6 @@ static void es_meshes_update(ApplicationState* state, Representation* rep, const
     ElectronicStructureRepresentation& es = rep->electronic_structure;
     if (!es.iso_mesh) {
         es.iso_mesh = new EsIsoMesh();
-        es.iso_mesh->meshes.gpu_mesh = true;
     }
     EsIsoMesh& em = *es.iso_mesh;
 
