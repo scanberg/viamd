@@ -109,8 +109,10 @@ struct DatasetItem {
     ParticleTypeLoadState load = {}; // What the loader assigned, the baseline user modifications are stored against
 };
 
+// The defaults of an element of the data, which the atom types linked to it follow: its van der Waals radius and its mass,
+// what the contacts, the centres of mass and the weightings take. Its colour is the palette's (ApplicationState::palette),
+// the user's.
 struct ElementDefault {
-    md_float4_t color;
     float radius;
     float mass;
 };
@@ -132,10 +134,6 @@ struct ElementDefaultDelta {
 // their standard monomer (md_monomer_t, as a particle type is to its element) and follow them, or carry a color of their own.
 // A type which is no form of a standard monomer (a ligand, water, an ion) always carries its own.
 
-// The defaults of a standard monomer, mdlib's built in ones until the user edits them
-struct MonomerDefault {
-    md_float4_t color;
-};
 
 struct ResidueTypeItem {
     char label[32] = "";
@@ -216,9 +214,8 @@ struct Dataset : viamd::EventHandler {
     ElementDefault element_defaults[MD_Z_Count] = {};
 
     char res_type_filter[64] = "";
-    int  monomer_popup      = -1;           // Monomer whose defaults are being edited
 
-    MonomerDefault monomer_defaults[MD_MONOMER_COUNT] = {};
+    uint64_t palette_seen = 0;   // The palette's version the types linked to it were last given its colours of
 
 
     // Particle type overrides read from a workspace, waiting for a system to be applied to.
@@ -279,17 +276,14 @@ struct Dataset : viamd::EventHandler {
 
     void init_element_defaults() {
         for (md_atomic_number_t z = 0; z < MD_Z_Count; ++z) {
-            element_defaults[z].color   = md_float4_from_u32(md_atomic_number_cpk_color(z));
             element_defaults[z].mass    = md_atomic_number_mass(z);
             element_defaults[z].radius  = md_atomic_number_vdw_radius(z);
         }
     }
 
-    void init_monomer_defaults() {
-        for (int m = 0; m < MD_MONOMER_COUNT; ++m) {
-            monomer_defaults[m].color = md_float4_from_u32(md_monomer_color((md_monomer_t)m));
-        }
-    }
+    // The palette's colour of an element, of a monomer (ApplicationState::palette)
+    md_float4_t element_color(int z) const { return app_state->palette.element[z]; }
+    md_float4_t monomer_color(int m) const { return app_state->palette.monomer[m]; }
 
     void clear_dataset_items() {
         T->res_types = 0;
@@ -393,7 +387,7 @@ struct Dataset : viamd::EventHandler {
     ElementDefaultDelta compute_element_default_delta(md_atomic_number_t z) const {
         const ElementDefault& def = element_defaults[z];
         ElementDefaultDelta delta;
-        delta.color  = md_u32_from_float4(def.color) != md_atomic_number_cpk_color(z);
+        delta.color  = md_u32_from_float4(element_color(z)) != md_atomic_number_cpk_color(z);
         delta.radius = def.radius != md_atomic_number_vdw_radius(z);
         delta.mass   = def.mass   != md_atomic_number_mass(z);
         return delta;
@@ -403,14 +397,14 @@ struct Dataset : viamd::EventHandler {
     // loaded system, so every customized element is written, not just the ones the current system happens to use.
     void serialize_element_defaults(viamd::serialization_state_t& state) {
         for (int z = 0; z < MD_Z_Count; ++z) {
+            // Its radius and mass: its colour is the palette's, not the workspace's
             ElementDefaultDelta delta = compute_element_default_delta((md_atomic_number_t)z);
-            if (!delta) continue;
+            if (!delta.radius && !delta.mass) continue;
 
             const ElementDefault& def = element_defaults[z];
             viamd::write_section_header(state, MD_STR_LIT("ElementDefault"));
             viamd::write_int(state, MD_STR_LIT("Element"), z);
 
-            if (delta.color)  viamd::write_vec4(state, MD_STR_LIT("Color"),  def.color);
             if (delta.radius) viamd::write_flt (state, MD_STR_LIT("Radius"), def.radius);
             if (delta.mass)   viamd::write_flt (state, MD_STR_LIT("Mass"),   def.mass);
         }
@@ -442,8 +436,9 @@ struct Dataset : viamd::EventHandler {
             return;
         }
 
+        // A colour, of a workspace from before the palette, is the user's palette's to say: not taken
+        if (has_color) MD_LOG_DEBUG("Dataset: the colour of [ElementDefault] %d is not taken: colours are the palette's", z);
         ElementDefault& def = element_defaults[z];
-        if (has_color)  def.color  = color;
         if (has_radius) def.radius = radius;
         if (has_mass)   def.mass   = mass;
     }
@@ -473,7 +468,7 @@ struct Dataset : viamd::EventHandler {
                 type.mass[i] = def.mass;
             }
             if (delta.color) {
-                const uint32_t color = md_u32_from_float4(def.color);
+                const uint32_t color = md_u32_from_float4(element_color(z));
                 color_changed |= type.color[i] != color;
                 type.color[i] = color;
             }
@@ -508,7 +503,7 @@ struct Dataset : viamd::EventHandler {
             const ElementDefault& def = element_defaults[type.z[i]];
             if (ed.radius) base_radius = def.radius;
             if (ed.mass)   base_mass   = def.mass;
-            if (ed.color)  base_color  = md_u32_from_float4(def.color);
+            if (ed.color)  base_color  = md_u32_from_float4(element_color(type.z[i]));
         }
 
         ParticleTypeDelta delta;
@@ -526,11 +521,11 @@ struct Dataset : viamd::EventHandler {
     // ## Residue types: their monomer defaults, what the user changed, and the workspace
 
     bool compute_monomer_default_delta(int m) const {
-        return md_u32_from_float4(monomer_defaults[m].color) != md_monomer_color((md_monomer_t)m);
+        return md_u32_from_float4(monomer_color(m)) != md_monomer_color((md_monomer_t)m);
     }
 
     uint32_t monomer_default_color(md_monomer_t m) const {
-        return md_u32_from_float4(monomer_defaults[m].color);
+        return md_u32_from_float4(monomer_color(m));
     }
 
     // The color a residue type is restored to: that of the defaults of its monomer when it is linked to them, else
@@ -592,21 +587,13 @@ struct Dataset : viamd::EventHandler {
             }
             if (ovr.has_use_defaults) {
                 T->res_types[t].use_defaults = ovr.use_defaults && res_type_has_monomer(type, t);
+            } else if (ovr.has_color) {
+                T->res_types[t].use_defaults = false;  // A colour of its own: not its monomer's
             }
             if (ovr.has_color) {
                 color_changed |= type.color[t] != ovr.color;
                 type.color[t] = ovr.color;
             }
-        }
-    }
-
-    // One [MonomerDefault] section per monomer whose defaults the user changed, identified by its id ("HIS")
-    void serialize_monomer_defaults(viamd::serialization_state_t& state) {
-        for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) {
-            if (!compute_monomer_default_delta(m)) continue;
-            viamd::write_section_header(state, MD_STR_LIT("MonomerDefault"));
-            viamd::write_str(state, MD_STR_LIT("Monomer"), md_monomer_id((md_monomer_t)m));
-            viamd::write_vec4(state, MD_STR_LIT("Color"), monomer_defaults[m].color);
         }
     }
 
@@ -628,59 +615,8 @@ struct Dataset : viamd::EventHandler {
             MD_LOG_INFO("Dataset: skipping [MonomerDefault] section without a known Monomer entry");
             return;
         }
-        if (has_color) monomer_defaults[m].color = color;
-    }
-
-    // The colours of the secondary structures, of every system (ApplicationState::secondary_structure_colors): written
-    // where any is other than the built in one
-    void serialize_secondary_structure_colors(viamd::serialization_state_t& state) {
-        if (!app_state) return;
-        const auto& c = app_state->secondary_structure_colors;
-        const decltype(app_state->secondary_structure_colors) builtin = {};
-        if (md_memcmp(&c, &builtin, sizeof(c)) == 0) return;
-        viamd::write_section_header(state, MD_STR_LIT("SecondaryStructureColors"));
-        viamd::write_vec4(state, MD_STR_LIT("Unknown"), c.unknown);
-        viamd::write_vec4(state, MD_STR_LIT("Coil"),    c.coil);
-        viamd::write_vec4(state, MD_STR_LIT("Helix"),   c.helix);
-        viamd::write_vec4(state, MD_STR_LIT("Sheet"),   c.sheet);
-    }
-
-    void deserialize_secondary_structure_colors(viamd::deserialization_state_t& state) {
-        md_str_t ident, arg;
-        while (viamd::next_entry(ident, arg, state)) {
-            if (!app_state) continue;
-            auto& c = app_state->secondary_structure_colors;
-            if      (md_str_eq_cstr(ident, "Unknown")) viamd::extract_vec4(c.unknown, arg);
-            else if (md_str_eq_cstr(ident, "Coil"))    viamd::extract_vec4(c.coil, arg);
-            else if (md_str_eq_cstr(ident, "Helix"))   viamd::extract_vec4(c.helix, arg);
-            else if (md_str_eq_cstr(ident, "Sheet"))   viamd::extract_vec4(c.sheet, arg);
-        }
-    }
-
-    // The palette of the secondary structures, below the monomers': of every system, as theirs is
-    void draw_secondary_structure_colors(ApplicationState& data) {
-        if (!ImGui::CollapsingHeader("Secondary Structure Colors")) return;
-        auto& c = data.secondary_structure_colors;
-        const ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
-        bool changed = false;
-        changed |= ImGui::ColorEdit4("Coil##ss", c.coil.elem, flags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit4("Helix##ss", c.helix.elem, flags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit4("Sheet##ss", c.sheet.elem, flags);
-        ImGui::SameLine();
-        changed |= ImGui::ColorEdit4("Unknown##ss", c.unknown.elem, flags);
-        ImGui::SameLine();
-        const decltype(data.secondary_structure_colors) builtin = {};
-        ImGui::BeginDisabled(md_memcmp(&c, &builtin, sizeof(c)) == 0);
-        if (ImGui::SmallButton("Reset##ss")) {
-            c = builtin;
-            changed = true;
-        }
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Restore the built in colors");
-        ImGui::TextDisabled("Of every system and representation coloured by secondary structure");
-        if (changed) flag_all_representations_as_dirty(&data);
+        // Of a workspace from before the palette: its colours are the user's palette's to say, not taken
+        if (has_color) MD_LOG_DEBUG("Dataset: the colour of [MonomerDefault] " MD_STR_FMT " is not taken: colours are the palette's", MD_STR_ARG(md_monomer_id(m)));
     }
 
     // One [ComponentType] section per residue type the user modified: its name and kind, then what differs
@@ -891,6 +827,10 @@ struct Dataset : viamd::EventHandler {
                 }
                 if (ovr.has_use_defaults) {
                     item.use_defaults = ovr.use_defaults;
+                } else if (ovr.has_radius || ovr.has_mass || ovr.has_color) {
+                    // A value of its own, of a workspace which does not say: unlinked, as editing one does, else the
+                    // palette or the element defaults would take it back
+                    item.use_defaults = false;
                 }
 
                 matched = true;
@@ -1113,16 +1053,13 @@ struct Dataset : viamd::EventHandler {
                 // Initialize component
                 app_state = (ApplicationState*)e.payload;
                 init_element_defaults();
-                init_monomer_defaults();
                 workspace_register_window("System", &show_window);
                 break;
             }
             case viamd::EventType_ViamdDeserializeBegin:
-                // A workspace without [ElementDefault], [AtomType], [MonomerDefault], [ComponentType] or
-                // [SecondaryStructureColors] sections has the built in ones
+                // A workspace without [ElementDefault], [AtomType] or [ComponentType] sections has the built in ones.
+                // The palette is the user's: a workspace does not touch it.
                 init_element_defaults();
-                init_monomer_defaults();
-                if (app_state) app_state->secondary_structure_colors = {};
                 free_pending_overrides();
                 break;
             case viamd::EventType_ViamdShutdown:
@@ -1149,8 +1086,14 @@ struct Dataset : viamd::EventHandler {
             }
             case viamd::EventType_ViamdFrameTick: {
                 ApplicationState& state = *(ApplicationState*)e.payload;
+                // Another palette: its colours to the types that follow it, of every system
+                if (state.palette_version != palette_seen) {
+                    palette_seen = state.palette_version;
+                    palette_to_types(state);
+                }
                 work_on_shown(state);
                 draw(state);
+                draw_palette_window(state);
                 break;
             }
             case viamd::EventType_ViamdWindowMenuRequest:
@@ -1159,8 +1102,6 @@ struct Dataset : viamd::EventHandler {
             case viamd::EventType_ViamdSerialize: {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 serialize_element_defaults(state);
-                serialize_monomer_defaults(state);
-                serialize_secondary_structure_colors(state);
                 // The types of the systems: each once, the same in all of them
                 md_array_shrink(written_types, 0);
                 if (app_state) {
@@ -1186,8 +1127,6 @@ struct Dataset : viamd::EventHandler {
                     deserialize_monomer_default(state);
                 } else if (md_str_eq_cstr(section, "ComponentType")) {
                     deserialize_residue_type(state);
-                } else if (md_str_eq_cstr(section, "SecondaryStructureColors")) {
-                    deserialize_secondary_structure_colors(state);
                 }
                 break;
             }
@@ -1277,7 +1216,7 @@ struct Dataset : viamd::EventHandler {
 
     // If `enabled_mask` is non-null: bit=1 means enabled.
     // Returns per-frame interaction info.
-    static PeriodicTableResult periodic_table_widget(const ElementDefault* elem_defs, const uint64_t enabled_mask[2] = nullptr) {
+    static PeriodicTableResult periodic_table_widget(const md_float4_t* colors, const uint64_t enabled_mask[2] = nullptr) {
         PeriodicTableResult res = {};
 
         const int width  = 18;
@@ -1285,8 +1224,7 @@ struct Dataset : viamd::EventHandler {
         const float button_size = ImGui::GetFontSize() * 1.5f;
         const float spacing = ImGui::GetStyle().ItemSpacing.x * 0.25f;
 
-        ImVec2 offset = ImGui::GetCursorPos();
-        ImGui::Dummy(ImVec2(width * (button_size + spacing), height * (button_size + spacing)));
+        const ImVec2 offset = ImGui::GetCursorPos();
 
         for (int z = 0; z < MD_Z_Count; ++z) {
             int row = element_row(z);
@@ -1297,8 +1235,7 @@ struct Dataset : viamd::EventHandler {
 
             bool disabled = enabled_mask ? !(enabled_mask[z / 64] & (1ULL << (z % 64))) : false;
 
-            const ElementDefault& def = elem_defs[z];
-            const md_float4_t color = def.color;
+            const md_float4_t color = colors[z];
             const md_str_t sym = md_atomic_number_symbol((md_atomic_number_t)z);
 
 			ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 0.25f);
@@ -1324,6 +1261,9 @@ struct Dataset : viamd::EventHandler {
             ImGui::PopID();
         }
 
+        // The table's room, last: the cursor is left below all of it, the f-block rows included, not after the last button
+        ImGui::SetCursorPos(offset);
+        ImGui::Dummy(ImVec2(width * (button_size + spacing), height * (button_size + spacing)));
         return res;
     }
 
@@ -2872,7 +2812,7 @@ struct Dataset : viamd::EventHandler {
             const ElementDefault& def = element_defaults[load.z];
             if (ed.radius) radius = def.radius;
             if (ed.mass)   mass   = def.mass;
-            if (ed.color)  color  = md_u32_from_float4(def.color);
+            if (ed.color)  color  = md_u32_from_float4(element_color(load.z));
         }
 
         radius_changed |= type.radius[i] != radius;
@@ -2890,7 +2830,7 @@ struct Dataset : viamd::EventHandler {
     void link_particle_type_to_element(ApplicationState& data, size_t i, bool& radius_changed, bool& color_changed, bool& mass_changed) {
         md_particle_type_data_t& type = system(data).data.sys.atom.type;
         const ElementDefault& def = element_defaults[type.z[i]];
-        const uint32_t color = md_u32_from_float4(def.color);
+        const uint32_t color = md_u32_from_float4(element_color(type.z[i]));
 
         radius_changed |= type.radius[i] != def.radius;
         mass_changed   |= type.mass[i]   != def.mass;
@@ -3040,12 +2980,12 @@ struct Dataset : viamd::EventHandler {
             ImGui::SameLine();
             ImGui::TextUnformatted("Element");
             ImGui::SameLine();
-            if (element_button(md_str_ptr(md_atomic_number_symbol(z)), element_defaults[z].color)) {
+            if (element_button(md_str_ptr(md_atomic_number_symbol(z)), element_color(z))) {
                 ImGui::OpenPopup("##element_popup");
             }
             ImGui::SetItemTooltip(MD_STR_FMT ", click to change", MD_STR_ARG(md_atomic_number_name(z)));
             if (ImGui::BeginPopup("##element_popup")) {
-                const PeriodicTableResult res = periodic_table_widget(element_defaults);
+                const PeriodicTableResult res = periodic_table_widget(app_state->palette.element);
                 if (res.clicked && res.z >= 0) {
                     color_changed |= type.z[i] != (md_atomic_number_t)res.z;
                     type.z[i] = (md_atomic_number_t)res.z;
@@ -3112,7 +3052,7 @@ struct Dataset : viamd::EventHandler {
             // from the color it was loaded with and is free
             const bool has_element = !type_is_bead(type.flags[i]) && type.z[i] != 0;
             ColorOptimizeItem it;
-            it.color  = has_element ? md_u32_from_float4(element_defaults[type.z[i]].color) : T->particle_types[i].load.color;
+            it.color  = has_element ? md_u32_from_float4(element_color(type.z[i])) : T->particle_types[i].load.color;
             it.pull   = has_element ? color_optimize_pull : 0.0f;
             it.weight = (float)T->particle_types[i].count;
             md_array_push(items, it, md_temp_allocator(temp));
@@ -3128,7 +3068,7 @@ struct Dataset : viamd::EventHandler {
             DatasetItem& item = T->particle_types[i];
             if (items[k].pull > 0.0f) {
                 const ElementDefault& def = element_defaults[type.z[i]];
-                if (items[k].color == md_u32_from_float4(def.color)) {
+                if (items[k].color == md_u32_from_float4(element_color(type.z[i]))) {
                     // It kept the color of its element: linked again, when that changes nothing else
                     if (!item.use_defaults && type.radius[i] == def.radius && type.mass[i] == def.mass) item.use_defaults = true;
                 } else {
@@ -3394,7 +3334,7 @@ struct Dataset : viamd::EventHandler {
         ImGui::Indent();
         MD_DEFER { ImGui::Unindent(); };
 
-        const PeriodicTableResult table_res = periodic_table_widget(element_defaults, elem_mask);
+        const PeriodicTableResult table_res = periodic_table_widget(app_state->palette.element, elem_mask);
         if (table_res.hovered) {
             md_bitmask_t* hb = &system(data).selection.highlight_mask;
             md_bitmask_clear(hb);
@@ -3411,7 +3351,7 @@ struct Dataset : viamd::EventHandler {
                 element_popup_z = table_res.z;
             }
         }
-        ImGui::TextDisabled("Click an element to edit its defaults, which apply to all atom types linked to them");
+        ImGui::TextDisabled("Click an element to edit its radius and mass, which apply to all atom types linked to them. Its colour is the palette's.");
 
         if (element_popup_z >= 0 && element_popup_z < MD_Z_Count && ImGui::BeginPopup("##element_default_popup")) {
             const int z = element_popup_z;
@@ -3422,7 +3362,7 @@ struct Dataset : viamd::EventHandler {
 
             ElementDefault& def = element_defaults[z];
             bool edited = false;
-            edited |= ImGui::ColorEdit3("Color", def.color.elem);
+            ImGui::TextDisabled("Its colour is the palette's: Visuals > Palette");
             if (ImGui::InputFloat("Van der Waals Radius", &def.radius)) {
                 def.radius = MD_MAX(def.radius, 0.01f);
                 edited = true;
@@ -3433,7 +3373,6 @@ struct Dataset : viamd::EventHandler {
             }
             if (compute_element_default_delta((md_atomic_number_t)z)) {
                 if (ImGui::Button("Reset")) {
-                    def.color  = md_float4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
                     def.radius = md_atomic_number_vdw_radius((md_atomic_number_t)z);
                     def.mass   = md_atomic_number_mass((md_atomic_number_t)z);
                     edited = true;
@@ -3928,104 +3867,12 @@ struct Dataset : viamd::EventHandler {
         return clicked;
     }
 
-    // The defaults of the standard monomers (tier 1), which the residue types linked to them follow
+    // The residue types linked to the palette take the colours of their monomers there (the user's, Visuals > Palette)
     void draw_monomer_defaults(ApplicationState& data, bool& color_changed) {
-        md_residue_type_data_t& type = system(data).data.sys.residue.type;
-        const size_t num_types = md_residue_type_count(&type);
-        if (num_types == 0 || md_array_size(T->res_types) != num_types) return;
-
-        // Monomers of residue types linked to the defaults, the others are shown disabled
-        bool used[MD_MONOMER_COUNT] = {};
-        bool any = false;
-        for (size_t i = 0; i < num_types; ++i) {
-            if (T->res_types[i].use_defaults && T->res_types[i].count > 0) {
-                used[md_residue_type_monomer(&type, i)] = true;
-                any = true;
-            }
-        }
-        if (!any) return;
-        if (!ImGui::CollapsingHeader("Residue Defaults")) return;
-
-        ImGui::Indent();
-        MD_DEFER { ImGui::Unindent(); };
-
-        const ImGuiStyle& style = ImGui::GetStyle();
-        const float spacing = style.ItemSpacing.x * 0.25f;
-        const float width   = ImGui::CalcTextSize("WWW").x + style.FramePadding.x * 2.0f;
-        const float max_x   = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-
-        auto draw_group = [&](const char* label, int beg, int end) {
-            ImGui::TextDisabled("%s", label);
-            for (int m = beg; m < end; ++m) {
-                if (m != beg) {
-                    if (ImGui::GetItemRectMax().x + spacing + width <= max_x) ImGui::SameLine(0, spacing);
-                }
-                char lbl[16];
-                snprintf(lbl, sizeof(lbl), MD_STR_FMT "##monomer", MD_STR_ARG(md_monomer_id((md_monomer_t)m)));
-                ImGui::BeginDisabled(!used[m]);
-                if (monomer_button(lbl, monomer_defaults[m].color, width) && !ImGui::IsKeyDown(ImGuiMod_Shift)) {
-                    monomer_popup = m;
-                    ImGui::OpenPopup("##monomer_default_popup");
-                }
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered()) {
-                    // The atoms of the residue types which follow these defaults
-                    md_bitmask_t* hb = &system(data).selection.highlight_mask;
-                    md_bitmask_clear(hb);
-                    for (size_t i = 0; i < num_types; ++i) {
-                        if (!T->res_types[i].use_defaults || md_residue_type_monomer(&type, i) != m) continue;
-                        for (size_t k = 0; k < md_array_size(T->res_types[i].res_indices); ++k) {
-                            const md_urange_t r = md_system_residue_atom_range(&system(data).data.sys, (size_t)T->res_types[i].res_indices[k]);
-                            md_bitmask_set_range(hb, r.beg, r.end);
-                        }
-                    }
-                    handle_item_click(data);
-                    ImGui::SetTooltip(MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_name((md_monomer_t)m)), md_monomer_letter((md_monomer_t)m));
-                }
-            }
-        };
-        draw_group("Amino acids", MD_MONOMER_ALA, MD_MONOMER_DA);
-        draw_group("Nucleotides", MD_MONOMER_DA, MD_MONOMER_COUNT);
-        ImGui::TextDisabled("Click a residue to edit its defaults, which apply to all residue types linked to them");
-
-        if (monomer_popup > MD_MONOMER_NONE && monomer_popup < MD_MONOMER_COUNT && ImGui::BeginPopup("##monomer_default_popup")) {
-            const md_monomer_t m = (md_monomer_t)monomer_popup;
-            ImGui::Text(MD_STR_FMT ": " MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_id(m)), MD_STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
-            ImGui::Separator();
-
-            MonomerDefault& def = monomer_defaults[m];
-            bool edited = ImGui::ColorEdit3("Color", def.color.elem);
-            if (compute_monomer_default_delta(m)) {
-                if (ImGui::Button("Reset")) {
-                    def.color = md_float4_from_u32(md_monomer_color(m));
-                    edited = true;
-                }
-                ImGui::SetItemTooltip("Restore the built in color");
-            }
-            if (edited) {
-                def.color.w = 1.0f;
-                // Of every system: the defaults are of them all
-                for (size_t k = 0; k < data.num_systems; ++k) {
-                    SystemContext& sc = *data.systems[k];
-                    work_on(sc);
-                    md_residue_type_data_t& t = sc.data.sys.residue.type;
-                    const size_t n = MD_MIN(md_residue_type_count(&t), md_array_size(T->res_types));
-                    bool color = false;
-                    for (size_t i = 0; i < n; ++i) {
-                        if (T->res_types[i].use_defaults && md_residue_type_monomer(&t, i) == m) {
-                            link_res_type_to_monomer(t, i, color);
-                        }
-                    }
-                    if (&sc != shown_before_all(data)) {
-                        if (color) flag_all_representations_as_dirty(sc);
-                    } else {
-                        color_changed |= color;
-                    }
-                }
-                work_on_shown(data);
-            }
-            ImGui::EndPopup();
-        }
+        (void)color_changed;
+        ImGui::TextDisabled("The residue types linked to the defaults take the colours of their monomers in the palette");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Palette...##res")) data.show_palette_window = true;
     }
 
     void draw_res_types_tab(ApplicationState& data) {
@@ -4036,7 +3883,6 @@ struct Dataset : viamd::EventHandler {
         MD_DEFER { sync_res_type_edits(data, before); };
         draw_res_types(data, color_changed);
         draw_monomer_defaults(data, color_changed);
-        draw_secondary_structure_colors(data);
         if (color_changed) {
             flag_all_representations_as_dirty(&data);
         }
@@ -4208,6 +4054,121 @@ struct Dataset : viamd::EventHandler {
             // What it has, whatever was typed
             snprintf(dir_edit, sizeof(dir_edit), "%s", sc.dir);
         }
+    }
+
+    // ## The palette (ApplicationState::palette): the user's colours of the elements, the monomers and the secondary
+    // structures, which the types linked to it take
+
+    // Its colours given to the types that follow it, of every system: an element's where it is other than the built in
+    // one, else what the type was loaded with; a monomer's. And every representation coloured again, of the secondary
+    // structures too.
+    void palette_to_types(ApplicationState& data) {
+        for (size_t k = 0; k < data.num_systems; ++k) {
+            SystemContext& sc = *data.systems[k];
+            if (!system_loaded(sc)) continue;
+            work_on(sc);
+            md_particle_type_data_t& type = sc.data.sys.atom.type;
+            const size_t n = MD_MIN(md_system_particle_type_count(&sc.data.sys), md_array_size(T->particle_types));
+            for (size_t i = 0; i < n; ++i) {
+                const DatasetItem& item = T->particle_types[i];
+                if (!item.use_defaults || type_is_bead(type.flags[i])) continue;
+                const md_atomic_number_t z = type.z[i];
+                const bool own = compute_element_default_delta(z).color || z != item.load.z;
+                type.color[i] = own ? md_u32_from_float4(element_color(z)) : item.load.color;
+            }
+            bool color_changed = false;
+            apply_monomer_defaults_to_res_types(data, color_changed);
+        }
+        work_on_shown(data);
+        flag_all_representations_as_dirty(&data);
+    }
+
+    int palette_popup_z = -1;
+    int palette_popup_m = -1;
+
+    void draw_palette_window(ApplicationState& data) {
+        if (!data.show_palette_window) return;
+        ImGui::SetNextWindowSize(ImVec2(620, 640), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("Palette", &data.show_palette_window, ImGuiWindowFlags_NoFocusOnAppearing)) {
+            ImGui::End();
+            return;
+        }
+        Palette& pal = data.palette;
+        bool changed = false;
+        ImGui::TextWrapped("The colours things are given unless what they are of says otherwise (a type with a colour of its own, "
+                           "a representation's). Yours, of every system and workspace: kept as you set them, never with a workspace.");
+
+        ImGui::SeparatorText("Elements");
+        const PeriodicTableResult res = periodic_table_widget(pal.element);
+        if (res.clicked && res.z >= 0) {
+            palette_popup_z = res.z;
+            ImGui::OpenPopup("##palette_element");
+        }
+        if (palette_popup_z >= 0 && palette_popup_z < MD_Z_Count && ImGui::BeginPopup("##palette_element")) {
+            const md_atomic_number_t z = (md_atomic_number_t)palette_popup_z;
+            ImGui::Text("%d: " MD_STR_FMT " (" MD_STR_FMT ")", (int)z, MD_STR_ARG(md_atomic_number_name(z)), MD_STR_ARG(md_atomic_number_symbol(z)));
+            changed |= ImGui::ColorEdit3("Color", pal.element[z].elem);
+            const md_float4_t builtin = md_float4_from_u32(md_atomic_number_cpk_color(z));
+            ImGui::BeginDisabled(md_u32_from_float4(pal.element[z]) == md_u32_from_float4(builtin));
+            if (ImGui::Button("Reset")) {
+                pal.element[z] = builtin;
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::EndPopup();
+        }
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float spacing = style.ItemSpacing.x * 0.25f;
+        const float width   = ImGui::CalcTextSize("WWW").x + style.FramePadding.x * 2.0f;
+        const float max_x   = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
+        auto draw_monomers = [&](const char* label, int beg, int end) {
+            ImGui::SeparatorText(label);
+            for (int m = beg; m < end; ++m) {
+                if (m != beg && ImGui::GetItemRectMax().x + spacing + width <= max_x) ImGui::SameLine(0, spacing);
+                char lbl[24];
+                snprintf(lbl, sizeof(lbl), MD_STR_FMT "##palette_monomer", MD_STR_ARG(md_monomer_id((md_monomer_t)m)));
+                if (monomer_button(lbl, pal.monomer[m], width)) {
+                    palette_popup_m = m;
+                    ImGui::OpenPopup("##palette_monomer");
+                }
+                ImGui::SetItemTooltip(MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_name((md_monomer_t)m)), md_monomer_letter((md_monomer_t)m));
+            }
+        };
+        draw_monomers("Amino acids", MD_MONOMER_ALA, MD_MONOMER_DA);
+        draw_monomers("Nucleotides", MD_MONOMER_DA, MD_MONOMER_COUNT);
+        if (palette_popup_m > MD_MONOMER_NONE && palette_popup_m < MD_MONOMER_COUNT && ImGui::BeginPopup("##palette_monomer")) {
+            const md_monomer_t m = (md_monomer_t)palette_popup_m;
+            ImGui::Text(MD_STR_FMT ": " MD_STR_FMT " (%c)", MD_STR_ARG(md_monomer_id(m)), MD_STR_ARG(md_monomer_name(m)), md_monomer_letter(m));
+            changed |= ImGui::ColorEdit3("Color", pal.monomer[m].elem);
+            const md_float4_t builtin = md_float4_from_u32(md_monomer_color(m));
+            ImGui::BeginDisabled(md_u32_from_float4(pal.monomer[m]) == md_u32_from_float4(builtin));
+            if (ImGui::Button("Reset")) {
+                pal.monomer[m] = builtin;
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            ImGui::EndPopup();
+        }
+
+        ImGui::SeparatorText("Secondary structure");
+        const ImGuiColorEditFlags cflags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
+        changed |= ImGui::ColorEdit3("Coil##palette", pal.ss_coil.elem, cflags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit3("Helix##palette", pal.ss_helix.elem, cflags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit3("Sheet##palette", pal.ss_sheet.elem, cflags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit3("Not known##palette", pal.ss_unknown.elem, cflags);
+
+        ImGui::Separator();
+        if (ImGui::Button("Reset all")) {
+            palette_builtin(&pal);
+            changed = true;
+        }
+        ImGui::SetItemTooltip("The built in palette, of all of it");
+        if (changed) palette_changed(&data);
+        ImGui::End();
     }
 
     void draw(ApplicationState& data) {

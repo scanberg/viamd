@@ -841,6 +841,14 @@ int main(int argc, char** argv) {
         app_settings::bind(MD_STR_LIT("look_dof_strength"), &look.dof.aperture);
     }
     app_settings::on_apply(apply_visual_settings, &state);
+    // The palette: the built in one, with what the .ini says of it
+    palette_builtin(&state.palette);
+    app_settings::bind(MD_STR_LIT("palette"), state.settings.palette, sizeof(state.settings.palette));
+    app_settings::on_apply([](void* user) {
+        ApplicationState* s = (ApplicationState*)user;
+        palette_read(&s->palette, md_str_from_cstr(s->settings.palette));
+        s->palette_version += 1;
+    }, &state);
     app_settings::bind_enum(MD_STR_LIT("script_language"), &state.settings.script_language);
     app_settings::on_apply(apply_script_language, &state);
     display_units::register_settings();
@@ -2422,6 +2430,36 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
             machine_dirty |= aa_toggled;
+
+            // The colours things are given unless what they are of says otherwise: the user's, of every system and workspace,
+            // kept as they are set. The secondary structures' here, the elements' and the monomers' in a window of their own.
+            if (prop::section("Palette", false)) {
+                Palette& pal = data->palette;
+                const ImGuiColorEditFlags cflags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
+                prop::row("secondary structure", "Coil, helix, sheet, and what is not known");
+                bool ss_changed = false;
+                ss_changed |= ImGui::ColorEdit3("##ss_coil", pal.ss_coil.elem, cflags);
+                ImGui::SetItemTooltip("Coil");
+                ImGui::SameLine(0.0f, gap);
+                ss_changed |= ImGui::ColorEdit3("##ss_helix", pal.ss_helix.elem, cflags);
+                ImGui::SetItemTooltip("Helix");
+                ImGui::SameLine(0.0f, gap);
+                ss_changed |= ImGui::ColorEdit3("##ss_sheet", pal.ss_sheet.elem, cflags);
+                ImGui::SetItemTooltip("Sheet");
+                ImGui::SameLine(0.0f, gap);
+                ss_changed |= ImGui::ColorEdit3("##ss_unknown", pal.ss_unknown.elem, cflags);
+                ImGui::SetItemTooltip("Not known");
+                if (ss_changed) palette_changed(data);
+                prop::row("elements, monomers", "The colours of the elements and of the amino acids and nucleotides");
+                if (ImGui::Button("Edit...##palette")) data->show_palette_window = true;
+                ImGui::SameLine(0.0f, gap);
+                if (ImGui::Button("Reset all##palette")) {
+                    palette_builtin(&pal);
+                    palette_changed(data);
+                }
+                ImGui::SetItemTooltip("The built in palette, of all of it");
+                prop::section_end();
+            }
 
             if (prop::section("Isosurfaces", false)) {
                 int rendering = MD_CLAMP(data->settings.isosurface_rendering, 0, 1);

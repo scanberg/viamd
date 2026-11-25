@@ -7,6 +7,7 @@
 #include <core/md_array.h>
 
 #include <md_system.h>
+#include <md_element.h>
 #include <md_run.h>
 #include <plane.h>
 #include <clock.h>
@@ -1923,6 +1924,16 @@ struct SystemContext {
     SystemSelection       selection;
 };
 
+// The colours of the palette (ApplicationState::palette, palette_builtin)
+struct Palette {
+    md_float4_t element[MD_Z_Count];
+    md_float4_t monomer[MD_MONOMER_COUNT];
+    md_float4_t ss_unknown;
+    md_float4_t ss_coil;
+    md_float4_t ss_helix;
+    md_float4_t ss_sheet;
+};
+
 struct ApplicationState {
     // --- APPLICATION ---
     application::Context app {};
@@ -2171,15 +2182,10 @@ struct ApplicationState {
         } grow;
     } selection;
 
-    // The colours of the secondary structures, of every system and representation (ColorMapping::SecondaryStructure), as
-    // the colours of the elements and the monomers are of them all: a palette above what is of a system. Edited in the
-    // System window (Residue Types), kept with the workspace ([SecondaryStructureColors]).
-    struct {
-        md_float4_t unknown = {0.333f, 0.333f, 0.333f, 1.0f};
-        md_float4_t coil    = {0.86f, 0.86f, 0.86f, 1.0f};
-        md_float4_t helix   = {0.12f, 0.86f, 0.12f, 1.0f};
-        md_float4_t sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
-    } secondary_structure_colors;
+    // The palette (Palette): the user's, of every system and workspace. Moves palette_version with every change.
+    Palette  palette;
+    uint64_t palette_version = 1;
+    bool     show_palette_window = false;   // Visuals > Palette
 
     // --- GBUFFER ---
     // Primary gbuffer
@@ -2364,6 +2370,7 @@ struct ApplicationState {
             decltype(visuals.tonemapping) tonemapping;
             decltype(visuals.dof)         dof;
         } look;
+        char palette[4096] = "";            // The palette as the .ini keeps it (palette_write)
         int  isosurface_rendering = 0;      // IsosurfaceRendering of the Orbital Grid and Transition Analysis panels (a
                                             // representation has its own: ElectronicStructureRepresentation::rendering)
         bool focus_in_free_space = true;    // A double click frames in what the windows leave of the view (view.region)
@@ -2964,6 +2971,19 @@ static inline const SystemContext& system_or_first(const ApplicationState& app, 
 
 // How many are loaded (system_loaded)
 size_t system_count(const ApplicationState& app);
+
+// THE PALETTE: the colours things are given unless what they are of says otherwise (a type with a colour of its own, a
+// representation's): of the elements, of the standard monomers (the amino acids, the nucleotides) and of the secondary
+// structures. The user's, as they like to see things: kept as they set it (the .ini, settings.palette), never with a
+// workspace, which keeps what overrides it alone. Edited under Visuals > Palette. The types of every system that follow
+// it (UseDefaults: System > Atom Types, Residue Types) take its colours.
+void palette_builtin(Palette* palette);
+// As the .ini keeps it: the entries other than the built in ones, "e:C=909090ff m:HIS=... ss:helix=...". Read onto the
+// built in ones; what it does not say is built in.
+void palette_write(char* buf, size_t cap, const Palette& palette);
+void palette_read(Palette* palette, md_str_t text);
+// After an edit of it: its version moved, and what the .ini keeps of it written
+void palette_changed(ApplicationState* app);
 
 // A system's directory (SystemContext::dir): the outermost layer of the paths of what is of it, as the Attributes window
 // lists them ("0/run/md/time", "mutant/atom/charge"). Unique among the systems: a number, the lowest free, given as it is

@@ -37,6 +37,7 @@
 #include <event.h>
 #include <loader.h>
 #include <color_utils.h>
+#include <app_settings.h>
 #include <display_units.h>
 #include <frame_axis.h>
 #include <serialization_utils.h>
@@ -2460,6 +2461,112 @@ SystemContext* system_find(ApplicationState* app, uint32_t id) {
 
 const SystemContext* system_find(const ApplicationState& app, uint32_t id) {
     return system_find(const_cast<ApplicationState*>(&app), id);
+}
+
+// --- THE PALETTE ---
+
+void palette_builtin(Palette* p) {
+    MD_ASSERT(p);
+    for (int z = 0; z < MD_Z_Count; ++z) p->element[z] = md_float4_from_u32(md_atomic_number_cpk_color((md_atomic_number_t)z));
+    for (int m = 0; m < MD_MONOMER_COUNT; ++m) p->monomer[m] = md_float4_from_u32(md_monomer_color((md_monomer_t)m));
+    // As the representations had them: an unknown structure the darker grey
+    p->ss_unknown = md_float4_from_u32(0xFF555555);
+    p->ss_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+    p->ss_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+    p->ss_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+}
+
+// Each entry of a palette by the name it is kept by, and where it is in it
+struct PaletteEntry {
+    char         name[16];
+    md_float4_t* color;
+};
+
+static size_t palette_entries(PaletteEntry* out, size_t cap, Palette* p) {
+    size_t n = 0;
+    auto add = [&](md_str_t prefix, md_str_t id, md_float4_t* c) {
+        if (n >= cap || id.len == 0) return;
+        snprintf(out[n].name, sizeof(out[n].name), MD_STR_FMT ":" MD_STR_FMT, MD_STR_ARG(prefix), MD_STR_ARG(id));
+        out[n].color = c;
+        n += 1;
+    };
+    for (int z = 1; z < MD_Z_Count; ++z) add(MD_STR_LIT("e"), md_atomic_number_symbol((md_atomic_number_t)z), &p->element[z]);
+    for (int m = MD_MONOMER_NONE + 1; m < MD_MONOMER_COUNT; ++m) add(MD_STR_LIT("m"), md_monomer_id((md_monomer_t)m), &p->monomer[m]);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("unknown"), &p->ss_unknown);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("coil"),    &p->ss_coil);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("helix"),   &p->ss_helix);
+    add(MD_STR_LIT("ss"), MD_STR_LIT("sheet"),   &p->ss_sheet);
+    return n;
+}
+
+#define PALETTE_MAX_ENTRIES (MD_Z_Count + MD_MONOMER_COUNT + 4)
+
+void palette_write(char* buf, size_t cap, const Palette& palette) {
+    MD_ASSERT(buf && cap > 0);
+    Palette builtin;
+    palette_builtin(&builtin);
+    PaletteEntry cur[PALETTE_MAX_ENTRIES], ref[PALETTE_MAX_ENTRIES];
+    const size_t n = palette_entries(cur, PALETTE_MAX_ENTRIES, const_cast<Palette*>(&palette));
+    palette_entries(ref, PALETTE_MAX_ENTRIES, &builtin);
+    size_t len = 0;
+    buf[0] = '\0';
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t c = md_u32_from_float4(*cur[i].color);
+        if (c == md_u32_from_float4(*ref[i].color)) continue;
+        // RGBA, as written: the bytes from the lowest
+        const int w = snprintf(buf + len, cap - len, "%s%s=%02x%02x%02x%02x", len ? " " : "", cur[i].name,
+                               c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, (c >> 24) & 0xFF);
+        if (w < 0 || (size_t)w >= cap - len) {
+            VIAMD_LOG_ERROR("Palette: more of it changed than the settings keep; the rest is not kept");
+            buf[len] = '\0';
+            return;
+        }
+        len += (size_t)w;
+    }
+}
+
+static int hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+void palette_read(Palette* palette, md_str_t text) {
+    MD_ASSERT(palette);
+    palette_builtin(palette);
+    PaletteEntry entries[PALETTE_MAX_ENTRIES];
+    const size_t n = palette_entries(entries, PALETTE_MAX_ENTRIES, palette);
+    while (text.len > 0) {
+        text = md_str_trim_beg(text);
+        size_t end = 0;
+        while (end < text.len && text.ptr[end] != ' ') ++end;
+        const md_str_t item = md_str_substr(text, 0, end);
+        text = md_str_substr(text, end, SIZE_MAX);
+        md_str_t name, value;
+        if (!md_str_cut(&name, &value, item, md_str_find_char(item, '=')) || value.len != 8) continue;
+        uint32_t c = 0;
+        bool ok = true;
+        for (int k = 0; k < 4 && ok; ++k) {
+            const int hi = hex_digit(value.ptr[2 * k]), lo = hex_digit(value.ptr[2 * k + 1]);
+            ok = hi >= 0 && lo >= 0;
+            c |= (uint32_t)((hi << 4) | lo) << (8 * k);
+        }
+        if (!ok) continue;
+        for (size_t i = 0; i < n; ++i) {
+            if (md_str_eq_cstr(name, entries[i].name)) {
+                *entries[i].color = md_float4_from_u32(c);
+                break;
+            }
+        }
+    }
+}
+
+void palette_changed(ApplicationState* app) {
+    MD_ASSERT(app);
+    app->palette_version += 1;
+    palette_write(app->settings.palette, sizeof(app->settings.palette), app->palette);
+    app_settings::mark_dirty();
 }
 
 // --- SYSTEM DIRECTORIES ---
