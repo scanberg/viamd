@@ -2438,6 +2438,10 @@ struct ApplicationState {
 
     struct {
         bool show_window = false;
+        // Of which system (by id, system_or_first) and which of its instances (by id, instance_resolve): its run's
+        // frames, at the frame it shows
+        uint32_t system_id = 0;
+        uint32_t instance_id = 0;
         int selected_atom_filter = 0;
         int selected_traj_filter = 0;       // all frames, the current frame, or the frames of selected_traj_period
         uint32_t selected_traj_period = 0;   // a timeline period, by id

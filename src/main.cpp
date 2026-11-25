@@ -7198,10 +7198,19 @@ void draw_structure_export_window(ApplicationState* data) {
         md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
         MD_DEFER { md_temp_end(temp); };
 
-        const md_system_t* sys = &data->mold.sys;
-        const md_system_state_t* state = &system_instance(data->system_context).state;
-        const bool traj = run_num_frames(data->system_context) > 0;
         auto& struct_exp = data->structure_export;
+        // Of which system and instance, where there are several
+        if (system_combo("System", &struct_exp.system_id, *data)) struct_exp.instance_id = 0;
+        SystemContext& sc = system_or_first(data, struct_exp.system_id);
+        if (sc.num_instances > 1) {
+            instance_combo("Instance", &struct_exp.instance_id, sc);
+            ImGui::SetItemTooltip("The instance whose run's frames are exported, at the frame it shows");
+        }
+        const SystemInstance& inst = instance_resolve(sc, struct_exp.instance_id);
+        const SystemRun* run = instance_run(inst);
+        const md_system_t* sys = &sc.data.sys;
+        const md_system_state_t* state = &inst.state;
+        const bool traj = run_num_frames(sc, run) > 0;
 
         static const char* atom_mask_options[] = {
             "Active Selection",
@@ -7227,21 +7236,21 @@ void draw_structure_export_window(ApplicationState* data) {
 
         if (struct_exp.selected_atom_filter == 2) { // Query
             auto& query = struct_exp.query;
-            query.requires_evaluation |= filter_input("Query", &query.filter, data->script.language, filter_context(data->system_context));
+            query.requires_evaluation |= filter_input("Query", &query.filter, data->script.language, filter_context(inst));
             bool preview = ImGui::IsItemFocused() || ImGui::IsItemHovered();
 
             if (query.requires_evaluation) {
-                filter_evaluate(&query.filter, &query.mask, data->script.language, filter_context(data->system_context), persistent_alloc);
+                filter_evaluate(&query.filter, &query.mask, data->script.language, filter_context(inst), persistent_alloc);
                 query.requires_evaluation = false;
             }
 
             if (ImGui::IsWindowHovered()) {
                 // Clear highlight mask
-                md_bitmask_clear(&data->system_context.selection.highlight_mask);
+                md_bitmask_clear(&sc.selection.highlight_mask);
             }
 
             if (query.filter.result.success && preview) {
-                md_bitmask_assign(&data->system_context.selection.highlight_mask, query.mask);
+                md_bitmask_assign(&sc.selection.highlight_mask, query.mask);
             }
         }
 
@@ -7276,20 +7285,20 @@ void draw_structure_export_window(ApplicationState* data) {
 
         //ImGui::PopItemWidth();
 
-        auto extract_atom_indices = [data](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
+        auto extract_atom_indices = [data, &sc, &inst](int* out_atom_indices, size_t atom_index_cap, const md_system_state_t* state) -> size_t {
             switch (data->structure_export.selected_atom_filter) {
                 case 0: { // Active Selection
-                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->system_context.selection.selection_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&sc.selection.selection_mask));
                 } break;
                 case 1: { // Visible Atoms
-                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&data->representation.visibility_mask));
+                    return md_bitset_iter_extract_indices(out_atom_indices, atom_index_cap, md_bitmask_iter(&sc.representation.visibility_mask));
                 } break;
                 case 2: { // Query
                     auto& query = data->structure_export.query;
                     if (query.filter.result.is_dynamic) {
                         // What it picks depends on the coordinates: picked again in each frame exported (script::filter
                         // replaces what the mask held, so nothing of the previous frame stays)
-                        script::FilterCtx ctx = filter_context(data->system_context);
+                        script::FilterCtx ctx = filter_context(inst);
                         ctx.state = state;
                         filter_evaluate(&query.filter, &query.mask, data->script.language, ctx, persistent_alloc);
                     }
@@ -7301,10 +7310,10 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                 } break;
                 case 3: { // All Atoms
-                    for (size_t i = 0; i < data->mold.sys.atom.count && i < atom_index_cap; ++i) {
+                    for (size_t i = 0; i < sc.data.sys.atom.count && i < atom_index_cap; ++i) {
                         out_atom_indices[i] = (int)i;
                     }
-                    return data->mold.sys.atom.count;
+                    return sc.data.sys.atom.count;
                 } break;
                 default: {
                     VIAMD_LOG_ERROR("Invalid atom filter selection.");
@@ -7318,18 +7327,18 @@ void draw_structure_export_window(ApplicationState* data) {
             if (traj) {
                 switch (struct_exp.selected_traj_filter) {
                 case 0: { // All Frames
-                    size_t num_frames = run_num_frames(data->system_context);
+                    size_t num_frames = run_num_frames(sc, run);
                     for (size_t i = 0; i < num_frames; ++i) {
                         md_array_push(frame_indices, (int32_t)i, frame_alloc);
                     }
                 } break;
                 case 1: { // Current Frame
-                    int32_t current_frame = (int)(clock_frame(data) + 0.5); // Round to nearest
+                    int32_t current_frame = (int)(instance_current_frame(inst) + 0.5); // Round to nearest
                     md_array_push(frame_indices, current_frame, frame_alloc);
                 } break;
                 case 2: { // A timeline period
                     int beg = 0, end = -1;
-                    if (!traj_period || !period_frames(&beg, &end, data, *traj_period)) {
+                    if (!traj_period || !run_period_frames(&beg, &end, data, sc, run, *traj_period)) {
                         beg = 0;
                         end = -1;
                     }
@@ -7364,7 +7373,7 @@ void draw_structure_export_window(ApplicationState* data) {
                                 // frame, which is delivered on the state.
                                 md_system_state_t frame_state = {};
                                 int first_frame = md_array_size(frame_indices) > 0 ? frame_indices[0] : 0;
-                                if (extract_frame(data->system_context, first_frame, &frame_state)) {
+                                if (extract_frame(sc, run, first_frame, &frame_state)) {
                                     if (frame_state.unitcell.flags != 0) {
                                         double a, b, c, alpha, beta, gamma;
                                         md_unitcell_extract_extent_angles(&a, &b, &c, &alpha, &beta, &gamma, &frame_state.unitcell);
@@ -7398,7 +7407,7 @@ void draw_structure_export_window(ApplicationState* data) {
 
                         // Many frames: one context for all of them, so the run's files stay open.
                         const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
-                        md_system_extract_t* ex = md_system_extract_begin(sys, run_path(data->system_context), paths, MD_COUNTOF(paths), md_get_heap_allocator());
+                        md_system_extract_t* ex = md_system_extract_begin(sys, md_str_from_cstr(run ? run->path : ""), paths, MD_COUNTOF(paths), md_get_heap_allocator());
                         MD_DEFER { md_system_extract_end(ex); };
 
                         for (size_t f = 0; f < num_frames; ++f) {
@@ -7420,7 +7429,7 @@ void draw_structure_export_window(ApplicationState* data) {
                     }
                     else {
                         // Single frame from system
-                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), &system_instance(data->system_context).state);
+                        size_t num_atoms = extract_atom_indices(atom_indices, md_array_capacity(atom_indices), state);
                         
                         if (struct_exp.selected_file_format == 0) { // XYZ
                             xyz_write_frame(file, atomic_numbers, state, atom_indices, num_atoms);
