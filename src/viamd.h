@@ -3096,7 +3096,8 @@ md_str_t create_unique_identifier(const script::Program* ir, md_str_t base, md_a
 // Starts inferring the system as it is now, from state (NULL: the coordinates shown): all of what is derived, put in
 // place of what it has once done
 void system_inference_start(SystemContext& sys, const md_system_state_t* state);
-// Once per frame: starts again what was cancelled, or was inferred from a topology which changed since
+// Once per frame: starts again what was cancelled (the inference, the runs' backbone angles and secondary structure),
+// or was inferred from a topology which changed since
 void system_inference_update(SystemContext& sys);
 // Whether the system shows its core, what inference derives not there yet
 bool system_inference_pending(const SystemContext& sys);

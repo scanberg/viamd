@@ -2703,6 +2703,14 @@ void system_inference_update(SystemContext& sys) {
     if (inf.pending && inf.restart && !inf.job.running()) {
         system_inference_start(sys, nullptr);
     }
+    // The runs' backbones, whose computation was stopped by what changed another system (interrupt_async_tasks stops
+    // the work of all of them), and of this one once it is inferred again (system_inferred_refresh starts them)
+    if (!inf.pending) {
+        for (size_t i = 0; i < sys.num_runs; ++i) {
+            SystemRun& run = *sys.runs[i];
+            if (run.backbone_computations.status() == task_system::Status::Cancelled) trajectory_backbone_start(sys, run);
+        }
+    }
 }
 
 void system_inference_finish(SystemContext& sys) {
