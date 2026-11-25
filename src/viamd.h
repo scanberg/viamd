@@ -1905,7 +1905,7 @@ struct ApplicationState {
         struct { 
             bool enabled = true;
             float intensity = 5.0f;
-            postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Performance;
+            postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Quality;     // the computer's (the .ini), as the rest of the AO
         } ssao;
 
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
