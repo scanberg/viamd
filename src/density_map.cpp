@@ -4,10 +4,12 @@
 #include <core/md_allocator.h>
 #include <core/md_vec_math.h>
 #include <core/md_hash.h>
+#include <core/md_log.h>
 
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
 #include <gfx/profiler.h>
+#include <app/imgui_impl_md_gpu.h>
+
+#include "density_map_shaders.inl"
 
 #include <implot_internal.h>
 
@@ -364,216 +366,75 @@ void density_map_cancel(DensityMapJob* job, bool wait) {
     if (wait) job->task.wait();
 }
 
-// ## GL
+// ## GPU
 
-uint32_t density_map_texture_create(bool periodic) {
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    const GLint wrap = periodic ? GL_REPEAT : GL_CLAMP_TO_BORDER;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
-    const float border[4] = { 0, 0, 0, 0 };
-    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA32F, DENSITY_MAP_DIM, DENSITY_MAP_DIM);
-    glBindTexture(GL_TEXTURE_2D, 0);
+// density_map.slang's parameters of a draw (PARAMS float4, at P_*) and Args
+struct GpuDraw {
+    md_gpu_float4 weights;
+    md_gpu_float4 levels[2];
+    md_gpu_float4 fill[DENSITY_MAP_MAX_LEVELS];
+    md_gpu_float4 line_color;
+    md_gpu_float4 cmap[16];
+    uint32_t mode, fill_on, lines_on, num_levels;
+    uint32_t cmap_count, cmap_log, _p0, _p1;
+    float    line_width, cmap_max, opacity, _p2;
+    md_gpu_float4 _p3;
+};
+static_assert(sizeof(GpuDraw) == 32 * 16, "density_map.slang's PARAMS");
+
+struct GpuArgs {
+    md_gpu_float4 uv_rect, clip01, clip2;
+    uint32_t width, height, count, periodic;
+    md_gpu_addr_t params;
+    md_gpu_addr_t grids;        // md_gpu_sampled_tex_t per draw
+    md_gpu_storage_tex_t dst;
+    uint32_t _p0, _p1;
+};
+static_assert(sizeof(GpuArgs) == 96, "density_map.slang's Args");
+
+static struct {
+    md_gpu_stream_t  stream = nullptr;
+    md_gpu_kernel_t  kernel = nullptr;
+    md_gpu_texture_t marks = nullptr;
+} gpu;
+
+void density_map_initialize(md_gpu_stream_t stream) {
+    gpu.stream = stream;
+}
+
+md_gpu_texture_t density_map_texture_create() {
+    if (!gpu.stream) return nullptr;
+    md_gpu_texture_desc_t d = {};
+    d.type   = MD_GPU_TEX_2D;
+    d.format = MD_GPU_FORMAT_RGBA32_FLOAT;
+    d.usage  = MD_GPU_TEX_SAMPLED;
+    d.width  = DENSITY_MAP_DIM;
+    d.height = DENSITY_MAP_DIM;
+    d.label  = "density map";
+    md_gpu_texture_t tex = md_gpu_texture_create(gpu.stream, &d);
+    if (!tex) MD_LOG_ERROR("A density map's texture could not be made: %s", md_gpu_last_error());
     return tex;
 }
 
-void density_map_texture_upload(uint32_t tex, const float* grid) {
-    gl::set_texture_2D_data(tex, 0, grid, GL_RGBA32F);
-    glBindTexture(GL_TEXTURE_2D, 0);
+void density_map_texture_upload(md_gpu_texture_t tex, const float* grid) {
+    if (!tex || !gpu.stream) return;
+    if (!md_gpu_upload_texture(gpu.stream, tex, nullptr, grid, grid_bytes())) {
+        MD_LOG_ERROR("A density map could not be uploaded: %s", md_gpu_last_error());
+    }
 }
 
-void density_map_texture_free(uint32_t* tex) {
+void density_map_texture_free(md_gpu_texture_t* tex) {
     if (tex && *tex) {
-        glDeleteTextures(1, tex);
-        *tex = 0;
+        md_gpu_texture_destroy(*tex);
+        *tex = nullptr;
     }
-}
-
-static constexpr md_str_t v_fs_triangle_src = MD_STR_LIT(R"(
-#version 150 core
-
-void main() {
-    uint idx = uint(gl_VertexID) % 3U;
-    gl_Position = vec4(
-        (float( idx     &1U)) * 4.0 - 1.0,
-        (float((idx>>1U)&1U)) * 4.0 - 1.0,
-        0, 1.0);
-}
-)");
-
-// A layer over the canvas, premultiplied: contours (fills of the regions above the levels, lines along them) or a heat
-// map, of the channels weighted. Sampled with a cubic B-spline, from four bilinear fetches.
-static constexpr md_str_t f_layer_src = MD_STR_LIT(R"(
-#version 330 core
-
-out vec4 out_color;
-
-uniform sampler2D u_tex;
-uniform vec2  u_tex_size;
-uniform vec4  u_uv_rect;        // The uv at the lower left corner, and the extent
-uniform vec2  u_inv_res;
-uniform vec4  u_weights;
-
-uniform int   u_mode;           // 0: contours, 1: heat map
-uniform int   u_fill;
-uniform int   u_lines;
-uniform int   u_num_levels;
-uniform float u_levels[8];      // Densities, the highest first
-uniform vec4  u_fill_colors[8];
-uniform vec4  u_line_color;
-uniform float u_line_width;     // Pixels
-
-uniform vec4  u_cmap[16];
-uniform int   u_cmap_count;
-uniform float u_cmap_max;
-uniform int   u_cmap_log;
-
-uniform float u_opacity;
-
-uniform int   u_clip;           // Within the triangle u_clip_tri (uv) only
-uniform vec2  u_clip_tri[3];
-
-float sample_density(vec2 uv) {
-    vec2 st = uv * u_tex_size - 0.5;
-    vec2 i  = floor(st);
-    vec2 f  = st - i;
-    vec2 f2 = f * f;
-    vec2 f3 = f2 * f;
-    vec2 w0 = (1.0 / 6.0) * (-f3 + 3.0 * f2 - 3.0 * f + 1.0);
-    vec2 w1 = (1.0 / 6.0) * (3.0 * f3 - 6.0 * f2 + 4.0);
-    vec2 w2 = (1.0 / 6.0) * (-3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0);
-    vec2 w3 = (1.0 / 6.0) * f3;
-    vec2 g0 = w0 + w1;
-    vec2 g1 = w2 + w3;
-    vec2 h0 = (i - 1.0 + w1 / g0 + 0.5) / u_tex_size;
-    vec2 h1 = (i + 1.0 + w3 / g1 + 0.5) / u_tex_size;
-    vec4 t00 = texture(u_tex, vec2(h0.x, h0.y));
-    vec4 t10 = texture(u_tex, vec2(h1.x, h0.y));
-    vec4 t01 = texture(u_tex, vec2(h0.x, h1.y));
-    vec4 t11 = texture(u_tex, vec2(h1.x, h1.y));
-    vec4 t = g0.y * (g0.x * t00 + g1.x * t10) + g1.y * (g0.x * t01 + g1.x * t11);
-    return dot(t, u_weights);
-}
-
-vec4 over(vec4 src, vec4 dst) {
-    return src + dst * (1.0 - src.a);
-}
-
-vec4 premultiply(vec4 c) {
-    return vec4(c.rgb * c.a, c.a);
-}
-
-// How much of the pixel is within the triangle: its distance in pixels to the nearest edge, inside
-float clip_coverage(vec2 uv) {
-    vec2 a = u_clip_tri[0], b = u_clip_tri[1], c = u_clip_tri[2];
-    float s = sign((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
-    float cov = 1.0;
-    for (int k = 0; k < 3; ++k) {
-        vec2 p = u_clip_tri[k];
-        vec2 q = u_clip_tri[(k + 1) % 3];
-        float e = s * ((q.x - p.x) * (uv.y - p.y) - (q.y - p.y) * (uv.x - p.x));
-        float g = max(length(vec2(dFdx(e), dFdy(e))), 1.0e-30);
-        cov = min(cov, clamp(e / g + 0.5, 0.0, 1.0));
-    }
-    return cov;
-}
-
-void main() {
-    vec2 uv = u_uv_rect.xy + gl_FragCoord.xy * u_inv_res * u_uv_rect.zw;
-    float d = sample_density(uv);
-    float g = max(length(vec2(dFdx(d), dFdy(d))), 1.0e-30);
-    float clip = clip_coverage(uv);
-
-    vec4 c = vec4(0.0);
-    if (u_mode == 0) {
-        if (u_fill != 0) {
-            for (int i = u_num_levels - 1; i >= 0; --i) {
-                float cov = clamp((d - u_levels[i]) / g + 0.5, 0.0, 1.0);
-                c = over(premultiply(u_fill_colors[i]) * cov, c);
-            }
-        }
-        if (u_lines != 0) {
-            float a = 0.0;
-            for (int i = 0; i < u_num_levels; ++i) {
-                float dist = abs(d - u_levels[i]) / g;
-                a = max(a, clamp(0.5 * u_line_width + 0.5 - dist, 0.0, 1.0));
-            }
-            c = over(premultiply(u_line_color) * a, c);
-        }
-    } else {
-        float v = d / max(u_cmap_max, 1.0e-30);
-        if (u_cmap_log != 0) v = 1.0 + log(max(v, 1.0e-4)) / log(10.0) * 0.25;
-        v = clamp(v, 0.0, 1.0);
-        float s = v * float(u_cmap_count - 1);
-        int i0 = int(floor(s));
-        int i1 = min(i0 + 1, u_cmap_count - 1);
-        vec4 col = mix(u_cmap[i0], u_cmap[i1], s - float(i0));
-        col.a *= smoothstep(0.0, 0.06, v);
-        c = premultiply(col);
-    }
-    out_color = c * u_opacity * (u_clip != 0 ? clip : 1.0);
-}
-)");
-
-static struct {
-    GLuint program = 0;
-    struct {
-        GLint tex, tex_size, uv_rect, inv_res, weights, mode, fill, lines, num_levels, levels, fill_colors, line_color,
-              line_width, cmap, cmap_count, cmap_max, cmap_log, opacity, clip, clip_tri;
-    } loc = {};
-    GLuint fbo = 0;
-    GLuint vao = 0;
-    GLuint marks = 0;
-} gl_state;
-
-static void gl_init() {
-    if (gl_state.program) return;
-    GLuint v_shader = gl::compile_shader_from_source(v_fs_triangle_src, GL_VERTEX_SHADER);
-    GLuint f_shader = gl::compile_shader_from_source(f_layer_src, GL_FRAGMENT_SHADER);
-    gl_state.program = glCreateProgram();
-    const GLuint shaders[] = { v_shader, f_shader };
-    gl::attach_link_detach(gl_state.program, shaders, (int)MD_COUNTOF(shaders));
-    glDeleteShader(v_shader);
-    glDeleteShader(f_shader);
-
-    const GLuint p = gl_state.program;
-    auto& l = gl_state.loc;
-    l.tex         = glGetUniformLocation(p, "u_tex");
-    l.tex_size    = glGetUniformLocation(p, "u_tex_size");
-    l.uv_rect     = glGetUniformLocation(p, "u_uv_rect");
-    l.inv_res     = glGetUniformLocation(p, "u_inv_res");
-    l.weights     = glGetUniformLocation(p, "u_weights");
-    l.mode        = glGetUniformLocation(p, "u_mode");
-    l.fill        = glGetUniformLocation(p, "u_fill");
-    l.lines       = glGetUniformLocation(p, "u_lines");
-    l.num_levels  = glGetUniformLocation(p, "u_num_levels");
-    l.levels      = glGetUniformLocation(p, "u_levels");
-    l.fill_colors = glGetUniformLocation(p, "u_fill_colors");
-    l.line_color  = glGetUniformLocation(p, "u_line_color");
-    l.line_width  = glGetUniformLocation(p, "u_line_width");
-    l.cmap        = glGetUniformLocation(p, "u_cmap");
-    l.cmap_count  = glGetUniformLocation(p, "u_cmap_count");
-    l.cmap_max    = glGetUniformLocation(p, "u_cmap_max");
-    l.cmap_log    = glGetUniformLocation(p, "u_cmap_log");
-    l.opacity     = glGetUniformLocation(p, "u_opacity");
-    l.clip        = glGetUniformLocation(p, "u_clip");
-    l.clip_tri    = glGetUniformLocation(p, "u_clip_tri");
-
-    glGenFramebuffers(1, &gl_state.fbo);
-    glGenVertexArrays(1, &gl_state.vao);
 }
 
 void density_map_shutdown() {
-    if (gl_state.program) glDeleteProgram(gl_state.program);
-    if (gl_state.fbo)     glDeleteFramebuffers(1, &gl_state.fbo);
-    if (gl_state.vao)     glDeleteVertexArrays(1, &gl_state.vao);
-    if (gl_state.marks)   glDeleteTextures(1, &gl_state.marks);
-    gl_state = {};
+    if (gpu.kernel) md_gpu_kernel_destroy(gpu.kernel);
+    if (gpu.marks)  md_gpu_texture_destroy(gpu.marks);
+    gpu.kernel = nullptr;
+    gpu.marks  = nullptr;
 }
 
 void density_map_draw_init(DensityMapDraw* d) {
@@ -621,97 +482,111 @@ void density_map_draw_colormap(DensityMapDraw* d, ImPlotColormap cmap, bool log_
     }
 }
 
-uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws, const float* clip_uv) {
+static md_gpu_float4 f4(float x, float y, float z, float w) {
+    md_gpu_float4 v = {x, y, z, w};
+    return v;
+}
+
+md_gpu_texture_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws,
+                                       bool periodic, const float* clip_uv) {
     MD_ASSERT(canvas);
-    if (num_draws <= 0) return 0;
-    gl_init();
+    if (num_draws <= 0 || !gpu.stream) return nullptr;
+    if (!gpu.kernel) {
+        md_gpu_kernel_desc_t kd = viamd_shader_density_map_composite_kernel();
+        gpu.kernel = md_gpu_kernel_create(md_gpu_stream_device(gpu.stream), &kd);
+        if (!gpu.kernel) {
+            MD_LOG_ERROR("The density maps' kernel could not be made: %s", md_gpu_last_error());
+            return nullptr;
+        }
+    }
 
     width  = MD_CLAMP(width,  1, 4096);
     height = MD_CLAMP(height, 1, 4096);
     if (!canvas->tex || canvas->width != width || canvas->height != height) {
-        if (canvas->tex) glDeleteTextures(1, &canvas->tex);
-        glGenTextures(1, &canvas->tex);
-        glBindTexture(GL_TEXTURE_2D, canvas->tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (canvas->tex) md_gpu_texture_destroy(canvas->tex);
+        md_gpu_texture_desc_t d = {};
+        d.type   = MD_GPU_TEX_2D;
+        d.format = MD_GPU_FORMAT_RGBA8_UNORM;
+        d.usage  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED;
+        d.width  = (uint32_t)width;
+        d.height = (uint32_t)height;
+        d.label  = "density map canvas";
+        canvas->tex = md_gpu_texture_create(gpu.stream, &d);
         canvas->width = width;
         canvas->height = height;
         canvas->hash = 0;
+        if (!canvas->tex) {
+            MD_LOG_ERROR("A density map's canvas (%d x %d) could not be made: %s", width, height, md_gpu_last_error());
+            *canvas = {};
+            return nullptr;
+        }
     }
 
-    uint64_t h = md_hash64(draws, sizeof(DensityMapDraw) * num_draws, (uint64_t)canvas->tex);
-    h = md_hash64(view_uv, sizeof(float) * 4, h);
+    uint64_t h = md_hash64(draws, sizeof(DensityMapDraw) * num_draws, (uint64_t)(uintptr_t)canvas->tex);
+    h = md_hash64(view_uv, sizeof(float) * 4, h ^ (periodic ? 0x9E71 : 0));
     if (clip_uv) h = md_hash64(clip_uv, sizeof(float) * 6, h ^ 0xC11B);
     if (h == canvas->hash) return canvas->tex;
     canvas->hash = h;
 
     PUSH_GPU_SECTION("Density map");
-    GLint last_fbo = 0;
-    GLint last_viewport[4];
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &last_fbo);
-    glGetIntegerv(GL_VIEWPORT, last_viewport);
-
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gl_state.fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, canvas->tex, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, width, height);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_SCISSOR_TEST);
-    glClearColor(0, 0, 0, 0);
-    glClear(GL_COLOR_BUFFER_BIT);
-    glEnable(GL_BLEND);
-    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
-    const auto& l = gl_state.loc;
-    glUseProgram(gl_state.program);
-    glBindVertexArray(gl_state.vao);
-    glActiveTexture(GL_TEXTURE0);
-    glUniform1i(l.tex, 0);
-    glUniform2f(l.tex_size, (float)DENSITY_MAP_DIM, (float)DENSITY_MAP_DIM);
-    glUniform4fv(l.uv_rect, 1, view_uv);
-    glUniform2f(l.inv_res, 1.0f / width, 1.0f / height);
-    glUniform1i(l.clip, clip_uv ? 1 : 0);
-    const float no_clip[6] = { 0, 0, 1, 0, 0, 1 };
-    glUniform2fv(l.clip_tri, 3, clip_uv ? clip_uv : no_clip);
-
+    md_gpu_temp_t scope = md_gpu_temp_begin(gpu.stream);
+    GpuDraw* g = (GpuDraw*)md_alloc(md_get_heap_allocator(), sizeof(GpuDraw) * num_draws);
+    md_gpu_sampled_tex_t* grids = (md_gpu_sampled_tex_t*)md_alloc(md_get_heap_allocator(), sizeof(md_gpu_sampled_tex_t) * num_draws);
+    md_memset(g, 0, sizeof(GpuDraw) * num_draws);
     for (int i = 0; i < num_draws; ++i) {
         const DensityMapDraw& d = draws[i];
-        glBindTexture(GL_TEXTURE_2D, d.tex);
-        glUniform4fv(l.weights, 1, d.weights);
-        glUniform1i(l.mode, d.mode);
-        glUniform1i(l.fill, d.fill);
-        glUniform1i(l.lines, d.lines);
-        glUniform1i(l.num_levels, d.num_levels);
-        glUniform1fv(l.levels, DENSITY_MAP_MAX_LEVELS, d.levels);
-        glUniform4fv(l.fill_colors, DENSITY_MAP_MAX_LEVELS, d.fill_colors[0]);
-        glUniform4fv(l.line_color, 1, d.line_color);
-        glUniform1f(l.line_width, d.line_width);
-        glUniform4fv(l.cmap, 16, d.cmap[0]);
-        glUniform1i(l.cmap_count, MD_MAX(d.cmap_count, 1));
-        glUniform1f(l.cmap_max, d.cmap_max);
-        glUniform1i(l.cmap_log, d.cmap_log);
-        glUniform1f(l.opacity, d.opacity);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        GpuDraw& o = g[i];
+        o.weights = f4(d.weights[0], d.weights[1], d.weights[2], d.weights[3]);
+        o.levels[0] = f4(d.levels[0], d.levels[1], d.levels[2], d.levels[3]);
+        o.levels[1] = f4(d.levels[4], d.levels[5], d.levels[6], d.levels[7]);
+        for (int k = 0; k < DENSITY_MAP_MAX_LEVELS; ++k) o.fill[k] = f4(d.fill_colors[k][0], d.fill_colors[k][1], d.fill_colors[k][2], d.fill_colors[k][3]);
+        o.line_color = f4(d.line_color[0], d.line_color[1], d.line_color[2], d.line_color[3]);
+        for (int k = 0; k < 16; ++k) o.cmap[k] = f4(d.cmap[k][0], d.cmap[k][1], d.cmap[k][2], d.cmap[k][3]);
+        o.mode       = (uint32_t)d.mode;
+        o.fill_on    = d.fill ? 1u : 0u;
+        o.lines_on   = d.lines ? 1u : 0u;
+        o.num_levels = (uint32_t)MD_CLAMP(d.num_levels, 0, DENSITY_MAP_MAX_LEVELS);
+        o.cmap_count = (uint32_t)MD_CLAMP(d.cmap_count, 1, 16);
+        o.cmap_log   = d.cmap_log ? 1u : 0u;
+        o.line_width = d.line_width;
+        o.cmap_max   = d.cmap_max;
+        o.opacity    = d.opacity;
+        grids[i]     = d.tex ? md_gpu_texture_sampled(d.tex) : md_gpu_sampled_tex_t{};
+        if (!d.tex) o.opacity = 0.0f;
     }
+    // A layer without a texture is drawn as nothing: a texture of the others stands in for it
+    md_gpu_sampled_tex_t any = {};
+    for (int i = 0; i < num_draws; ++i) if (grids[i].handle) any = grids[i];
+    for (int i = 0; i < num_draws; ++i) if (!grids[i].handle) grids[i] = any;
 
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glDisable(GL_BLEND);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)last_fbo);
-    glViewport(last_viewport[0], last_viewport[1], last_viewport[2], last_viewport[3]);
+    GpuArgs a = {};
+    a.uv_rect  = f4(view_uv[0], view_uv[1], view_uv[2], view_uv[3]);
+    a.clip01   = clip_uv ? f4(clip_uv[0], clip_uv[1], clip_uv[2], clip_uv[3]) : f4(0, 0, 1, 0);
+    a.clip2    = clip_uv ? f4(clip_uv[4], clip_uv[5], 1, 0) : f4(0, 1, 0, 0);
+    a.width    = (uint32_t)width;
+    a.height   = (uint32_t)height;
+    a.count    = any.handle ? (uint32_t)num_draws : 0u;
+    a.periodic = periodic ? 1u : 0u;
+    a.params   = md_gpu_temp_upload(scope, g, sizeof(GpuDraw) * num_draws);
+    a.grids    = md_gpu_temp_upload(scope, grids, sizeof(md_gpu_sampled_tex_t) * num_draws);
+    a.dst      = md_gpu_texture_storage(canvas->tex, 0);
+    md_free(md_get_heap_allocator(), g, sizeof(GpuDraw) * num_draws);
+    md_free(md_get_heap_allocator(), grids, sizeof(md_gpu_sampled_tex_t) * num_draws);
+    const md_gpu_ordering_t prev = md_gpu_stream_set_ordering(gpu.stream, MD_GPU_ORDER_IMPLICIT);
+    const bool ok = a.params && a.grids && md_gpu_launch(gpu.stream, gpu.kernel, md_gpu_grid_for(gpu.kernel, a.width, a.height, 1), &a, sizeof(a));
+    md_gpu_stream_set_ordering(gpu.stream, prev);
+    md_gpu_temp_end(scope);
+    if (!ok) {
+        MD_LOG_ERROR("A density map could not be drawn: %s", md_gpu_last_error());
+        canvas->hash = 0;
+    }
     POP_GPU_SECTION();
 
     return canvas->tex;
 }
 
 void density_map_canvas_free(DensityMapCanvas* canvas) {
-    if (canvas && canvas->tex) glDeleteTextures(1, &canvas->tex);
+    if (canvas && canvas->tex) md_gpu_texture_destroy(canvas->tex);
     if (canvas) *canvas = {};
 }
 
@@ -719,19 +594,15 @@ void density_map_canvas_invalidate(DensityMapCanvas* canvas) {
     if (canvas) canvas->hash = 0;
 }
 
-static void imgui_blend_premultiplied(const ImDrawList*, const ImDrawCmd*) {
-    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-}
-
-void density_map_plot_canvas(uint32_t tex) {
+void density_map_plot_canvas(md_gpu_texture_t tex) {
     if (!tex) return;
     const ImVec2 pos = ImPlot::GetPlotPos();
     const ImVec2 size = ImPlot::GetPlotSize();
     ImDrawList* dl = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
-    dl->AddCallback(imgui_blend_premultiplied, nullptr);
-    dl->AddImage((ImTextureID)(intptr_t)tex, pos, ImVec2(pos.x + size.x, pos.y + size.y), ImVec2(0, 1), ImVec2(1, 0));
-    dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
+    ImGui_ImplMdGpu_PushState(dl, ImGui_ImplMdGpu_Premultiplied);
+    dl->AddImage(ImGui_ImplMdGpu_TextureID(tex), pos, ImVec2(pos.x + size.x, pos.y + size.y), ImVec2(0, 0), ImVec2(1, 1));
+    ImGui_ImplMdGpu_PopState(dl);
     ImPlot::PopPlotClipRect();
 }
 
@@ -757,7 +628,8 @@ void density_map_plot_view_uv(float out[4], const DensityMapDomain& domain) {
 // ## Marks
 
 // Side by side: a disc with a dark rim (tinted, the rim staying dark) and a ring (tinted)
-static GLuint create_marks() {
+// The marks' texture, with its mips (each a box filter of the one above it): what a mark a few pixels across samples
+static md_gpu_texture_t create_marks() {
     constexpr int S = 64;
     static uint32_t pixels[S * 2 * S];
     for (int y = 0; y < S; ++y) {
@@ -780,22 +652,55 @@ static GLuint create_marks() {
             pixels[y * 2 * S + x] = l8 | (l8 << 8) | (l8 << 16) | (a8 << 24);
         }
     }
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_2D, tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2 * S, S, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    glGenerateMipmap(GL_TEXTURE_2D);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (!gpu.stream) return nullptr;
+    constexpr uint32_t MIPS = 8;    // 128 x 64 down to 1 x 1
+    md_gpu_texture_desc_t d = {};
+    d.type       = MD_GPU_TEX_2D;
+    d.format     = MD_GPU_FORMAT_RGBA8_UNORM;
+    d.usage      = MD_GPU_TEX_SAMPLED;
+    d.width      = 2 * S;
+    d.height     = S;
+    d.mip_levels = MIPS;
+    d.label      = "density map marks";
+    md_gpu_texture_t tex = md_gpu_texture_create(gpu.stream, &d);
+    if (!tex) {
+        MD_LOG_ERROR("The marks' texture could not be made: %s", md_gpu_last_error());
+        return nullptr;
+    }
+    static uint32_t mip[S * S];     // the next level, at most half of the first
+    uint32_t* src = pixels;
+    uint32_t w = 2 * S, h = S;
+    for (uint32_t m = 0; m < MIPS; ++m) {
+        md_gpu_tex_region_t r = {};
+        r.extent[0] = w;
+        r.extent[1] = h;
+        r.extent[2] = 1;
+        r.mip = m;
+        md_gpu_upload_texture(gpu.stream, tex, &r, src, (size_t)w * h * 4);
+        const uint32_t nw = MD_MAX(w / 2, 1u), nh = MD_MAX(h / 2, 1u);
+        for (uint32_t y = 0; y < nh; ++y) {
+            for (uint32_t x = 0; x < nw; ++x) {
+                uint32_t sum[4] = {};
+                for (uint32_t k = 0; k < 4; ++k) {
+                    const uint32_t sx = MD_MIN(2 * x + (k & 1), w - 1), sy = MD_MIN(2 * y + (k >> 1), h - 1);
+                    const uint32_t p = src[sy * w + sx];
+                    for (int c = 0; c < 4; ++c) sum[c] += (p >> (8 * c)) & 0xFF;
+                }
+                uint32_t o = 0;
+                for (int c = 0; c < 4; ++c) o |= ((sum[c] + 2) / 4) << (8 * c);
+                mip[y * nw + x] = o;
+            }
+        }
+        if (src == pixels) src = mip;   // in place from here on: each texel reads only texels at or after its own
+        w = nw;
+        h = nh;
+    }
     return tex;
 }
 
 void density_map_marks_begin(ImDrawList* dl) {
-    if (!gl_state.marks) gl_state.marks = create_marks();
-    dl->PushTexture(ImTextureRef((ImTextureID)(intptr_t)gl_state.marks));
+    if (!gpu.marks) gpu.marks = create_marks();
+    dl->PushTexture(ImTextureRef(ImGui_ImplMdGpu_TextureID(gpu.marks)));
 }
 
 void density_map_mark(ImDrawList* dl, ImVec2 p, float r, DensityMapMark mark, ImU32 col) {

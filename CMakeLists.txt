@@ -82,8 +82,6 @@ if (VIAMD_ENABLE_QM)
     set(MD_ENABLE_HDF5 ON CACHE BOOL "" FORCE)
 endif ()
 
-find_package(OpenGL REQUIRED)
-
 # Before the add_subdirectory() calls, and unconditionally. enable_testing() applies to this
 # directory and the ones added below it, and ctest only descends from a CTestTestfile.cmake at
 # the build root - which is generated only if testing was enabled in the top-level scope. mdlib
@@ -92,6 +90,9 @@ find_package(OpenGL REQUIRED)
 enable_testing()
 
 add_subdirectory(ext/mdlib)
+if (NOT MD_ENABLE_GPU)
+    message(FATAL_ERROR "VIAMD draws and presents with md_gpu: build mdlib with MD_ENABLE_GPU=ON")
+endif()
 add_subdirectory(ext/glfw)
 add_subdirectory(ext/imgui)
 
@@ -258,24 +259,20 @@ set(SRC_FILES
 set(APP_FILES
     src/app/application.cpp
     src/app/imgui_impl_glfw.cpp
-    src/app/imgui_impl_opengl3.cpp
+    src/app/imgui_impl_md_gpu.cpp
 
     src/app/application.h
     src/app/IconsFontAwesome6.h
     src/app/imgui_impl_glfw.h
-    src/app/imgui_impl_opengl3.h
-    src/app/imgui_impl_opengl3_loader.h
+    src/app/imgui_impl_md_gpu.h
 )
 
 set(GFX_FILES
     src/gfx/camera_utils.cpp
-    src/gfx/gl_utils.cpp
     src/gfx/profiler.cpp
 
     src/gfx/camera.h
     src/gfx/camera_utils.h
-    src/gfx/gl.h
-    src/gfx/gl_utils.h
     src/gfx/postprocessing_utils.h
     src/gfx/view_param.h
     src/gfx/profiler.h
@@ -315,6 +312,14 @@ if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
 endif()
 
 add_executable(viamd ${MACOSX_ICON} ${SRC_FILES} ${APP_FILES} ${GFX_FILES} ${COMP_FILES})
+
+# viamd's own kernels, built as mdlib's are (mdlib/cmake/CompileGpuShaders.cmake)
+compile_gpu_shaders(density_map_shaders.inl
+    TARGET    viamd
+    NAMESPACE viamd_shader
+    SOURCE    ${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/density_map.slang
+    ENTRIES   composite
+)
 
 if (APPLE AND VIAMD_CREATE_MACOSX_BUNDLE)
     set_target_properties(viamd PROPERTIES
@@ -403,7 +408,6 @@ target_include_directories(viamd
     PRIVATE
         src
         gen
-        ext/gl3w
         ext/imgui
         ext/enkiTS/src
 )

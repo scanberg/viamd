@@ -23,8 +23,8 @@
 // freed after. A job cancelled is not to be touched again by the caller (but its callback still comes).
 //
 // ## Drawing
-// The density layers of one plot are composited into one texture of the plot's size (a canvas), drawn again only when
-// what they show changes, and put into the plot premultiplied. A layer is drawn as contours (fills of the regions
+// On md_gpu (density_map_initialize). The density layers of one plot are composited into one texture of the plot's
+// size (a canvas) by a kernel, drawn again only when what they show changes, and put into the plot premultiplied. A layer is drawn as contours (fills of the regions
 // above levels, lines along them, of a constant width in pixels) or a heat map, of a weighted sum of the channels of its
 // grid, sampled with a cubic B-spline so that contours stay smooth however far the view is zoomed in. A canvas may be
 // clipped to a triangle (the triangle of shapes), with antialiased edges.
@@ -33,6 +33,7 @@
 // many quads.
 
 #include <core/md_str.h>
+#include <core/md_gpu.h>
 #include <task_system.h>
 
 #include <imgui.h>
@@ -140,17 +141,20 @@ void density_map_triangle_mask(uint8_t* mask, const DensityMapDomain& domain);
 // A gaussian blur of a dim x dim grid of DENSITY_MAP_CHANNELS, in place: periodic, or with nothing outside it
 void density_map_blur(float* data, int dim, float sigma_texels, bool periodic);
 
-// ## GL
+// ## GPU
 
-// A texture for the grid of a job: wrapped where the domain is periodic, nothing (zero) outside it where it is bounded
-uint32_t density_map_texture_create(bool periodic);
-void     density_map_texture_upload(uint32_t tex, const float* grid);
-void     density_map_texture_free(uint32_t* tex);
+// The stream the textures are made, uploaded and drawn on: the window's (GRAPHICS), once, before anything else here
+void density_map_initialize(md_gpu_stream_t stream);
+
+// A texture for the grid of a job (RGBA32_FLOAT, DENSITY_MAP_DIM^2): null when it cannot be made
+md_gpu_texture_t density_map_texture_create();
+void             density_map_texture_upload(md_gpu_texture_t tex, const float* grid);
+void             density_map_texture_free(md_gpu_texture_t* tex);
 
 // What one layer is drawn with in one plot. Zeroed whole (density_map_draw_init) before it is filled: a canvas is drawn
 // again only when the bytes of its draws change.
 struct DensityMapDraw {
-    uint32_t tex;
+    md_gpu_texture_t tex;
     int32_t  mode;          // 0: contours, 1: heat map
     int32_t  fill;
     int32_t  lines;
@@ -179,20 +183,22 @@ void density_map_draw_colormap(DensityMapDraw* d, ImPlotColormap cmap, bool log_
 
 // The composite of the density layers of one plot
 struct DensityMapCanvas {
-    uint32_t tex = 0;
+    md_gpu_texture_t tex = nullptr;
     int      width = 0, height = 0;
     uint64_t hash = 0;
 };
 
 // Composites the draws, the first at the bottom, into the canvas, of width x height texels, when what they show
-// changed. view_uv: the uv of the grid at the plot's lower left corner, and the extent of the plot in uv. clip_uv, if
-// given: a triangle (3 uv) outside which nothing is drawn. Returns the texture, 0 when there is nothing to show.
-uint32_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws, const float* clip_uv = nullptr);
-void     density_map_canvas_free(DensityMapCanvas* canvas);
-void     density_map_canvas_invalidate(DensityMapCanvas* canvas);
+// changed. view_uv: the uv of the grid at the plot's lower left corner, and the extent of the plot in uv. periodic: the
+// domain's (the grids wrapped, else nothing outside them). clip_uv, if given: a triangle (3 uv) outside which nothing is
+// drawn. Returns the texture (RGBA8, premultiplied, rows from the top), null when there is nothing to show.
+md_gpu_texture_t density_map_composite(DensityMapCanvas* canvas, int width, int height, const float view_uv[4], const DensityMapDraw* draws, int num_draws,
+                                       bool periodic, const float* clip_uv = nullptr);
+void density_map_canvas_free(DensityMapCanvas* canvas);
+void density_map_canvas_invalidate(DensityMapCanvas* canvas);
 
 // The canvas over the whole of the current plot (between BeginPlot and EndPlot, after SetupFinish)
-void density_map_plot_canvas(uint32_t tex);
+void density_map_plot_canvas(md_gpu_texture_t tex);
 
 // The size in texels a canvas for the current plot is to have (its size times the framebuffer's scale)
 void density_map_plot_canvas_size(int* width, int* height);
@@ -200,7 +206,7 @@ void density_map_plot_canvas_size(int* width, int* height);
 // The uv rect (see density_map_composite) the current plot shows of a domain
 void density_map_plot_view_uv(float out_view_uv[4], const DensityMapDomain& domain);
 
-// Frees what is shared by everything drawn (the program, the marks). Safe to call more than once.
+// Frees what is shared by everything drawn (the kernel, the marks). Safe to call more than once.
 void density_map_shutdown();
 
 // ## Marks

@@ -39,14 +39,14 @@
 #include <core/md_hash.h>
 #include <core/md_vec_math.h>
 
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
 #include <gfx/camera.h>
 #include <gfx/camera_utils.h>
 #include <gfx/postprocessing_utils.h>
 #include <iso_meshes.h>
 #include <gpu_job.h>
 #include <md_render_bridge.h>
+#include <density_map.h>
+#include <app/imgui_impl_md_gpu.h>
 #include <gpu_volume.h>
 #include <density_cache.h>
 #include <es_planes.h>
@@ -387,7 +387,7 @@ static md_str_t create_unique_identifier(const script::Program* ir, md_str_t bas
 static bool export_xvg(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename);
 static bool export_csv(const float* column_data[], const char* column_labels[], size_t num_columns, size_t num_rows, md_str_t filename);
 
-static void create_screenshot(md_str_t path);
+static void write_screenshot(md_str_t path, const uint32_t* rgba, uint32_t width, uint32_t height);
 
 // The sizes offered in the Settings menu. The stored setting is the size itself, not an
 // index into this table, so the table can change without invalidating anyone's .ini.
@@ -568,7 +568,7 @@ int main(int argc, char** argv) {
     state.operations.recenter_query.mask = md_bitset_empty_set();
 
     // Init platform
-    VIAMD_LOG_DEBUG("Initializing GL...");
+    VIAMD_LOG_DEBUG("Initializing the window...");
     if (!application::initialize(&state.app, 0, 0, MD_STR_LIT("VIAMD"))) {
         VIAMD_LOG_ERROR("Could not initialize application...\n");
         return -1;
@@ -618,12 +618,10 @@ int main(int argc, char** argv) {
     app_settings::initialize();
 
 #if MD_ENABLE_GPU
-    VIAMD_LOG_DEBUG("Initializing GPU device...");
-    state.gpu_device = md_gpu_device_create(nullptr);
-    if (!state.gpu_device) {
-        const char* reason = md_gpu_last_error();
-        VIAMD_LOG_ERROR("Failed to create GPU device: %s", reason ? reason : "unknown");
-    } else {
+    // The device the window is drawn with: the application's, which presents with it
+    state.gpu_device = state.app.gpu.device;
+    density_map_initialize(state.app.gpu.stream);
+    {
         // The scratch belongs to the device, not to whichever component happens to evaluate
         // first. Components borrow it; see the note on ApplicationState.
         state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
@@ -785,7 +783,7 @@ int main(int argc, char** argv) {
 #if MD_ENABLE_GPU
         // Retires stream-ordered frees and fires completion callbacks for work
         // that finished since the last frame. Callbacks run on the calling
-        // thread, so this must stay on the GL thread: they issue GL calls.
+        // thread, so this must stay on the main thread: they touch what it owns.
         // Not optional -- without it, freed device memory is never reclaimed.
         if (state.gpu_device) {
             md_gpu_device_poll(state.gpu_device);
@@ -1549,8 +1547,6 @@ int main(int argc, char** argv) {
     VIAMD_LOG_DEBUG("Shutting down task system...");
     task_system::shutdown();
 
-    if (state.target.fbo) glDeleteFramebuffers(1, &state.target.fbo);
-    if (state.target.tex) glDeleteTextures(1, &state.target.tex);
 #if MD_ENABLE_GPU
     if (state.gpu_device) {
         // A queued copy lands in a volume, so nothing below may go until the queue has run out.
@@ -1573,9 +1569,7 @@ int main(int argc, char** argv) {
         state.gpu_coeff_capacity = 0;
         state.gpu_volume = nullptr;
         state.gpu_stream = nullptr;
-
-        md_gpu_device_destroy(state.gpu_device);
-        state.gpu_device = nullptr;
+        state.gpu_device = nullptr;     // the application's: it goes with the window
     }
 #endif
     application::shutdown(&state.app);
@@ -6886,60 +6880,22 @@ static void update_md_buffers(ApplicationState* data) {
     data->mold.dirty_gpu_buffers = 0;
 }
 
-void create_screenshot(md_str_t path) {
-    md_temp_scope_t tmp = md_temp_begin_in(frame_alloc);
-    MD_DEFER { md_temp_end(tmp); };
-
-    int viewport[4] = {};
-    int fbo = 0;
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
-
-    int width  = viewport[2];
-    int height = viewport[3];
-
-    size_t bytes = width * height * sizeof(uint32_t);
-    uint32_t* rgba = (uint32_t*)md_vm_arena_push(frame_alloc, bytes);
-    MD_DEFER { md_vm_arena_pop(frame_alloc, bytes); };
-
-    GLenum read_buffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_BACK;
-
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-    glReadBuffer(read_buffer);
-
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-
-    {
-        // @NOTE: Swap Rows to flip image with respect to y-axis
-        const uint32_t row_byte_size = width * sizeof(uint32_t);
-        uint32_t* row_t = (uint32_t*)md_alloc(frame_alloc, row_byte_size);
-        MD_DEFER { md_free(frame_alloc, row_t, row_byte_size); };
-        for (uint32_t i = 0; i < (uint32_t)height / 2; ++i) {
-            uint32_t* row_a = rgba + i * width;
-            uint32_t* row_b = rgba + (height - 1 - i) * width;
-            if (row_a != row_b) {
-                md_memcpy(row_t, row_a, row_byte_size);  // tmp = a;
-                md_memcpy(row_a, row_b, row_byte_size);  // a = b;
-                md_memcpy(row_b, row_t, row_byte_size);  // b = tmp;
-            }
-        }
-    }
-
+// The image (RGBA8, rows from the top) into the file, its format by the extension
+void write_screenshot(md_str_t path, const uint32_t* rgba, uint32_t width, uint32_t height) {
     md_str_t ext = md_path_ext(path);
 
     bool written = false;
     switch (image_format_from_ext(ext)) {
     case ImageFormat_JPG: {
         const int quality = 95;
-        written = image_write_jpg(path, rgba, width, height, quality);
+        written = image_write_jpg(path, rgba, (int)width, (int)height, quality);
         break;
     }
     case ImageFormat_PNG:
-        written = image_write_png(path, rgba, width, height);
+        written = image_write_png(path, rgba, (int)width, (int)height);
         break;
     case ImageFormat_BMP:
-        written = image_write_bmp(path, rgba, width, height);
+        written = image_write_bmp(path, rgba, (int)width, (int)height);
         break;
     default:
         VIAMD_LOG_ERROR("Non supported file-extension '" MD_STR_FMT "' when saving screenshot", MD_STR_ARG(ext));
@@ -7165,36 +7121,22 @@ static void render_scene(ApplicationState* state) {
     POP_GPU_SECTION()
 }
 
-// Saves the screenshot from the framebuffer bound (create_screenshot), and it is no longer pending
-static void screenshot_save(ApplicationState* state) {
-    create_screenshot(state->screenshot.path_to_file);
+// Saves the screenshot, and it is no longer pending: the window as drawn this frame (the GUI and all, after
+// render_imgui), or the main view's image alone, presented at the screenshot's size
+static void screenshot_save(ApplicationState* state, bool window) {
+    const uint32_t w = window ? state->app.framebuffer.width : state->target.out_width;
+    const uint32_t h = window ? state->app.framebuffer.height : state->target.out_height;
+    const size_t bytes = (size_t)w * h * sizeof(uint32_t);
+    uint32_t* rgba = bytes ? (uint32_t*)md_vm_arena_push(frame_alloc, bytes) : nullptr;
+    const bool read = rgba && (window ? application::read_frame(&state->app, rgba, w, h) : md_render_bridge_read_image(state, rgba, w, h));
+    if (read) {
+        write_screenshot(state->screenshot.path_to_file, rgba, w, h);
+    } else {
+        VIAMD_LOG_ERROR("The screenshot (%u x %u) could not be read", w, h);
+    }
+    if (rgba) md_vm_arena_pop(frame_alloc, bytes);
     md_free_str(state->allocator.persistent, state->screenshot.path_to_file);
     state->screenshot.path_to_file = {};
-}
-
-// The GL target a screenshot without the GUI is presented into and read from: RGBA8 at the size of the image. False
-// when it cannot be made.
-static bool screenshot_target(ApplicationState* state) {
-    auto& t = state->target;
-    if (t.fbo && t.fbo_width == t.out_width && t.fbo_height == t.out_height) return true;
-    if (!t.fbo) glGenFramebuffers(1, &t.fbo);
-    if (!t.tex) glGenTextures(1, &t.tex);
-    glBindTexture(GL_TEXTURE_2D, t.tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)t.out_width, (GLsizei)t.out_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.tex, 0);
-    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    if (!ok) {
-        VIAMD_LOG_ERROR("The screenshot's target (%u x %u) could not be made", t.out_width, t.out_height);
-        return false;
-    }
-    t.fbo_width  = t.out_width;
-    t.fbo_height = t.out_height;
-    return true;
 }
 
 static void render(ApplicationState* state) {
@@ -7251,8 +7193,8 @@ static void render(ApplicationState* state) {
     const bool draw_marks = !md_bitmask_empty(&state->selection.selection_mask) || !md_bitmask_empty(&state->selection.highlight_mask) ||
                             state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
 
-    // The image kept, the marks over it and the overlay over those, into the framebuffer bound at the size of the image.
-    // In the window the planes' outlines too (es_planes.h), which a screenshot leaves out.
+    // The image kept, the marks over it and the overlay over those, into the main view's image (of the window's size, or
+    // the screenshot's). In the window the planes' outlines too (es_planes.h), which a screenshot leaves out.
     auto present = [&](bool window) {
         PUSH_GPU_SECTION("Present")
         postprocess_pipeline::Settings settings = {};
@@ -7275,25 +7217,21 @@ static void render(ApplicationState* state) {
         POP_GPU_SECTION()
     };
 
-    // Without the GUI: once settled, the image presented into a target of its size and saved from there
-    if (offscreen && settled && screenshot_target(state)) {
-        glBindFramebuffer(GL_FRAMEBUFFER, state->target.fbo);
-        glViewport(0, 0, (GLsizei)state->target.out_width, (GLsizei)state->target.out_height);
-        glDrawBuffer(GL_COLOR_ATTACHMENT0);
-        glReadBuffer(GL_COLOR_ATTACHMENT0);
+    // Without the GUI: once settled, the image presented at its size and saved from there
+    if (offscreen && settled) {
         present(false);
-        screenshot_save(state);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        screenshot_save(state, false);
     }
 
-    // The window: the image, or while a screenshot without the GUI is made (at a size of its own), how far it has come
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glViewport(0, 0, state->app.framebuffer.width, state->app.framebuffer.height);
-    glDrawBuffer(GL_BACK);
-    glClearColor(0, 0, 0, 1);
-    glClear(GL_COLOR_BUFFER_BIT);
+    // The window: the image under the GUI, or while a screenshot without the GUI is made (at a size of its own), how
+    // far it has come
     if (!offscreen) {
         present(true);
+        const ImTextureID image = ImGui_ImplMdGpu_TextureID(md_render_bridge_image(state));
+        if (image != ImTextureID_Invalid) {
+            ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::GetBackgroundDrawList(vp)->AddImage(image, vp->Pos, ImVec2(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y));
+        }
     } else {
         const uint32_t total = MD_MAX(settle_frames(state), 1u);
         const float fraction = screenshot_pending(state) ? 1.0f - (float)lazy.settle_frames / (float)total : 1.0f;
@@ -7313,7 +7251,7 @@ static void render(ApplicationState* state) {
 
     // With the GUI: the window as shown, once settled
     if (screenshot && !offscreen && settled) {
-        screenshot_save(state);
+        screenshot_save(state, true);
     }
 }
 

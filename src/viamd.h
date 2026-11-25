@@ -65,8 +65,7 @@
 #error "Unsupported frame cache size"
 #endif
 
-// Profiling: PUSH_GPU_SECTION / POP_GPU_SECTION / PROFILE_SCOPE (gfx/profiler.h). A section is a debug group and is
-// timed on the GPU and the CPU; one that issues no GL work is timed on the CPU only, in effect.
+// Profiling: PUSH_GPU_SECTION / POP_GPU_SECTION / PROFILE_SCOPE (gfx/profiler.h). A section is timed on the CPU.
 #include <gfx/profiler.h>
 #define PUSH_CPU_SECTION(lbl) PUSH_GPU_SECTION(lbl)
 #define POP_CPU_SECTION()     POP_GPU_SECTION()
@@ -1733,12 +1732,10 @@ struct ApplicationState {
 
     // --- MAIN VIEW ---
     // Its image: the scene made at width x height (the render scale's), shown at out_width x out_height (the window's,
-    // or a screenshot's); and the GL target a screenshot without the GUI is presented into, at the image's size
+    // or a screenshot's)
     struct {
         uint32_t width = 0, height = 0;
         uint32_t out_width = 0, out_height = 0;
-        uint32_t fbo = 0, tex = 0;
-        uint32_t fbo_width = 0, fbo_height = 0;
     } target;
 
     // --- PICKING ---

@@ -15,6 +15,7 @@
 #include <color_utils.h>
 #include <gpu_volume.h>
 #include <md_render_bridge.h>
+#include <app/imgui_impl_md_gpu.h>
 
 #include <imgui_internal.h>
 #include <imgui_widgets.h>
@@ -1590,10 +1591,10 @@ struct DensityVolume : viamd::EventHandler {
             // The view, or its background while there is none, and a border
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             {
-                uint32_t tex = 0;
+                md_gpu_texture_t tex = nullptr;
                 md_float2_t uv0, uv1;
                 if (md_render_bridge_panels_image(view, 0, &tex, &uv0, &uv1)) {
-                    draw_list->AddImage((ImTextureID)(intptr_t)tex, canvas_p0, canvas_p1, vec_cast(uv0), vec_cast(uv1));
+                    draw_list->AddImage(ImGui_ImplMdGpu_TextureID(tex), canvas_p0, canvas_p1, vec_cast(uv0), vec_cast(uv1));
                 } else {
                     const md_float3_t bg = state->visuals.background.color;
                     draw_list->AddRectFilled(canvas_p0, canvas_p1, ImGui::ColorConvertFloat4ToU32(ImVec4(bg.x, bg.y, bg.z, 1.0f)));

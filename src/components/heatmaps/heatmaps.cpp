@@ -48,8 +48,8 @@
 #include <display_units.h>
 #include <task_system.h>
 #include "heatmaps_core.h"
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
+#include <app/imgui_impl_md_gpu.h>
+#include <core/md_gpu.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -88,7 +88,7 @@ using heatmaps::ViewSource;
 #define SPINNER_AFTER   0.15    // Seconds a tile waits before it shows that it does
 
 struct Tile {
-    GLuint   tex = 0;               // TILE × TILE, RGBA8, its first row at the top
+    md_gpu_texture_t tex = nullptr; // TILE × TILE, RGBA8, its first row at the top
     uint64_t gen = 0;               // Of the view it shows
     int      used = 0;              // The frame it was last drawn in
     double   waiting = 0;           // Since when it has been in view and not of the view shown, 0 when it is
@@ -141,9 +141,17 @@ struct Heatmap {
     Heatmap& operator=(const Heatmap&) = delete;
     ~Heatmap() {
         job.cancel_and_wait();
-        for (auto& kv : tiles) gl::free_texture(&kv.second.tex);
+        for (auto& kv : tiles) free_tile(kv.second);
+    }
+
+    static void free_tile(Tile& t) {
+        if (t.tex) md_gpu_texture_destroy(t.tex);     // deferred past its last draw
+        t.tex = nullptr;
     }
 };
+
+// The stream the tiles are made and uploaded on: the window's
+static md_gpu_stream_t tile_stream = nullptr;
 
 static inline uint64_t tile_key(uint32_t level, uint32_t tx, uint32_t ty) {
     return (uint64_t)level << 58 | (uint64_t)ty << 29 | tx;
@@ -153,7 +161,7 @@ static inline uint32_t key_ty(uint64_t k) { return (uint32_t)(k >> 29) & ((1u <<
 static inline uint32_t key_tx(uint64_t k) { return (uint32_t)k & ((1u << 29) - 1); }
 
 static void free_tiles(Heatmap& h) {
-    for (auto& kv : h.tiles) gl::free_texture(&kv.second.tex);
+    for (auto& kv : h.tiles) Heatmap::free_tile(kv.second);
     h.tiles.clear();
 }
 
@@ -198,6 +206,7 @@ struct Heatmaps : viamd::EventHandler {
             switch (e.type) {
             case viamd::EventType_ViamdInitialize:
                 app = (ApplicationState*)e.payload;
+                tile_stream = app->app.gpu.stream;
                 workspace_register_window("Heatmaps", &show_window);
                 break;
             case viamd::EventType_ViamdShutdown:
@@ -493,14 +502,17 @@ struct Heatmaps : viamd::EventHandler {
             if (w.done.load(std::memory_order_acquire) != 1) continue;
             w.done.store(2, std::memory_order_relaxed);
             Tile& t = h.tiles[w.key];
-            if (!t.tex) {
-                gl::init_texture_2D(&t.tex, TILE, TILE, GL_RGBA8);
-                glBindTexture(GL_TEXTURE_2D, t.tex);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            if (!t.tex && tile_stream) {
+                md_gpu_texture_desc_t d = {};
+                d.type   = MD_GPU_TEX_2D;
+                d.format = MD_GPU_FORMAT_RGBA8_UNORM;
+                d.usage  = MD_GPU_TEX_SAMPLED;
+                d.width  = TILE;
+                d.height = TILE;
+                d.label  = "heatmap tile";
+                t.tex = md_gpu_texture_create(tile_stream, &d);
             }
-            gl::set_texture_2D_data(t.tex, 0, w.rgba.data(), GL_RGBA8);
-            glBindTexture(GL_TEXTURE_2D, 0);
+            if (t.tex) md_gpu_upload_texture(tile_stream, t.tex, nullptr, w.rgba.data(), (size_t)TILE * TILE * 4);
             t.gen = h.view->gen;
             t.waiting = 0;
             w.rgba = {};
@@ -687,7 +699,7 @@ struct Heatmaps : viamd::EventHandler {
             std::sort(old.begin(), old.end());
             for (size_t i = 0; i < old.size() && h.tiles.size() > keep; ++i) {
                 auto it = h.tiles.find(old[i].second);
-                gl::free_texture(&it->second.tex);
+                Heatmap::free_tile(it->second);
                 h.tiles.erase(it);
             }
         }
@@ -700,7 +712,9 @@ struct Heatmaps : viamd::EventHandler {
         const double u = x - ttx * ts, w = y - tty * ts;
         const ImVec2 p0 = ImPlot::PlotToPixels(ImPlotPoint(x, (double)h.rows - y));
         const ImVec2 p1 = ImPlot::PlotToPixels(ImPlotPoint(x + s, (double)h.rows - y - s));
-        dl->AddImage((ImTextureID)(intptr_t)t.tex, p0, p1, ImVec2((float)(u / ts), (float)(w / ts)), ImVec2((float)((u + s) / ts), (float)((w + s) / ts)));
+        ImGui_ImplMdGpu_PushState(dl, ImGui_ImplMdGpu_Nearest);     // a cell a texel: sharp however near
+        dl->AddImage(ImGui_ImplMdGpu_TextureID(t.tex), p0, p1, ImVec2((float)(u / ts), (float)(w / ts)), ImVec2((float)((u + s) / ts), (float)((w + s) / ts)));
+        ImGui_ImplMdGpu_PopState(dl);
     }
 
     void draw_cell_tooltip(const Heatmap& h, const View& v, uint32_t r, uint32_t c) {

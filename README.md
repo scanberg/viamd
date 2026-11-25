@@ -79,8 +79,6 @@ https://github.com/epezent/implot
 
 https://github.com/BalazsJako/ImGuiColorTextEdit
 
-https://github.com/skaslev/gl3w
-
 https://github.com/mlabbe/nativefiledialog
 
 https://github.com/nothings/stb

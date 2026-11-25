@@ -299,7 +299,7 @@ struct Layer {
     uint64_t window_key = 0;                     // Of what window_coords are of
 
     // The density
-    uint32_t tex = 0;
+    md_gpu_texture_t tex = nullptr;
     DensityMapResult result = {};
     bool     has_result = false;
     uint64_t shown_hash = 0;
@@ -1001,7 +1001,7 @@ struct Shapespace : viamd::EventHandler {
                 layer->want_hash = 0;
                 return;
             }
-            if (!layer->tex) layer->tex = density_map_texture_create(false);
+            if (!layer->tex) layer->tex = density_map_texture_create();
             density_map_texture_upload(layer->tex, grid);
             layer->result = *result;
             layer->has_result = true;
@@ -1752,7 +1752,7 @@ struct Shapespace : viamd::EventHandler {
         return true;
     }
 
-    uint32_t render_densities() {
+    md_gpu_texture_t render_densities() {
         DensityMapDraw draws[MAX_LAYERS];
         int num_draws = 0;
         for (int i = num_layers - 1; i >= 0; --i) {
@@ -1762,7 +1762,7 @@ struct Shapespace : viamd::EventHandler {
         }
         int w = 0, h = 0;
         density_map_plot_canvas_size(&w, &h);
-        if (num_draws == 0 || w <= 0 || h <= 0) return 0;
+        if (num_draws == 0 || w <= 0 || h <= 0) return nullptr;
         float view_uv[4];
         density_map_plot_view_uv(view_uv, shape_domain);
         // Within the triangle only: the smoothing spreads the density past its edges, where there are no shapes
@@ -1770,7 +1770,7 @@ struct Shapespace : viamd::EventHandler {
         auto u = [&](md_float2_t p) { return (p.x - D.x_min) / (D.x_max - D.x_min); };
         auto v = [&](md_float2_t p) { return (p.y - D.y_min) / (D.y_max - D.y_min); };
         const float clip[6] = { u(tri_lin), v(tri_lin), u(tri_pla), v(tri_pla), u(tri_iso), v(tri_iso) };
-        return density_map_composite(&canvas, w, h, view_uv, draws, num_draws, clip);
+        return density_map_composite(&canvas, w, h, view_uv, draws, num_draws, false, clip);
     }
 
     // ### Points

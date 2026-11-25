@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include <core/md_str.h>
+#include <core/md_gpu.h>
 
 namespace application {
 
@@ -24,13 +25,12 @@ struct Context {
         uint32_t height;
     } framebuffer;
 
+    // What everything is drawn with, and how the window is shown: by md_gpu (a surface), or through OpenGL (gl)
     struct {
-        struct {
-            int major;
-            int minor;
-            int revision;
-        } version;
-    } gl_info;
+        md_gpu_device_t device;
+        md_gpu_stream_t stream;     // GRAPHICS: draws the window and presents it
+        bool gl;
+    } gpu;
 
     struct {
         double delta_s;
@@ -47,8 +47,12 @@ struct Context {
 bool initialize(Context* ctx, size_t width, size_t height, md_str_t title);
 void shutdown(Context* ctx);
 void update(Context* ctx);
+// ImGui's frame into the window (and the other windows it has)
 void render_imgui(Context* ctx);
 void swap_buffers(Context* ctx);
+// The window as drawn this frame, the GUI and all, after render_imgui: RGBA8, rows from the top, of the framebuffer's
+// size (width, height). False when it cannot be read.
+bool read_frame(Context* ctx, uint32_t* rgba, uint32_t width, uint32_t height);
 
 // File Dialog
 typedef unsigned int FileDialogFlag;

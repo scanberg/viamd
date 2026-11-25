@@ -46,8 +46,6 @@
 #include <timeline_periods_ui.h>
 #include <filter_input.h>
 #include <property_grid.h>
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
 #include <task_system.h>
 #include <density_map.h>
 #include <layer_groups.h>
@@ -250,7 +248,7 @@ struct Layer {
     bool     segs_valid = false;    // The filter evaluated (or there is none)
 
     // The density, on the GPU, and what it is of
-    uint32_t tex = 0;
+    md_gpu_texture_t tex = nullptr;
     DensityResult result = {};
     bool     has_result = false;
     uint64_t shown_hash = 0;        // Of the inputs of the density in tex
@@ -322,8 +320,8 @@ struct Ramachandran : viamd::EventHandler {
     bool  view_fitted = false;
     float plot_aspect = 0.0f;       // Width over height of the plots, the last frame
 
-    // GL: the reference's densities, and the densities of the layers composited by plot
-    uint32_t ref_tex = 0;
+    // The reference's densities, and the densities of the layers composited by plot (on md_gpu)
+    md_gpu_texture_t ref_tex = nullptr;
     DensityMapCanvas canvas[NUM_PANELS] = {};
 
     // Box selection, in the plot it started in
@@ -435,7 +433,7 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void initialize() {
-        ref_tex = density_map_texture_create(true);
+        ref_tex = density_map_texture_create();
         init_reference(ref_tex);
 
         create_default_layers();
@@ -452,7 +450,7 @@ struct Ramachandran : viamd::EventHandler {
 
     // The reference densities, resampled onto the grid of the densities (texel centres) and smoothed a little: they are
     // tabulated at 2 degrees
-    static void init_reference(uint32_t tex) {
+    static void init_reference(md_gpu_texture_t tex) {
         MD_STATIC_ASSERT(NUM_TYPES == DENSITY_MAP_CHANNELS, "a channel for each class");
         md_temp_scope_t temp = md_temp_begin();
         MD_DEFER { md_temp_end(temp); };
@@ -615,8 +613,7 @@ struct Ramachandran : viamd::EventHandler {
     void free_layer(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
         cancel_job(l, true);
-        if (l.tex) glDeleteTextures(1, &l.tex);
-        l.tex = 0;
+        density_map_texture_free(&l.tex);
         md_bitset_free(&l.atoms, heap);
         for (int t = 0; t < NUM_TYPES; ++t) md_array_free(l.segs[t], heap);
     }
@@ -648,7 +645,7 @@ struct Ramachandran : viamd::EventHandler {
         l.segs_key = 0;
         l.segs_hash = 0;
         l.segs_valid = false;
-        l.tex = 0;
+        l.tex = nullptr;
         l.has_result = false;
         l.shown_hash = 0;
         l.want_hash = 0;
@@ -917,7 +914,7 @@ struct Ramachandran : viamd::EventHandler {
                 layer->want_hash = 0;
                 return;
             }
-            if (!layer->tex) layer->tex = density_map_texture_create(true);
+            if (!layer->tex) layer->tex = density_map_texture_create();
             density_map_texture_upload(layer->tex, grid);
             DensityResult& r = layer->result;
             r = {};
@@ -1501,8 +1498,8 @@ struct Ramachandran : viamd::EventHandler {
         return true;
     }
 
-    // The densities of the layers in the plot, composited (density_map_composite): 0 when there are none
-    uint32_t render_panel(int panel) {
+    // The densities of the layers in the plot, composited (density_map_composite): null when there are none
+    md_gpu_texture_t render_panel(int panel) {
         DensityMapDraw draws[MAX_LAYERS];
         int num_draws = 0;
         // Bottom up: the first layer is on top
@@ -1513,10 +1510,10 @@ struct Ramachandran : viamd::EventHandler {
         }
         int w = 0, h = 0;
         density_map_plot_canvas_size(&w, &h);
-        if (num_draws == 0 || w <= 0 || h <= 0) return 0;
+        if (num_draws == 0 || w <= 0 || h <= 0) return nullptr;
         float view_uv[4];
         density_map_plot_view_uv(view_uv, rama_domain);
-        return density_map_composite(&canvas[panel], w, h, view_uv, draws, num_draws);
+        return density_map_composite(&canvas[panel], w, h, view_uv, draws, num_draws, true);
     }
 
     // ### Points

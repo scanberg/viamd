@@ -6,15 +6,15 @@
 // isosurfaces, volume renderings and planes; their isosurfaces drawn as meshes are md_render's triangles); md_post
 // makes the image of it (the display transform, the temporal antialiasing at the size of the image shown) and presents
 // it with the marks of the selection and the highlight, and the overlay over those (viamd.h: what the script shows,
-// the planes' outlines, the critical points), into a texture shared with OpenGL, which draws it into the framebuffer
-// bound, under the GUI. OpenGL draws nothing of the scene. See render_scene and render (main.cpp).
+// the planes' outlines, the critical points), into the image shown (md_render_bridge_image), which ImGui draws under
+// the GUI. See render_scene and render (main.cpp).
 //
-// Needs a device that draws (md_gpu's graphics) and shares textures with the GL context (the same GPU,
-// GL_EXT_memory_object or IOSurface); otherwise md_render_bridge_status says why, and the main view is empty.
+// Needs a device that draws (md_gpu's graphics); otherwise md_render_bridge_status says why, and the main view is empty.
 
 #include <stddef.h>
 #include <stdint.h>
 #include <core/md_vec_math.h>
+#include <core/md_gpu.h>
 
 struct ApplicationState;
 struct Representation;
@@ -65,10 +65,14 @@ void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty);
 void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline::Settings& settings);
 
 // The image kept, with the marks over it (settings.marks; null: none) and the overlay over those (viamd.h; null: none),
-// into the framebuffer bound at the size of the image shown (the viewport the caller set). When the marks changed
-// without the scene being made, md_render makes its masks again first. The overlay is kept to be picked
-// (md_render_bridge_hit). False: there is no image (nothing was made yet).
+// into the image shown (md_render_bridge_image), of its size. When the marks changed without the scene being made,
+// md_render makes its masks again first. The overlay is kept to be picked (md_render_bridge_hit). False: there is no
+// image (nothing was made yet).
 bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks, const Overlay* overlay);
+// The image shown, as last presented: RGBA8, sRGB-encoded, rows from the top, SAMPLED (ImGui draws it). Null: none.
+md_gpu_texture_t md_render_bridge_image(const ApplicationState* state);
+// It read back (rgba: width x height, its size), waiting for the GPU. False: none, or of another size.
+bool md_render_bridge_read_image(ApplicationState* state, uint32_t* rgba, uint32_t width, uint32_t height);
 
 // ---- Panels -------------------------------------------------------------------------------------------------------
 // The component windows' views (the Orbital Grid's, the Transition Analysis', the Charge Transfer side views, the
@@ -78,7 +82,7 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
 // while none has meshes (the molecule rasterised once), else each has its own. Composed, displayed and settled
 // (md_render's samples of a still view, a jittered raster each frame, averaged by md_post's resolve until there are
 // enough, after which nothing is drawn until something changes), presented with the marks of the selection and the
-// highlight and an overlay, side by side in an image of them all: a GL texture for ImGui. The system's positions and
+// highlight and an overlay, side by side in an image of them all, which ImGui draws. The system's positions and
 // marks are the main view's (taken up by md_render_bridge_render): the panels follow them a frame later.
 
 constexpr int PANEL_TRANSFER_RES = 256;     // a transfer function's texels (PanelVolume::transfer)
@@ -140,9 +144,9 @@ struct PanelsDesc {
 // what changed drawn again, another sample of what settles, nothing of what has. All of the desc is read at the call.
 // False: no image (the bridge does not run, or has no system yet).
 bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** panels, const PanelsDesc& desc);
-// The image: its GL texture (GL_TEXTURE_2D, RGBA8, rows from the bottom) and panel i's corners in it, as ImGui's
-// AddImage takes them (uv0 its top left, uv1 its bottom right). False: none (yet).
-bool md_render_bridge_panels_image(const MdRenderPanels* panels, uint32_t i, uint32_t* gl_texture, md_float2_t* uv0, md_float2_t* uv1);
+// The image: its texture (RGBA8, rows from the top, SAMPLED: ImGui_ImplMdGpu_TextureID) and panel i's corners in it, as
+// ImGui's AddImage takes them (uv0 its top left, uv1 its bottom right). False: none (yet).
+bool md_render_bridge_panels_image(const MdRenderPanels* panels, uint32_t i, md_gpu_texture_t* texture, md_float2_t* uv0, md_float2_t* uv1);
 // Picking in panel i (x, y: its pixels, rows from the top), and the answer of a frame or two later, as the main view's
 // (md_render_bridge_pick, md_render_bridge_hit): an atom or a bond, or nothing (a mesh, the background)
 void md_render_bridge_panels_pick(ApplicationState* state, MdRenderPanels* panels, uint32_t i, float x, float y);

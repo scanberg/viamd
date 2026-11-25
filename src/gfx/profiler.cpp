@@ -1,7 +1,5 @@
 #include <gfx/profiler.h>
 
-#include <gfx/gl.h>
-
 #include <core/md_common.h>
 #include <core/md_log.h>
 #include <core/md_os.h>
@@ -17,9 +15,8 @@
 
 namespace profiler {
 
-static constexpr int MAX_NODES      = 1024;     // sections, by their path; beyond: debug groups only
-static constexpr int MAX_DEPTH      = 64;       // sections open at once; deeper: debug groups only
-static constexpr int FRAMES         = 4;        // frames whose queries can be in flight; a fifth waits for the oldest
+static constexpr int MAX_NODES      = 1024;     // sections, by their path; beyond: not timed
+static constexpr int MAX_DEPTH      = 64;       // sections open at once; deeper: not timed
 static constexpr int PUBLISH_FRAMES = 30;       // frames a published average is over
 static constexpr int NAME_LEN       = 48;
 
@@ -35,33 +32,16 @@ struct Node {
     char     name[NAME_LEN] = {};
 
     // Over the frames of the current window
-    double acc_gpu_self_ns = 0.0;  // while it was the innermost
     double acc_cpu_ns = 0.0;       // from its pushes to its pops
     double acc_calls = 0.0;
 
     // Published, per frame
-    float gpu_self_ms = 0.0f;
-    float gpu_ms = 0.0f;           // its own and its sections'
     float cpu_ms = 0.0f;
     float calls = 0.0f;
     bool  shown = false;           // pushed within the published window
 };
 
-// The GPU time of a frame: a query per stretch of it, and the section it went to
-struct Segment {
-    GLuint query;
-    int    node;
-};
-
-struct Record {
-    GLuint*  queries = nullptr;    // owned, made as more are needed
-    int      query_cap = 0;
-    Segment* segments = nullptr;
-    int      count = 0;
-    bool     pending = false;      // its results are yet to be read
-};
-
-// What a push left on the stack: the section it timed, or none (a debug group only)
+// What a push left on the stack: the section it timed, or none
 struct Entry {
     int       node;                // -1: not timed
     md_tick_t cpu_start;
@@ -74,20 +54,13 @@ static struct {
 
     Entry  stack[MAX_DEPTH];
     int    depth = 0;              // entries on the stack
-    int    overflow = 0;           // pushes beyond MAX_DEPTH, debug groups only
-
-    Record records[FRAMES];
-    Record* rec = nullptr;         // this frame's, or none (the oldest still in flight: no GPU timing this frame)
-    bool   query_running = false;
-    int    paused = 0;
+    int    overflow = 0;           // pushes beyond MAX_DEPTH, not timed
 
     bool   in_frame = false;
     int    frame = 0;
     int    window_start = 0;       // the frame the current window began in
     int    cpu_frames = 0;         // frames in the current window
-    int    gpu_frames = 0;         // frames whose GPU times went into it
     int    published_cpu_frames = 0;   // the same of the window published
-    int    published_gpu_frames = 0;
     bool   warned = false;
 } g;
 
@@ -121,7 +94,7 @@ static int node_get(int parent, const char* name) {
         slot = (slot + 1) & mask;
     }
     if (g.node_count >= MAX_NODES) {
-        warn_once("more sections than it keeps, the rest are debug groups only");
+        warn_once("more sections than it keeps, the rest are not timed");
         return -1;
     }
     const int i = g.node_count++;
@@ -142,32 +115,6 @@ static int node_get(int parent, const char* name) {
     return i;
 }
 
-// GPU TIMING
-// One query runs at a time, for the innermost section
-
-static void segment_begin(int node) {
-    if (!g.rec || g.paused || node < 0) return;
-    Record& r = *g.rec;
-    if (r.count == r.query_cap) {
-        const int cap = r.query_cap ? 2 * r.query_cap : 256;
-        r.queries  = (GLuint*)realloc(r.queries, sizeof(GLuint) * cap);
-        r.segments = (Segment*)realloc(r.segments, sizeof(Segment) * cap);
-        glGenQueries(cap - r.query_cap, r.queries + r.query_cap);
-        r.query_cap = cap;
-    }
-    const GLuint q = r.queries[r.count];
-    glBeginQuery(GL_TIME_ELAPSED, q);
-    r.segments[r.count] = {q, node};
-    g.query_running = true;
-}
-
-static void segment_end() {
-    if (!g.query_running) return;
-    glEndQuery(GL_TIME_ELAPSED);
-    g.rec->count += 1;
-    g.query_running = false;
-}
-
 static int stack_top_node() {
     for (int i = g.depth - 1; i >= 0; --i) {
         if (g.stack[i].node >= 0) return g.stack[i].node;
@@ -175,57 +122,24 @@ static int stack_top_node() {
     return -1;
 }
 
-// Reads the results of the frames that are done; a frame is read whole, once its last query is
-static void collect() {
-    for (int f = 0; f < FRAMES; ++f) {
-        Record& r = g.records[f];
-        if (!r.pending) continue;
-        GLint available = 0;
-        glGetQueryObjectiv(r.segments[r.count - 1].query, GL_QUERY_RESULT_AVAILABLE, &available);
-        if (!available) continue;
-        for (int i = 0; i < r.count; ++i) {
-            GLuint64 ns = 0;
-            glGetQueryObjectui64v(r.segments[i].query, GL_QUERY_RESULT, &ns);
-            g.nodes[r.segments[i].node].acc_gpu_self_ns += (double)ns;
-        }
-        r.pending = false;
-        g.gpu_frames += 1;
-    }
-}
-
 static void publish() {
     const double cpu_frames = (double)MD_MAX(g.cpu_frames, 1);
-    const double gpu_frames = (double)g.gpu_frames;
     for (int i = 0; i < g.node_count; ++i) {
         Node& n = g.nodes[i];
-        n.shown       = n.seen_frame >= g.window_start;
-        n.gpu_self_ms = gpu_frames > 0 ? (float)(n.acc_gpu_self_ns / gpu_frames * 1.0e-6) : 0.0f;
-        n.gpu_ms      = n.gpu_self_ms;
-        n.cpu_ms      = (float)(n.acc_cpu_ns / cpu_frames * 1.0e-6);
-        n.calls       = (float)(n.acc_calls / cpu_frames);
-        n.acc_gpu_self_ns = n.acc_cpu_ns = n.acc_calls = 0.0;
-    }
-    // A child is made after its parent: from the last, every section's time is complete when it is added to its parent's
-    for (int i = g.node_count - 1; i >= 0; --i) {
-        const Node& n = g.nodes[i];
-        if (n.parent >= 0) g.nodes[n.parent].gpu_ms += n.gpu_ms;
+        n.shown  = n.seen_frame >= g.window_start;
+        n.cpu_ms = (float)(n.acc_cpu_ns / cpu_frames * 1.0e-6);
+        n.calls  = (float)(n.acc_calls / cpu_frames);
+        n.acc_cpu_ns = n.acc_calls = 0.0;
     }
     g.published_cpu_frames = g.cpu_frames;
-    g.published_gpu_frames = g.gpu_frames;
     g.window_start = g.frame;
     g.cpu_frames = 0;
-    g.gpu_frames = 0;
 }
 
 void frame_begin() {
     if (g.in_frame) frame_end();
 
-    collect();
     if (g.cpu_frames >= PUBLISH_FRAMES) publish();
-
-    Record& r = g.records[g.frame % FRAMES];
-    g.rec = r.pending ? nullptr : &r;
-    if (g.rec) g.rec->count = 0;
 
     g.in_frame = true;
     g.depth = 0;
@@ -240,26 +154,14 @@ void frame_end() {
         while (g.depth > 1 || g.overflow) pop();
     }
     pop();
-    if (g.rec) g.rec->pending = g.rec->count > 0;
-    g.rec = nullptr;
     g.in_frame = false;
     g.cpu_frames += 1;
     g.frame += 1;
 }
 
-void shutdown() {
-    if (g.query_running) segment_end();
-    for (Record& r : g.records) {
-        if (r.query_cap) glDeleteQueries(r.query_cap, r.queries);
-        free(r.queries);
-        free(r.segments);
-        r = Record{};
-    }
-    g.rec = nullptr;
-}
+void shutdown() {}
 
 void push(const char* name) {
-    if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 0, -1, name);
     if (!g.in_frame) return;
     if (g.depth >= MAX_DEPTH) {
         g.overflow += 1;
@@ -272,12 +174,9 @@ void push(const char* name) {
 
     g.nodes[node].seen_frame = g.frame;
     g.nodes[node].acc_calls += 1.0;
-    segment_end();
-    segment_begin(node);
 }
 
 void pop() {
-    if (glPopDebugGroup) glPopDebugGroup();
     if (!g.in_frame) return;
     if (g.overflow) {
         g.overflow -= 1;
@@ -291,16 +190,6 @@ void pop() {
     if (e.node < 0) return;
 
     g.nodes[e.node].acc_cpu_ns += md_tick_to_nanoseconds(md_tick_now() - e.cpu_start);
-    segment_end();
-    segment_begin(stack_top_node());
-}
-
-Pause::Pause() {
-    if (g.paused++ == 0) segment_end();
-}
-
-Pause::~Pause() {
-    if (--g.paused == 0 && g.in_frame) segment_begin(stack_top_node());
 }
 
 // RESULTS
@@ -313,15 +202,6 @@ static bool within_named(const Node& n, const char* within) {
     return false;
 }
 
-float gpu_ms(const char* name, const char* within) {
-    float ms = 0.0f;
-    for (int i = 0; i < g.node_count; ++i) {
-        const Node& n = g.nodes[i];
-        if (n.shown && strcmp(n.name, name) == 0 && within_named(n, within)) ms += n.gpu_ms;
-    }
-    return ms;
-}
-
 float cpu_ms(const char* name, const char* within) {
     float ms = 0.0f;
     for (int i = 0; i < g.node_count; ++i) {
@@ -331,10 +211,9 @@ float cpu_ms(const char* name, const char* within) {
     return ms;
 }
 
-float frame_gpu_ms() { return g.node_count ? g.nodes[0].gpu_ms : 0.0f; }
 float frame_cpu_ms() { return g.node_count ? g.nodes[0].cpu_ms : 0.0f; }
 
-// A bar under the number: the share of the frame's GPU time
+// A bar under the number: the share of the frame's time
 static void time_cell(float ms, float frame_ms) {
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const float  w = ImGui::GetContentRegionAvail().x;
@@ -365,13 +244,8 @@ static void draw_row(int i, float frame_ms) {
     if (leaf)          flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
     if (n.depth < 3)   flags |= ImGuiTreeNodeFlags_DefaultOpen;
     const bool open = ImGui::TreeNodeEx("##node", flags, "%s", n.name);
-    if (ImGui::IsItemHovered() && n.first_child >= 0) {
-        ImGui::SetItemTooltip("Its own GPU time: %.3f ms", n.gpu_self_ms);
-    }
     ImGui::TableNextColumn();
-    time_cell(n.gpu_ms, frame_ms);
-    ImGui::TableNextColumn();
-    ImGui::Text("%7.3f", n.cpu_ms);
+    time_cell(n.cpu_ms, frame_ms);
     ImGui::TableNextColumn();
     if (n.calls != 1.0f) ImGui::TextDisabled("%.0f", n.calls);
     ImGui::PopID();
@@ -390,14 +264,13 @@ void draw_table() {
     }
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable |
                                   ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit;
-    if (ImGui::BeginTable("##profiler", 4, flags)) {
+    if (ImGui::BeginTable("##profiler", 3, flags)) {
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableSetupColumn("Section", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("GPU ms", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("0000.000000").x);
-        ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("0000.0000").x);
+        ImGui::TableSetupColumn("CPU ms", ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("0000.000000").x);
         ImGui::TableSetupColumn("Calls",  ImGuiTableColumnFlags_WidthFixed, ImGui::CalcTextSize("00000").x);
         ImGui::TableHeadersRow();
-        draw_row(0, g.nodes[0].gpu_ms);
+        draw_row(0, g.nodes[0].cpu_ms);
         ImGui::EndTable();
     }
 }
@@ -408,10 +281,10 @@ void draw_summary() {
         return;
     }
     const Node& root = g.nodes[0];
-    ImGui::Text("Per frame: GPU %.2f ms, CPU %.2f ms", root.gpu_ms, root.cpu_ms);
+    ImGui::Text("Per frame: CPU %.2f ms", root.cpu_ms);
     for (int c = root.first_child; c >= 0; c = g.nodes[c].next_sibling) {
         const Node& n = g.nodes[c];
-        if (n.shown) ImGui::Text("  %-22s GPU %7.3f ms   CPU %7.3f ms", n.name, n.gpu_ms, n.cpu_ms);
+        if (n.shown) ImGui::Text("  %-22s CPU %7.3f ms", n.name, n.cpu_ms);
     }
     ImGui::TextDisabled("Every section: Windows > Profiler");
 }
@@ -448,7 +321,7 @@ static void write_csv_rows(md_writer_i* w, int i) {
         len = MD_MIN(len + (size_t)m, sizeof(path) - 1);
     }
     write_csv_field(w, path);
-    md_writef(w, ",%.4f,%.4f,%.4f,%.2f\n", n.gpu_ms, n.gpu_self_ms, n.cpu_ms, n.calls);
+    md_writef(w, ",%.4f,%.2f\n", n.cpu_ms, n.calls);
     for (int c = n.first_child; c >= 0; c = g.nodes[c].next_sibling) {
         if (g.nodes[c].shown) write_csv_rows(w, c);
     }
@@ -458,9 +331,6 @@ void write_csv(md_writer_i* w, const char* info) {
     char when[64] = "";
     const time_t t = time(nullptr);
     if (const struct tm* tm = localtime(&t)) strftime(when, sizeof(when), "%Y-%m-%d %H:%M:%S", tm);
-    const char* vendor   = (const char*)glGetString(GL_VENDOR);
-    const char* renderer = (const char*)glGetString(GL_RENDERER);
-    const char* version  = (const char*)glGetString(GL_VERSION);
 
     md_writef(w, "# VIAMD profiler, %s\n", when);
 #ifdef NDEBUG
@@ -468,8 +338,7 @@ void write_csv(md_writer_i* w, const char* info) {
 #else
     md_write_cstr(w, "# build: debug (asserts on)\n");
 #endif
-    md_writef(w, "# GL: %s | %s | %s\n", vendor ? vendor : "?", renderer ? renderer : "?", version ? version : "?");
-    md_writef(w, "# per frame, averaged over %d frames (the GPU's over %d of them)\n", g.published_cpu_frames, g.published_gpu_frames);
+    md_writef(w, "# per frame, averaged over %d frames\n", g.published_cpu_frames);
     for (const char* line = info; line && *line;) {
         const char* end = strchr(line, '\n');
         const size_t n = end ? (size_t)(end - line) : strlen(line);
@@ -478,7 +347,7 @@ void write_csv(md_writer_i* w, const char* info) {
         md_write_char(w, '\n');
         line = end ? end + 1 : line + n;
     }
-    md_write_cstr(w, "section,gpu_ms,gpu_self_ms,cpu_ms,calls\n");
+    md_write_cstr(w, "section,cpu_ms,calls\n");
     if (g.node_count && g.nodes[0].shown) write_csv_rows(w, 0);
 }
 

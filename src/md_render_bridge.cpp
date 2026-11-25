@@ -12,8 +12,6 @@
 #include <core/md_arena_allocator.h>
 #include <core/md_geom.h>
 
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
 #include <imgui.h>
 
 #include <stdio.h>
@@ -26,7 +24,6 @@
 #include <md_render_mol.h>
 #include <md_compose.h>
 #include <md_post.h>
-#include <core/md_gpu_gl.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/isolines.h>
 #include <gpu_volume.h>
@@ -72,16 +69,6 @@ static void free_rep(md_gpu_stream_t s, BridgeRep* r) {
     if (r->profile) md_gpu_free(s, r->profile);
     free_pairs(s, &r->pairs);
 }
-
-// A texture md_gpu writes and GL reads, and the GL texture of it. The two take turns with it: md_gpu writes it between
-// acquire and release, GL reads it between begin_read and end_read, and md_gpu writes it again only after GL said so
-// (gl_done)
-struct SharedTex {
-    md_gpu_texture_t    tex = nullptr;
-    md_gpu_gl_texture_t gl  = {};
-    bool                imported = false;
-    bool                released = false;   // released by md_gpu, not yet read by GL
-};
 
 struct MdRenderBridge {
     bool        ok = false;
@@ -135,7 +122,7 @@ struct MdRenderBridge {
     uint64_t       parts_topology = 0;
 
     // The frame: md_compose's scene and md_post's frame at the scene's size, the histories at the image's, the image
-    // kept (the frame, or the history written last); shared with GL, the image shown and the scene's depth
+    // kept (the frame, or the history written last); the image shown
     md_compose_ctx_t compose = nullptr;
     md_post_ctx_t    post = nullptr;
     uint32_t  width = 0, height = 0;            // the scene's (the G-buffer's)
@@ -145,16 +132,12 @@ struct MdRenderBridge {
     int       hist = 0;                         // the history written last
     bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
     md_gpu_texture_t image = nullptr;
-    SharedTex out;
+    md_gpu_texture_t out = nullptr;             // the image shown: the image kept presented, the overlay over it
     bool      still = true;         // md_render did not rasterise this frame: nothing moved
     md_render_frame_t last = {};    // the frame drawn last (its batches are `batches`), for the masks alone
     bool      has_last = false;
     int       last_ui_frame = -1;   // the ImGui frame it was drawn in
     uint32_t  presents = 0;         // seeds the dither
-
-    // GL: the image shown into the framebuffer
-    GLuint present_program = 0, vao = 0;
-    GLint  ploc_image = -1, ploc_size = -1;
 
     // The overlay drawn last (draw_overlay), for picking it: its items, the camera and the size it was drawn at; and
     // the pixel asked about last (md_render_bridge_pick: the scene's, rows from the top)
@@ -202,134 +185,8 @@ struct MdRenderBridge {
     uint32_t         num_picks = 0;
 };
 
-static void* gl_loader(const char* name) {
-    GL3WglProc p = gl3wGetProcAddress(name);
-    void* v = nullptr;
-    static_assert(sizeof(p) == sizeof(v), "function and object pointers of one size");
-    memcpy(&v, &p, sizeof(v));
-    return v;
-}
-
 static void set_status(MdRenderBridge* b, const char* fmt, const char* detail = nullptr) {
     snprintf(b->status, sizeof(b->status), fmt, detail ? detail : "");
-}
-
-// ---- GL ----------------------------------------------------------------------------------------------------------
-
-static const char* fullscreen_vs = R"(
-#version 330 core
-void main() {
-    vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
-    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-)";
-
-// The image shown, as md_post presented it (sRGB-encoded, dithered), into the framebuffer: its rows from the top, GL's
-// from the bottom
-static const char* present_fs = R"(
-#ifdef RECT
-uniform sampler2DRect u_image;
-#define FETCH(t, p) texelFetch(t, p)
-#else
-uniform sampler2D u_image;
-#define FETCH(t, p) texelFetch(t, p, 0)
-#endif
-uniform ivec2 u_size;
-out vec4 out_color;
-void main() {
-    ivec2 p = ivec2(gl_FragCoord.xy);
-    p.y = u_size.y - 1 - p.y;
-    out_color = vec4(FETCH(u_image, p).rgb, 1.0);
-}
-)";
-
-
-static GLuint gl_program(const char* fs_body, bool rect) {
-    char fs_src[4096];
-    snprintf(fs_src, sizeof(fs_src), "#version 330 core\n%s%s", rect ? "#define RECT 1\n" : "", fs_body);
-    GLuint vs = gl::compile_shader_from_source(md_str_from_cstr(fullscreen_vs), GL_VERTEX_SHADER);
-    GLuint fs = gl::compile_shader_from_source(md_str_from_cstr(fs_src), GL_FRAGMENT_SHADER);
-    GLuint program = 0;
-    if (vs && fs) {
-        program = glCreateProgram();
-        const GLuint shaders[] = {vs, fs};
-        if (!gl::attach_link_detach(program, shaders, 2)) {
-            glDeleteProgram(program);
-            program = 0;
-        }
-    }
-    if (vs) glDeleteShader(vs);
-    if (fs) glDeleteShader(fs);
-    return program;
-}
-
-static bool gl_init(MdRenderBridge* b, bool rect) {
-    b->present_program = gl_program(present_fs, rect);
-    if (!b->present_program) return false;
-    b->ploc_image = glGetUniformLocation(b->present_program, "u_image");
-    b->ploc_size  = glGetUniformLocation(b->present_program, "u_size");
-    glGenVertexArrays(1, &b->vao);
-    return true;
-}
-
-// ---- Shared textures ---------------------------------------------------------------------------------------------
-
-// Before md_gpu writes s again: GL is done with it (read or not)
-static void gl_done(SharedTex* s) {
-    if (!s->released) return;
-    md_gpu_gl_begin_read(&s->gl);
-    md_gpu_gl_end_read(&s->gl);
-    s->released = false;
-}
-
-static void share_write_begin(MdRenderBridge* b, SharedTex* s) {
-    gl_done(s);
-    md_gpu_texture_share_acquire(b->stream, s->tex);
-}
-
-static void share_write_end(MdRenderBridge* b, SharedTex* s) {
-    md_gpu_texture_share_release(b->stream, s->tex);
-    s->released = true;
-}
-
-// GL reads what md_gpu released: between gl_read_begin and gl_read_end
-static void gl_read_begin(SharedTex* s) {
-    if (s->released) md_gpu_gl_begin_read(&s->gl);
-}
-
-static void gl_read_end(SharedTex* s) {
-    if (!s->released) return;
-    md_gpu_gl_end_read(&s->gl);
-    s->released = false;
-}
-
-static void shared_free(SharedTex* s) {
-    gl_done(s);
-    if (s->imported) md_gpu_gl_release(&s->gl);
-    if (s->tex) md_gpu_texture_destroy(s->tex);
-    *s = SharedTex{};
-}
-
-// Written by md_post_present and drawn over by md_post_overlay
-static bool shared_make(MdRenderBridge* b, SharedTex* s, md_gpu_format_t format, uint32_t width, uint32_t height, const char* label) {
-    md_gpu_texture_desc_t d = {};
-    d.type   = MD_GPU_TEX_2D;
-    d.format = format;
-    d.usage  = MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET | MD_GPU_TEX_SHARED;
-    d.width  = width;
-    d.height = height;
-    d.label  = label;
-    s->tex = md_gpu_texture_create(b->stream, &d);
-    if (!s->tex) {
-        set_status(b, "Could not make a texture shared with OpenGL: %s", md_gpu_last_error());
-        return false;
-    }
-    if (!md_gpu_gl_import(&s->gl, s->tex, gl_loader)) {
-        set_status(b, "OpenGL could not import md_gpu's texture (see the log): %s", md_gpu_last_error());
-        return false;
-    }
-    s->imported = true;
-    return true;
 }
 
 static md_gpu_texture_t gpu_texture(MdRenderBridge* b, md_gpu_format_t format, md_gpu_tex_usage_t usage, uint32_t w, uint32_t h, const char* label) {
@@ -344,7 +201,8 @@ static void free_targets(MdRenderBridge* b) {
         if (*x) md_gpu_texture_destroy(*x);
         *x = nullptr;
     }
-    shared_free(&b->out);
+    if (b->out) md_gpu_texture_destroy(b->out);
+    b->out = nullptr;
     b->image = nullptr;
     b->hist_valid = false;
     b->width = b->height = b->out_width = b->out_height = 0;
@@ -364,12 +222,11 @@ static bool ensure_targets(MdRenderBridge* b, uint32_t width, uint32_t height, u
         free_targets(b);
         return false;
     }
-    if (!shared_make(b, &b->out, MD_GPU_FORMAT_RGBA8_UNORM, out_width, out_height, "main view image")) {
-        free_targets(b);
-        return false;
-    }
-    if (!b->present_program && !gl_init(b, b->out.gl.target != GL_TEXTURE_2D)) {
-        set_status(b, "The main view's GL shaders did not compile%s");
+    // Written by md_post_present, drawn over by md_post_overlay, drawn by ImGui
+    b->out = gpu_texture(b, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET | MD_GPU_TEX_SAMPLED, out_width, out_height,
+                         "main view image");
+    if (!b->out) {
+        set_status(b, "Could not make the main view's image: %s", md_gpu_last_error());
         free_targets(b);
         return false;
     }
@@ -2001,7 +1858,7 @@ static bool draw_overlay(MdRenderBridge* b, ApplicationState* state, const Overl
     md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
     md_post_overlay_item_t* items = overlay_items(o->items, n, state->allocator.frame);
     md_post_overlay_t ov = {};
-    ov.target = b->out.tex;
+    ov.target = b->out;
     ov.camera = b->overlay_camera;
     ov.items  = items;
     ov.count  = (uint32_t)n;
@@ -2078,7 +1935,7 @@ static void marks_of(md_post_marks_t* m, const postprocess_pipeline::Settings& s
 
 bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks, const Overlay* overlay) {
     MdRenderBridge* b = state->md_render_bridge;
-    if (!b || !b->ok || !b->image || !b->out.tex) return false;
+    if (!b || !b->ok || !b->image || !b->out) return false;
     // The marks changed without the scene being made: md_render's masks again (only they are made)
     if (marks && b->has_last && b->last_ui_frame != ImGui::GetFrameCount() && b->last.width == b->width && b->last.height == b->height) {
         if (take_up(b, state)) {
@@ -2097,34 +1954,27 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
     pd.image = b->image;
     pd.marks_view = marks && b->has_last ? b->view : nullptr;
     pd.marks  = marks ? &m : nullptr;
-    pd.target = b->out.tex;
+    pd.target = b->out;
     pd.frame  = b->presents++;
-    share_write_begin(b, &b->out);
-    const bool ok = md_post_present(b->stream, b->post, &pd) && draw_overlay(b, state, overlay);
-    share_write_end(b, &b->out);
-    if (!ok) return false;
-
-    // Into the framebuffer bound, over the viewport the caller set
-    gl_read_begin(&b->out);
-    const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), blend = glIsEnabled(GL_BLEND);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glUseProgram(b->present_program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(b->out.gl.target, b->out.gl.name);
-    glUniform1i(b->ploc_image, 0);
-    glUniform2i(b->ploc_size, (GLint)b->out_width, (GLint)b->out_height);
-    glBindVertexArray(b->vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glBindTexture(b->out.gl.target, 0);
-    glUseProgram(0);
-    if (depth_test) glEnable(GL_DEPTH_TEST);
-    if (blend) glEnable(GL_BLEND);
-    gl_read_end(&b->out);
-    return true;
+    return md_post_present(b->stream, b->post, &pd) && draw_overlay(b, state, overlay);
 }
 
+md_gpu_texture_t md_render_bridge_image(const ApplicationState* state) {
+    const MdRenderBridge* b = state->md_render_bridge;
+    return b && b->ok && b->image ? b->out : nullptr;
+}
+
+bool md_render_bridge_read_image(ApplicationState* state, uint32_t* rgba, uint32_t width, uint32_t height) {
+    MdRenderBridge* b = state->md_render_bridge;
+    if (!b || !b->ok || !b->image || !b->out || b->out_width != width || b->out_height != height) return false;
+    const size_t bytes = (size_t)width * height * 4;
+    md_gpu_mem_t rb = md_gpu_malloc(b->stream, MD_GPU_MEM_HOST_READ, bytes);
+    const bool ok = rb.cpu && md_gpu_copy_from_texture(b->stream, rb.gpu, b->out, nullptr);
+    md_gpu_stream_sync(b->stream);
+    if (ok) memcpy(rgba, rb.cpu, bytes);
+    if (rb.gpu) md_gpu_free(b->stream, rb.gpu);
+    return ok;
+}
 
 // ---- Picking ------------------------------------------------------------------------------------------------------
 
@@ -2327,10 +2177,9 @@ struct MdRenderPanels {
     uint64_t surfaces[PANEL_MAX] = {};
     // A panel's on the way: composed, displayed, presented (in turn, one panel after another)
     md_gpu_texture_t scene = nullptr, frame = nullptr, image = nullptr;
-    // Their images side by side, shared with GL, and its copy that ImGui draws
-    SharedTex atlas;
+    // Their images side by side, which ImGui draws
+    md_gpu_texture_t atlas = nullptr;
     uint32_t  atlas_w = 0, atlas_h = 0;
-    GLuint    gl_tex = 0, fbo = 0;
     bool      has_image = false;
     // The molecule: its sets of colours, and of each representation which atoms it shows (of its set's, and of its own),
     // its transform; what they were made of. The cartoons' profiles, by what they are of, kept while drawn.
@@ -2383,10 +2232,8 @@ static void panels_free_targets(MdRenderBridge* b, MdRenderPanels* p) {
         if (*x) md_gpu_texture_destroy(*x);
         *x = nullptr;
     }
-    shared_free(&p->atlas);
-    if (p->gl_tex) glDeleteTextures(1, &p->gl_tex);
-    if (p->fbo) glDeleteFramebuffers(1, &p->fbo);
-    p->gl_tex = p->fbo = 0;
+    if (p->atlas) md_gpu_texture_destroy(p->atlas);
+    p->atlas = nullptr;
     p->has_image = false;
     p->width = p->height = p->count = p->columns = p->atlas_w = p->atlas_h = 0;
 }
@@ -2407,7 +2254,8 @@ static bool panels_ensure(MdRenderBridge* b, MdRenderPanels* p, uint32_t w, uint
         }
     }
     const uint32_t rows = (count + columns - 1) / columns;
-    ok = ok && shared_make(b, &p->atlas, MD_GPU_FORMAT_RGBA8_UNORM, w * columns, h * rows, "panels");
+    p->atlas = ok ? gpu_texture(b, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_SAMPLED, w * columns, h * rows, "panels") : nullptr;
+    ok = ok && p->atlas;
     if (!ok) {
         MD_LOG_ERROR("The panels' textures (%u of %u x %u) could not be made: %s", count, w, h, md_gpu_last_error());
         panels_free_targets(b, p);
@@ -2415,15 +2263,6 @@ static bool panels_ensure(MdRenderBridge* b, MdRenderPanels* p, uint32_t w, uint
     }
     p->atlas_w = w * columns;
     p->atlas_h = h * rows;
-    glGenTextures(1, &p->gl_tex);
-    glBindTexture(GL_TEXTURE_2D, p->gl_tex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, (GLsizei)p->atlas_w, (GLsizei)p->atlas_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glGenFramebuffers(1, &p->fbo);
     p->width = w;
     p->height = h;
     p->count = count;
@@ -2677,39 +2516,7 @@ static bool panel_present(MdRenderBridge* b, MdRenderPanels* p, uint32_t i, md_r
     dst.extent[0] = p->width;
     dst.extent[1] = p->height;
     dst.extent[2] = 1;
-    return md_gpu_copy_texture(b->stream, p->atlas.tex, &dst, p->image, &src);
-}
-
-// The atlas, as md_gpu wrote it, into its GL copy (rows from the bottom)
-static void panels_to_gl(MdRenderBridge* b, MdRenderPanels* p) {
-    GLint fbo = 0, viewport[4] = {};
-    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fbo);
-    glGetIntegerv(GL_VIEWPORT, viewport);
-    const GLboolean depth_test = glIsEnabled(GL_DEPTH_TEST), blend = glIsEnabled(GL_BLEND), scissor = glIsEnabled(GL_SCISSOR_TEST);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
-    glDisable(GL_SCISSOR_TEST);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, p->fbo);
-    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, p->gl_tex, 0);
-    glDrawBuffer(GL_COLOR_ATTACHMENT0);
-    glViewport(0, 0, (GLsizei)p->atlas_w, (GLsizei)p->atlas_h);
-    gl_read_begin(&p->atlas);
-    glUseProgram(b->present_program);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(p->atlas.gl.target, p->atlas.gl.name);
-    glUniform1i(b->ploc_image, 0);
-    glUniform2i(b->ploc_size, (GLint)p->atlas_w, (GLint)p->atlas_h);
-    glBindVertexArray(b->vao);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glBindVertexArray(0);
-    glBindTexture(p->atlas.gl.target, 0);
-    glUseProgram(0);
-    gl_read_end(&p->atlas);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fbo);
-    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-    if (depth_test) glEnable(GL_DEPTH_TEST);
-    if (blend) glEnable(GL_BLEND);
-    if (scissor) glEnable(GL_SCISSOR_TEST);
+    return md_gpu_copy_texture(b->stream, p->atlas, &dst, p->image, &src);
 }
 
 bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, const PanelsDesc& d) {
@@ -2870,31 +2677,26 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
             if (!make && !marked) continue;
             if (make) ok = panel_make(b, p, i, p->view[v], cam, st, d.panels[i], sh, disp, alloc);
             if (!ok) break;
-            if (!presented) share_write_begin(b, &p->atlas);
             presented = true;
             ok = panel_present(b, p, i, p->view[v], d.marks ? &mk : nullptr, ov.count ? &ov : nullptr);
         }
     }
     md_temp_end(ov_temp);
-    if (presented) share_write_end(b, &p->atlas);
     if (!ok) {
         MD_LOG_ERROR("The panels could not be drawn (see the log)");
         return false;
     }
-    if (presented) {
-        panels_to_gl(b, p);
-        p->has_image = true;
-    }
+    if (presented) p->has_image = true;
     return p->has_image;
 }
 
-bool md_render_bridge_panels_image(const MdRenderPanels* p, uint32_t i, uint32_t* gl_texture, md_float2_t* uv0, md_float2_t* uv1) {
+bool md_render_bridge_panels_image(const MdRenderPanels* p, uint32_t i, md_gpu_texture_t* texture, md_float2_t* uv0, md_float2_t* uv1) {
     if (!p || !p->has_image || i >= p->count) return false;
     const float W = (float)p->atlas_w, H = (float)p->atlas_h;
     const float x0 = (float)((i % p->columns) * p->width), y0 = (float)((i / p->columns) * p->height);
-    *gl_texture = p->gl_tex;
-    *uv0 = {x0 / W, 1.0f - y0 / H};
-    *uv1 = {(x0 + (float)p->width) / W, 1.0f - (y0 + (float)p->height) / H};
+    *texture = p->atlas;
+    *uv0 = {x0 / W, y0 / H};
+    *uv1 = {(x0 + (float)p->width) / W, (y0 + (float)p->height) / H};
     return true;
 }
 
@@ -2986,10 +2788,6 @@ static bool create(ApplicationState* state) {
         set_status(b, "The GPU device does not draw (md_gpu graphics)%s");
         return false;
     }
-    if (!info.supports_sharing) {
-        set_status(b, "The GPU device cannot share textures with OpenGL%s");
-        return false;
-    }
     b->device = state->gpu_device;
     b->stream = md_gpu_stream_default(b->device, MD_GPU_STREAM_GRAPHICS);
     b->render = b->stream ? md_render_create(b->device, nullptr) : nullptr;
@@ -3001,7 +2799,7 @@ static bool create(ApplicationState* state) {
         set_status(b, "md_render, md_compose or md_post could not be made: %s", md_gpu_last_error());
         return false;
     }
-    // Whether GL can read what md_gpu writes: the targets made once (and GL's shaders compiled)
+    // Whether the targets can be made: once
     if (!ensure_targets(b, 16, 16, 16, 16)) return false;
     set_status(b, "Ready%s");
     return true;
@@ -3038,8 +2836,6 @@ void md_render_bridge_destroy(ApplicationState* state) {
     if (b->compose) md_compose_destroy(b->compose);
     if (b->mol) md_render_mol_destroy(b->mol);
     if (b->render) md_render_destroy(b->render);
-    if (b->present_program) glDeleteProgram(b->present_program);
-    if (b->vao) glDeleteVertexArrays(1, &b->vao);
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
     md_array_free(b->light_batches, state->allocator.persistent);
@@ -3070,26 +2866,5 @@ uint32_t md_render_bridge_split_heads(const ApplicationState* state) {
     const MdRenderBridge* b = state->md_render_bridge;
     return b && b->has_topo ? b->topo.lipid_sphere_count[1] : 0;
 }
-
-#else
-
-bool md_render_bridge_create(ApplicationState*) { return false; }
-void md_render_bridge_destroy(ApplicationState*) {}
-const char* md_render_bridge_status(const ApplicationState&) { return "Built without md_gpu (MD_ENABLE_GPU): the main view is not drawn"; }
-uint32_t md_render_bridge_split_heads(const ApplicationState*) { return 0; }
-void md_render_bridge_pick(ApplicationState*, float, float) {}
-bool md_render_bridge_hit(ApplicationState*, PickingHit*) { return false; }
-void md_render_bridge_rep_colors(ApplicationState*, const Representation&, const uint32_t*, size_t) {}
-void md_render_bridge_rep_pairs(ApplicationState*, const Representation&, const uint32_t*, const uint32_t*, const uint32_t*, size_t) {}
-void md_render_bridge_buffers(ApplicationState*, uint32_t) {}
-void md_render_bridge_render(ApplicationState*, const postprocess_pipeline::Settings&) {}
-bool md_render_bridge_present(ApplicationState*, const postprocess_pipeline::Settings*, const Overlay*) { return false; }
-bool md_render_bridge_panels_draw(ApplicationState*, MdRenderPanels**, const PanelsDesc&) { return false; }
-bool md_render_bridge_panels_image(const MdRenderPanels*, uint32_t, uint32_t*, md_float2_t*, md_float2_t*) { return false; }
-void md_render_bridge_panels_pick(ApplicationState*, MdRenderPanels*, uint32_t, float, float) {}
-bool md_render_bridge_panels_hit(ApplicationState*, MdRenderPanels*, PickingHit*) { return false; }
-void md_render_bridge_panels_surface_hit(PickingHit* hit, ApplicationState*, MdRenderPanels*, uint32_t, const InteractionSurfaceState&, uint64_t,
-                                         const md_float4x4_t&, int, int) { *hit = {}; }
-void md_render_bridge_panels_destroy(ApplicationState*, MdRenderPanels**) {}
 
 #endif

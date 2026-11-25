@@ -12,6 +12,7 @@
 
 #include <iso_meshes.h>
 #include <md_render_bridge.h>
+#include <app/imgui_impl_md_gpu.h>
 #include <gpu_volume.h>
 
 #include <md_gto.h>
@@ -8370,10 +8371,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%i %s", mo_idx + 1, lbl);
-                    uint32_t tex = 0;
+                    md_gpu_texture_t tex = nullptr;
                     md_float2_t uv0, uv1;
                     if (md_render_bridge_panels_image(orb.panels, (uint32_t)i, &tex, &uv0, &uv1)) {
-                        draw_list->AddImage((ImTextureID)(intptr_t)tex, p0, p1, vec_cast(uv0), vec_cast(uv1));
+                        draw_list->AddImage(ImGui_ImplMdGpu_TextureID(tex), p0, p1, vec_cast(uv0), vec_cast(uv1));
                     }
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0), buf);
 
@@ -9494,10 +9495,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     //char buf[32];
                     //snprintf(buf, sizeof(buf), (const char*)u8"λ: %.3f", nto_lambda[i / 2]);
-                    uint32_t tex = 0;
+                    md_gpu_texture_t tex = nullptr;
                     md_float2_t uv0, uv1;
                     if (md_render_bridge_panels_image(nto.panels, (uint32_t)idx, &tex, &uv0, &uv1)) {
-                        draw_list->AddImage((ImTextureID)(intptr_t)tex, p0, p1, vec_cast(uv0), vec_cast(uv1));
+                        draw_list->AddImage(ImGui_ImplMdGpu_TextureID(tex), p0, p1, vec_cast(uv0), vec_cast(uv1));
                     }
                     //draw_list->AddText(text_pos_bl, ImColor(0,0,0), buf);
                     draw_list->AddText(text_pos_tl, ImColor(0,0,0), lbl);
@@ -11545,10 +11546,10 @@ struct QuantumChemistry : viamd::EventHandler {
 
         static const char* lbl[2] = { "Hole", "Particle" };
         for (int i = 0; i < 2; ++i) {
-            uint32_t tex = 0;
+            md_gpu_texture_t tex = nullptr;
             md_float2_t uv0, uv1;
             if (md_render_bridge_panels_image(ctv.panels, (uint32_t)i, &tex, &uv0, &uv1)) {
-                dl->AddImage((ImTextureID)(intptr_t)tex, r[i].Min, r[i].Max, vec_cast(uv0), vec_cast(uv1));
+                dl->AddImage(ImGui_ImplMdGpu_TextureID(tex), r[i].Min, r[i].Max, vec_cast(uv0), vec_cast(uv1));
             }
             dl->AddRect(r[i].Min, r[i].Max, IM_COL32(0, 0, 0, 22));
             const ImVec2 tp = r[i].Min + ImVec2(6.0f, 4.0f);
