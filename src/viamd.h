@@ -1282,13 +1282,6 @@ struct Representation {
     // User defined base color used in uniform mode
     md_float4_t base_color = {1.0f, 1.0f, 1.0f, 1.0f};
 
-    struct {
-        md_float4_t color_unknown = {0.50f, 0.50f, 0.50f, 1.0f};
-        md_float4_t color_coil    = {0.86f, 0.86f, 0.86f, 1.0f};
-        md_float4_t color_helix   = {0.12f, 0.86f, 0.12f, 1.0f};
-        md_float4_t color_sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
-    } secondary_structure;
-
     // Global post processing parameters applied to the final colors.
     md_float4_t tint_color = {1.0f, 0.0f, 0.0f, 1.0f};
     float tint_scale = 0.0f;
@@ -2177,6 +2170,16 @@ struct ApplicationState {
             bool show_window = false;
         } grow;
     } selection;
+
+    // The colours of the secondary structures, of every system and representation (ColorMapping::SecondaryStructure), as
+    // the colours of the elements and the monomers are of them all: a palette above what is of a system. Edited in the
+    // System window (Residue Types), kept with the workspace ([SecondaryStructureColors]).
+    struct {
+        md_float4_t unknown = {0.333f, 0.333f, 0.333f, 1.0f};
+        md_float4_t coil    = {0.86f, 0.86f, 0.86f, 1.0f};
+        md_float4_t helix   = {0.12f, 0.86f, 0.12f, 1.0f};
+        md_float4_t sheet   = {0.12f, 0.12f, 0.86f, 1.0f};
+    } secondary_structure_colors;
 
     // --- GBUFFER ---
     // Primary gbuffer

@@ -71,11 +71,7 @@ static inline void set_type_bead(md_system_t& sys, size_t i, bool bead) {
 
 // A single deserialized [AtomType] section. The workspace is parsed before the system is loaded, so these
 // are buffered here and applied once the particle types actually exist (see apply_pending_particle_type_overrides).
-// The system of an override that names none: the first (ApplicationState::system_context)
-static constexpr uint32_t OVERRIDE_FIRST_SYSTEM = UINT32_MAX - 1;
-
 struct ParticleTypeOverride {
-    uint32_t system_id = OVERRIDE_FIRST_SYSTEM;  // Of the system (by id) it names (System=), else the first's
     char name[32] = "";             // Name of the particle type
     char ff_type[64] = "";          // Force field type, empty when the type has none
     md_atomic_number_t load_z = 0;  // Element the type was assigned upon load. Name, force field type and element identify the type
@@ -153,7 +149,6 @@ struct ResidueTypeItem {
 
 // A single deserialized [ComponentType] section, buffered until the system is loaded (as AtomTypeOverride)
 struct ResidueTypeOverride {
-    uint32_t system_id = OVERRIDE_FIRST_SYSTEM;  // Of the system (by id) it names (System=), else the first's
     char name[16] = "";
     md_residue_kind_t kind = MD_RESIDUE_KIND_OTHER;      // Name and kind identify the type
     bool has_color = false;
@@ -590,7 +585,6 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ResidueTypeOverride& ovr = pending_res_type_overrides[j];
-            if (!override_of_work(ovr.system_id)) continue;
             const md_residue_type_idx_t t = md_residue_type_find(&type, md_str_from_cstr(ovr.name), ovr.kind);
             if (t < 0) {
                 MD_LOG_INFO("Dataset: workspace contains overrides for residue type '%s' (%s) which is not present in the loaded system", ovr.name, md_residue_kind_name(ovr.kind));
@@ -637,6 +631,58 @@ struct Dataset : viamd::EventHandler {
         if (has_color) monomer_defaults[m].color = color;
     }
 
+    // The colours of the secondary structures, of every system (ApplicationState::secondary_structure_colors): written
+    // where any is other than the built in one
+    void serialize_secondary_structure_colors(viamd::serialization_state_t& state) {
+        if (!app_state) return;
+        const auto& c = app_state->secondary_structure_colors;
+        const decltype(app_state->secondary_structure_colors) builtin = {};
+        if (md_memcmp(&c, &builtin, sizeof(c)) == 0) return;
+        viamd::write_section_header(state, MD_STR_LIT("SecondaryStructureColors"));
+        viamd::write_vec4(state, MD_STR_LIT("Unknown"), c.unknown);
+        viamd::write_vec4(state, MD_STR_LIT("Coil"),    c.coil);
+        viamd::write_vec4(state, MD_STR_LIT("Helix"),   c.helix);
+        viamd::write_vec4(state, MD_STR_LIT("Sheet"),   c.sheet);
+    }
+
+    void deserialize_secondary_structure_colors(viamd::deserialization_state_t& state) {
+        md_str_t ident, arg;
+        while (viamd::next_entry(ident, arg, state)) {
+            if (!app_state) continue;
+            auto& c = app_state->secondary_structure_colors;
+            if      (md_str_eq_cstr(ident, "Unknown")) viamd::extract_vec4(c.unknown, arg);
+            else if (md_str_eq_cstr(ident, "Coil"))    viamd::extract_vec4(c.coil, arg);
+            else if (md_str_eq_cstr(ident, "Helix"))   viamd::extract_vec4(c.helix, arg);
+            else if (md_str_eq_cstr(ident, "Sheet"))   viamd::extract_vec4(c.sheet, arg);
+        }
+    }
+
+    // The palette of the secondary structures, below the monomers': of every system, as theirs is
+    void draw_secondary_structure_colors(ApplicationState& data) {
+        if (!ImGui::CollapsingHeader("Secondary Structure Colors")) return;
+        auto& c = data.secondary_structure_colors;
+        const ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha;
+        bool changed = false;
+        changed |= ImGui::ColorEdit4("Coil##ss", c.coil.elem, flags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit4("Helix##ss", c.helix.elem, flags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit4("Sheet##ss", c.sheet.elem, flags);
+        ImGui::SameLine();
+        changed |= ImGui::ColorEdit4("Unknown##ss", c.unknown.elem, flags);
+        ImGui::SameLine();
+        const decltype(data.secondary_structure_colors) builtin = {};
+        ImGui::BeginDisabled(md_memcmp(&c, &builtin, sizeof(c)) == 0);
+        if (ImGui::SmallButton("Reset##ss")) {
+            c = builtin;
+            changed = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("Restore the built in colors");
+        ImGui::TextDisabled("Of every system and representation coloured by secondary structure");
+        if (changed) flag_all_representations_as_dirty(&data);
+    }
+
     // One [ComponentType] section per residue type the user modified: its name and kind, then what differs
     void serialize_residue_types(viamd::serialization_state_t& state) {
         if (!app_state) return;
@@ -646,10 +692,8 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t i = 0; i < type_count; ++i) {
             const ResidueTypeDelta delta = compute_res_type_delta(type, i);
-            if (!delta) continue;
+            if (!delta || !write_once(res_type_key(type, i))) continue;
             viamd::write_section_header(state, MD_STR_LIT("ComponentType"));
-            // Of which system, where there are several: by its id, as the workspace names it
-            if (system_count(*app_state) > 1) viamd::write_int(state, MD_STR_LIT("System"), (int)work->id);
             viamd::write_str(state, MD_STR_LIT("Name"), md_residue_type_name(&type, i));
             viamd::write_int(state, MD_STR_LIT("Kind"), (int)md_residue_type_kind(&type, i));
             if (delta.color)    viamd::write_vec4(state, MD_STR_LIT("Color"), md_float4_from_u32(type.color[i]));
@@ -672,9 +716,7 @@ struct Dataset : viamd::EventHandler {
 
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "System")) {
-                ovr.system_id = override_system(state, arg);
-            } else if (md_str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
             } else if (md_str_eq_cstr(ident, "Kind")) {
                 int kind = 0;
@@ -717,11 +759,9 @@ struct Dataset : viamd::EventHandler {
             }
 
             ParticleTypeDelta delta = compute_particle_type_delta(type, item, i);
-            if (!delta) continue;
+            if (!delta || !write_once(particle_type_key(type, item, i))) continue;
 
             viamd::write_section_header(state, MD_STR_LIT("AtomType"));
-            // Of which system, where there are several: by its id, as the workspace names it
-            if (system_count(*app_state) > 1) viamd::write_int(state, MD_STR_LIT("System"), (int)work->id);
             viamd::write_str(state, MD_STR_LIT("Name"), md_particle_type_name(&type, i));
             const md_str_t ff_type = md_particle_type_ff_type(&type, i);
             if (!md_str_empty(ff_type)) {
@@ -746,9 +786,7 @@ struct Dataset : viamd::EventHandler {
 
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "System")) {
-                ovr.system_id = override_system(state, arg);
-            } else if (md_str_eq_cstr(ident, "Name")) {
+            if (md_str_eq_cstr(ident, "Name")) {
                 viamd::extract_to_char_buf(ovr.name, sizeof(ovr.name), arg);
             } else if (md_str_eq_cstr(ident, "ForceFieldType")) {
                 viamd::extract_to_char_buf(ovr.ff_type, sizeof(ovr.ff_type), arg);
@@ -788,28 +826,14 @@ struct Dataset : viamd::EventHandler {
         md_array_push(pending_overrides, ovr, md_get_heap_allocator());
     }
 
-    // The system an override names (System=), by the id the workspace names it by; of none it loads, no system's
-    static uint32_t override_system(const viamd::deserialization_state_t& state, md_str_t arg) {
-        int id = 0;
-        const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
-        return sc ? sc->id : UINT32_MAX;
-    }
-
-    // Whether an override of the system (OVERRIDE_FIRST_SYSTEM for the first) is of the system worked on
-    bool override_of_work(uint32_t id) const {
-        return id == work->id || (id == OVERRIDE_FIRST_SYSTEM && app_state && work == &app_state->system_context);
-    }
-
-    // Those of the system worked on, applied: gone from what waits
-    void drop_pending_overrides_of_work() {
-        for (size_t i = 0; i < md_array_size(pending_overrides);) {
-            if (override_of_work(pending_overrides[i].system_id)) md_array_swap_back_and_pop(pending_overrides, i);
-            else ++i;
+    // The types written of the systems, by their keys: a type is written once, being the same in every system
+    md_array(uint64_t) written_types = 0;
+    bool write_once(uint64_t key) {
+        for (size_t i = 0; i < md_array_size(written_types); ++i) {
+            if (written_types[i] == key) return false;
         }
-        for (size_t i = 0; i < md_array_size(pending_res_type_overrides);) {
-            if (override_of_work(pending_res_type_overrides[i].system_id)) md_array_swap_back_and_pop(pending_res_type_overrides, i);
-            else ++i;
-        }
+        md_array_push(written_types, key, md_get_heap_allocator());
+        return true;
     }
 
     void free_pending_overrides() {
@@ -835,7 +859,6 @@ struct Dataset : viamd::EventHandler {
 
         for (size_t j = 0; j < num_overrides; ++j) {
             const ParticleTypeOverride& ovr = pending_overrides[j];
-            if (!override_of_work(ovr.system_id)) continue;
             md_str_t name = md_str_from_cstr(ovr.name);
             md_str_t ff_type = md_str_from_cstr(ovr.ff_type);
 
@@ -880,6 +903,183 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    // ## A type is the same in every system
+    //
+    // A type's settings are of the type, not of a system: the same for the same type in every system loaded (an atom
+    // type by its name, its force field type and the element its loader gave it; a residue type by its name and kind),
+    // as the palettes of the elements, monomers and secondary structures are of them all. What a type deviates from
+    // what its loader assigned it, it does in every system, by the same; in each it keeps its loader's otherwise. An edit
+    // of one system's types is made of the others' (sync_*_edits); a system loaded takes the settings of its types from
+    // those loaded (adopt_types), after a workspace's ([AtomType], [ComponentType]), which are of every system.
+
+    static uint64_t particle_type_key(const md_particle_type_data_t& type, const DatasetItem& item, size_t i) {
+        const md_str_t name = md_particle_type_name(&type, i);
+        const md_str_t ff   = md_particle_type_ff_type(&type, i);
+        return md_hash64(ff.ptr, ff.len, md_hash64(name.ptr, name.len, (uint64_t)item.load.z + 1));
+    }
+
+    static uint64_t res_type_key(const md_residue_type_data_t& type, size_t i) {
+        const md_str_t name = md_residue_type_name(&type, i);
+        return md_hash64(name.ptr, name.len, (uint64_t)md_residue_type_kind(&type, i) + 1);
+    }
+
+    // The atom type of a system's (whose types are kept in t) with the key, -1 where it has none
+    static int64_t find_particle_type(const SystemContext& sc, const TypeItems& t, uint64_t key) {
+        const md_particle_type_data_t& type = sc.data.sys.atom.type;
+        const size_t n = md_system_particle_type_count(&sc.data.sys);
+        if (md_array_size(t.particle_types) != n) return -1;
+        for (size_t i = 0; i < n; ++i) {
+            if (particle_type_key(type, t.particle_types[i], i) == key) return (int64_t)i;
+        }
+        return -1;
+    }
+
+    static int64_t find_res_type(const SystemContext& sc, const TypeItems& t, uint64_t key) {
+        const md_residue_type_data_t& type = sc.data.sys.residue.type;
+        const size_t n = md_residue_type_count(&type);
+        if (md_array_size(t.res_types) != n) return -1;
+        for (size_t i = 0; i < n; ++i) {
+            if (res_type_key(type, i) == key) return (int64_t)i;
+        }
+        return -1;
+    }
+
+    // The atom type j of dst set as type i of src is: what i deviates from its loader by, j does
+    static void sync_particle_type(const SystemContext& src, const TypeItems& ts, size_t i, SystemContext& dst, TypeItems& td, size_t j,
+                                   bool* radius_changed, bool* color_changed) {
+        const md_particle_type_data_t& a = src.data.sys.atom.type;
+        md_particle_type_data_t& b = dst.data.sys.atom.type;
+        const ParticleTypeLoadState& la = ts.particle_types[i].load;
+        const ParticleTypeLoadState& lb = td.particle_types[j].load;
+        const float    radius = a.radius[i] == la.radius ? lb.radius : a.radius[i];
+        const uint32_t color  = a.color[i]  == la.color  ? lb.color  : a.color[i];
+        *radius_changed |= b.radius[j] != radius;
+        *color_changed  |= b.color[j] != color;
+        b.z[j]      = a.z[i] == la.z ? lb.z : a.z[i];
+        b.radius[j] = radius;
+        b.mass[j]   = a.mass[i] == la.mass ? lb.mass : a.mass[i];
+        b.color[j]  = color;
+        const bool bead = type_is_bead(a.flags[i]);
+        set_type_bead(dst.data.sys, j, bead == type_is_bead(la.flags) ? type_is_bead(lb.flags) : bead);
+        td.particle_types[j].use_defaults = ts.particle_types[i].use_defaults;
+    }
+
+    static void sync_res_type(const SystemContext& src, const TypeItems& ts, size_t i, SystemContext& dst, TypeItems& td, size_t j, bool* color_changed) {
+        const md_residue_type_data_t& a = src.data.sys.residue.type;
+        md_residue_type_data_t& b = dst.data.sys.residue.type;
+        const uint32_t color = a.color[i] == ts.res_types[i].load_color ? td.res_types[j].load_color : a.color[i];
+        *color_changed |= b.color[j] != color;
+        b.color[j] = color;
+        td.res_types[j].use_defaults = ts.res_types[i].use_defaults;
+    }
+
+    // The system worked on: its types set as the same types of a system loaded are, the first that has each
+    void adopt_types(ApplicationState& data, bool* radius_changed, bool* color_changed) {
+        SystemContext& dst = *work;
+        TypeItems& td = *T;
+        const md_particle_type_data_t& ptype = dst.data.sys.atom.type;
+        for (size_t j = 0; j < md_array_size(td.particle_types); ++j) {
+            const uint64_t key = particle_type_key(ptype, td.particle_types[j], j);
+            for (size_t k = 0; k < data.num_systems; ++k) {
+                SystemContext& src = *data.systems[k];
+                if (&src == &dst || !system_loaded(src)) continue;
+                const TypeItems& ts = types_of(src.id);
+                const int64_t i = find_particle_type(src, ts, key);
+                if (i < 0) continue;
+                sync_particle_type(src, ts, (size_t)i, dst, td, j, radius_changed, color_changed);
+                break;
+            }
+        }
+        const md_residue_type_data_t& rtype = dst.data.sys.residue.type;
+        for (size_t j = 0; j < md_array_size(td.res_types); ++j) {
+            const uint64_t key = res_type_key(rtype, j);
+            for (size_t k = 0; k < data.num_systems; ++k) {
+                SystemContext& src = *data.systems[k];
+                if (&src == &dst || !system_loaded(src)) continue;
+                const TypeItems& ts = types_of(src.id);
+                const int64_t i = find_res_type(src, ts, key);
+                if (i < 0) continue;
+                sync_res_type(src, ts, (size_t)i, dst, td, j, color_changed);
+                break;
+            }
+        }
+    }
+
+    // What the types of the system worked on were as a frame of the window began, to tell those edited in it
+    struct TypeState {
+        md_atomic_number_t z;
+        float    radius, mass;
+        uint32_t color;
+        md_particle_type_flags_t flags;
+        bool     use_defaults;
+    };
+
+    md_array(TypeState) particle_type_states(md_allocator_i* alloc) {
+        const md_particle_type_data_t& type = work->data.sys.atom.type;
+        md_array(TypeState) out = 0;
+        for (size_t i = 0; i < md_array_size(T->particle_types); ++i) {
+            const TypeState st = { type.z[i], type.radius[i], type.mass[i], type.color[i], type.flags[i], T->particle_types[i].use_defaults };
+            md_array_push(out, st, alloc);
+        }
+        return out;
+    }
+
+    md_array(TypeState) res_type_states(md_allocator_i* alloc) {
+        const md_residue_type_data_t& type = work->data.sys.residue.type;
+        md_array(TypeState) out = 0;
+        for (size_t i = 0; i < md_array_size(T->res_types); ++i) {
+            const TypeState st = { 0, 0.0f, 0.0f, type.color[i], md_particle_type_flags_t{}, T->res_types[i].use_defaults };
+            md_array_push(out, st, alloc);
+        }
+        return out;
+    }
+
+    // The types of the system worked on edited since before: made so of the same types in every other system
+    void sync_particle_type_edits(ApplicationState& data, const md_array(TypeState) before) {
+        SystemContext& src = *work;
+        const TypeItems& ts = *T;
+        const md_particle_type_data_t& type = src.data.sys.atom.type;
+        const size_t n = MD_MIN(md_array_size(before), md_array_size(ts.particle_types));
+        for (size_t i = 0; i < n; ++i) {
+            const TypeState& b = before[i];
+            if (b.z == type.z[i] && b.radius == type.radius[i] && b.mass == type.mass[i] && b.color == type.color[i] &&
+                b.flags == type.flags[i] && b.use_defaults == ts.particle_types[i].use_defaults) continue;
+            const uint64_t key = particle_type_key(type, ts.particle_types[i], i);
+            for (size_t k = 0; k < data.num_systems; ++k) {
+                SystemContext& dst = *data.systems[k];
+                if (&dst == &src || !system_loaded(dst)) continue;
+                TypeItems& td = types_of(dst.id);
+                const int64_t j = find_particle_type(dst, td, key);
+                if (j < 0) continue;
+                bool radius = false, color = false;
+                sync_particle_type(src, ts, i, dst, td, (size_t)j, &radius, &color);
+                if (radius) system_instances_flag(dst, MolBit_DirtyRadius);
+                if (color)  flag_all_representations_as_dirty(dst);
+            }
+        }
+    }
+
+    void sync_res_type_edits(ApplicationState& data, const md_array(TypeState) before) {
+        SystemContext& src = *work;
+        const TypeItems& ts = *T;
+        const md_residue_type_data_t& type = src.data.sys.residue.type;
+        const size_t n = MD_MIN(md_array_size(before), md_array_size(ts.res_types));
+        for (size_t i = 0; i < n; ++i) {
+            if (before[i].color == type.color[i] && before[i].use_defaults == ts.res_types[i].use_defaults) continue;
+            const uint64_t key = res_type_key(type, i);
+            for (size_t k = 0; k < data.num_systems; ++k) {
+                SystemContext& dst = *data.systems[k];
+                if (&dst == &src || !system_loaded(dst)) continue;
+                TypeItems& td = types_of(dst.id);
+                const int64_t j = find_res_type(dst, td, key);
+                if (j < 0) continue;
+                bool color = false;
+                sync_res_type(src, ts, i, dst, td, (size_t)j, &color);
+                if (color) flag_all_representations_as_dirty(dst);
+            }
+        }
+    }
+
     void on_system_init(ApplicationState& data) {
         init_dataset_items(data);
 
@@ -887,16 +1087,15 @@ struct Dataset : viamd::EventHandler {
         bool color_changed  = false;
 
         // Order matters. The per type overrides carry the UseDefaults flags, and those decide which types the
-        // element defaults are allowed to touch, so they have to be in place before the defaults are pushed.
+        // element defaults are allowed to touch, so they have to be in place before the defaults are pushed. A
+        // workspace's are of every system it loads; then its types are as the same types of the systems loaded are.
         apply_pending_particle_type_overrides(data, radius_changed, color_changed);
+        apply_pending_res_type_overrides(data, color_changed);
+        adopt_types(data, &radius_changed, &color_changed);
         apply_element_defaults_to_particle_types(data, radius_changed, color_changed);
 
         // The same for the residue types and the defaults of their monomers
-        apply_pending_res_type_overrides(data, color_changed);
         apply_monomer_defaults_to_res_types(data, color_changed);
-
-        // Applied: those of another system wait for it
-        drop_pending_overrides_of_work();
 
         if (radius_changed) {
             system_instances_flag(system(data), MolBit_DirtyRadius);
@@ -919,15 +1118,19 @@ struct Dataset : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdDeserializeBegin:
-                // A workspace without [ElementDefault], [AtomType], [MonomerDefault] or [ComponentType] sections has the built in ones
+                // A workspace without [ElementDefault], [AtomType], [MonomerDefault], [ComponentType] or
+                // [SecondaryStructureColors] sections has the built in ones
                 init_element_defaults();
                 init_monomer_defaults();
+                if (app_state) app_state->secondary_structure_colors = {};
                 free_pending_overrides();
                 break;
             case viamd::EventType_ViamdShutdown:
                 // Cleanup
                 while (!all_types.empty()) forget_system(all_types.back()->system_id);
                 free_pending_overrides();
+                md_array_free(written_types, md_get_heap_allocator());
+                written_types = 0;
                 app_state = nullptr;
                 break;
             case viamd::EventType_ViamdSystemInit: {
@@ -957,7 +1160,9 @@ struct Dataset : viamd::EventHandler {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 serialize_element_defaults(state);
                 serialize_monomer_defaults(state);
-                // The types of each system: those of another than the first say which (System=)
+                serialize_secondary_structure_colors(state);
+                // The types of the systems: each once, the same in all of them
+                md_array_shrink(written_types, 0);
                 if (app_state) {
                     for (size_t k = 0; k < app_state->num_systems; ++k) {
                         SystemContext& sc = *app_state->systems[k];
@@ -981,6 +1186,8 @@ struct Dataset : viamd::EventHandler {
                     deserialize_monomer_default(state);
                 } else if (md_str_eq_cstr(section, "ComponentType")) {
                     deserialize_residue_type(state);
+                } else if (md_str_eq_cstr(section, "SecondaryStructureColors")) {
+                    deserialize_secondary_structure_colors(state);
                 }
                 break;
             }
@@ -3279,6 +3486,10 @@ struct Dataset : viamd::EventHandler {
         bool radius_changed = false;
         bool color_changed  = false;
         bool mass_changed   = false;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        const md_array(TypeState) before = particle_type_states(md_temp_allocator(temp));
+        MD_DEFER { sync_particle_type_edits(data, before); };
 
         draw_particle_types(data, radius_changed, color_changed, mass_changed);
         draw_element_defaults(data, radius_changed, color_changed, mass_changed);
@@ -3819,8 +4030,13 @@ struct Dataset : viamd::EventHandler {
 
     void draw_res_types_tab(ApplicationState& data) {
         bool color_changed = false;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        const md_array(TypeState) before = res_type_states(md_temp_allocator(temp));
+        MD_DEFER { sync_res_type_edits(data, before); };
         draw_res_types(data, color_changed);
         draw_monomer_defaults(data, color_changed);
+        draw_secondary_structure_colors(data);
         if (color_changed) {
             flag_all_representations_as_dirty(&data);
         }

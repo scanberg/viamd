@@ -972,10 +972,13 @@ void representation_atom_colors(uint32_t* colors, size_t num_atoms, SystemContex
         color_atoms_part_idx(colors, num_atoms, sys);
         break;
     case ColorMapping::SecondaryStructure: {
+        // The palette of every system and representation
+        const auto& ss = state->secondary_structure_colors;
         SecondaryStructurePalette palette = {
-            .coil  = convert_color(rep->secondary_structure.color_coil),
-            .helix = convert_color(rep->secondary_structure.color_helix),
-            .sheet = convert_color(rep->secondary_structure.color_sheet),
+            .unknown = convert_color(ss.unknown),
+            .coil    = convert_color(ss.coil),
+            .helix   = convert_color(ss.helix),
+            .sheet   = convert_color(ss.sheet),
         };
         color_atoms_secondary_structure(colors, num_atoms, sys, displayed_secondary_structure(representation_instance(sc, *rep)), palette);
         break;
@@ -2677,12 +2680,6 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
     viamd::write_bool(s, p("PeriodicImages"), rep.periodic_images);
     viamd::write_bool(s, p("AutoUpdate"), rep.dynamic_evaluation);
 
-    viamd::PathPrefix ss = p.sub("SecondaryStructure");
-    viamd::write_vec4(s, ss("Unknown"), rep.secondary_structure.color_unknown);
-    viamd::write_vec4(s, ss("Coil"),    rep.secondary_structure.color_coil);
-    viamd::write_vec4(s, ss("Helix"),   rep.secondary_structure.color_helix);
-    viamd::write_vec4(s, ss("Sheet"),   rep.secondary_structure.color_sheet);
-
     viamd::PathPrefix b = p.sub("Bonds");
     viamd::write_enum(s, b("Color"), (int)rep.bond_color, viamd::enum_names(bond_color_names));
     viamd::write_vec4(s, b("BaseColor"), rep.bond_base_color);
@@ -2836,6 +2833,22 @@ static const viamd::PathAlias representation_aliases[] = {
 };
 
 // Reads a representation from the entries of its section (read_entries with representation_aliases)
+// Of a workspace from before the colours of the secondary structures were of every system: a representation's own,
+// taken as the palette where they are other than the built in ones. The palette's own section, read after, is of a
+// workspace since.
+static void read_legacy_secondary_structure_colors(viamd::Entries& e, ApplicationState* app) {
+    if (!app) return;
+    viamd::PathPrefix p;
+    viamd::PathPrefix ss = p.sub("SecondaryStructure");
+    const decltype(app->secondary_structure_colors) builtin = {};
+    auto c = builtin;
+    viamd::get(e, ss("Unknown"), c.unknown);
+    viamd::get(e, ss("Coil"),    c.coil);
+    viamd::get(e, ss("Helix"),   c.helix);
+    viamd::get(e, ss("Sheet"),   c.sheet);
+    if (md_memcmp(&c, &builtin, sizeof(c)) != 0) app->secondary_structure_colors = c;
+}
+
 static void read_representation(viamd::Entries& e, Representation& rep) {
     viamd::PathPrefix p;
     viamd::get(e, p("Name"), rep.name, sizeof(rep.name));
@@ -2862,12 +2875,6 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     // frame, so a stored 0 mostly says nothing about what the user chose. Read, it would keep a representation from
     // following a context that does (a group within(...)) without a word. AutoUpdate is the choice alone.
     viamd::get_value(e, MD_STR_LIT("DynamicEval"));
-
-    viamd::PathPrefix ss = p.sub("SecondaryStructure");
-    viamd::get(e, ss("Unknown"), rep.secondary_structure.color_unknown);
-    viamd::get(e, ss("Coil"),    rep.secondary_structure.color_coil);
-    viamd::get(e, ss("Helix"),   rep.secondary_structure.color_helix);
-    viamd::get(e, ss("Sheet"),   rep.secondary_structure.color_sheet);
 
     viamd::PathPrefix b = p.sub("Bonds");
     viamd::get_enum(e, b("Color"), rep.bond_color, viamd::enum_names(bond_color_names));
@@ -2967,6 +2974,7 @@ static void deserialize_representation(SystemContext& sys, viamd::Entries& e) {
         }
     }
     read_representation(e, *rep);
+    read_legacy_secondary_structure_colors(e, sys.app);
     // Last in the group it says it is in: the sections are in the order of the window
     tree_normalize(sys);
 }
@@ -4208,14 +4216,7 @@ bool draw_representation_coloring(SystemContext& sys, Representation& rep) {
             prop::hint("no per atom attributes in this dataset");
         }
     } else if (rep.color_mapping == ColorMapping::SecondaryStructure) {
-        prop::row("unknown");
-        update_rep |= prop::color("##ss_unknown", rep.secondary_structure.color_unknown.elem);
-        prop::row("coil");
-        update_rep |= prop::color("##ss_coil", rep.secondary_structure.color_coil.elem);
-        prop::row("helix");
-        update_rep |= prop::color("##ss_helix", rep.secondary_structure.color_helix.elem);
-        prop::row("sheet");
-        update_rep |= prop::color("##ss_sheet", rep.secondary_structure.color_sheet.elem);
+        prop::hint("The colours of the secondary structures are of every system: System > Residue Types");
     }
 
     if (rep.type == RepresentationType::Licorice || rep.type == RepresentationType::BallAndStick || rep.type == RepresentationType::Bonds) {
