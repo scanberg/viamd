@@ -51,6 +51,7 @@
 #include <task_system.h>
 #include <density_map.h>
 #include <layer_groups.h>
+#include <system_scene.h>
 
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
@@ -215,6 +216,7 @@ struct Layer {
     bool     visible = true;
 
     LayerSource source = LayerSource_System;
+    uint32_t    instance = 0;   // Of the system's (Ramachandran::system_id): its run and the frame it shows, 0 the first
     LayerFrames frames = LayerFrames_Current;
     uint32_t    period = 0;     // Of LayerFrames_Period, by id
     AtomFilter  filter = {};    // The residues: those whose CA it picks, within its group's. Empty: all of them.
@@ -286,6 +288,9 @@ static inline md_atom_idx_t segment_atom(const md_system_t& sys, size_t seg_idx)
 
 struct Ramachandran : viamd::EventHandler {
     ApplicationState* app = nullptr;
+    // The system the plots are of, by id (system_or_first): its residues, its selection. Each layer of it is of one of
+    // its instances (Layer::instance): runs of it compared in one plot.
+    uint32_t system_id = 0;
     bool show_window = false;
 
     // In the order of the list (apply_tree): what is listed first is drawn on top
@@ -404,14 +409,14 @@ struct Ramachandran : viamd::EventHandler {
                 }
                 break;
             case viamd::EventType_ViamdSystemInit:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 // Classified again, whatever its topology's version says
                 seg_type_key = 0;
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdSystemFree:
             case viamd::EventType_ViamdTrajectoryFree:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 // What the densities were of is gone: nothing of it is shown again, even where the next system's
                 // attributes happen to have the same versions
                 cancel_all_jobs(true);
@@ -810,6 +815,7 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void reset_settings() {
+        system_id = 0;
         view = -1;
         show_sidebar = true;
         show_ticks = true;
@@ -864,7 +870,8 @@ struct Ramachandran : viamd::EventHandler {
     // Where the samples fall in the reference is counted along, by chunk.
     void launch_job(Layer& l, uint64_t hash, uint32_t frame_beg, uint32_t frame_end) {
         MD_ASSERT(!l.job);
-        const md_backbone_angles_t* angles = run_angles().data;
+        const auto run_angles_l = run_angles(l);
+        const md_backbone_angles_t* angles = run_angles_l.data;
         MD_ASSERT(angles && frame_end > frame_beg);
 
         struct Input {
@@ -877,7 +884,7 @@ struct Ramachandran : viamd::EventHandler {
         };
         std::shared_ptr<Input> in = std::make_shared<Input>();
         in->angles = angles;
-        in->stride = run_angles().stride;
+        in->stride = run_angles_l.stride;
         in->frame_beg = frame_beg;
         in->frame_end = frame_end;
         uint64_t num_samples = 0;
@@ -944,9 +951,10 @@ struct Ramachandran : viamd::EventHandler {
 
     // The class of each segment: rebuilt when the topology changes
     void classify_segments() {
-        const md_system_t& sys = app->mold.sys;
+        const md_system_t& sys = system().data.sys;
         const size_t num_segments = sys.protein_backbone.segment.count;
-        const uint64_t key = md_hash64_combine(sys.topology_version, num_segments);
+        // Of another system, another classification
+        const uint64_t key = md_hash64_combine(md_hash64_combine(sys.topology_version, num_segments), system().id + 1);
         if (key == seg_type_key && md_array_size(seg_type) == num_segments) return;
 
         // The jobs under way index the old segments
@@ -990,7 +998,9 @@ struct Ramachandran : viamd::EventHandler {
     // The residues of the layer, as segments by class: found again when what they are found from changes
     void update_layer_segments(Layer& l) {
         if (l.source != LayerSource_System) return;
-        const md_system_t& sys = app->mold.sys;
+        const SystemContext& sc = system();
+        const SystemInstance& inst = layer_instance(l);
+        const md_system_t& sys = sc.data.sys;
         md_allocator_i* heap = md_get_heap_allocator();
 
         // What decides them: its own, within its group's
@@ -1000,15 +1010,16 @@ struct Ramachandran : viamd::EventHandler {
         if (in_context) key = md_hash64_combine(key, g->hash);
         bool evaluate = false;
         if (l.follow_selection) {
-            const md_bitset_t sel = md_bitmask_view(&app->system_context.selection.selection_mask);
+            const md_bitset_t sel = md_bitmask_view(&sc.selection.selection_mask);
             key = md_hash64_combine(key, md_bitset_hash64(sel, 0));
         } else if (l.filter.text[0] != '\0') {
             evaluate = true;
             key = md_hash64_combine(key, md_hash64(l.filter.text, strlen(l.filter.text), app->script.ir_fingerprint));
             // What depends on the coordinates follows the frame as points of it, but is taken once for frames that
             // are many: the density over them would be found again at every frame
-            if (l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
-                key = md_hash64_combine(key, (uint64_t)(clock_frame(app) * 4096.0));
+            if (l.filter.result.is_dynamic) {
+                key = md_hash64_combine(key, inst.id);
+                if (l.frames == LayerFrames_Current) key = md_hash64_combine(key, (uint64_t)(instance_current_frame(inst) * 4096.0));
             }
         }
         if (key == l.segs_key) return;
@@ -1021,14 +1032,14 @@ struct Ramachandran : viamd::EventHandler {
             // Nothing within a group whose filter does not evaluate
             l.segs_valid = false;
         } else if (l.follow_selection) {
-            atoms = md_bitmask_view(&app->system_context.selection.selection_mask);
+            atoms = md_bitmask_view(&sc.selection.selection_mask);
             if (in_context) {
                 md_bitset_free(&l.atoms, heap);
                 l.atoms = md_bitset_and(atoms, g->atoms, heap);
                 atoms = l.atoms;
             }
         } else if (evaluate) {
-            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), heap);
+            l.segs_valid = filter_evaluate(&l.filter, &l.atoms, app->script.language, layer_group_filter_context(inst, in_context ? g : nullptr), heap);
             atoms = l.atoms;
         } else if (in_context) {
             atoms = g->atoms;
@@ -1058,11 +1069,12 @@ struct Ramachandran : viamd::EventHandler {
 
     // The frames [beg, end) of the layer, false when it covers none
     bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
-        const int num_frames = (int)run_num_frames(app->system_context);
+        const SystemInstance& inst = layer_instance(l);
+        const int num_frames = (int)run_num_frames(*inst.sys, instance_run(inst));
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(instance_current_frame(inst) + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1074,7 +1086,7 @@ struct Ramachandran : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !period_frames(&b, &e, app, *p) || b >= num_frames) return false;
+            if (!p || !run_period_frames(&b, &e, app, *inst.sys, instance_run(inst), *p) || b >= num_frames) return false;
             e = MD_MIN(e, num_frames - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
@@ -1085,24 +1097,33 @@ struct Ramachandran : viamd::EventHandler {
         }
     }
 
-    // The angles over the frames of the first system's run shown, empty without one
-    decltype(SystemTrajectoryData::backbone_angles) run_angles() const {
-        const SystemRun* run = system_run(app->system_context);
+    SystemContext& system() const { return system_or_first(app, system_id); }
+    const SystemInstance& layer_instance(const Layer& l) const { return instance_resolve(system(), l.instance); }
+
+    // The angles over the frames of the run of the layer's instance, empty without one
+    decltype(SystemTrajectoryData::backbone_angles) run_angles(const Layer& l) const {
+        const SystemRun* run = instance_run(layer_instance(l));
         return run ? run->trajectory_data.backbone_angles : decltype(SystemTrajectoryData::backbone_angles){};
     }
 
-    bool angles_available() const {
-        const md_system_t& sys = app->mold.sys;
-        const auto angles = run_angles();
+    bool angles_available(const Layer& l) const {
+        const md_system_t& sys = system().data.sys;
+        const auto angles = run_angles(l);
         return angles.data && angles.stride == sys.protein_backbone.segment.count &&
                md_array_size(seg_type) == sys.protein_backbone.segment.count;
+    }
+
+    // Frames of the run of the layer's instance
+    size_t layer_num_frames(const Layer& l) const {
+        const SystemInstance& inst = layer_instance(l);
+        return run_num_frames(*inst.sys, instance_run(inst));
     }
 
     // A layer of the system drawn as a density: whether it is to be shown, with a trajectory to show it of
     bool layer_draws_density(const Layer& l) const {
         if (l.source != LayerSource_System || l.style == LayerStyle_Points) return false;
         // Of a single structure, the frames are the frame: points say it better than a smoothing of them
-        if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) return false;
+        if (l.frames != LayerFrames_Current && layer_num_frames(l) < 2) return false;
         return true;
     }
 
@@ -1111,23 +1132,26 @@ struct Ramachandran : viamd::EventHandler {
         classify_segments();
         if (!show_window) return;
 
-        char path_buf[256];
-        const uint64_t angle_version = md_attributes_version(&app->mold.sys.attributes,
-            md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), app->system_context, MD_STR_LIT("backbone/angle"))));
-        const bool available = angles_available();
+        const SystemContext& sc = system();
 
         if (tree_dirty) apply_tree();
 
         // The groups' subsets, before what is within them. One that depends on the coordinates follows the frame only
-        // when every layer in it is of the frame shown: a density over frames could not follow it.
+        // when every layer in it is of the frame shown, of one instance: a density over frames, or layers of instances
+        // at other frames, could not follow it. It is taken in the coordinates of its layers' instance.
         for (int gi = 0; gi < num_groups; ++gi) {
             LayerGroup& g = groups[gi];
             bool follow_frame = true;
+            const SystemInstance* inst = nullptr;
             for (int i = 0; i < num_layers; ++i) {
                 const Layer& l = layers[i];
-                if (l.node.parent == g.node.id && l.source == LayerSource_System && l.frames != LayerFrames_Current) follow_frame = false;
+                if (l.node.parent != g.node.id || l.source != LayerSource_System) continue;
+                if (l.frames != LayerFrames_Current) follow_frame = false;
+                const SystemInstance* li = &layer_instance(l);
+                if (inst && li != inst) follow_frame = false;
+                if (!inst) inst = li;
             }
-            layer_group_update(&g, app, md_hash64_combine(seg_type_key, system_generation), follow_frame, false);
+            layer_group_update(&g, inst ? *inst : system_instance(sc), md_hash64_combine(seg_type_key, system_generation), follow_frame, false);
         }
 
         for (int i = 0; i < num_layers; ++i) {
@@ -1136,12 +1160,18 @@ struct Ramachandran : viamd::EventHandler {
             update_layer_segments(l);
             if (!layer_shown(l)) continue;
 
-            if (!layer_draws_density(l) || !available || !l.segs_valid) continue;
+            if (!layer_draws_density(l) || !angles_available(l) || !l.segs_valid) continue;
 
             uint32_t beg = 0, end = 0;
             if (!layer_frame_range(l, &beg, &end)) continue;
 
+            // Of its instance's run: its angles as they are now
+            const SystemInstance& inst = layer_instance(l);
+            char path_buf[256];
+            const uint64_t angle_version = md_attributes_version(&sc.data.sys.attributes,
+                md_attributes_id_from_path(run_attribute_path(path_buf, sizeof(path_buf), instance_run(inst), MD_STR_LIT("backbone/angle"))));
             uint64_t h = md_hash64_combine(angle_version, l.segs_hash);
+            h = md_hash64_combine(h, (uint64_t)(int64_t)inst.run + 2);
             h = md_hash64_combine(h, md_hash64_combine(seg_type_key, system_generation));
             const uint32_t frames[2] = { beg, end };
             h = md_hash64(frames, sizeof(frames), h);
@@ -1162,6 +1192,8 @@ struct Ramachandran : viamd::EventHandler {
         viamd::write_int(state, MD_STR_LIT("View"), view);
         viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, MD_STR_LIT("ShowTicks"), show_ticks);
+        // Of another system than the first: by its id, as the workspace names it
+        if (&system() != &app->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
         // Said even when there are none, so that none stays none (rather than the defaults) once read again
         viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
 
@@ -1193,6 +1225,9 @@ struct Ramachandran : viamd::EventHandler {
             viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
             viamd::write_str(state, MD_STR_LIT("Source"), l.source == LayerSource_Reference ? MD_STR_LIT("reference") : MD_STR_LIT("system"));
             if (l.source == LayerSource_System) {
+                // Of another instance than the first
+                const SystemInstance& inst = layer_instance(l);
+                if (&inst != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)inst.id);
                 static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
                 viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
                 if (l.frames == LayerFrames_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)l.period);
@@ -1226,6 +1261,11 @@ struct Ramachandran : viamd::EventHandler {
                 viamd::extract_bool(show_sidebar, arg);
             } else if (md_str_eq_cstr(ident, "ShowTicks")) {
                 viamd::extract_bool(show_ticks, arg);
+            } else if (md_str_eq_cstr(ident, "System")) {
+                // The first in place of one the workspace does not load
+                int id = 0;
+                const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
+                system_id = sc ? sc->id : 0;
             } else if (md_str_eq_cstr(ident, "Layers")) {
                 layers_declared = true;
             }
@@ -1319,6 +1359,9 @@ struct Ramachandran : viamd::EventHandler {
                 viamd::extract_bool(l->visible, arg);
             } else if (md_str_eq_cstr(ident, "Source") && viamd::extract_str(s, arg)) {
                 l->source = md_str_eq_cstr(s, "reference") ? LayerSource_Reference : LayerSource_System;
+            } else if (md_str_eq_cstr(ident, "Instance")) {
+                int id = 0;
+                if (viamd::extract_int(id, arg)) l->instance = (uint32_t)MD_MAX(id, 0);
             } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
                 l->frames = md_str_eq_cstr(s, "all") ? LayerFrames_All : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_Current;
             } else if (md_str_eq_cstr(ident, "Period")) {
@@ -1466,6 +1509,13 @@ struct Ramachandran : viamd::EventHandler {
         } else {
             snprintf(buf, cap, "%s", frames);
         }
+        // Of which instance, where there are several
+        if (system().num_instances > 1) {
+            char inst[96];
+            instance_label(inst, sizeof(inst), layer_instance(l));
+            const size_t len = strlen(buf);
+            if (len + 1 < cap) snprintf(buf + len, cap - len, " \xc2\xb7 %s", inst);
+        }
     }
 
     void panel_hash_reset() {
@@ -1501,7 +1551,7 @@ struct Ramachandran : viamd::EventHandler {
             return true;
         }
 
-        if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.segs_valid || !angles_available()) return false;
+        if (!layer_draws_density(l) || !l.has_result || !l.tex || !l.segs_valid || !angles_available(l)) return false;
         const DensityMapResult& r = l.result.map;
         if (r.samples[panel] == 0 || r.max[panel] <= 0.0f) return false;
         d->tex = l.tex;
@@ -1550,9 +1600,11 @@ struct Ramachandran : viamd::EventHandler {
         if (num_segs == 0) return false;
 
         // The frame shown, or the only one there is
-        if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
-            ps->base = md_system_state_backbone_angles(&system_instance(app->system_context).state, &app->mold.sys);
-            if (!ps->base || md_array_size(seg_type) != app->mold.sys.protein_backbone.segment.count) return false;
+        const SystemInstance& inst = layer_instance(l);
+        const md_system_t& sys = system().data.sys;
+        if (l.frames == LayerFrames_Current || layer_num_frames(l) < 2) {
+            ps->base = md_system_state_backbone_angles(&inst.state, &sys);
+            if (!ps->base || md_array_size(seg_type) != sys.protein_backbone.segment.count) return false;
             ps->stride = 0;
             ps->frame_beg = 0;
             ps->frame_end = 1;
@@ -1561,11 +1613,11 @@ struct Ramachandran : viamd::EventHandler {
             l.point_stride = 1;
             return true;
         }
-        if (!angles_available()) return false;
+        if (!angles_available(l)) return false;
         uint32_t beg = 0, end = 0;
         if (!layer_frame_range(l, &beg, &end)) return false;
-        ps->base = run_angles().data;
-        ps->stride = run_angles().stride;
+        ps->base = run_angles(l).data;
+        ps->stride = run_angles(l).stride;
         ps->frame_beg = beg;
         ps->frame_end = end;
         const uint64_t total = (uint64_t)num_segs * (end - beg);
@@ -1619,7 +1671,7 @@ struct Ramachandran : viamd::EventHandler {
     };
 
     void draw_tooltip(const Hover& h) const {
-        const md_system_t& sys = app->mold.sys;
+        const md_system_t& sys = system().data.sys;
         const Layer& l = layers[h.layer];
         const md_residue_idx_t res_idx = sys.protein_backbone.segment.res_idx[h.seg];
         ImGui::BeginTooltip();
@@ -1654,14 +1706,15 @@ struct Ramachandran : viamd::EventHandler {
     }
 
     void apply_to_selection(const md_bitmask_t* atoms, SelectionOperator op) {
-        modify_field(&app->system_context.selection.selection_mask, md_bitmask_view(atoms), op);
+        modify_field(&system().selection.selection_mask, md_bitmask_view(atoms), op);
     }
 
     // The points of the visible layers in the plot: hovered and boxed, then drawn
     void draw_points(int panel, bool hovered) {
-        const md_system_t& sys = app->mold.sys;
-        md_bitmask_t* selection_mask = &app->system_context.selection.selection_mask;
-        md_bitmask_t* highlight_mask = &app->system_context.selection.highlight_mask;
+        SystemContext& sc = system();
+        const md_system_t& sys = sc.data.sys;
+        md_bitmask_t* selection_mask = &sc.selection.selection_mask;
+        md_bitmask_t* highlight_mask = &sc.selection.highlight_mask;
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
         const ImVec2 pos = ImPlot::GetPlotPos();
@@ -2112,6 +2165,21 @@ struct Ramachandran : viamd::EventHandler {
         ImGui::SameLine();
         density_map_segmented("view", labels, values, (int)MD_COUNTOF(labels), &view, tooltips);
 
+        // Of which system, when there are several: its residues, its selection
+        if (system_count(*app) > 1) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(160);
+            const uint32_t before = system().id;
+            if (system_combo("##system", &system_id, *app) && system().id != before) {
+                // Its selection lit up no longer
+                if (owns_highlight) md_bitmask_clear(&system_or_first(app, before).selection.highlight_mask);
+                owns_highlight = false;
+                // The instances of the one before are not of this one
+                for (int i = 0; i < num_layers; ++i) layers[i].instance = 0;
+            }
+            ImGui::SetItemTooltip("The system whose residues are shown");
+        }
+
         // On the right: fitting the view and the settings
         ImGui::SameLine();
         const float bw = ImGui::CalcTextSize(ICON_FA_EXPAND).x + ImGui::CalcTextSize(ICON_FA_GEAR).x + ImGui::GetStyle().FramePadding.x * 4 + ImGui::GetStyle().ItemSpacing.x;
@@ -2395,7 +2463,7 @@ struct Ramachandran : viamd::EventHandler {
 
     // How many residues of the system are within a group's subset
     uint32_t group_residue_count(const LayerGroup& g) const {
-        const md_system_t& sys = app->mold.sys;
+        const md_system_t& sys = system().data.sys;
         uint32_t n = 0;
         const size_t count = md_array_size(seg_type);
         for (size_t i = 0; i < count; ++i) {
@@ -2438,8 +2506,8 @@ struct Ramachandran : viamd::EventHandler {
         // Its subset lit up
         if (row.hovered && context && g.valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->system_context.selection.highlight_mask);
-            md_bitmask_or(&app->system_context.selection.highlight_mask, g.atoms);
+            md_bitmask_clear(&system().selection.highlight_mask);
+            md_bitmask_or(&system().selection.highlight_mask, g.atoms);
         }
 
         ImGui::PushID("group_drop");
@@ -2597,7 +2665,7 @@ struct Ramachandran : viamd::EventHandler {
                 } else {
                     snprintf(none, sizeof(none), "all residues");
                 }
-                if (filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
+                if (filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(layer_instance(l), in_context ? g : nullptr), 0, nullptr, l.follow_selection ? "the selection" : none)) {
                     l.segs_key = 0;
                 }
                 if (invalid) ImGui::PopInvalid();
@@ -2616,6 +2684,11 @@ struct Ramachandran : viamd::EventHandler {
                 }
             }
 
+            // Of which instance of the system: its run, its frame
+            if (system().num_instances > 1) {
+                prop::row("instance", "The instance of the system whose run and frame it shows");
+                if (instance_combo("##instance", &l.instance, system())) l.segs_key = 0;
+            }
             prop::row("frames");
             {
                 char preview[TIMELINE_PERIOD_NAME_CAP + 16];
@@ -2640,7 +2713,7 @@ struct Ramachandran : viamd::EventHandler {
                     if (ps.count == 0) ImGui::TextDisabled("Mark periods in the timeline to use them here");
                     ImGui::EndCombo();
                 }
-                if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) {
+                if (l.frames != LayerFrames_Current && layer_num_frames(l) < 2) {
                     prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
                 }
             }
@@ -2788,7 +2861,7 @@ struct Ramachandran : viamd::EventHandler {
     void draw() {
         highlights_now = false;
         draw_window();
-        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->system_context.selection.highlight_mask);
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&system().selection.highlight_mask);
         owns_highlight = highlights_now;
     }
 
@@ -2805,7 +2878,7 @@ struct Ramachandran : viamd::EventHandler {
                 ImGui::SameLine();
             }
             ImGui::BeginChild("##plots", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            if (app->mold.sys.protein_backbone.segment.count == 0) {
+            if (system().data.sys.protein_backbone.segment.count == 0) {
                 ImGui::TextDisabled("The system has no protein backbone: only the reference is shown");
             }
             draw_plots();

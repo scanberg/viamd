@@ -3329,6 +3329,10 @@ static SystemContext* workspace_system_fn(void* user, int id) {
     return s ? s->sys : nullptr;
 }
 
+SystemContext* workspace_system_of(const viamd::deserialization_state_t& state, int id) {
+    return state.reader ? workspace_system_fn(state.reader, id) : nullptr;
+}
+
 void load_workspace(ApplicationState* data, md_str_t filename) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
@@ -3354,6 +3358,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
     WorkspacePending pending = {};
     pending.app = data;
     pending.frame_mask = md_bitset_empty_set();
+    state.reader = &pending;
 
     md_str_t folder = md_path_folder(filename);
 
@@ -4180,10 +4185,16 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
 }
 
 script::FilterCtx filter_context(const SystemContext& sys) {
+    // On the coordinates of the first instance: those the selection and the script are of
+    return filter_context(system_instance(sys));
+}
+
+script::FilterCtx filter_context(const SystemInstance& inst) {
+    const SystemContext& sys = *inst.sys;
     const ApplicationState* app = sys.app;
     const bool names = app && &sys == &app->system_context;
-    // On the coordinates of the first instance: those the selection, the script and the tools are of
-    return script::FilterCtx{&sys.data.sys, &system_instance(sys).state, names ? app->script.ir : nullptr, nullptr, run_path(sys)};
+    const SystemRun* run = instance_run(inst);
+    return script::FilterCtx{&sys.data.sys, &inst.state, names ? app->script.ir : nullptr, nullptr, run ? md_str_from_cstr(run->path) : md_str_t{}};
 }
 
 // --- THE USER'S GROUPS ---

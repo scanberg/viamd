@@ -15,18 +15,21 @@
 
 // ## Groups
 
-void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t generation, bool follow_frame, bool want_sets) {
-    MD_ASSERT(g && app);
+void layer_group_update(LayerGroup* g, const SystemInstance& inst, uint64_t generation, bool follow_frame, bool want_sets) {
+    MD_ASSERT(g && inst.sys && inst.sys->app);
+    const SystemContext& sys = *inst.sys;
+    const ApplicationState* app = sys.app;
     md_allocator_i* heap = md_get_heap_allocator();
 
     uint64_t key = md_hash64_combine(generation, (g->follow_selection ? 1 : 2) | (want_sets ? 4 : 0));
+    key = md_hash64_combine(key, ((uint64_t)sys.id << 32) | inst.id);
     if (g->follow_selection) {
-        key = md_hash64_combine(key, md_bitset_hash64(md_bitmask_view(&app->system_context.selection.selection_mask), 0));
+        key = md_hash64_combine(key, md_bitset_hash64(md_bitmask_view(&sys.selection.selection_mask), 0));
     } else if (g->filter.text[0]) {
         key = md_hash64_combine(key, md_hash64(g->filter.text, strlen(g->filter.text), app->script.ir_fingerprint));
-        key = md_hash64_combine(key, app->mold.sys.topology_version);
+        key = md_hash64_combine(key, sys.data.sys.topology_version);
         if (follow_frame && g->filter.result.is_dynamic) {
-            key = md_hash64_combine(key, (uint64_t)(clock_frame(app) * 4096.0));
+            key = md_hash64_combine(key, (uint64_t)(instance_current_frame(inst) * 4096.0));
         }
     }
     if (key == g->key) return;
@@ -37,12 +40,12 @@ void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t gen
     g->valid = true;
 
     if (g->follow_selection) {
-        md_bitset_assign(&g->atoms, md_bitmask_view(&app->system_context.selection.selection_mask), heap);
+        md_bitset_assign(&g->atoms, md_bitmask_view(&sys.selection.selection_mask), heap);
         if (want_sets && !md_bitset_empty(g->atoms)) md_array_push(g->sets, md_bitset_copy(g->atoms, heap), heap);
     } else if (g->filter.text[0]) {
-        g->valid = filter_evaluate(&g->filter, &g->atoms, app->script.language, filter_context(app->system_context), heap);
+        g->valid = filter_evaluate(&g->filter, &g->atoms, app->script.language, filter_context(inst), heap);
         if (g->valid && want_sets) {
-            g->valid = filter_evaluate_sets(&g->filter, &g->sets, app->script.language, filter_context(app->system_context), heap);
+            g->valid = filter_evaluate_sets(&g->filter, &g->sets, app->script.language, filter_context(inst), heap);
         }
     } else {
         md_bitset_free(&g->atoms, heap);
@@ -67,8 +70,8 @@ void layer_group_free(LayerGroup* g) {
     g->hash = 0;
 }
 
-script::FilterCtx layer_group_filter_context(const ApplicationState* app, const LayerGroup* g) {
-    script::FilterCtx ctx = filter_context(app->system_context);
+script::FilterCtx layer_group_filter_context(const SystemInstance& inst, const LayerGroup* g) {
+    script::FilterCtx ctx = filter_context(inst);
     if (g && layer_group_has_context(*g)) ctx.atoms = &g->atoms;
     return ctx;
 }

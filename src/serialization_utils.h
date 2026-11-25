@@ -37,6 +37,7 @@ struct deserialization_state_t {
 	md_str_t filename;
 	md_str_t text;
 	md_str_t cur_section;
+	void*    reader = nullptr;	// What reads it, for what its sections name beyond themselves (load_workspace: the systems)
 };
 
 struct serialization_state_t {

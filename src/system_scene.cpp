@@ -175,6 +175,54 @@ static void instance_source_label(char* buf, size_t cap, const SystemInstance& i
     else                        snprintf(buf, cap, "%s", name);
 }
 
+bool system_combo(const char* label, uint32_t* system_id, const ApplicationState& app) {
+    if (system_count(app) < 2) return false;
+    const SystemContext& cur = system_or_first(app, *system_id);
+    char preview[80];
+    system_label(preview, sizeof(preview), cur);
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview)) {
+        for (size_t i = 0; i < app.num_systems; ++i) {
+            const SystemContext& sc = *app.systems[i];
+            if (!system_loaded(sc)) continue;
+            char item[80];
+            system_label(item, sizeof(item), sc);
+            ImGui::PushID((int)sc.id);
+            if (ImGui::Selectable(item, &sc == &cur) && sc.id != *system_id) {
+                *system_id = sc.id;
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+bool instance_combo(const char* label, uint32_t* instance_id, const SystemContext& sys) {
+    if (sys.num_instances < 2) return false;
+    const SystemInstance& cur = instance_resolve(sys, *instance_id);
+    char preview[96];
+    instance_label(preview, sizeof(preview), cur);
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview)) {
+        for (size_t k = 0; k < sys.num_instances; ++k) {
+            const SystemInstance& inst = *sys.instances[k];
+            char item[96];
+            instance_label(item, sizeof(item), inst);
+            ImGui::PushID((int)inst.id);
+            const uint32_t id = k == 0 ? 0 : inst.id;
+            if (ImGui::Selectable(item, &inst == &cur) && id != *instance_id) {
+                *instance_id = id;
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
 void instance_label(char* buf, size_t cap, const SystemInstance& inst) {
     if (inst.name[0]) {
         snprintf(buf, cap, "%s", inst.name);

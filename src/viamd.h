@@ -2497,13 +2497,18 @@ struct LoadDataPayload {
     md_str_t path_to_file;
 };
 
-// Whether a system event (its payload EventPayloadType_System, or EventPayloadType_LoadData) is of the first system
-// (ApplicationState::system_context). What is not per system yet (the components, the System window) acts on that one
-// alone, and leaves the events of the others be.
+// The system a system event (its payload EventPayloadType_System, or EventPayloadType_LoadData) is of, null for
+// another event
+static inline const SystemContext* event_system(const viamd::Event& e) {
+    if (e.payload_type == viamd::EventPayloadType_System) return (const SystemContext*)e.payload;
+    if (e.payload_type == viamd::EventPayloadType_LoadData && e.payload) return ((const LoadDataPayload*)e.payload)->system;
+    return nullptr;
+}
+
+// Whether a system event is of the first system (ApplicationState::system_context). What is not per system yet (some
+// components, the System window) acts on that one alone, and leaves the events of the others be.
 static inline bool event_of_first_system(const viamd::Event& e) {
-    const SystemContext* sys = nullptr;
-    if (e.payload_type == viamd::EventPayloadType_System) sys = (const SystemContext*)e.payload;
-    else if (e.payload_type == viamd::EventPayloadType_LoadData && e.payload) sys = ((const LoadDataPayload*)e.payload)->system;
+    const SystemContext* sys = event_system(e);
     return sys && sys->app && sys == &sys->app->system_context;
 }
 
@@ -2936,6 +2941,15 @@ void system_release(ApplicationState* app, SystemContext* sys);
 // The system with the id, NULL when there is none
 SystemContext* system_find(ApplicationState* app, uint32_t id);
 const SystemContext* system_find(const ApplicationState& app, uint32_t id);
+// The system with the id, the first when there is none: what a tool of a system reads, its system gone
+static inline SystemContext& system_or_first(ApplicationState* app, uint32_t id) {
+    SystemContext* sys = system_find(app, id);
+    return sys ? *sys : app->system_context;
+}
+static inline const SystemContext& system_or_first(const ApplicationState& app, uint32_t id) {
+    const SystemContext* sys = system_find(app, id);
+    return sys ? *sys : app.system_context;
+}
 
 // How many are loaded (system_loaded)
 size_t system_count(const ApplicationState& app);
@@ -3192,6 +3206,9 @@ int playback_stride(const ApplicationState* app);
 // The system a section of a workspace being read is of, by the id the workspace names it by (System=; -1 where the
 // section names none, which is of the first system). NULL for one it does not load: the section is left out.
 typedef SystemContext* (*WorkspaceSystemFn)(void* user, int id);
+// The same for a section a component reads (EventType_ViamdDeserialize): the system of the workspace being read that
+// it names by id, NULL for one it does not load or outside a workspace
+SystemContext* workspace_system_of(const viamd::deserialization_state_t& state, int id);
 
 void load_workspace(ApplicationState* app, md_str_t file);
 // True when the whole file was written; it is then the current workspace (files.workspace)
@@ -3209,6 +3226,9 @@ bool* workspace_window_flag(const char* name);
 // names of the script in the editor. The script is compiled against the first system (system_context) alone until it
 // is per system, so its names are of that one: another system's filters see none of them.
 script::FilterCtx filter_context(const SystemContext& sys);
+// The same of an instance: its coordinates and its run, as a tool of it evaluates its filters in. The first instance's
+// of a system is filter_context of the system.
+script::FilterCtx filter_context(const SystemInstance& inst);
 
 // The user's groups (MD_GROUP_ORIGIN_USER), what were stored selections: named sets of atoms of the system, kept in
 // the workspace, which VIAL selects as group('name') and v1 names as identifiers. The System window lists, renames and

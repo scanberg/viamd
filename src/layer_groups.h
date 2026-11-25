@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 struct ApplicationState;
+struct SystemInstance;
 
 namespace viamd {
 struct serialization_state_t;
@@ -56,15 +57,16 @@ static inline bool layer_group_has_context(const LayerGroup& g) {
 }
 
 // The context found again when what it is of changes: the filter, the script's names it may use, the selection it
-// follows, the system (generation). follow_frame: a filter that depends on the coordinates follows the frame shown;
-// otherwise it is taken in the frame it is evaluated in, as a density over frames could not follow it. want_sets: the
-// structures of the filter too, one set each (a group following the selection has one: all of it).
-void layer_group_update(LayerGroup* g, const ApplicationState* app, uint64_t generation, bool follow_frame, bool want_sets);
+// follows, the system (generation). Of the system of inst, in its coordinates (the tool's: filter_context of an
+// instance). follow_frame: a filter that depends on the coordinates follows the frame inst shows; otherwise it is taken
+// in the frame it is evaluated in, as a density over frames could not follow it. want_sets: the structures of the filter
+// too, one set each (a group following the selection has one: all of it).
+void layer_group_update(LayerGroup* g, const SystemInstance& inst, uint64_t generation, bool follow_frame, bool want_sets);
 
 void layer_group_free(LayerGroup* g);
 
-// What is within g is evaluated in: the system as shown, and g's atoms when it has a subset. g may be NULL.
-script::FilterCtx layer_group_filter_context(const ApplicationState* app, const LayerGroup* g);
+// What is within g is evaluated in: the instance as shown, and g's atoms when it has a subset. g may be NULL.
+script::FilterCtx layer_group_filter_context(const SystemInstance& inst, const LayerGroup* g);
 
 // Its name, or what it is of
 void layer_group_label(char* buf, size_t cap, const LayerGroup& g);

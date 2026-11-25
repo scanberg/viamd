@@ -1050,7 +1050,7 @@ struct Shapespace : viamd::EventHandler {
             md_array_push(l.structures, md_bitset_range(0, (uint32_t)num_atoms), heap);
             l.structs_valid = true;
         } else {
-            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), heap) &&
+            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, app->script.language, layer_group_filter_context(system_instance(app->system_context), in_context ? g : nullptr), heap) &&
                               md_array_size(l.structures) > 0;
         }
         uint64_t h = 0x5A9E;
@@ -1354,7 +1354,7 @@ struct Shapespace : viamd::EventHandler {
             }
             const bool dynamic = !g.follow_selection && g.filter.result.is_dynamic;
             const uint64_t generation = md_hash64_combine(system_generation, follow_frame && dynamic ? state_generation : 0);
-            layer_group_update(&g, app, generation, follow_frame, true);
+            layer_group_update(&g, system_instance(app->system_context), generation, follow_frame, true);
         }
 
         for (int i = 0; i < num_layers; ++i) {
@@ -3822,7 +3822,7 @@ struct Shapespace : viamd::EventHandler {
             } else {
                 snprintf(none, sizeof(none), "all atoms, as one");
             }
-            filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(app, in_context ? g : nullptr), 0, nullptr, none);
+            filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(system_instance(app->system_context), in_context ? g : nullptr), 0, nullptr, none);
             if (invalid) ImGui::PopInvalid();
             if (ImGui::IsItemHovered() && l.structs_valid) {
                 highlights_now = true;
