@@ -64,6 +64,7 @@
 #include <property_grid.h>
 #include <density_map.h>
 #include <layer_groups.h>
+#include <system_scene.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 #include <implot_internal.h>
@@ -153,13 +154,14 @@ static md_float3_t structure_shape(md_bitset_t atoms, const md_float3_t* xyz, co
 // The shapes of a set of structures over every frame of the run, weighted by mass or not: shared by the layers of the
 // same structures and weighting, and freed when none uses it
 struct Evaluation {
-    uint64_t key = 0;                       // Of the structures and the weighting
+    uint64_t key = 0;                       // Of the structures, the weighting and the run
     md_allocator_i* arena = nullptr;
     md_array(md_bitset_t) structures = 0;   // In arena
     bool     use_mass = true;
     uint32_t first_frame = 0;               // Of the run: its frames are [first_frame, first_frame + num_frames)
     size_t   num_frames = 0;
     size_t   num_structures = 0;
+    char     run[128] = "";             // "run/<name>" of the run its frames are of
     md_float2_t*  coords = nullptr;              // [structure * num_frames + frame - first_frame], in the triangle: NaN for frames not done
     std::atomic<uint32_t> frames_done{0};
 
@@ -252,6 +254,7 @@ struct Layer {
 
     AtomFilter  filter = {};        // The structures: a set of atoms each, within its group's subset. Empty: the
                                     // group's structures, or without a group all atoms, as one.
+    uint32_t    instance = 0;       // Of the system's (Shapespace::system_id): its run and the frame it shows, 0 the first
     bool        use_mass = true;    // Weighted by mass
     LayerFrames frames = LayerFrames_All;
     uint32_t    period = 0;
@@ -349,6 +352,10 @@ struct Shapespace : viamd::EventHandler {
     ApplicationState* app = nullptr;
     bool show_window = false;
 
+    // The system the plots are of, by id (system_or_first): its atoms, its selection. Each layer of it is of one of its
+    // instances (Layer::instance): runs of it compared in one plot, along the clock's time in 3D.
+    uint32_t system_id = 0;
+
     // In the order of the list (apply_tree): what is listed first is drawn on top
     Layer layers[MAX_LAYERS];
     int   num_layers = 0;
@@ -369,7 +376,6 @@ struct Shapespace : viamd::EventHandler {
     std::vector<EvaluationRef> evaluations;
     std::vector<EvaluationRef> retired;     // Cancelled, freed once their tasks have stopped
     uint64_t system_generation = 1;
-    uint64_t state_generation = 1;          // Of the state shown: its coordinates may change with nothing else
 
     bool show_sidebar = true;
     bool show_grid = true;
@@ -437,9 +443,10 @@ struct Shapespace : viamd::EventHandler {
         int    click_layer = -1;
         int64_t click_structure = -1;
         uint32_t click_frame = 0, click_next = 0;
-        // A press of the left button without a drag, on a point of a frame: goes there when let go
+        // A press of the left button without a drag, on a point of a frame of a layer: goes there when let go
         bool   pressed = false;
         ImVec2 press_pos;
+        int    press_layer = -1;
     } v3;
 
     // Of a workspace from before there were layers
@@ -480,18 +487,18 @@ struct Shapespace : viamd::EventHandler {
                 viamd::window_menu_add(e, "Analysis/Shapespace", &show_window, {.order = 50});
                 break;
             case viamd::EventType_ViamdSystemInit:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdSystemFree:
             case viamd::EventType_ViamdTrajectoryFree:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 // What the evaluations read goes with it
                 release_all(true);
                 system_generation += 1;
                 break;
             case viamd::EventType_ViamdLoadData: {
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
+                if (event_system(e) != &system()) break;    // of another system than the one shown
                 // A system or a run loaded in place of the one there: a run of another file may have as many frames
                 // as the one before, and is opened without a SystemInit or SystemFree (the tasks reading the old one
                 // were interrupted and waited for already)
@@ -502,16 +509,12 @@ struct Shapespace : viamd::EventHandler {
                 }
                 break;
             }
-            case viamd::EventType_ViamdSystemStateChanged:
-                if (!event_of_first_system(e)) break;     // of another system: this is of the first alone, so far
-                // Coordinates written in place (a QM optimization step, a vibration), the frame the same
-                state_generation += 1;
-                break;
             case viamd::EventType_ViamdSerialize:
                 serialize(*(viamd::serialization_state_t*)e.payload);
                 break;
             case viamd::EventType_ViamdDeserializeBegin:
                 clear_layers();
+                system_id = 0;
                 legacy = {};
                 read_layers = false;
                 layers_declared = false;
@@ -957,6 +960,45 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
+    // ## The system and its instances
+
+    SystemContext& system() const { return system_or_first(app, system_id); }
+    const SystemInstance& layer_instance(const Layer& l) const { return instance_resolve(system(), l.instance); }
+    const SystemRun* layer_run(const Layer& l) const { return instance_run(layer_instance(l)); }
+    // The frames of the run of the layer's instance
+    size_t layer_num_frames(const Layer& l) const { return run_num_frames(system(), layer_run(l)); }
+    // Whether a layer's run has frames to go over, or else the first instance's: what smoothing is of
+    bool any_trajectory() const {
+        for (int i = 0; i < num_layers; ++i) {
+            if (layer_num_frames(layers[i]) >= 2) return true;
+        }
+        return run_num_frames(system(), instance_run(system_instance(system()))) >= 2;
+    }
+    // The fractional frame the layer's instance shows, 0 without a run
+    double layer_frame(const Layer& l) const { return MD_MAX(instance_current_frame(layer_instance(l)), 0.0); }
+
+    // The run of the layer on the clock: its frames at their times there. Of a run whose times cannot be taken into the
+    // clock's unit, the reference's: it is placed frame by frame as the reference (run_clock_time).
+    ClockAxis layer_axis(const Layer& l) const {
+        const ClockAxis a = run_clock_axis(app, system(), layer_run(l));
+        if (clock_axis_timed(a)) return a;
+        const SystemInstance* ref = clock_reference(app);
+        return ref ? run_clock_axis(app, *ref->sys, instance_run(*ref)) : a;
+    }
+
+    // Whether the layer's frames are those the frame selection is of (ApplicationState::selection.frame_mask): the frames
+    // of the clock's reference's run
+    bool layer_selects_frames(const Layer& l) const {
+        const SystemInstance* ref = clock_reference(app);
+        return ref && ref->sys == &system() && instance_run(*ref) == layer_run(l);
+    }
+
+    // The clock set to the time of a frame of the layer's run
+    void go_to_frame(const Layer& l, double frame) {
+        const ClockAxis a = layer_axis(l);
+        if (clock_axis_timed(a)) app->animation.time = clock_axis_time(a, frame);
+    }
+
     // ## Jobs
 
     void cancel_job(Layer& l, bool wait) {
@@ -1023,13 +1065,17 @@ struct Shapespace : viamd::EventHandler {
         md_allocator_i* heap = md_get_heap_allocator();
         const LayerGroup* g = layer_group(l);
         const bool in_context = g && layer_group_has_context(*g);
+        const SystemContext& sc = system();
+        const SystemInstance& inst = layer_instance(l);
         uint64_t key = md_hash64_combine(system_generation, md_hash64(l.filter.text, strlen(l.filter.text), app->script.ir_fingerprint));
-        key = md_hash64_combine(key, app->mold.sys.topology_version);
+        key = md_hash64_combine(key, md_hash64_combine(sc.data.sys.topology_version, sc.id));
         if (in_context) key = md_hash64_combine(key, g->hash);
-        // What depends on the coordinates follows the frame shown as points of it, but is taken once for frames that
-        // are many (all of them would have to be evaluated again at every frame)
-        if (l.filter.text[0] && l.filter.result.is_dynamic && l.frames == LayerFrames_Current) {
-            key = md_hash64_combine(key, md_hash64_combine((uint64_t)(clock_frame(app) * 4096.0), state_generation));
+        // What depends on the coordinates is taken in those of the layer's instance. It follows the frame shown as
+        // points of it, but is taken once for frames that are many (all of them would have to be evaluated again at
+        // every frame).
+        if (l.filter.text[0] && l.filter.result.is_dynamic) {
+            key = md_hash64_combine(key, inst.id);
+            if (l.frames == LayerFrames_Current) key = md_hash64_combine(key, md_hash64_combine((uint64_t)(instance_current_frame(inst) * 4096.0), inst.state_version));
         }
         if (key == l.structs_key) return;
         l.structs_key = key;
@@ -1038,7 +1084,7 @@ struct Shapespace : viamd::EventHandler {
         md_array_shrink(l.structures, 0);
         l.structs_valid = false;
 
-        const size_t num_atoms = app->mold.sys.atom.count;
+        const size_t num_atoms = sc.data.sys.atom.count;
         if (num_atoms == 0) return;
         if (in_context && !g->valid) {
             // Nothing within a group whose subset does not evaluate
@@ -1050,7 +1096,7 @@ struct Shapespace : viamd::EventHandler {
             md_array_push(l.structures, md_bitset_range(0, (uint32_t)num_atoms), heap);
             l.structs_valid = true;
         } else {
-            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, app->script.language, layer_group_filter_context(system_instance(app->system_context), in_context ? g : nullptr), heap) &&
+            l.structs_valid = filter_evaluate_sets(&l.filter, &l.structures, app->script.language, layer_group_filter_context(inst, in_context ? g : nullptr), heap) &&
                               md_array_size(l.structures) > 0;
         }
         uint64_t h = 0x5A9E;
@@ -1069,7 +1115,7 @@ struct Shapespace : viamd::EventHandler {
     // Whether the points of the frame shown are the smoothed shapes there, of an evaluation over the run, rather than the
     // shapes of the state shown
     bool current_smoothed(const Layer& l) const {
-        return l.frames == LayerFrames_Current && smoothing > 1 && run_num_frames(app->system_context) >= 2 && !structures_follow_frame(l);
+        return l.frames == LayerFrames_Current && smoothing > 1 && layer_num_frames(l) >= 2 && !structures_follow_frame(l);
     }
 
     // The smoothed shape at frame f of the run (of num_frames) from the shapes c of frames [first, ...) about it: the
@@ -1131,19 +1177,26 @@ struct Shapespace : viamd::EventHandler {
     // The evaluation of the layer's structures and weighting over the run: one shared, or a new one started. Of a layer
     // of the frame shown too, when its points there are the smoothed shapes.
     void update_evaluation(Layer& l) {
-        const size_t num_frames = run_num_frames(app->system_context);
+        const SystemRun* run = layer_run(l);
+        const size_t num_frames = layer_num_frames(l);
         if ((l.frames == LayerFrames_Current && !current_smoothed(l)) || !l.structs_valid || num_frames == 0) {
             l.eval.reset();
             return;
         }
-        const uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, num_frames));
+        const uint64_t key = md_hash64_combine(eval_key(l, run), md_hash64_combine(system_generation, num_frames));
         if (l.eval && l.eval->key == key && !l.eval->failed()) return;
-        l.eval = evaluation(key, l.structures, l.use_mass, 0, num_frames);
+        l.eval = evaluation(key, l.structures, l.use_mass, run, 0, num_frames);
+    }
+
+    // What an evaluation of the layer is of, but for its frames: the structures, the weighting, the system and the run
+    uint64_t eval_key(const Layer& l, const SystemRun* run) const {
+        const uint64_t k = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), system().id);
+        return run ? md_hash64(run->path, strlen(run->path), k) : k;
     }
 
     // The evaluation of the key: one shared, or a new one started of the structures and weighting over the frames
-    // [first, first + count) of the run
-    EvaluationRef evaluation(uint64_t key, const md_array(md_bitset_t) structures, bool use_mass, uint32_t first, size_t count) {
+    // [first, first + count) of the run of the system shown
+    EvaluationRef evaluation(uint64_t key, const md_array(md_bitset_t) structures, bool use_mass, const SystemRun* run, uint32_t first, size_t count) {
         for (size_t i = 0; i < evaluations.size(); ++i) {
             if (evaluations[i]->key != key) continue;
             if (evaluations[i]->failed()) {
@@ -1163,13 +1216,14 @@ struct Shapespace : viamd::EventHandler {
         e->num_structures = md_array_size(e->structures);
         e->first_frame = first;
         e->num_frames = count;
+        if (run) snprintf(e->run, sizeof(e->run), "%s", run->path);
         const size_t n = e->num_structures * count;
         e->coords = (md_float2_t*)md_alloc(e->arena, sizeof(md_float2_t) * MD_MAX(n, (size_t)1));
         for (size_t i = 0; i < n; ++i) e->coords[i] = { NAN, NAN };
 
-        // The system it reads, taken now: what the application calls its system when the task runs need not be it
+        // The system it reads, taken now: the one shown when the task runs need not be it
         Evaluation* ev = e.get();
-        const SystemContext* sc = &app->system_context;
+        const SystemContext* sc = &system();
         e->task.start_for(MD_STR_LIT("Shapespace"), (uint32_t)count, 1, [ev, sc](uint32_t beg, uint32_t end) {
             const md_system_t& sys = sc->data.sys;
             md_temp_scope_t temp = md_temp_begin();
@@ -1182,7 +1236,7 @@ struct Shapespace : viamd::EventHandler {
             }
             // One context for the range, so the run's files stay open across its frames
             const md_str_t paths[] = { MD_STR_INIT("atom/position"), MD_STR_INIT("unitcell") };
-            md_system_extract_t* ex = md_system_extract_begin(&sys, run_path(*sc), paths, MD_COUNTOF(paths), md_get_heap_allocator());
+            md_system_extract_t* ex = md_system_extract_begin(&sys, md_str_from_cstr(ev->run), paths, MD_COUNTOF(paths), md_get_heap_allocator());
             if (!ex) {
                 // Nothing to read them from: done, without shapes
                 ev->frames_done.fetch_add(end - beg);
@@ -1215,7 +1269,7 @@ struct Shapespace : viamd::EventHandler {
     // Whether the points of the frame shown are smoothed shapes of structures that follow the frame: of those picked in
     // the state shown, over the frames of the window about it (they are not the same structures in other frames)
     bool window_smoothed(const Layer& l) const {
-        return l.frames == LayerFrames_Current && smoothing > 1 && run_num_frames(app->system_context) >= 2 && structures_follow_frame(l);
+        return l.frames == LayerFrames_Current && smoothing > 1 && layer_num_frames(l) >= 2 && structures_follow_frame(l);
     }
 
     void window_clear(Layer& l) {
@@ -1235,15 +1289,16 @@ struct Shapespace : viamd::EventHandler {
             window_clear(l);
             return;
         }
-        const size_t nf = run_num_frames(app->system_context);
-        const double fr = MD_CLAMP(clock_frame(app), 0.0, (double)(nf - 1));
+        const SystemRun* run = layer_run(l);
+        const size_t nf = layer_num_frames(l);
+        const double fr = MD_CLAMP(layer_frame(l), 0.0, (double)(nf - 1));
         const size_t f0 = (size_t)fr, f1 = MD_MIN(f0 + 1, nf - 1);
         const size_t half = (size_t)(smoothing / 2);
         const size_t lo = f0 - MD_MIN(half, MD_MIN(f0, nf - 1 - f0));
         const size_t hi = f1 + MD_MIN(half, MD_MIN(f1, nf - 1 - f1));     // Of the windows of f0 and f1, the frames
-        uint64_t key = md_hash64_combine(md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22), md_hash64_combine(system_generation, nf));
+        uint64_t key = md_hash64_combine(eval_key(l, run), md_hash64_combine(system_generation, nf));
         key = md_hash64_combine(key, md_hash64_combine(0x3170 + lo, hi));
-        if (!l.window || l.window->key != key || l.window->failed()) l.window = evaluation(key, l.structures, l.use_mass, (uint32_t)lo, hi - lo + 1);
+        if (!l.window || l.window->key != key || l.window->failed()) l.window = evaluation(key, l.structures, l.use_mass, run, (uint32_t)lo, hi - lo + 1);
         if (!l.window->complete()) return;
 
         const uint64_t shown = md_hash64(&fr, sizeof(fr), md_hash64_combine(key, (uint64_t)smoothing));
@@ -1266,23 +1321,25 @@ struct Shapespace : viamd::EventHandler {
     // The shapes of the structures in the state shown: found again when it changes
     void update_current(Layer& l) {
         md_allocator_i* heap = md_get_heap_allocator();
-        const md_system_state_t& st = system_instance(app->system_context).state;
+        const SystemInstance& inst = layer_instance(l);
+        const md_system_t& sys = system().data.sys;
+        const md_system_state_t& st = inst.state;
         uint64_t key = md_hash64_combine(l.structs_hash, l.use_mass ? 0x11 : 0x22);
         key = md_hash64_combine(key, md_hash64(&st.frame, sizeof(st.frame), (uint64_t)(uintptr_t)st.xyz));
-        key = md_hash64_combine(key, md_hash64_combine(system_generation, state_generation));
+        key = md_hash64_combine(key, md_hash64_combine(system_generation, md_hash64_combine(((uint64_t)system().id << 32) | inst.id, inst.state_version)));
         if (key == l.current_key) return;
         l.current_key = key;
         const size_t n = l.structs_valid ? md_array_size(l.structures) : 0;
         md_array_resize(l.current_coords, n, heap);
-        if (n == 0 || !st.xyz || st.num_atoms != app->mold.sys.atom.count) {
+        if (n == 0 || !st.xyz || st.num_atoms != sys.atom.count) {
             md_array_shrink(l.current_coords, 0);
             return;
         }
         md_temp_scope_t temp = md_temp_begin();
         float* masses = nullptr;
         if (l.use_mass) {
-            masses = (float*)md_temp_alloc(temp, sizeof(float) * MD_ALIGN_TO(app->mold.sys.atom.count, 8));
-            md_atom_extract_masses(masses, 0, app->mold.sys.atom.count, &app->mold.sys.atom);
+            masses = (float*)md_temp_alloc(temp, sizeof(float) * MD_ALIGN_TO(sys.atom.count, 8));
+            md_atom_extract_masses(masses, 0, sys.atom.count, &sys.atom);
         }
         for (size_t s = 0; s < n; ++s) {
             md_temp_scope_t inner = md_temp_begin();
@@ -1294,11 +1351,11 @@ struct Shapespace : viamd::EventHandler {
 
     // The frames [beg, end) of the layer, false when it covers none
     bool layer_frame_range(const Layer& l, uint32_t* beg, uint32_t* end) const {
-        const int num_frames = (int)run_num_frames(app->system_context);
+        const int num_frames = (int)layer_num_frames(l);
         if (num_frames <= 0) return false;
         switch (l.frames) {
         case LayerFrames_Current: {
-            const int f = MD_CLAMP((int)(clock_frame(app) + 0.5), 0, num_frames - 1);
+            const int f = MD_CLAMP((int)(layer_frame(l) + 0.5), 0, num_frames - 1);
             *beg = (uint32_t)f;
             *end = (uint32_t)f + 1;
             return true;
@@ -1310,7 +1367,7 @@ struct Shapespace : viamd::EventHandler {
         case LayerFrames_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, l.period);
             int b = 0, e = 0;
-            if (!p || !period_frames(&b, &e, app, *p) || b >= num_frames) return false;
+            if (!p || !run_period_frames(&b, &e, app, system(), layer_run(l), *p) || b >= num_frames) return false;
             e = MD_MIN(e, num_frames - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
@@ -1337,7 +1394,7 @@ struct Shapespace : viamd::EventHandler {
 
     // A density over frames, with frames to find it over
     bool layer_draws_density(const Layer& l) const {
-        return l.style != LayerStyle_Points && l.frames != LayerFrames_Current && run_num_frames(app->system_context) >= 2;
+        return l.style != LayerStyle_Points && l.frames != LayerFrames_Current && layer_num_frames(l) >= 2;
     }
 
     void update() {
@@ -1346,22 +1403,30 @@ struct Shapespace : viamd::EventHandler {
 
         // The groups' subsets, before what is within them. One that depends on the coordinates follows the frame only
         // when every layer in it is of the frame shown: what is over frames could not follow it.
+        // It is taken in the coordinates of its layers' instance; following the frame, when they are of one.
         for (int gi = 0; gi < num_groups; ++gi) {
             LayerGroup& g = groups[gi];
             bool follow_frame = true;
+            const SystemInstance* inst = nullptr;
             for (int i = 0; i < num_layers; ++i) {
-                if (layers[i].node.parent == g.node.id && layers[i].frames != LayerFrames_Current) follow_frame = false;
+                const Layer& l = layers[i];
+                if (l.node.parent != g.node.id) continue;
+                if (l.frames != LayerFrames_Current) follow_frame = false;
+                const SystemInstance* li = &layer_instance(l);
+                if (inst && li != inst) follow_frame = false;
+                if (!inst) inst = li;
             }
+            const SystemInstance& gi_inst = inst ? *inst : system_instance(system());
             const bool dynamic = !g.follow_selection && g.filter.result.is_dynamic;
-            const uint64_t generation = md_hash64_combine(system_generation, follow_frame && dynamic ? state_generation : 0);
-            layer_group_update(&g, system_instance(app->system_context), generation, follow_frame, true);
+            const uint64_t generation = md_hash64_combine(system_generation, follow_frame && dynamic ? gi_inst.state_version : 0);
+            layer_group_update(&g, gi_inst, generation, follow_frame, true);
         }
 
         for (int i = 0; i < num_layers; ++i) {
             Layer& l = layers[i];
             update_structures(l);
             if (!layer_shown(l)) continue;
-            if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
+            if (l.frames == LayerFrames_Current || layer_num_frames(l) < 2) {
                 update_current(l);
             }
             update_evaluation(l);
@@ -1411,6 +1476,8 @@ struct Shapespace : viamd::EventHandler {
 
     void serialize(viamd::serialization_state_t& state) {
         viamd::write_section_header(state, MD_STR_LIT("ShapeSpace"));
+        // Of another system than the first: by its id, as the workspace names it
+        if (&system() != &app->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
         viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, MD_STR_LIT("ShowGrid"), show_grid);
         viamd::write_str(state, MD_STR_LIT("View"), md_str_from_cstr(view_mode_names[view_mode]));
@@ -1451,6 +1518,9 @@ struct Shapespace : viamd::EventHandler {
             if (l.name[0]) viamd::write_str(state, MD_STR_LIT("Name"), md_str_from_cstr(l.name));
             viamd::write_bool(state, MD_STR_LIT("Visible"), l.visible);
             if (l.filter.text[0]) viamd::write_str(state, MD_STR_LIT("Filter"), md_str_from_cstr(l.filter.text));
+            // Of another instance than the first
+            const SystemInstance& inst = layer_instance(l);
+            if (&inst != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)inst.id);
             viamd::write_bool(state, MD_STR_LIT("UseMass"), l.use_mass);
             static const md_str_t frames[LayerFrames_Count] = { MD_STR_LIT("current"), MD_STR_LIT("all"), MD_STR_LIT("period") };
             viamd::write_str(state, MD_STR_LIT("Frames"), frames[l.frames]);
@@ -1481,7 +1551,12 @@ struct Shapespace : viamd::EventHandler {
     void deserialize_settings(viamd::deserialization_state_t& state) {
         md_str_t ident, arg;
         while (viamd::next_entry(ident, arg, state)) {
-            if (md_str_eq_cstr(ident, "ShowLayers")) {
+            if (md_str_eq_cstr(ident, "System")) {
+                // The first in place of one the workspace does not load
+                int id = 0;
+                const SystemContext* sc = viamd::extract_int(id, arg) ? workspace_system_of(state, id) : nullptr;
+                system_id = sc ? sc->id : 0;
+            } else if (md_str_eq_cstr(ident, "ShowLayers")) {
                 viamd::extract_bool(show_sidebar, arg);
             } else if (md_str_eq_cstr(ident, "ShowGrid")) {
                 viamd::extract_bool(show_grid, arg);
@@ -1589,6 +1664,9 @@ struct Shapespace : viamd::EventHandler {
                 viamd::extract_to_char_buf(l->filter.text, sizeof(l->filter.text), arg);
             } else if (md_str_eq_cstr(ident, "UseMass")) {
                 viamd::extract_bool(l->use_mass, arg);
+            } else if (md_str_eq_cstr(ident, "Instance")) {
+                int id = 0;
+                if (viamd::extract_int(id, arg)) l->instance = (uint32_t)MD_MAX(id, 0);
             } else if (md_str_eq_cstr(ident, "Frames") && viamd::extract_str(s, arg)) {
                 // (A layer of the frames selected, "selection", as there was: of all of them)
                 l->frames = md_str_eq_cstr(s, "current") ? LayerFrames_Current : md_str_eq_cstr(s, "period") ? LayerFrames_Period : LayerFrames_All;
@@ -1710,6 +1788,13 @@ struct Shapespace : viamd::EventHandler {
         }
         if (l.filter.text[0]) snprintf(buf, cap, "%s \xc2\xb7 %s", frames, l.filter.text);
         else                  snprintf(buf, cap, "%s", frames);
+        // Of which instance, where there are several
+        if (system().num_instances > 1) {
+            char inst[96];
+            instance_label(inst, sizeof(inst), layer_instance(l));
+            const size_t len = strlen(buf);
+            if (len + 1 < cap) snprintf(buf + len, cap - len, " \xc2\xb7 %s", inst);
+        }
     }
 
     void layer_stats(char* buf, size_t cap, const Layer& l) const {
@@ -1721,7 +1806,7 @@ struct Shapespace : viamd::EventHandler {
         }
         const size_t n = md_array_size(l.structures);
         const char* what = n == 1 ? "structure" : "structures";
-        if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) >= 2) {
+        if (l.frames != LayerFrames_Current && layer_num_frames(l) >= 2) {
             if (l.eval && !l.eval->complete()) {
                 snprintf(buf, cap, "%zu %s \xc2\xb7 %u%% evaluated", n, what, (uint32_t)(100.0 * l.eval->frames_done.load() / MD_MAX((size_t)1, l.eval->num_frames)));
                 return;
@@ -1804,6 +1889,11 @@ struct Shapespace : viamd::EventHandler {
         // that a point is in the same colour however much of time is shown, and in 2D and 3D alike
         uint32_t time_beg = 0;
         uint32_t time_last = 0;
+        // Of the layer's run: where its frames are on the clock, the frame its instance shows, and whether its frames are
+        // those of the frame selection (layer_selects_frames)
+        ClockAxis axis = {};
+        double   now_frame = 0.0;
+        bool     ref_frames = false;
 
         uint32_t frame(size_t k) const { return frames[k]; }
         uint32_t next(size_t k) const { return k + 1 < num_frames ? frames[k + 1] : frames_end; }
@@ -1812,6 +1902,14 @@ struct Shapespace : viamd::EventHandler {
     // The points of the layer, at most about max_points of them, of its shapes as they are shown (smoothed or not:
     // eval_shapes). Of the layer's frames only those in [frame_beg, frame_end) (the time window, in 3D), when given.
     bool point_source(PointSource* ps, const Layer& l, size_t max_points, uint32_t frame_beg = 0, uint32_t frame_end = UINT32_MAX) const {
+        if (!point_source_frames(ps, l, max_points, frame_beg, frame_end)) return false;
+        ps->axis = layer_axis(l);
+        ps->now_frame = layer_frame(l);
+        ps->ref_frames = layer_selects_frames(l);
+        return true;
+    }
+
+    bool point_source_frames(PointSource* ps, const Layer& l, size_t max_points, uint32_t frame_beg, uint32_t frame_end) const {
         if (!l.structs_valid) return false;
         static const uint32_t zero = 0;
         // Of the frame shown, smoothed: the smoothed shapes there, between the frames on either side of it as the paths
@@ -1834,7 +1932,7 @@ struct Shapespace : viamd::EventHandler {
             const Evaluation& e = *l.eval;
             const md_float2_t* c = eval_shapes(e);
             const size_t nf = e.num_frames;
-            const double f = MD_CLAMP(clock_frame(app), 0.0, (double)(nf - 1));
+            const double f = MD_CLAMP(layer_frame(l), 0.0, (double)(nf - 1));
             const size_t f0 = (size_t)f, f1 = MD_MIN(f0 + 1, nf - 1);
             const float a = (float)(f - (double)f0);
             md_float2_t* at = (md_float2_t*)md_alloc(app->allocator.frame, sizeof(md_float2_t) * MD_MAX(e.num_structures, (size_t)1));
@@ -1853,7 +1951,7 @@ struct Shapespace : viamd::EventHandler {
             ps->smoothed = true;
             return true;
         }
-        if (l.frames == LayerFrames_Current || run_num_frames(app->system_context) < 2) {
+        if (l.frames == LayerFrames_Current || layer_num_frames(l) < 2) {
             if (md_array_size(l.current_coords) == 0) return false;
             *ps = PointSource{};
             ps->coords = l.current_coords;
@@ -1939,7 +2037,7 @@ struct Shapespace : viamd::EventHandler {
 
     // The frames point k stands for, into m: of the layer's, from its frame to the next drawn. None of the frame shown.
     static void add_point_frames(md_bitmask_t* m, const PointSource& ps, size_t k) {
-        if (ps.current || md_bitset_empty(ps.set)) return;
+        if (ps.current || !ps.ref_frames || md_bitset_empty(ps.set)) return;
         const uint32_t f = ps.frames[k], e = ps.next(k);
         if (!ps.set.words) {
             const uint32_t b = MD_MAX(f, ps.set.beg), x = MD_MIN(e, ps.set.end);
@@ -1952,7 +2050,7 @@ struct Shapespace : viamd::EventHandler {
 
     // Whether any of the frames point k stands for is selected
     bool point_frames_selected(const PointSource& ps, size_t k) const {
-        if (ps.current) return false;
+        if (ps.current || !ps.ref_frames) return false;
         return md_bitmask_test_any_range(&app->selection.frame_mask, ps.frames[k], ps.next(k));
     }
 
@@ -1990,7 +2088,7 @@ struct Shapespace : viamd::EventHandler {
     bool structure_selected(const Layer& l, const PointSource& ps, uint32_t s, bool any_atoms) const {
         if (!any_atoms) return true;
         const md_bitset_t atoms = structure_atoms(l, ps, s);
-        return !md_bitset_empty(atoms) && md_bitmask_test_bit(&app->system_context.selection.selection_mask, md_bitset_first(atoms));
+        return !md_bitset_empty(atoms) && md_bitmask_test_bit(&system().selection.selection_mask, md_bitset_first(atoms));
     }
 
     bool selects_structures() const { return select_target != SelectTarget_Frames; }
@@ -1998,7 +2096,7 @@ struct Shapespace : viamd::EventHandler {
 
     // What is highlighted from now on in this frame is ours: the atoms', and the frames'
     void begin_highlight() {
-        md_bitmask_clear(&app->system_context.selection.highlight_mask);
+        md_bitmask_clear(&system().selection.highlight_mask);
         md_bitmask_clear(&app->selection.frame_highlight_mask);
         highlights_now = true;
         frame_highlights_now = true;
@@ -2006,15 +2104,15 @@ struct Shapespace : viamd::EventHandler {
 
     // Point k of structure s of a layer into the highlight: its structure, and (when frames are selected) its frames
     void highlight_point(const Layer& l, const PointSource& ps, uint32_t s, size_t k) {
-        md_bitmask_or(&app->system_context.selection.highlight_mask, structure_atoms(l, ps, s));
+        md_bitmask_or(&system().selection.highlight_mask, structure_atoms(l, ps, s));
         if (selects_frames()) add_point_frames(&app->selection.frame_highlight_mask, ps, k);
     }
 
     // What is highlighted, selected (op): its structures and its frames, as far as the selection is of them
     void commit_highlight(SelectionOperator op) {
         if (selects_structures()) {
-            grow_mask_by_selection_granularity(&app->system_context.selection.highlight_mask, app->selection.granularity, app->mold.sys);
-            modify_field(&app->system_context.selection.selection_mask, md_bitmask_view(&app->system_context.selection.highlight_mask), op);
+            grow_mask_by_selection_granularity(&system().selection.highlight_mask, app->selection.granularity, system().data.sys);
+            modify_field(&system().selection.selection_mask, md_bitmask_view(&system().selection.highlight_mask), op);
         }
         if (selects_frames() && !md_bitmask_empty(&app->selection.frame_highlight_mask)) {
             frame_selection_modify(app, md_bitmask_view(&app->selection.frame_highlight_mask), op);
@@ -2023,7 +2121,7 @@ struct Shapespace : viamd::EventHandler {
 
     // A right click on nothing: the selection cleared, as far as it is of what is selected here
     void clear_selection() {
-        if (selects_structures()) md_bitmask_clear(&app->system_context.selection.selection_mask);
+        if (selects_structures()) md_bitmask_clear(&system().selection.selection_mask);
         if (selects_frames()) frame_selection_clear(app);
     }
 
@@ -2061,12 +2159,11 @@ struct Shapespace : viamd::EventHandler {
         if (h.current) {
             ImGui::TextDisabled("frame shown");
         } else {
-            // The run's time in the display unit, as the timeline shows it
-            const double* t = run_frame_times(app->system_context);
+            // Its time on the clock in the display unit, as the timeline shows it
             char unit[32] = "";
-            const double scl = display_units::factor_print(unit, sizeof(unit), run_time_unit(app->system_context));
-            const bool has_time = t && run_num_frames(app->system_context) > h.frame && unit[0] != '\0';
-            if (has_time) ImGui::TextDisabled("frame %u (%.6g %s)  \xc2\xb7  click to go there", h.frame, t[h.frame] * scl, unit);
+            const double scl = display_units::factor_print(unit, sizeof(unit), clock_unit(app));
+            const bool has_time = clock_axis_timed(ps.axis) && unit[0] != '\0';
+            if (has_time) ImGui::TextDisabled("frame %u (%.6g %s)  \xc2\xb7  click to go there", h.frame, clock_axis_time(ps.axis, h.frame) * scl, unit);
             else          ImGui::TextDisabled("frame %u  \xc2\xb7  click to go there", h.frame);
             if (h.next > h.frame + 1) ImGui::TextDisabled("standing for the frames to %u, which are not drawn", h.next - 1);
         }
@@ -2079,8 +2176,8 @@ struct Shapespace : viamd::EventHandler {
 
     void draw_points(bool hovered) {
         plot_drawn = true;
-        md_bitmask_t* selection_mask = &app->system_context.selection.selection_mask;
-        md_bitmask_t* highlight_mask = &app->system_context.selection.highlight_mask;
+        md_bitmask_t* selection_mask = &system().selection.selection_mask;
+        md_bitmask_t* highlight_mask = &system().selection.highlight_mask;
 
         const ImPlotRect lim = ImPlot::GetPlotLimits();
         const ImVec2 pos = ImPlot::GetPlotPos();
@@ -2134,7 +2231,7 @@ struct Shapespace : viamd::EventHandler {
             if (box.click_layer >= 0 && box.click_layer < num_layers && box.click_structure >= 0 && has_source[box.click_layer]) {
                 const PointSource& ps = sources[box.click_layer];
                 md_bitmask_or(highlight_mask, structure_atoms(layers[box.click_layer], ps, (uint32_t)box.click_structure));
-                if (selects_frames() && !ps.current && box.click_next > box.click_frame) {
+                if (selects_frames() && !ps.current && ps.ref_frames && box.click_next > box.click_frame) {
                     md_bitmask_set_range(&app->selection.frame_highlight_mask, box.click_frame, box.click_next);
                 }
             }
@@ -2227,7 +2324,7 @@ struct Shapespace : viamd::EventHandler {
             draw_tooltip(hover, sources[hover.layer]);
             // A click on a point of a frame: that frame
             if (!hover.current && !ImGui::GetIO().KeyShift && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                clock_set_frame(app, hover.frame);
+                go_to_frame(layers[hover.layer], hover.frame);
             }
         }
 
@@ -2414,14 +2511,11 @@ struct Shapespace : viamd::EventHandler {
     // In the plot's coordinates x is time (the timeline's), y and z the triangle's plane: the triangle stood up across
     // the time axis.
 
-    // The time of a frame in the display unit (time_scale, set where the 3D plot is drawn), as the timeline shows it;
-    // the frame itself without times
+    // The time on the clock of a frame of the points' run, in the display unit (time_scale, set where the 3D plot is
+    // drawn), as the timeline shows it; the frame itself without times
     double time_scale = 1.0;
-    double frame_time(double frame) const {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        if (!t || n == 0) return frame;
-        return time_at_frame(t, n, frame) * time_scale;
+    double frame_time(const PointSource& ps, double frame) const {
+        return (clock_axis_timed(ps.axis) ? clock_axis_time(ps.axis, frame) : frame) * time_scale;
     }
 
     // A point drawn in 3D: of structure s in the frame ps.frames[k] (or the frame shown), where it is on the screen
@@ -2446,22 +2540,21 @@ struct Shapespace : viamd::EventHandler {
 
     // ### The time window of the 3D plot
     //
-    // The time the 3D plot shows, and cuts the paths to, is a window of the run: the timeline's visible range (linked,
-    // both ways), one of its own, or one that follows the frame shown. All of the run is the window when nothing is cut.
+    // The time the 3D plot shows, and cuts the paths to, is a window of the clock's time, as the timeline shows it: the
+    // timeline's visible range (linked, both ways), one of its own, or one that follows the time shown. All of the runs
+    // shown (clock_span) is the window when nothing is cut. Each layer's frames in it are those of its run there.
 
-    // The window, in the run's own unit
+    // The window, on the clock
     void time_window(double* tb, double* te) const {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        const double r0 = (t && n > 0) ? t[0] : 0.0;
-        const double r1 = (t && n > 0) ? t[n - 1] : 0.0;
+        double r0 = 0, r1 = 0;
+        clock_span(app, &r0, &r1);
         switch (time_win.mode) {
         case TimeWindow_Timeline:
             *tb = MD_CLAMP(app->timeline.view_range.beg_x, r0, r1);
             *te = MD_CLAMP(app->timeline.view_range.end_x, *tb, r1);
             break;
         case TimeWindow_Follow: {
-            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
+            const double tc = app->animation.time;
             *tb = tc + time_win.beg;
             *te = tc + time_win.end;
             break;
@@ -2478,24 +2571,26 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
-    // The frames whose times are in the window, [*fb, *fe): empty when it is beside the run
-    void time_window_frames(uint32_t* fb, uint32_t* fe) const {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        *fb = *fe = 0;
-        if (!t || n == 0) return;
+    // The frames of a run on the clock (a layer's: layer_axis) whose times are in the window, [*fb, *fe): empty when it is
+    // beside the run. All of them for a run without times.
+    void time_window_frames(const ClockAxis& a, uint32_t* fb, uint32_t* fe) const {
+        *fb = 0;
+        *fe = UINT32_MAX;
+        if (!clock_axis_timed(a)) return;
+        *fe = 0;
+        const size_t n = a.count;
         double tb, te;
         time_window(&tb, &te);
-        if (te < t[0] || tb > t[n - 1] || te < tb) return;
+        if (te < clock_axis_time(a, 0.0) || tb > clock_axis_time(a, (double)(n - 1)) || te < tb) return;
         // The first frame at or after tb, and one past the last at or before te
-        uint32_t b = (uint32_t)ceil(frame_at_time(t, n, tb) - 1e-9);
-        uint32_t e = (uint32_t)floor(frame_at_time(t, n, te) + 1e-9);
-        while (e + 1 < n && t[e + 1] <= te) ++e;
+        const uint32_t b = (uint32_t)ceil(clock_axis_frame(a, tb) - 1e-9);
+        uint32_t e = (uint32_t)floor(clock_axis_frame(a, te) + 1e-9);
+        while (e + 1 < n && clock_axis_time(a, (double)(e + 1)) <= te) ++e;
         *fb = b;
         *fe = MD_MAX(b, e + 1);
     }
 
-    // Another mode, from the window as it is: what is shown stays shown. Following, as long a tail behind the frame
+    // Another mode, from the window as it is: what is shown stays shown. Following, as long a tail behind the time
     // shown; else the window as times (linked, into the timeline's range).
     void time_window_set_mode(TimeWindow mode) {
         if (mode == time_win.mode) return;
@@ -2510,32 +2605,33 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
-    // The window set to the times [b, e], in the run's own unit, as zooming, panning and the range in the toolbar move
-    // it: at least two frames long. Linked and of its own, within the run (all of it at most); following, as offsets.
+    // The window set to the times [b, e] on the clock, as zooming, panning and the range in the toolbar move it: at least
+    // two frames of the reference long. Linked and of its own, within the runs' span (all of it at most); following, as
+    // offsets.
     void time_window_set(double b, double e) {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        if (!t || n < 2) return;
-        const double span = t[n - 1] - t[0];
-        const double min_len = 2.0 * span / (double)(n - 1);
+        double r0 = 0, r1 = 0;
+        clock_span(app, &r0, &r1);
+        if (!(r1 > r0)) return;
+        const double span = r1 - r0;
+        const double min_len = MD_MIN(2.0 * clock_frame_duration(app), span);
         if (e - b < min_len) {
             const double c = 0.5 * (b + e);
             b = c - 0.5 * min_len;
             e = c + 0.5 * min_len;
         }
         if (time_win.mode == TimeWindow_Follow) {
-            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
+            const double tc = app->animation.time;
             time_win.beg = MD_CLAMP(b - tc, -span, span);
             time_win.end = MD_CLAMP(e - tc, time_win.beg, span);
             return;
         }
         if (e - b >= span) {
-            b = t[0];
-            e = t[n - 1];
+            b = r0;
+            e = r1;
         }
-        // Moved back into the run, as long as it is
-        if (b < t[0])     { e += t[0] - b; b = t[0]; }
-        if (e > t[n - 1]) { b -= e - t[n - 1]; e = t[n - 1]; }
+        // Moved back into the span, as long as it is
+        if (b < r0) { e += r0 - b; b = r0; }
+        if (e > r1) { b -= e - r1; e = r1; }
         if (time_win.mode == TimeWindow_Timeline) {
             app->timeline.view_range.beg_x = b;
             app->timeline.view_range.end_x = e;
@@ -2545,32 +2641,32 @@ struct Shapespace : viamd::EventHandler {
         }
     }
 
-    // All of it: the run (linked, the timeline's too), or following, all of the run behind the frame shown
+    // All of it: the runs' span (linked, the timeline's too), or following, all of it behind the time shown
     void time_window_fit() {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        if (!t || n < 2) return;
+        double r0 = 0, r1 = 0;
+        clock_span(app, &r0, &r1);
+        if (!(r1 > r0)) return;
         if (time_win.mode == TimeWindow_Follow) {
-            time_win.beg = -(t[n - 1] - t[0]);
+            time_win.beg = -(r1 - r0);
             time_win.end = 0.0;
         } else {
-            time_window_set(t[0], t[n - 1]);
+            time_window_set(r0, r1);
         }
     }
 
     // The toolbar's controls of the window: its mode, and its ends in the display unit, as the timeline shows time
     void draw_time_window_controls() {
-        const double* t = run_frame_times(app->system_context);
-        const size_t n = run_num_frames(app->system_context);
-        if (!t || n < 2) return;
+        double r0 = 0, r1 = 0;
+        clock_span(app, &r0, &r1);
+        if (!(r1 > r0)) return;
         char unit[32] = "";
-        const double scl = display_units::factor_print(unit, sizeof(unit), run_time_unit(app->system_context));
+        const double scl = display_units::factor_print(unit, sizeof(unit), clock_unit(app));
 
         static const char* const icons[TimeWindow_Count] = { ICON_FA_LINK, ICON_FA_THUMBTACK, ICON_FA_PERSON_RUNNING };
         static const char* const tips[TimeWindow_Count] = {
             "Time in 3D: the timeline's visible range, both ways (zoom and pan either)",
             "Time in 3D: a window of its own",
-            "Time in 3D: following the frame shown (a tail behind it when it ends at 0)",
+            "Time in 3D: following the time shown (a tail behind it when it ends at 0)",
         };
         for (int k = 0; k < TimeWindow_Count; ++k) {
             if (k > 0) ImGui::SameLine(0.0f, 1.0f);
@@ -2582,16 +2678,16 @@ struct Shapespace : viamd::EventHandler {
         }
 
         const bool follow = time_win.mode == TimeWindow_Follow;
-        const double span = t[n - 1] - t[0];
+        const double span = r1 - r0;
+        const double tc = app->animation.time;
         double tb, te;
         time_window(&tb, &te);
         if (follow) {
-            const double tc = run_time_at_frame(app->system_context, clock_frame(app));
             tb -= tc;
             te -= tc;
         }
-        const double lo_bound = follow ? -span : t[0];
-        const double hi_bound = follow ?  span : t[n - 1];
+        const double lo_bound = follow ? -span : r0;
+        const double hi_bound = follow ?  span : r1;
         float v[2] = { (float)(tb * scl), (float)(te * scl) };
         char fmt[48];
         snprintf(fmt, sizeof(fmt), follow ? "%%+.6g%s%s" : "%%.6g%s%s", unit[0] ? " " : "", unit);
@@ -2600,26 +2696,26 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::DragFloatRange2("##time_window", &v[0], &v[1], (float)(span * scl / 500.0), (float)(lo_bound * scl), (float)(hi_bound * scl), fmt, fmt, ImGuiSliderFlags_AlwaysClamp)) {
             double b = v[0] / scl, e = MD_MAX(v[1], v[0]) / scl;
             if (follow) {
-                const double tc = run_time_at_frame(app->system_context, clock_frame(app));
                 b += tc;
                 e += tc;
             }
             time_window_set(b, e);
         }
         if (ImGui::BeginPopupContextItem("##time_window_menu")) {
-            if (ImGui::MenuItem(follow ? "All of the run behind the frame shown" : "The whole run")) time_window_fit();
+            if (ImGui::MenuItem(follow ? "All of the time behind the time shown" : "All of the time")) time_window_fit();
             ImGui::EndPopup();
         }
-        uint32_t fb, fe;
-        time_window_frames(&fb, &fe);
-        if (fe > fb) ImGui::SetItemTooltip("Frames %u to %u, %u frames. Drag the ends or ctrl-click to type; right-click for all of it.", fb, fe - 1, fe - fb);
-        else         ImGui::SetItemTooltip("No frames in the window. Drag the ends or ctrl-click to type; right-click for all of it.");
+        // Its frames, of the reference's run: what stepping counts
+        uint32_t fb = 0, fe = 0;
+        if (const SystemInstance* ref = clock_reference(app)) time_window_frames(run_clock_axis(app, *ref->sys, instance_run(*ref)), &fb, &fe);
+        if (fe > fb) ImGui::SetItemTooltip("Frames %u to %u of the reference, %u frames. Drag the ends or ctrl-click to type; right-click for all of it.", fb, fe - 1, fe - fb);
+        else         ImGui::SetItemTooltip("No frames of the reference in the window. Drag the ends or ctrl-click to type; right-click for all of it.");
     }
 
     // In a corner of a plot, while what it shows is smoothed over time: said with the data, so that no view of it (a
     // screenshot of the plot alone) passes for the shapes of the frames
     void draw_smoothing_badge(ImDrawList* dl, ImVec2 corner) const {
-        if (smoothing <= 1 || run_num_frames(app->system_context) < 2) return;
+        if (smoothing <= 1 || !any_trajectory()) return;
         char text[64];
         snprintf(text, sizeof(text), ICON_FA_WAVE_SQUARE " smoothed over %d frames", smoothing);
         const ImVec2 pad(5.0f, 2.0f);
@@ -2661,18 +2757,20 @@ struct Shapespace : viamd::EventHandler {
         v3.drawn = true;
         if (ImGui::GetContentRegionAvail().x < 32.0f || ImGui::GetContentRegionAvail().y < 32.0f) return;
         md_allocator_i* fa = app->allocator.frame;
-        const uint32_t nf = (uint32_t)run_num_frames(app->system_context);
+        // The clock's time: the runs' span, and the time axis, the time window, which the paths are cut to
+        double c0 = 0, c1 = 0;
+        clock_span(app, &c0, &c1);
+        const bool has_time = clock_reference(app) != nullptr;
+        const bool timed = has_time && c1 > c0;
         char unit[32] = "";
-        time_scale = display_units::factor_print(unit, sizeof(unit), run_time_unit(app->system_context));
-        // The run, and the time axis: the time window, which the paths are cut to
-        const double r0 = frame_time(0.0);
-        double r1 = nf > 1 ? frame_time((double)(nf - 1)) : r0 + 1.0;
+        time_scale = display_units::factor_print(unit, sizeof(unit), clock_unit(app));
+        const double r0 = c0 * time_scale;
+        double r1 = timed ? c1 * time_scale : r0 + 1.0;
         if (!(r1 > r0)) r1 = r0 + 1.0;
-        const double tc = nf > 0 ? frame_time(clock_frame(app)) : r0;
-        uint32_t filter_beg = 0, filter_end = UINT32_MAX;
+        const double tc = has_time ? app->animation.time * time_scale : r0;
+        bool window_empty = timed;      // No layer has frames in the window
         double t0 = r0, t1 = r1;
-        if (nf > 1) {
-            time_window_frames(&filter_beg, &filter_end);
+        if (timed) {
             double tb, te;
             time_window(&tb, &te);
             t0 = tb * time_scale;
@@ -2813,12 +2911,12 @@ struct Shapespace : viamd::EventHandler {
             spec.Flags = item_flags | ImPlot3DTriangleFlags_NoMarkers;
             ImPlot3D::PlotTriangle(id, xs, ys, zs, 3, spec);
         };
-        if (nf > 0) slice("##current", tc, ImVec4(1, 1, 0, 0.75f), ImVec4(1, 1, 0, 0.05f));
+        if (has_time) slice("##current", tc, ImVec4(1, 1, 0, 0.75f), ImVec4(1, 1, 0, 0.05f));
         // The timeline's periods along time, as it shades them: a band each across a side of the box along the edge the
         // time axis is drawn on (as the box is turned), out to that axis, a line for a marker; named along the axis' edge,
         // by its ticks. The one hovered (in the timeline, or a layer's) brighter.
         const uint32_t hot_period = timeline_periods_hovered();
-        if (time_win.show_periods && nf > 1) {
+        if (time_win.show_periods && timed) {
             const double y_lo = -0.04, y_hi = 1.04, z_lo = -0.04, z_hi = tri_iso.y + 0.04;
             // The edge the time axis is drawn along, as the box is turned; looking down the time axis there is none: the
             // floor's near edge
@@ -2863,10 +2961,9 @@ struct Shapespace : viamd::EventHandler {
             const TimelinePeriods& rs = app->timeline.periods;
             for (int i = 0; i < rs.count; ++i) {
                 const TimelinePeriod& p = rs.items[i];
-                int b = 0, e = 0;
-                if (!period_frames(&b, &e, app, p) || b >= (int)nf) continue;
-                e = MD_MIN(e, (int)nf - 1);
-                const double xb = frame_time(b), xe = frame_time(e);
+                double pb = 0, pe = 0;
+                timeline_period_span(&pb, &pe, p, app->animation.time);
+                const double xb = pb * time_scale, xe = pe * time_scale;
                 if (xe < t0 || xb > t1) continue;
                 const bool hot = p.id == hot_period;
                 const ImVec4 col(p.color.x, p.color.y, p.color.z, hot ? 0.95f : 0.7f);
@@ -2875,7 +2972,7 @@ struct Shapespace : viamd::EventHandler {
                 ImPlot3DSpec spec;
                 spec.Flags = item_flags;
                 const double xa = MD_MAX(xb, t0), xz = MD_MIN(xe, t1);
-                if (b == e) {
+                if (timeline_period_is_marker(p)) {
                     const double xs[2] = { xb, xb }, ys[2] = { sy0, sy1 }, zs[2] = { sz0, sz1 };
                     spec.LineColor = col;
                     spec.LineWeight = hot ? 2.5f : 1.5f;
@@ -2892,13 +2989,13 @@ struct Shapespace : viamd::EventHandler {
             }
         }
         if (const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, hot_period)) {
-            int b = 0, e = 0;
-            if (period_frames(&b, &e, app, *p) && b < (int)nf) {
-                e = MD_MIN(e, (int)nf - 1);
+            if (has_time) {
+                double pb = 0, pe = 0;
+                timeline_period_span(&pb, &pe, *p, app->animation.time);
                 const ImVec4 col(p->color.x, p->color.y, p->color.z, 0.8f);
                 const ImVec4 fill(p->color.x, p->color.y, p->color.z, 0.10f);
-                slice("##period_beg", frame_time(b), col, fill);
-                if (e != b) slice("##period_end", frame_time(e), col, fill);
+                slice("##period_beg", pb * time_scale, col, fill);
+                if (!timeline_period_is_marker(*p)) slice("##period_end", pe * time_scale, col, fill);
             }
         }
 
@@ -2912,7 +3009,7 @@ struct Shapespace : viamd::EventHandler {
                 const size_t k = end == 0 ? 0 : ps.num_frames - 1;
                 const uint32_t in = ps.frames[k];
                 if ((end == 0 ? in - out : out - in) > ps.step) continue;
-                const double ti = frame_time(in), to = frame_time(out);
+                const double ti = frame_time(ps, in), to = frame_time(ps, out);
                 const double te = end == 0 ? t0 : t1;
                 if (!(to != ti)) continue;
                 const double u = MD_CLAMP((te - ti) / (to - ti), 0.0, 1.0);
@@ -2931,12 +3028,16 @@ struct Shapespace : viamd::EventHandler {
         bool has_source[MAX_LAYERS] = {};
         Point3D* points[MAX_LAYERS] = {};
         size_t num_points[MAX_LAYERS] = {};
-        const bool any_sel = !md_bitmask_empty(&app->system_context.selection.selection_mask);
+        const bool any_sel = !md_bitmask_empty(&system().selection.selection_mask);
         const bool any_frames_sel = !md_bitmask_empty(&app->selection.frame_mask);
         for (int i = num_layers - 1; i >= 0; --i) {
             Layer& l = layers[i];
             if (!layer_shown(l) || l.style != LayerStyle_Points || l.opacity <= 0.0f) continue;
-            if (!point_source(&sources[i], l, MAX_LINE_POINTS, filter_beg, filter_end)) continue;
+            // Of its frames those of its run in the window
+            uint32_t fb = 0, fe = UINT32_MAX;
+            if (timed) time_window_frames(layer_axis(l), &fb, &fe);
+            if (fe > fb) window_empty = false;
+            if (!point_source(&sources[i], l, MAX_LINE_POINTS, fb, fe)) continue;
             has_source[i] = true;
             const PointSource& ps = sources[i];
             if (!ps.current) l.line_stride = ps.step;
@@ -2946,7 +3047,7 @@ struct Shapespace : viamd::EventHandler {
             Point3D* pts = (Point3D*)md_alloc(fa, sizeof(Point3D) * MD_MAX(cap, (size_t)1));
             size_t np = 0;
             for_each_point(ps, [&](uint32_t s, size_t k, md_float2_t c) {
-                pts[np++] = Point3D{ s, (uint32_t)k, (float)(ps.current ? tc : frame_time(ps.frames[k])), c.x, c.y, ImVec2() };
+                pts[np++] = Point3D{ s, (uint32_t)k, (float)frame_time(ps, ps.current ? ps.now_frame : (double)ps.frames[k]), c.x, c.y, ImVec2() };
             });
             points[i] = pts;
             num_points[i] = np;
@@ -3054,8 +3155,8 @@ struct Shapespace : viamd::EventHandler {
         if (v3.active && box_is_click) {
             if (v3.click_layer >= 0 && v3.click_layer < num_layers && v3.click_structure >= 0 && has_source[v3.click_layer]) {
                 const PointSource& ps = sources[v3.click_layer];
-                md_bitmask_or(&app->system_context.selection.highlight_mask, structure_atoms(layers[v3.click_layer], ps, (uint32_t)v3.click_structure));
-                if (selects_frames() && !ps.current && v3.click_next > v3.click_frame) {
+                md_bitmask_or(&system().selection.highlight_mask, structure_atoms(layers[v3.click_layer], ps, (uint32_t)v3.click_structure));
+                if (selects_frames() && !ps.current && ps.ref_frames && v3.click_next > v3.click_frame) {
                     md_bitmask_set_range(&app->selection.frame_highlight_mask, v3.click_frame, v3.click_next);
                 }
             }
@@ -3069,7 +3170,7 @@ struct Shapespace : viamd::EventHandler {
                     if (!r.Contains(p.px)) continue;
                     if (!md_bitmask_test_bit(&taken, p.s)) {
                         md_bitmask_set_bit(&taken, p.s);
-                        md_bitmask_or(&app->system_context.selection.highlight_mask, structure_atoms(layers[i], sources[i], p.s));
+                        md_bitmask_or(&system().selection.highlight_mask, structure_atoms(layers[i], sources[i], p.s));
                     }
                     if (selects_frames()) add_point_frames(&app->selection.frame_highlight_mask, sources[i], p.k);
                 }
@@ -3082,7 +3183,7 @@ struct Shapespace : viamd::EventHandler {
         // What is highlighted, and the points of the selection over frames, over the layers: a line in the highlight's
         // colour through the points of each structure highlighted, and marks on the points of the frames selected
         {
-            const bool any_hl = !md_bitmask_empty(&app->system_context.selection.highlight_mask);
+            const bool any_hl = !md_bitmask_empty(&system().selection.highlight_mask);
             const ImVec4 hl_col = vec_cast(app->selection.color.highlight.outline);
             const ImVec4 sel_col = vec_cast(app->selection.color.selection.outline);
             for (int i = 0; i < num_layers && (any_hl || any_frames_sel); ++i) {
@@ -3093,7 +3194,7 @@ struct Shapespace : viamd::EventHandler {
                 const size_t np = num_points[i];
                 auto structure_highlighted = [&](uint32_t s) {
                     const md_bitset_t atoms = structure_atoms(l, ps, s);
-                    return !md_bitset_empty(atoms) && md_bitmask_test_bit(&app->system_context.selection.highlight_mask, md_bitset_first(atoms));
+                    return !md_bitset_empty(atoms) && md_bitmask_test_bit(&system().selection.highlight_mask, md_bitset_first(atoms));
                 };
                 char id[32];
                 if (any_hl && !ps.current) {
@@ -3230,7 +3331,7 @@ struct Shapespace : viamd::EventHandler {
         v3.over_box = hovered && exit_face >= 0;
         // Off the box, a double-click zooms out fully: the whole run. On one of its planes ImPlot3D turns to face it, and
         // the time shown stays.
-        if (hovered && !shift && !ctrl && !v3.active && exit_face < 0 && nf > 1 && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
+        if (hovered && !shift && !ctrl && !v3.active && exit_face < 0 && timed && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) time_window_fit();
         auto pointer_time = [&]() -> double {
             if (exit_face > 0) return ray.Origin.x + ray.Direction.x * exit_t;
             ImPlot3DPoint ea, eb;
@@ -3249,19 +3350,14 @@ struct Shapespace : viamd::EventHandler {
             const double u = l * r / (1.0f - l + l * r);
             return ea.x + (eb.x - ea.x) * u;
         };
-        if (nf > 1 && ctrl && hovered && !v3.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && isfinite(pointer_time())) {
+        if (timed && ctrl && hovered && !v3.active && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && isfinite(pointer_time())) {
             v3.scrubbing = true;
             v3.pressed = false;
         }
         if (v3.scrubbing && (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || !io.KeyCtrl)) v3.scrubbing = false;
         if (v3.scrubbing) {
             const double t = pointer_time();
-            if (isfinite(t)) {
-                const double* times = run_frame_times(app->system_context);
-                const double rt = MD_CLAMP(t, r0, r1) / time_scale;
-                const double f = times ? frame_at_time(times, nf, rt) : rt;
-                clock_set_frame(app, MD_CLAMP(f, 0.0, (double)(nf - 1)));
-            }
+            if (isfinite(t)) app->animation.time = MD_CLAMP(t, r0, r1) / time_scale;
         }
         ImPlot3D::EndPlot();
 
@@ -3287,7 +3383,7 @@ struct Shapespace : viamd::EventHandler {
                 const float l = MD_CLAMP(ImDot(p - time_a, axis) / len2, 0.0f, 1.0f);
                 return l * r / (1.0f - l + l * r);
             };
-            if (hovered && !shift && !v3.active && nf > 1) {
+            if (hovered && !shift && !v3.active && timed) {
                 ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindow()->ID);
                 if (io.MouseWheel != 0.0f) {
                     const float u = along ? time_u(mouse) : 0.5f;
@@ -3305,7 +3401,7 @@ struct Shapespace : viamd::EventHandler {
             if (v3.dollying) {
                 if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
                     v3.dollying = false;
-                } else if (io.MouseDelta.y != 0.0f && nf > 1) {
+                } else if (io.MouseDelta.y != 0.0f && timed) {
                     const double tm = w0 + v3.dolly_u * (w1 - w0);
                     const double f = exp(0.01 * (double)io.MouseDelta.y);
                     time_window_set((tm - (tm - w0) * f) / time_scale, (tm + (w1 - tm) * f) / time_scale);
@@ -3350,7 +3446,7 @@ struct Shapespace : viamd::EventHandler {
             dl->AddRect(a, b, ImGui::ColorConvertFloat4ToU32(vec_cast(c)), 0.0f, 0, 1.0f);
         }
         if (!any_points && num_layers > 0) {
-            const char* msg = nf > 1 && filter_end <= filter_beg ? "No frames in the time shown" : "Layers of points show here, over time";
+            const char* msg = window_empty ? "No frames in the time shown" : "Layers of points show here, over time";
             const ImVec2 ts = ImGui::CalcTextSize(msg);
             dl->AddText(ImVec2(plot_rect.Min.x + 8.0f, plot_rect.Max.y - ts.y - 6.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), msg);
         }
@@ -3362,11 +3458,12 @@ struct Shapespace : viamd::EventHandler {
             if (!hover.current && !shift && !ctrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 v3.pressed = true;
                 v3.press_pos = mouse;
+                v3.press_layer = hover.layer;
                 v3.click_frame = hover.frame;
             }
         }
         if (v3.pressed && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-            if (ImLengthSqr(mouse - v3.press_pos) < 9.0f) clock_set_frame(app, v3.click_frame);
+            if (ImLengthSqr(mouse - v3.press_pos) < 9.0f && v3.press_layer >= 0 && v3.press_layer < num_layers) go_to_frame(layers[v3.press_layer], v3.click_frame);
             v3.pressed = false;
         }
         if (v3.pressed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) v3.pressed = false;
@@ -3411,9 +3508,10 @@ struct Shapespace : viamd::EventHandler {
         md_allocator_i* temp = md_temp_allocator(temp_scope);
         MD_DEFER { md_temp_end(temp_scope); };
 
-        // The time column is the run's time in the display unit, as the timeline shows it
+        // The time column is the clock's time of the frames of the layer's run in the display unit, as the timeline shows it
         char unit_buf[64];
-        const double time_scl = display_units::factor_print(unit_buf, sizeof(unit_buf), run_time_unit(app->system_context));
+        const double time_scl = display_units::factor_print(unit_buf, sizeof(unit_buf), clock_unit(app));
+        const ClockAxis axis = layer_axis(l);
         md_str_t x_label = MD_STR_INIT("Frame");
         if (unit_buf[0] != '\0') {
             x_label = md_alloc_printf(temp, "Time (%s)", unit_buf);
@@ -3435,10 +3533,9 @@ struct Shapespace : viamd::EventHandler {
             }
             for (int k = 0; k < 3; ++k) md_array_push(values, NULL, temp);
         }
-        const double* time = run_frame_times(app->system_context);
-        const bool has_time = time && run_num_frames(app->system_context) >= nf;
+        const bool has_time = clock_axis_timed(axis) && axis.count >= nf;
         for (size_t f = 0; f < nf; ++f) {
-            md_array_push(values[0], has_time ? (float)(time[f] * time_scl) : (float)f, temp);
+            md_array_push(values[0], has_time ? (float)(clock_axis_time(axis, (double)f) * time_scl) : (float)f, temp);
             for (size_t s = 0; s < ns; ++s) {
                 const md_float3_t w = shape_weights_of(shapes[s * nf + f]);
                 md_array_push(values[1 + s * 3 + 0], w.x, temp);
@@ -3465,6 +3562,27 @@ struct Shapespace : viamd::EventHandler {
         if (ImGui::Button(ICON_FA_LAYER_GROUP "##layers")) show_sidebar = !show_sidebar;
         ImGui::SetItemTooltip(show_sidebar ? "Hide the layers" : "Show the layers");
         ImGui::SameLine();
+
+        // Of which system, when there are several: its atoms, its selection
+        if (system_count(*app) > 1) {
+            ImGui::SetNextItemWidth(160);
+            const uint32_t before = system().id;
+            if (system_combo("##system", &system_id, *app) && system().id != before) {
+                // Its selection lit up no longer
+                if (owns_highlight) md_bitmask_clear(&system_or_first(app, before).selection.highlight_mask);
+                owns_highlight = false;
+                // The instances of the one before are not of this one, nor what was found of it
+                release_all(true);
+                for (int i = 0; i < num_layers; ++i) {
+                    layers[i].instance = 0;
+                    layers[i].structs_key = 0;
+                    layers[i].current_key = 0;
+                }
+                system_generation += 1;
+            }
+            ImGui::SetItemTooltip("The system whose structures are shown");
+            ImGui::SameLine();
+        }
 
         const Layer* sel = find_layer(selected_layer);
         const bool can_export = sel && sel->frames != LayerFrames_Current && sel->eval && sel->eval->complete();
@@ -3505,7 +3623,7 @@ struct Shapespace : viamd::EventHandler {
             ImGui::SameLine();
             draw_time_window_controls();
         }
-        if (run_num_frames(app->system_context) >= 2) {
+        if (any_trajectory()) {
             ImGui::SameLine();
             draw_smoothing_control();
         }
@@ -3628,8 +3746,8 @@ struct Shapespace : viamd::EventHandler {
         // Hovering a layer lights its structures up
         if (row_hovered && l.structs_valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->system_context.selection.highlight_mask);
-            for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->system_context.selection.highlight_mask, l.structures[i]);
+            md_bitmask_clear(&system().selection.highlight_mask);
+            for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&system().selection.highlight_mask, l.structures[i]);
         }
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -3708,8 +3826,8 @@ struct Shapespace : viamd::EventHandler {
         // Its structures lit up
         if (row.hovered && context && g.valid) {
             highlights_now = true;
-            md_bitmask_clear(&app->system_context.selection.highlight_mask);
-            md_bitmask_or(&app->system_context.selection.highlight_mask, g.atoms);
+            md_bitmask_clear(&system().selection.highlight_mask);
+            md_bitmask_or(&system().selection.highlight_mask, g.atoms);
         }
 
         ImGui::PushID("group_drop");
@@ -3822,12 +3940,12 @@ struct Shapespace : viamd::EventHandler {
             } else {
                 snprintf(none, sizeof(none), "all atoms, as one");
             }
-            filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(system_instance(app->system_context), in_context ? g : nullptr), 0, nullptr, none);
+            filter_input("##filter", &l.filter, app->script.language, layer_group_filter_context(layer_instance(l), in_context ? g : nullptr), 0, nullptr, none);
             if (invalid) ImGui::PopInvalid();
             if (ImGui::IsItemHovered() && l.structs_valid) {
                 highlights_now = true;
-                md_bitmask_clear(&app->system_context.selection.highlight_mask);
-                for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&app->system_context.selection.highlight_mask, l.structures[i]);
+                md_bitmask_clear(&system().selection.highlight_mask);
+                for (size_t i = 0; i < md_array_size(l.structures); ++i) md_bitmask_or(&system().selection.highlight_mask, l.structures[i]);
             }
             if (l.filter.result.is_dynamic && l.frames != LayerFrames_Current) {
                 prop::hint("Depends on the coordinates: taken in the frame it was evaluated in");
@@ -3836,6 +3954,11 @@ struct Shapespace : viamd::EventHandler {
         prop::row("by mass", "Atoms weighted by their mass, or alike");
         ImGui::Checkbox("##mass", &l.use_mass);
 
+        // Of which instance of the system: its run, its frame
+        if (system().num_instances > 1) {
+            prop::row("instance", "The instance of the system whose run and frame it shows");
+            instance_combo("##instance", &l.instance, system());
+        }
         prop::row("frames");
         {
             char preview[TIMELINE_PERIOD_NAME_CAP + 16];
@@ -3859,7 +3982,7 @@ struct Shapespace : viamd::EventHandler {
                 }
                 ImGui::EndCombo();
             }
-            if (l.frames != LayerFrames_Current && run_num_frames(app->system_context) < 2) {
+            if (l.frames != LayerFrames_Current && layer_num_frames(l) < 2) {
                 prop::hint(l.style == LayerStyle_Points ? "No trajectory: the frame there is" : "No trajectory to find a density over");
             }
         }
@@ -4034,7 +4157,7 @@ struct Shapespace : viamd::EventHandler {
             v3.active = false;
             v3.pressed = false;
         }
-        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&app->system_context.selection.highlight_mask);
+        if (app && owns_highlight && !highlights_now) md_bitmask_clear(&system().selection.highlight_mask);
         owns_highlight = highlights_now;
         if (app && owns_frame_highlight && !frame_highlights_now) md_bitmask_clear(&app->selection.frame_highlight_mask);
         owns_frame_highlight = frame_highlights_now;
