@@ -778,6 +778,7 @@ int main(int argc, char** argv) {
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MD_MEGABYTES(1)), MD_MEGABYTES(1));
     // The first system, which is held in place: its arena and its masks
     system_context_init(&state.system_context, &state);
+    system_dir_number(state.system_context);
 
     md_temp_arena_system_init();
 

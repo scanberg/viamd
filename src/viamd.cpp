@@ -2415,8 +2415,12 @@ SystemContext* system_add(ApplicationState* app) {
         while (i < app->num_systems && app->systems[i] != first) ++i;
         for (; i + 1 < app->num_systems; ++i) app->systems[i] = app->systems[i + 1];
         app->systems[app->num_systems - 1] = first;
-        // Of whatever was loaded into it before, nothing refers to it by its id now
-        if (app->num_systems > 1) first->id = app->next_system_id++;
+        // Of whatever was loaded into it before, nothing refers to it by its id now, nor by its directory
+        if (app->num_systems > 1) {
+            first->id = app->next_system_id++;
+            first->dir[0] = '\0';
+            system_dir_number(*first);
+        }
         return first;
     }
     return system_alloc(app);
@@ -2428,6 +2432,7 @@ SystemContext* system_alloc(ApplicationState* app) {
     SystemContext* sys = new SystemContext();
     system_context_init(sys, app);
     sys->id = app->next_system_id++;
+    system_dir_number(*sys);
     app->systems[app->num_systems++] = sys;
     return sys;
 }
@@ -2455,6 +2460,72 @@ SystemContext* system_find(ApplicationState* app, uint32_t id) {
 
 const SystemContext* system_find(const ApplicationState& app, uint32_t id) {
     return system_find(const_cast<ApplicationState*>(&app), id);
+}
+
+// --- SYSTEM DIRECTORIES ---
+
+static bool dir_char_valid(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+}
+
+static bool dir_is_number(md_str_t dir) {
+    if (dir.len == 0) return false;
+    for (size_t i = 0; i < dir.len; ++i) {
+        if (dir.ptr[i] < '0' || dir.ptr[i] > '9') return false;
+    }
+    return true;
+}
+
+// The system other than sys with the directory, NULL when none has it
+static SystemContext* dir_holder(const ApplicationState& app, const SystemContext& sys, md_str_t dir) {
+    for (size_t i = 0; i < app.num_systems; ++i) {
+        SystemContext* sc = app.systems[i];
+        if (sc != &sys && md_str_eq_cstr(dir, sc->dir)) return sc;
+    }
+    return nullptr;
+}
+
+void system_dir_number(SystemContext& sys) {
+    MD_ASSERT(sys.app);
+    char buf[sizeof(sys.dir)];
+    for (uint32_t n = 0;; ++n) {
+        const int len = snprintf(buf, sizeof(buf), "%u", n);
+        if (!dir_holder(*sys.app, sys, md_str_t{buf, (size_t)len})) break;
+    }
+    md_memcpy(sys.dir, buf, sizeof(buf));
+}
+
+const char* system_dir_invalid(const ApplicationState& app, const SystemContext& sys, md_str_t dir) {
+    if (dir.len == 0) return "it is empty";
+    if (dir.len >= sizeof(sys.dir)) return "it is too long";
+    for (size_t i = 0; i < dir.len; ++i) {
+        if (!dir_char_valid(dir.ptr[i])) return "only letters, digits, '_', '-' and '.' go in it";
+    }
+    if (dir_is_number(dir)) return "the numbers are given to the systems";
+    if (dir_holder(app, sys, dir)) return "another system has it";
+    return nullptr;
+}
+
+bool system_set_dir(SystemContext& sys, md_str_t dir) {
+    MD_ASSERT(sys.app);
+    if (system_dir_invalid(*sys.app, sys, dir)) return false;
+    md_str_copy_to_char_buf(sys.dir, sizeof(sys.dir), dir);
+    return true;
+}
+
+void system_dir_take(SystemContext& sys, md_str_t dir) {
+    MD_ASSERT(sys.app);
+    if (dir.len == 0 || dir.len >= sizeof(sys.dir)) return;
+    for (size_t i = 0; i < dir.len; ++i) {
+        if (!dir_char_valid(dir.ptr[i])) return;
+    }
+    if (SystemContext* other = dir_holder(*sys.app, sys, dir)) {
+        if (!dir_is_number(md_str_from_cstr(other->dir))) return;
+        md_str_copy_to_char_buf(sys.dir, sizeof(sys.dir), dir);
+        system_dir_number(*other);
+        return;
+    }
+    md_str_copy_to_char_buf(sys.dir, sizeof(sys.dir), dir);
 }
 
 size_t system_count(const ApplicationState& app) {
@@ -3235,6 +3306,9 @@ static void workspace_reset(ApplicationState* data) {
         system_remove(*sc);
         system_release(data, sc);
     }
+    // The first's directory, as the workspace gives it ([SystemScene] Dir=), else the first number
+    data->system_context.dir[0] = '\0';
+    system_dir_number(data->system_context);
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]. No unit to the time yet:
     // what the workspace holds on the clock is taken into the clock's unit once its runs are loaded, not converted from

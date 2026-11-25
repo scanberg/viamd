@@ -1899,6 +1899,8 @@ struct SystemContext {
     // user names it. Empty while nothing is loaded.
     uint32_t              id = 0;
     char                  name[64] = "";
+    // Its directory: the outermost layer of the paths of what is of it, as the Attributes window lists them (system_dir)
+    char                  dir[32] = "";
 
     // The application it is of: what the events about it (SystemEventPayload) reach the rest of viamd through
     ApplicationState*     app = nullptr;
@@ -2959,6 +2961,20 @@ static inline const SystemContext& system_or_first(const ApplicationState& app, 
 
 // How many are loaded (system_loaded)
 size_t system_count(const ApplicationState& app);
+
+// A system's directory (SystemContext::dir): the outermost layer of the paths of what is of it, as the Attributes window
+// lists them ("0/run/md/time", "mutant/atom/charge"). Unique among the systems: a number, the lowest free, given as it is
+// made, or a name the user gives it (the System window). Kept with the workspace ([SystemScene] Dir=).
+// Why the user cannot give sys the directory, NULL when they can: empty, longer than it holds, a character other than a
+// letter, a digit, '_', '-' or '.', all digits (the numbers are given), or another system's
+const char* system_dir_invalid(const ApplicationState& app, const SystemContext& sys, md_str_t dir);
+// Gives sys the directory the user gives it, false (and nothing changed) where it cannot (system_dir_invalid)
+bool system_set_dir(SystemContext& sys, md_str_t dir);
+// Gives sys the directory a workspace says it had: a number too. Another system's number gives way, as it was given and
+// the workspace says what that one's is; where another has it as a name, sys keeps its own.
+void system_dir_take(SystemContext& sys, md_str_t dir);
+// The lowest free number, as a system is made or emptied
+void system_dir_number(SystemContext& sys);
 
 // The system a hit is of (PickingHit::system), NULL for a hit of none or of a system since removed
 SystemContext* picking_hit_system(ApplicationState* app, const PickingHit& hit);

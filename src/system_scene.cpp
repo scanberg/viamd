@@ -1311,6 +1311,7 @@ void system_scene_serialize(viamd::serialization_state_t& state, const SystemCon
 
     viamd::write_section_header(state, MD_STR_LIT("SystemScene"));
     viamd::write_int(state, MD_STR_LIT("System"), (int)sys.id);
+    viamd::write_str(state, MD_STR_LIT("Dir"), md_str_from_cstr(sys.dir));
     viamd::write_bool(state, MD_STR_LIT("Visible"), sys.visible);
 
     // The operations: on or off, and their settings
@@ -1378,6 +1379,9 @@ bool system_scene_read_entry(SystemContext& sys, md_str_t ident, md_str_t arg) {
 
     if (md_str_eq(ident, MD_STR_LIT("Visible"))) {
         viamd::extract_bool(sys.visible, arg);
+    } else if (md_str_eq(ident, MD_STR_LIT("Dir"))) {
+        md_str_t dir = {};
+        if (viamd::extract_str(dir, arg)) system_dir_take(sys, dir);
     } else if (md_str_eq(ident, MD_STR_LIT("Placement")) || md_str_eq(ident, MD_STR_LIT("PeriodicImages"))) {
         // Of a workspace written before the instances ([Instance]): the system's, now its first instance's
         return system_scene_read_instance_entry(system_instance(sys).scene, ident, arg);

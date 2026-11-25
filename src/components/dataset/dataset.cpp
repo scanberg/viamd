@@ -23,6 +23,7 @@
 #include <md_nonbonded.h>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <imgui_widgets.h>
 #include <implot_widgets.h>
 
@@ -3963,6 +3964,36 @@ struct Dataset : viamd::EventHandler {
         }
     }
 
+    // Its directory (system_dir): the outermost layer of the paths of what is of it. Given when the field is left or Enter
+    // is pressed; what cannot be its directory is marked, and said why.
+    char     dir_edit[32] = "";
+    uint32_t dir_edit_of = UINT32_MAX;     // The system the field is of, by id: set again for another
+
+    void draw_dir(ApplicationState& data) {
+        SystemContext& sc = system(data);
+        // Of another system, or not being typed in: what it has
+        const bool typing = ImGui::GetActiveID() == ImGui::GetID("##dir");
+        if (dir_edit_of != sc.id || !typing) {
+            dir_edit_of = sc.id;
+            snprintf(dir_edit, sizeof(dir_edit), "%s", sc.dir);
+        }
+        const md_str_t text = md_str_from_cstr(dir_edit);
+        const char* invalid = md_str_eq_cstr(text, sc.dir) ? nullptr : system_dir_invalid(data, sc, text);
+        ImGui::SetNextItemWidth(160);
+        if (invalid) ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.55f, 0.15f, 0.15f, 1.0f));
+        ImGui::InputTextWithHint("##dir", "directory", dir_edit, sizeof(dir_edit));
+        if (invalid) ImGui::PopStyleColor();
+        const bool done = ImGui::IsItemDeactivatedAfterEdit();
+        if (invalid) ImGui::SetItemTooltip("Not a directory it can have: %s", invalid);
+        else ImGui::SetItemTooltip("Its directory: the outermost layer of the paths of what is of it, as the Attributes window lists them.\n"
+                                   "A name of letters, digits, '_', '-' and '.', of no other system");
+        if (done) {
+            if (!invalid && !md_str_eq_cstr(text, sc.dir)) system_set_dir(sc, text);
+            // What it has, whatever was typed
+            snprintf(dir_edit, sizeof(dir_edit), "%s", sc.dir);
+        }
+    }
+
     void draw(ApplicationState& data) {
         if (!show_window) return;
 
@@ -3973,7 +4004,9 @@ struct Dataset : viamd::EventHandler {
                 ImGui::SetNextItemWidth(220);
                 if (system_combo("##system", &system_id, data)) work_on_shown(data);
                 ImGui::SetItemTooltip("The system shown");
+                ImGui::SameLine();
             }
+            draw_dir(data);
             if (ImGui::IsWindowHovered()) {
                 md_bitmask_clear(&system(data).selection.highlight_mask);
             }
