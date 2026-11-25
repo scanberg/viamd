@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <vector>
 
 #include <core/md_unit.h>
 #include <system/md_attributes.h>
@@ -129,3 +130,13 @@ bool glyphs_unit_print(char* buf, size_t cap, double* factor, md_unit_t unit);
 
 // The group a point set is: G of G/coordinate (empty when it is none). A view into the attribute table.
 md_str_t glyphs_group(const md_system_t& sys, md_attribute_id_t points);
+
+// What a quantity spans over its points (the 1st to 99th percentile), and a colour scale set up for it: symmetric and
+// diverging for both signs. For whatever is coloured by one (the glyphs, a surface: vdw_surface.h).
+ColorScaleSpan glyphs_quantity_span(const md_system_t& sys, md_attribute_id_t quantity);
+void glyphs_scale_for(ColorScale* scale, const md_system_t& sys, md_attribute_id_t quantity);
+
+// The points of a point set where they are in the state (world, Angstrom), placed as its glyphs are: 3 floats each,
+// empty when it is none. And a hash of what that placement depends on (the set as read, the atoms it follows).
+std::vector<float> glyphs_place_points(const md_system_t& sys, const md_system_state_t& state, md_attribute_id_t points);
+uint64_t glyphs_placement_hash(const md_system_t& sys, const md_system_state_t& state, md_attribute_id_t points);

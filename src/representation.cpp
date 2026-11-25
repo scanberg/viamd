@@ -281,6 +281,7 @@ static void init_representation(ApplicationState* state, Representation* rep) {
     surface_field_invalidate(&rep->electronic_structure.source_vol);
     // the points of the old one
     glyphs_invalidate(&rep->glyphs);
+    vdw_surface_invalidate(&rep->vdw);
     if (rep->type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep->glyphs.points)) {
         glyphs_select(&rep->glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
     }
@@ -307,6 +308,7 @@ static void clear_owned(Representation* rep) {
     rep->electronic_structure.source_span        = ColorScaleSpan{};
     rep->electronic_structure.iso_mesh           = nullptr;
     rep->glyphs.data                             = nullptr;
+    rep->vdw.data                                = nullptr;
 }
 
 // Appends a copy, at the place in the tree it is given, and does not normalize: that is the caller's to do
@@ -389,6 +391,7 @@ void remove_representation(ApplicationState* state, size_t idx) {
     surface_field_free(&rep.electronic_structure.source_vol);
     electronic_structure_mesh_free(state, &rep.electronic_structure);
     glyphs_free(&rep.glyphs);
+    vdw_surface_free(&rep.vdw);
 
     // In order: the array is the order of the window
     const size_t count = md_array_size(state->representation.reps);
@@ -966,6 +969,10 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         // Read and placed every frame as the picking is reserved (glyphs_update), which follows the frame
         rep->type_is_valid = glyphs_is_point_set(sys, rep->glyphs.points);
         break;
+    case RepresentationType::VdwSurface:
+        // Its spheres placed every frame as it is drawn (vdw_surface_update), of the atoms coloured below
+        rep->type_is_valid = sys.atom.count > 0;
+        break;
     default:
         MD_ASSERT(false);
         break;
@@ -981,6 +988,9 @@ static void update_representation(ApplicationState* state, Representation* rep) 
         rep->glyphs_shown = false;
         if (rep->type == RepresentationType::Cartoon) {
             rep->glyphs_shown = cartoon_glyphs_rep_set_colors(state->mold.cartoon_glyphs, rep->glyph_rep, colors, num_atoms, rep->two_head_spheres);
+        }
+        if (rep->type == RepresentationType::VdwSurface) {
+            vdw_surface_set_colors(&rep->vdw, colors, num_atoms);
         }
         state->representation.gl_version += 1;
     }
@@ -1989,11 +1999,30 @@ done:
     }
 
     {
-        // Every oriented point set (a cavity's tesserae: a run under pressure, in a continuum): its glyphs
+        // Every cavity (the spheres of a run under pressure, in a continuum): its surface, coloured by its tesserae
+        md_attribute_id_t cavities[16];
+        const size_t nc = MD_MIN(vdw_surface_radii_sets(cavities, MD_COUNTOF(cavities), state->mold.sys), MD_COUNTOF(cavities));
+        for (size_t i = 0; i < nc; ++i) {
+            Representation* v = create_representation(state, RepresentationType::VdwSurface);
+            vdw_surface_select_cavity(&v->vdw, state->mold.sys, cavities[i]);
+            const md_str_t grp = md_attribute_group(md_attributes_get(&state->mold.sys.attributes, cavities[i]));
+            const size_t sl = md_str_rfind_char(grp, '/');
+            const md_str_t nm = sl == MD_STR_NPOS ? grp : md_str_substr(grp, sl + 1, grp.len);
+            snprintf(v->name, sizeof(v->name), "%.*s cavity", (int)nm.len, nm.ptr);
+            v->enabled = true;
+        }
+
+        // Every other oriented point set: its glyphs (a cavity's tesserae are on its surface, their glyphs one click away)
         md_attribute_id_t sets[16];
         const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
         for (size_t i = 0; i < n; ++i) {
             if (!glyphs_is_oriented(state->mold.sys, sets[i])) continue;
+            bool on_cavity = false;
+            for (size_t k = 0; k < nc; ++k) {
+                const md_str_t cg = md_attribute_group(md_attributes_get(&state->mold.sys.attributes, cavities[k]));
+                on_cavity |= md_str_begins_with(glyphs_group(state->mold.sys, sets[i]), cg);
+            }
+            if (on_cavity) continue;
             Representation* g = create_representation(state, RepresentationType::Glyphs);
             glyphs_select(&g->glyphs, state->mold.sys, sets[i]);
             const md_str_t grp = glyphs_group(state->mold.sys, sets[i]);
@@ -2561,6 +2590,17 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
         write_color_scale(s, q, g.scale);
         viamd::write_bool(s, q("Unlit"), g.unlit);
     }
+
+    if (rep.type == RepresentationType::VdwSurface) {
+        // The radii and the colour's quantity by their paths (none written: the van der Waals radii, the atoms' colours)
+        const VdwSurfaceRepresentation& v = rep.vdw;
+        viamd::PathPrefix q = p.sub("VdwSurface");
+        viamd::write_flt(s, q("Scale"), v.scale);
+        write_attribute_path(s, q("Radii"), attributes, v.radii);
+        write_attribute_path(s, q("Quantity"), attributes, v.quantity);
+        write_color_scale(s, q, v.color_scale);
+        viamd::write_flt(s, q("Smoothing"), v.smoothing);
+    }
 }
 
 // Where the keys of the workspaces from before the paths are now, of those that only moved
@@ -2752,6 +2792,15 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     read_attribute_path(e, q("Color"), g.color);
     read_color_scale(e, q, g.scale, true);
     viamd::get(e, q("Unlit"), g.unlit);
+
+    VdwSurfaceRepresentation& v = rep.vdw;
+    viamd::PathPrefix w = p.sub("VdwSurface");
+    viamd::get(e, w("Scale"), v.scale);
+    v.radii = v.quantity = MD_ATTRIBUTE_INVALID;    // what is not written is none
+    read_attribute_path(e, w("Radii"), v.radii);
+    read_attribute_path(e, w("Quantity"), v.quantity);
+    read_color_scale(e, w, v.color_scale, true);
+    viamd::get(e, w("Smoothing"), v.smoothing);
 }
 
 void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section) {
@@ -4295,6 +4344,90 @@ static bool draw_representation_glyphs(Representation& rep, const md_system_t& s
     return update_rep;
 }
 
+// A VdW Surface's own properties: the spheres' radii, and what colours it (the atoms', or a quantity of the points on
+// it, smoothed over the surface). Returns whether it needs updating.
+static bool draw_representation_vdw_surface(ApplicationState* state, Representation& rep) {
+    bool update_rep = false;
+    const md_system_t& sys = state->mold.sys;
+    VdwSurfaceRepresentation& v = rep.vdw;
+    if (prop::section("Surface")) {
+        prop::row("radii", "Van der Waals: each atom's van der Waals radius times the scale (Scale 1: the van der Waals surface).\n"
+                           "A cavity's: the spheres a solvation model put about the QM atoms, as its tesserae lie (GOSTSHYP,\n"
+                           "C-PCM: their van der Waals radii scaled up, by 1.5 and 1.2 in VeloxChem). Only the QM atoms have one.");
+        {
+            md_attribute_id_t sets[16];
+            const size_t n = MD_MIN(vdw_surface_radii_sets(sets, MD_COUNTOF(sets), sys), MD_COUNTOF(sets));
+            const md_attribute_t* cur = v.radii != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.radii) : nullptr;
+            char preview[160];
+            if (cur) snprintf(preview, sizeof(preview), "%.*s", (int)md_attribute_group(cur).len, md_attribute_group(cur).ptr);
+            else snprintf(preview, sizeof(preview), "Van der Waals");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##vdw_radii", preview)) {
+                if (ImGui::Selectable("Van der Waals", !cur)) { v.radii = MD_ATTRIBUTE_INVALID; update_rep = true; }
+                for (size_t i = 0; i < n; ++i) {
+                    const md_attribute_t* a = md_attributes_get(&sys.attributes, sets[i]);
+                    const md_str_t grp = md_attribute_group(a);
+                    char label[176];
+                    snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
+                    if (ImGui::Selectable(label, sets[i] == v.radii)) { vdw_surface_select_cavity(&v, sys, sets[i]); update_rep = true; }
+                    if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+                }
+                ImGui::EndCombo();
+            }
+        }
+        if (v.radii == MD_ATTRIBUTE_INVALID) {
+            prop::row("scale", "Of the van der Waals radii");
+            update_rep |= ImGui::SliderFloat("##vdw_scale", &v.scale, 0.5f, 2.5f, "%.2f x", ImGuiSliderFlags_AlwaysClamp);
+        }
+        prop::section_end();
+    }
+    if (prop::section("Color")) {
+        prop::row("by", "Atoms: the atoms' colours, as the colouring below gives them.\n"
+                        "A quantity of the points on the surface (a cavity's tesserae): its values there, under each point's own\n"
+                        "Gaussian as the solvation model smears it. Totals per point (a tessera's energy, its area) are not offered:\n"
+                        "on a surface their pattern would be that of the points' sizes.");
+        {
+            md_attribute_id_t q[256];
+            const size_t n = MD_MIN(vdw_surface_quantities(q, MD_COUNTOF(q), sys), MD_COUNTOF(q));
+            const md_attribute_t* cur = v.quantity != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.quantity) : nullptr;
+            char preview[160];
+            if (cur) { const md_str_t nm = glyph_attribute_name(cur); snprintf(preview, sizeof(preview), "%.*s", (int)nm.len, nm.ptr); }
+            else snprintf(preview, sizeof(preview), "Atoms");
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::BeginCombo("##vdw_color", preview)) {
+                if (ImGui::Selectable("Atoms", !cur)) { vdw_surface_select_quantity(&v, sys, MD_ATTRIBUTE_INVALID); update_rep = true; }
+                for (size_t i = 0; i < n; ++i) {
+                    const md_attribute_t* a = md_attributes_get(&sys.attributes, q[i]);
+                    const md_str_t nm = glyph_attribute_name(a);
+                    char label[176];
+                    snprintf(label, sizeof(label), "%.*s##%u", (int)nm.len, nm.ptr, (unsigned)i);
+                    if (ImGui::Selectable(label, q[i] == v.quantity)) { vdw_surface_select_quantity(&v, sys, q[i]); update_rep = true; }
+                    if (a->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)a->description.len, a->description.ptr);
+                }
+                ImGui::EndCombo();
+            }
+            if (cur && cur->description.len && ImGui::IsItemHovered()) ImGui::SetTooltip("%.*s", (int)cur->description.len, cur->description.ptr);
+        }
+        if (const md_attribute_t* a = v.quantity != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.quantity) : nullptr) {
+            char unit[64];
+            const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+            if (!display && unit[0]) {
+                prop::row("unit");
+                ImGui::TextUnformatted(unit);
+            }
+            prop::row("smoothing", "Experimental. The values diffused over the surface, along the points next to each other, for this\n"
+                                   "diffusion length (the width of the heat kernel). What adds up over the surface is kept: the integral\n"
+                                   "of a density (the wall energy of the wall energy per area) is the same however smooth. 0: as they are.");
+            update_rep |= ImGui::SliderFloat("##vdw_smoothing", &v.smoothing, 0.0f, 5.0f, v.smoothing > 0.0f ? "%.2f Å" : "none", ImGuiSliderFlags_AlwaysClamp);
+            update_rep |= color_scale_draw_controls(&v.color_scale, vdw_surface_span(v), display ? a->unit : md_unit_none(), "surface", "Over the points on the surface: the 1st to 99th percentile");
+        } else {
+            update_rep |= draw_representation_coloring(state, rep);
+        }
+        prop::section_end();
+    }
+    return update_rep;
+}
+
 bool draw_representation_type(ApplicationState* state, Representation& rep, bool atoms_only) {
     bool update_rep = false;
     // @TODO: Only display the representations which can be used for the current dataset
@@ -4317,6 +4450,11 @@ bool draw_representation_type(ApplicationState* state, Representation& rep, bool
                 }
                 if (rep.type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep.glyphs.points)) {
                     glyphs_select(&rep.glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
+                }
+                if (rep.type == RepresentationType::VdwSurface && rep.vdw.radii == MD_ATTRIBUTE_INVALID) {
+                    // a cavity's, where the system has one
+                    md_attribute_id_t c;
+                    if (vdw_surface_radii_sets(&c, 1, state->mold.sys) > 0) vdw_surface_select_cavity(&rep.vdw, state->mold.sys, c);
                 }
                 update_rep = true;
             }
@@ -4484,6 +4622,9 @@ static bool draw_representation_properties(ApplicationState* state, Representati
         break;
     case RepresentationType::Glyphs:
         update_rep |= draw_representation_glyphs(rep, state->mold.sys);
+        break;
+    case RepresentationType::VdwSurface:
+        update_rep |= draw_representation_vdw_surface(state, rep);
         break;
     default: {
         const bool one_row = representation_geometry_is_one_row(rep);
@@ -4820,6 +4961,20 @@ void draw_representation_legends(ApplicationState& state) {
                 if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
                 else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
                 color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+            }
+            continue;
+        }
+
+        if (rep.type == RepresentationType::VdwSurface && rep.vdw.quantity != MD_ATTRIBUTE_INVALID) {
+            const md_attribute_t* a = md_attributes_get(&state.mold.sys.attributes, rep.vdw.quantity);
+            if (a && rep.type_is_valid && rep.vdw.color_scale.show_legend && vdw_surface_span(rep.vdw).valid) {
+                const md_str_t nm = glyph_attribute_name(a);
+                char unit[64];
+                const bool display = glyphs_unit_print(unit, sizeof(unit), nullptr, a->unit);
+                char label[160];
+                if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
+                else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
+                color_scale_draw_legend(rep.vdw.color_scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
             }
             continue;
         }

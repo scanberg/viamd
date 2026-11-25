@@ -167,18 +167,26 @@ static ColorScaleSpan span_of(const std::vector<double>& v) {
     return s;
 }
 
+ColorScaleSpan glyphs_quantity_span(const md_system_t& sys, md_attribute_id_t quantity) {
+    const md_attribute_t* a = get(sys, quantity);
+    return a && is_series(a, 1, 0) ? span_of(values(sys, quantity, a->format.shape[0], a->unit)) : ColorScaleSpan{};
+}
+
+void glyphs_scale_for(ColorScale* scale, const md_system_t& sys, md_attribute_id_t quantity) {
+    if (!get(sys, quantity)) return;
+    const ColorScaleSpan span = glyphs_quantity_span(sys, quantity);
+    const bool signed_values = color_scale_span_signed(span);
+    scale->symmetric  = signed_values;
+    scale->auto_range = true;
+    if (signed_values && scale->colormap == COLOR_SCALE_COLORMAP_VIRIDIS) scale->colormap = COLOR_SCALE_COLORMAP_RDBU;
+    else if (!signed_values && scale->colormap == COLOR_SCALE_COLORMAP_RDBU) scale->colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
+    color_scale_update_range(scale, span);
+}
+
 void glyphs_select_color(GlyphRepresentation* g, const md_system_t& sys, md_attribute_id_t quantity) {
     g->color = get(sys, quantity) ? quantity : MD_ATTRIBUTE_INVALID;
-    const md_attribute_t* c = coordinate(sys, g->points);
-    if (!c || g->color == MD_ATTRIBUTE_INVALID) return;
-    const md_attribute_t* a = get(sys, g->color);
-    const ColorScaleSpan span = span_of(values(sys, g->color, c->format.shape[0], a->unit));
-    const bool signed_values = color_scale_span_signed(span);
-    g->scale.symmetric  = signed_values;
-    g->scale.auto_range = true;
-    if (signed_values && g->scale.colormap == COLOR_SCALE_COLORMAP_VIRIDIS) g->scale.colormap = COLOR_SCALE_COLORMAP_RDBU;
-    else if (!signed_values && g->scale.colormap == COLOR_SCALE_COLORMAP_RDBU) g->scale.colormap = COLOR_SCALE_COLORMAP_VIRIDIS;
-    color_scale_update_range(&g->scale, span);
+    if (!coordinate(sys, g->points) || g->color == MD_ATTRIBUTE_INVALID) return;
+    glyphs_scale_for(&g->scale, sys, g->color);
 }
 
 void glyphs_select(GlyphRepresentation* g, const md_system_t& sys, md_attribute_id_t points) {
@@ -303,33 +311,74 @@ static void upload_buffer(GlyphData* d, int i, GLenum format, const void* data, 
     glBindBuffer(GL_TEXTURE_BUFFER, 0);
 }
 
+// A point and its normal where they are now (world, Angstrom), as read (p, q: as published, in and out), placed by pl
+// (QmFrame: made by place_frame)
+static void place_frame(QmPlacement* pl, const GlyphData* d, const md_system_state_t& state) {
+    if (d->place == GlyphData::QmFrame) {
+        qm_place(pl, d->qm_xyz.data(), (uint32_t)d->atom_of.size(), state.xyz, state.num_atoms, d->atom_of.data(), 1.0);
+    }
+}
+
+static void place_point(const GlyphData* d, const QmPlacement& pl, const md_system_state_t& state, uint32_t j, double p[3], double q[3]) {
+    if (d->place == GlyphData::QmFrame) {
+        double pp[3], qq[3];
+        qm_place_point(pl, p, pp);
+        qm_place_dir(pl, q, qq);
+        for (int k = 0; k < 3; ++k) { p[k] = pp[k]; q[k] = qq[k]; }
+    } else if (d->place == GlyphData::PerAtom) {
+        const uint32_t i = d->atom_of[j];
+        if (state.xyz && i < state.num_atoms) { p[0] = state.xyz[i].x; p[1] = state.xyz[i].y; p[2] = state.xyz[i].z; }
+    }
+}
+
 // The points and normals where they are now (world, Angstrom), and the colour's values beside the normals
 static void upload_placed(GlyphData* d, const md_system_state_t& state) {
     const uint32_t n = d->num;
     QmPlacement pl;
-    if (d->place == GlyphData::QmFrame) {
-        qm_place(&pl, d->qm_xyz.data(), (uint32_t)d->atom_of.size(), state.xyz, state.num_atoms, d->atom_of.data(), 1.0);
-    }
+    place_frame(&pl, d, state);
     std::vector<float> a(4 * (size_t)n), b(4 * (size_t)n, 0.0f);
     for (uint32_t j = 0; j < n; ++j) {
         double p[3] = {d->pos[3 * j], d->pos[3 * j + 1], d->pos[3 * j + 2]};
         double q[3] = {0, 0, 0};
         if (!d->nrm.empty()) for (int k = 0; k < 3; ++k) q[k] = d->nrm[3 * j + k];
-        if (d->place == GlyphData::QmFrame) {
-            double pp[3], qq[3];
-            qm_place_point(pl, p, pp);
-            qm_place_dir(pl, q, qq);
-            for (int k = 0; k < 3; ++k) { p[k] = pp[k]; q[k] = qq[k]; }
-        } else if (d->place == GlyphData::PerAtom) {
-            const uint32_t i = d->atom_of[j];
-            if (state.xyz && i < state.num_atoms) { p[0] = state.xyz[i].x; p[1] = state.xyz[i].y; p[2] = state.xyz[i].z; }
-        }
+        place_point(d, pl, state, j, p, q);
         for (int k = 0; k < 3; ++k) { a[4 * j + k] = (float)p[k]; b[4 * j + k] = (float)q[k]; }
         a[4 * j + 3] = 1.0f;
         b[4 * j + 3] = j < d->color_value.size() ? d->color_value[j] : 0.0f;
     }
     upload_buffer(d, BUF_POINT,  GL_RGBA32F, a.data(), a.size() * sizeof(float));
     upload_buffer(d, BUF_NORMAL, GL_RGBA32F, b.data(), b.size() * sizeof(float));
+}
+
+std::vector<float> glyphs_place_points(const md_system_t& sys, const md_system_state_t& state, md_attribute_id_t points) {
+    GlyphData d;
+    if (!read_points(&d, sys, points) || d.num == 0) return {};
+    QmPlacement pl;
+    place_frame(&pl, &d, state);
+    std::vector<float> out(3 * (size_t)d.num);
+    for (uint32_t j = 0; j < d.num; ++j) {
+        double p[3] = {d.pos[3 * j], d.pos[3 * j + 1], d.pos[3 * j + 2]};
+        double q[3] = {0, 0, 0};
+        place_point(&d, pl, state, j, p, q);
+        for (int k = 0; k < 3; ++k) out[3 * j + k] = (float)p[k];
+    }
+    return out;
+}
+
+uint64_t glyphs_placement_hash(const md_system_t& sys, const md_system_state_t& state, md_attribute_id_t points) {
+    uint64_t h = source_hash(sys, points);
+    const md_attribute_t* c = coordinate(sys, points);
+    if (!c || !state.xyz) return h;
+    // the atoms they are on or of: of the QM atoms (qm/atom/system_index), or the points' own
+    const md_attribute_t* map = sibling(sys, c, "system_index");
+    if (!map) map = md_attributes_find(&sys.attributes, MD_STR_LIT("qm/atom/system_index"));
+    if (map && is_series(map, 1, 0)) {
+        const std::vector<double> v = attribute_values(sys, map, map->unit);
+        for (double x : v) {
+            if (x >= 0 && x < (double)state.num_atoms) h = md_hash64(&state.xyz[(size_t)x], sizeof(md_float3_t), h);
+        }
+    }
+    return h;
 }
 
 // The magnitude of the q-quantile of the values

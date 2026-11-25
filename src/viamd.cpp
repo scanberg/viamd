@@ -7884,6 +7884,10 @@ void ViamdEventHandler::process_events(const viamd::Event* events, size_t num_ev
                 if (rep.type == RepresentationType::Glyphs && glyphs_update(&rep.glyphs, state->mold.sys, state->mold.state)) {
                     picking_range_reserve(NULL, space, PickingDomain_Glyph, glyphs_count(rep.glyphs), rep.node.id);
                 }
+                if (rep.type == RepresentationType::VdwSurface) {
+                    // its spheres and points on the frame, as the glyphs' (it picks as the atoms: nothing to reserve)
+                    vdw_surface_update(&rep.vdw, state->mold.sys, state->mold.state);
+                }
                 const size_t count = representation_weak_bond_count(*state, rep);
                 if (count > 0) picking_range_reserve(NULL, space, PickingDomain_Bond, count, rep.node.id);
             }

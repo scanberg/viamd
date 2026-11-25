@@ -179,6 +179,7 @@ set(SRC_FILES
     src/field.cpp
     src/attribute_access.cpp
     src/glyphs.cpp
+    src/vdw_surface.cpp
     src/qm_placement.cpp
     src/event.cpp
     src/file_list.cpp
@@ -338,6 +339,8 @@ set(SHADER_FILES
     src/shaders/shadows/screen_space.frag
     src/shaders/glyphs/point_glyph.vert
     src/shaders/glyphs/point_glyph.frag
+    src/shaders/vdw/vdw_surface.vert
+    src/shaders/vdw/vdw_surface.frag
 )
 
 # Bake shaders into a single header file

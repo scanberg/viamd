@@ -36,6 +36,7 @@
 #include <task_system.h>
 #include <surface_field.h>
 #include <glyphs.h>
+#include <vdw_surface.h>
 #include <cartoon_glyphs.h>
 #include <loader.h>
 #include <file_list.h>
@@ -257,6 +258,7 @@ enum class RepresentationType {
     SimulationBox,
     Bonds,              // The bonds its filter picks (script::filter_bonds), as sticks or dashed, without the atoms
     Glyphs,             // A glyph per point of a point set of the attributes (glyphs.h): a cavity's tesserae, ...
+    VdwSurface,         // The surface of the atoms' spheres (vdw_surface.h): van der Waals radii, or a cavity's
     Count
 };
 
@@ -294,6 +296,7 @@ inline const char* representation_type_str[(int)RepresentationType::Count] = {
     "Simulation Box",
     "Bonds",
     "Glyphs",
+    "VdW Surface",
 };
 
 // In the words of the files: residue, and chain for the chains the data gives (md_chain_data_t); a part is a strand, a
@@ -1291,6 +1294,7 @@ struct Representation {
 	DipoleRepresentation dipole = {};
     BoxRepresentation box = {};
     GlyphRepresentation glyphs = {};
+    VdwSurfaceRepresentation vdw = {};      // VdwSurface
     bool periodic_images = true;    // Repeated in the periodic images of the view (view.periodic_images), as they are shown
 };
 

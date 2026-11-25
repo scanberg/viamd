@@ -8178,6 +8178,13 @@ static void draw_representations_opaque(ApplicationState* state) {
             glyphs_draw(rep.glyphs, state->view.param, range->beg);
         }
     }
+
+    // The VdW surfaces, ray cast sphere by sphere, picking as the atoms (updated where the picking is reserved)
+    for (size_t i = 0; i < num_representations; ++i) {
+        const Representation& rep = state->representation.reps[i];
+        if (rep.type != RepresentationType::VdwSurface || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
+        vdw_surface_draw(rep.vdw, state->view.param, state->picking_range_atom.beg);
+    }
 }
 
 // The glyph hovered, into the marks of the highlight
@@ -8255,6 +8262,10 @@ static uint64_t opaque_scene_hash(const ApplicationState* state) {
         }
         if (rep.type == RepresentationType::Glyphs) {
             const uint64_t c = glyphs_hash(rep.glyphs);
+            h = md_hash64(&c, sizeof(c), h);
+        }
+        if (rep.type == RepresentationType::VdwSurface) {
+            const uint64_t c = vdw_surface_hash(rep.vdw);
             h = md_hash64(&c, sizeof(c), h);
         }
         if (rep.type == RepresentationType::DipoleMoment) {
