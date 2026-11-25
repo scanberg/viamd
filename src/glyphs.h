@@ -9,8 +9,6 @@
 
 struct md_system_t;
 struct md_system_state_t;
-struct GBuffer;
-struct ViewParam;
 struct GlyphData;
 
 // GLYPHS
@@ -37,8 +35,10 @@ struct GlyphData;
 //   anything else as its magnitude over the 99th percentile of the magnitudes, at the scale in Angstrom - a radius by
 //   its square root, so that the cross section goes with the value, a height linearly.
 // A height keeps its sign: a negative value stands inward. The colour through a colour scale over the quantity's
-// spread (the 1st to 99th percentile), symmetric about 0 for one of both signs. A glyph is never thinner than a pixel
-// or two, so the smallest can be seen and hovered.
+// spread (the 1st to 99th percentile), symmetric about 0 for one of both signs.
+//
+// DRAWN by md_render (md_render_bridge.cpp, glyphs_draw_data): spheres, or flat-ended cylinders; the hovered glyph is
+// marked as the highlight is.
 //
 // UNITS: positions in Angstrom as the system's.
 
@@ -108,12 +108,21 @@ uint64_t glyphs_hash(const GlyphRepresentation& g);
 // The picking indices it needs: one per point
 uint32_t glyphs_count(const GlyphRepresentation& g);
 
-// The glyphs into the G-buffer bound for drawing (the opaque pass), picking as the points (base + the index of each)
-void glyphs_draw(const GlyphRepresentation& g, const ViewParam& view, uint32_t base);
-
-// The glyph of a point into the marks of the highlight (the marks target bound, gbuffer_marks_begin): there where it
-// is, in view where nothing is in front of it
-void glyphs_draw_marks(const GlyphRepresentation& g, uint32_t point, const GBuffer& gbuf, const ViewParam& view);
+// What md_render draws of it, as of glyphs_update: per glyph its points, 4 floats each (x, y, z, radius; world,
+// Angstrom), one for a sphere, two for a cylinder (its base on the point, its top along the normal by the height), its
+// radius and its colour (RGBA8, sRGB-encoded, opaque). The arrays are the representation's, valid until its next
+// update. `version` changes with the points (where they are, how large), `color_version` with the colours. False:
+// nothing to draw.
+struct GlyphDraw {
+    const float*    points = nullptr;
+    const float*    radius = nullptr;
+    const uint32_t* colors = nullptr;
+    uint32_t count = 0;
+    bool     cylinders = false;
+    bool     unlit = false;
+    uint32_t version = 0, color_version = 0;
+};
+bool glyphs_draw_data(GlyphDraw* out, const GlyphRepresentation& g);
 
 // The system's atom a point is on or of (G/system_index, or G/atom_index through qm/atom/system_index), or UINT32_MAX
 uint32_t glyphs_point_atom(const md_system_t& sys, md_attribute_id_t points, uint32_t point);

@@ -7419,7 +7419,8 @@ static void render(ApplicationState* state) {
 
     // The marks of the selection and the highlight, over the image as it is presented (md_render's masks). They are
     // not part of the scene: changing them changes nothing in it, nor in its history.
-    const bool draw_marks = !md_bitmask_empty(&state->selection.selection_mask) || !md_bitmask_empty(&state->selection.highlight_mask);
+    const bool draw_marks = !md_bitmask_empty(&state->selection.selection_mask) || !md_bitmask_empty(&state->selection.highlight_mask) ||
+                            state->glyph_hover.rep_id != 0 || state->glyph_hover_ui.rep_id != 0;
 
     // The image kept, the marks over it, into the framebuffer bound at the size of the image
     auto present = [&]() {

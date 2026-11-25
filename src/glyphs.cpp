@@ -3,11 +3,6 @@
 #include <qm_placement.h>
 #include <display_units.h>
 
-#include <gfx/gl.h>
-#include <gfx/gl_utils.h>
-#include <gfx/gbuffer.h>
-#include <gfx/view_param.h>
-
 #include <md_system.h>
 #include <md_system_state.h>
 #include <core/md_common.h>
@@ -16,17 +11,11 @@
 #include <core/md_allocator.h>
 #include <core/md_vec_math.h>
 
-#include <imgui.h>
-#include <implot.h>
-
-#include <shaders.inl>
-
 #include <math.h>
 #include <float.h>
 #include <vector>
 #include <algorithm>
 
-static const float GLYPH_MIN_PX = 1.5f;     // pixels: the radius a glyph is never thinner than, to be seen and hovered
 static const double REF_PERCENTILE = 0.99;  // the magnitude a quantity that is not a length or an area maps to its scale at
 
 struct GlyphData {
@@ -45,15 +34,18 @@ struct GlyphData {
     ColorScaleSpan span = {};
     std::vector<float> color_value;         // per point, the colour's quantity (NAN-free: 0 where it has none)
 
-    // GPU
-    GLuint buf[3] = {};             // point, normal (and colour value), size (radius, height)
-    GLuint tex[3] = {};
-    GLuint colormap_tex = 0;
-    int    colormap = -1;
-    uint32_t version = 0;
-};
+    std::vector<float> size;                // 2 per point: the radius, the height (Angstrom, signed)
+    bool sized = false;
 
-enum { BUF_POINT, BUF_NORMAL, BUF_SIZE, BUF_COUNT };
+    // What md_render draws (glyphs_draw_data)
+    bool cylinders = false;
+    std::vector<float>    draw_points;      // 4 per point of a glyph (x, y, z, radius): a sphere's one, a cylinder's two
+    std::vector<float>    draw_radius;      // per glyph
+    std::vector<uint32_t> draw_colors;      // per glyph, RGBA8
+    bool     placed = false;
+    uint64_t color_hash = 0;
+    uint32_t version = 0, color_version = 0;
+};
 
 // ---------------------------------------------------------------------------
 // The point sets and their quantities
@@ -290,27 +282,17 @@ static bool read_points(GlyphData* d, const md_system_t& sys, md_attribute_id_t 
     return true;
 }
 
-static void upload_buffer(GlyphData* d, int i, GLenum format, const void* data, size_t bytes) {
-    if (!d->buf[i]) glGenBuffers(1, &d->buf[i]);
-    if (!d->tex[i]) glGenTextures(1, &d->tex[i]);
-    glBindBuffer(GL_TEXTURE_BUFFER, d->buf[i]);
-    // A buffer texture of nothing is not allowed to be bound: one element at least
-    static const uint32_t zero[4] = {};
-    glBufferData(GL_TEXTURE_BUFFER, bytes ? bytes : sizeof(zero), bytes ? data : zero, GL_STATIC_DRAW);
-    glBindTexture(GL_TEXTURE_BUFFER, d->tex[i]);
-    glTexBuffer(GL_TEXTURE_BUFFER, format, d->buf[i]);
-    glBindTexture(GL_TEXTURE_BUFFER, 0);
-    glBindBuffer(GL_TEXTURE_BUFFER, 0);
-}
-
-// The points and normals where they are now (world, Angstrom), and the colour's values beside the normals
-static void upload_placed(GlyphData* d, const md_system_state_t& state) {
+// Where the glyphs are now (world, Angstrom): a sphere on each point, or a cylinder from it along its normal by its
+// height (inward for a negative one, never shorter than a thousandth of an Angstrom)
+static void place(GlyphData* d, const md_system_state_t& state) {
     const uint32_t n = d->num;
     QmPlacement pl;
     if (d->place == GlyphData::QmFrame) {
         qm_place(&pl, d->qm_xyz.data(), (uint32_t)d->atom_of.size(), state.xyz, state.num_atoms, d->atom_of.data(), 1.0);
     }
-    std::vector<float> a(4 * (size_t)n), b(4 * (size_t)n, 0.0f);
+    const uint32_t per = d->cylinders ? 2 : 1;
+    d->draw_points.assign(4 * (size_t)per * n, 0.0f);
+    d->draw_radius.assign(n, 0.0f);
     for (uint32_t j = 0; j < n; ++j) {
         double p[3] = {d->pos[3 * j], d->pos[3 * j + 1], d->pos[3 * j + 2]};
         double q[3] = {0, 0, 0};
@@ -324,12 +306,20 @@ static void upload_placed(GlyphData* d, const md_system_state_t& state) {
             const uint32_t i = d->atom_of[j];
             if (state.xyz && i < state.num_atoms) { p[0] = state.xyz[i].x; p[1] = state.xyz[i].y; p[2] = state.xyz[i].z; }
         }
-        for (int k = 0; k < 3; ++k) { a[4 * j + k] = (float)p[k]; b[4 * j + k] = (float)q[k]; }
-        a[4 * j + 3] = 1.0f;
-        b[4 * j + 3] = j < d->color_value.size() ? d->color_value[j] : 0.0f;
+        const float r = d->size[2 * j];
+        float* o = &d->draw_points[4 * (size_t)per * j];
+        for (int k = 0; k < 3; ++k) o[k] = (float)p[k];
+        o[3] = r;
+        d->draw_radius[j] = r;
+        if (per == 2) {
+            const double len = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+            const double u[3] = {len > 0 ? q[0] / len : 0.0, len > 0 ? q[1] / len : 0.0, len > 0 ? q[2] / len : 1.0};
+            const double h = d->size[2 * j + 1];
+            const double L = h < 0.0 ? MD_MIN(h, -1e-3) : MD_MAX(h, 1e-3);
+            for (int k = 0; k < 3; ++k) o[4 + k] = (float)(p[k] + u[k] * L);
+            o[7] = r;
+        }
     }
-    upload_buffer(d, BUF_POINT,  GL_RGBA32F, a.data(), a.size() * sizeof(float));
-    upload_buffer(d, BUF_NORMAL, GL_RGBA32F, b.data(), b.size() * sizeof(float));
 }
 
 // The magnitude of the q-quantile of the values
@@ -366,14 +356,13 @@ static void sizes(std::vector<float>* out, const md_system_t& sys, uint32_t n, c
     }
 }
 
-static void upload_sizes(GlyphData* d, const md_system_t& sys, const GlyphRepresentation& g) {
+static void set_sizes(GlyphData* d, const md_system_t& sys, const GlyphRepresentation& g) {
     const uint32_t n = d->num;
     std::vector<float> r, h;
     sizes(&r, sys, n, g.radius, true);
     sizes(&h, sys, n, g.height, false);
-    std::vector<float> s(4 * (size_t)n, 0.0f);
-    for (uint32_t j = 0; j < n; ++j) { s[4 * j + 0] = r[j]; s[4 * j + 1] = h[j]; }
-    upload_buffer(d, BUF_SIZE, GL_RGBA32F, s.data(), s.size() * sizeof(float));
+    d->size.assign(2 * (size_t)n, 0.0f);
+    for (uint32_t j = 0; j < n; ++j) { d->size[2 * j + 0] = r[j]; d->size[2 * j + 1] = h[j]; }
 
     d->span = {};
     d->color_value.assign(n, 0.0f);
@@ -382,37 +371,6 @@ static void upload_sizes(GlyphData* d, const md_system_t& sys, const GlyphRepres
         for (uint32_t j = 0; j < n && j < v.size(); ++j) d->color_value[j] = isfinite(v[j]) ? (float)v[j] : 0.0f;
         d->span = span_of(v);
     }
-}
-
-static void free_gpu(GlyphData* d) {
-    for (int i = 0; i < BUF_COUNT; ++i) {
-        if (d->tex[i]) glDeleteTextures(1, &d->tex[i]);
-        if (d->buf[i]) glDeleteBuffers(1, &d->buf[i]);
-        d->tex[i] = d->buf[i] = 0;
-    }
-    if (d->colormap_tex) glDeleteTextures(1, &d->colormap_tex);
-    d->colormap_tex = 0;
-    d->colormap = -1;
-}
-
-static GLuint colormap_texture(GlyphData* d, int colormap) {
-    if (d->colormap_tex && d->colormap == colormap) return d->colormap_tex;
-    uint32_t pixels[256];
-    for (int i = 0; i < 256; ++i) {
-        ImVec4 col = ImPlot::SampleColormap((float)i / 255.0f, colormap);
-        col.w = 1.0f;
-        pixels[i] = ImGui::ColorConvertFloat4ToU32(col);
-    }
-    if (!d->colormap_tex) {
-        gl::init_texture_2D(&d->colormap_tex, 256, 1, GL_RGBA8);
-        glBindTexture(GL_TEXTURE_2D, d->colormap_tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
-    gl::set_texture_2D_data(d->colormap_tex, 0, pixels, GL_RGBA8);
-    d->colormap = colormap;
-    return d->colormap_tex;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +396,6 @@ bool glyphs_update(GlyphRepresentation* g, const md_system_t& sys, const md_syst
 
     const uint64_t h = source_hash(sys, g->points);
     if (h != d->source_hash) {
-        free_gpu(d);
         *d = GlyphData{};
         d->source_hash = h;
         if (!read_points(d, sys, g->points)) return false;
@@ -447,12 +404,19 @@ bool glyphs_update(GlyphRepresentation* g, const md_system_t& sys, const md_syst
 
     // Sizes and colours when their mapping (or what it maps) changed; then the points placed again, beside which the
     // colours are
-    bool place = false;
+    bool replace = false;
     const uint64_t sh = size_hash(sys, *g);
-    if (sh != d->size_hash || !d->tex[BUF_SIZE]) {
+    if (sh != d->size_hash || !d->sized) {
         d->size_hash = sh;
-        upload_sizes(d, sys, *g);
-        place = true;
+        set_sizes(d, sys, *g);
+        d->sized = true;
+        replace = true;
+    }
+    // Cylinders where the points are oriented, else spheres
+    const bool cylinders = g->shape == GlyphShape::Cylinder && !d->nrm.empty();
+    if (cylinders != d->cylinders) {
+        d->cylinders = cylinders;
+        replace = true;
     }
     // Placed on the atoms as they are
     uint64_t ph = (uint64_t)d->place + 1;
@@ -461,12 +425,25 @@ bool glyphs_update(GlyphRepresentation* g, const md_system_t& sys, const md_syst
             if (i < state.num_atoms) ph = md_hash64(&state.xyz[i], sizeof(md_float3_t), ph);
         }
     }
-    if (place || ph != d->placement_hash || !d->tex[BUF_POINT]) {
+    if (replace || ph != d->placement_hash || !d->placed) {
         d->placement_hash = ph;
-        upload_placed(d, state);
+        place(d, state);
+        d->placed = true;
         d->version++;
     }
     color_scale_update_range(&g->scale, d->span);
+    // The colours, by the scale over the values (or a uniform grey), opaque
+    uint64_t ch = md_hash64(&g->scale, sizeof(g->scale), d->size_hash);
+    ch = md_hash64(&g->color, sizeof(g->color), ch);
+    if (ch != d->color_hash || d->draw_colors.size() != d->num) {
+        d->color_hash = ch;
+        d->draw_colors.resize(d->num);
+        const bool uniform = g->color == MD_ATTRIBUTE_INVALID;
+        for (uint32_t j = 0; j < d->num; ++j) {
+            d->draw_colors[j] = uniform ? 0xFFBFBFBFu : (color_scale_color_u32(g->scale, d->color_value[j]) | 0xFF000000u);
+        }
+        d->color_version++;
+    }
     return true;
 }
 
@@ -476,7 +453,6 @@ void glyphs_invalidate(GlyphRepresentation* g) {
 
 void glyphs_free(GlyphRepresentation* g) {
     if (!g->data) return;
-    free_gpu(g->data);
     delete g->data;
     g->data = nullptr;
 }
@@ -503,136 +479,17 @@ uint32_t glyphs_count(const GlyphRepresentation& g) { return g.data ? g.data->nu
 // Drawing
 // ---------------------------------------------------------------------------
 
-static struct {
-    GLuint program = 0;
-    GLuint vao = 0;
-    bool   failed = false;
-} gl_state;
-
-static bool ensure_program() {
-    if (gl_state.failed) return false;
-    if (!gl_state.program) {
-        GLuint vs = gl::compile_shader_from_source({(const char*)point_glyph_vert, point_glyph_vert_size}, GL_VERTEX_SHADER);
-        GLuint fs = gl::compile_shader_from_source({(const char*)point_glyph_frag, point_glyph_frag_size}, GL_FRAGMENT_SHADER);
-        if (vs && fs) {
-            gl_state.program = glCreateProgram();
-            const GLuint shaders[] = {vs, fs};
-            if (!gl::attach_link_detach(gl_state.program, shaders, 2)) {
-                MD_LOG_ERROR("Glyphs: the glyph program did not link");
-                glDeleteProgram(gl_state.program);
-                gl_state.program = 0;
-            }
-        }
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
-        if (!gl_state.program) {
-            gl_state.failed = true;
-            return false;
-        }
-    }
-    if (!gl_state.vao) glGenVertexArrays(1, &gl_state.vao);
+bool glyphs_draw_data(GlyphDraw* out, const GlyphRepresentation& g) {
+    *out = {};
+    const GlyphData* d = g.data;
+    if (!d || d->num == 0 || !d->placed || d->draw_colors.size() != d->num) return false;
+    out->points = d->draw_points.data();
+    out->radius = d->draw_radius.data();
+    out->colors = d->draw_colors.data();
+    out->count = d->num;
+    out->cylinders = d->cylinders;
+    out->unlit = g.unlit;
+    out->version = d->version;
+    out->color_version = d->color_version;
     return true;
-}
-
-static void jitter_uv(float out[2], const md_float4x4_t& P) {
-    // As md_gl reads it off the projection
-    if (P.elem[2][3] == 0.0f) {
-        out[0] = -P.elem[3][0] * 0.5f;
-        out[1] = -P.elem[3][1] * 0.5f;
-    } else {
-        out[0] = P.elem[2][0] * 0.5f;
-        out[1] = P.elem[2][1] * 0.5f;
-    }
-}
-
-// The program with its buffers and uniforms, for the G-buffer (proj, jittered) or the marks (unjittered)
-static void bind_program(const GlyphRepresentation& g, const GlyphData& d, const ViewParam& view, const md_float4x4_t& proj, bool marks) {
-    const GLuint prog = gl_state.program;
-    glUseProgram(prog);
-    const char* names[BUF_COUNT] = {"u_point", "u_normal", "u_size"};
-    for (int i = 0; i < BUF_COUNT; ++i) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_BUFFER, d.tex[i]);
-        glUniform1i(glGetUniformLocation(prog, names[i]), i);
-    }
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, colormap_texture((GlyphData*)&d, g.scale.colormap));
-    glUniform1i(glGetUniformLocation(prog, "u_colormap"), 3);
-    // The depth of the marks on a unit of its own even when unused: two types of sampler on one unit fail the draw
-    glUniform1i(glGetUniformLocation(prog, "u_tex_depth"), 8);
-
-    const md_float4x4_t curr_view_to_prev_clip = view.matrix.prev.proj * view.matrix.prev.view * view.matrix.inv.view;
-    float jit[4];
-    jitter_uv(jit + 0, view.matrix.curr.proj);
-    jitter_uv(jit + 2, view.matrix.prev.proj);
-    const bool ortho = proj.elem[2][3] == 0.0f;
-    GLint vp[4];
-    glGetIntegerv(GL_VIEWPORT, vp);
-    const float p11 = proj.elem[1][1];
-    const bool sphere = g.shape == GlyphShape::Sphere || d.nrm.empty();
-
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_world_to_view"), 1, GL_FALSE, &view.matrix.curr.view.elem[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_clip"), 1, GL_FALSE, &proj.elem[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip"), 1, GL_FALSE, &curr_view_to_prev_clip.elem[0][0]);
-    glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, jit);
-    glUniform1i(glGetUniformLocation(prog, "u_ortho"), ortho ? 1 : 0);
-    glUniform1i(glGetUniformLocation(prog, "u_only"), -1);
-    glUniform1i(glGetUniformLocation(prog, "u_sphere"), sphere ? 1 : 0);
-    glUniform2f(glGetUniformLocation(prog, "u_range"), g.scale.range_beg, g.scale.range_end);
-    glUniform1f(glGetUniformLocation(prog, "u_min_px"), GLYPH_MIN_PX);
-    glUniform1f(glGetUniformLocation(prog, "u_pixel"), 2.0f / (p11 * (float)MD_MAX(vp[3], 1)));
-    glUniform1i(glGetUniformLocation(prog, "u_color_mode"), g.color == MD_ATTRIBUTE_INVALID ? 1 : 0);
-    glUniform1i(glGetUniformLocation(prog, "u_unlit"), g.unlit ? 1 : 0);
-    glUniform1i(glGetUniformLocation(prog, "u_marks"), marks ? 1 : 0);
-    glUniform1f(glGetUniformLocation(prog, "u_proj_11"), p11);
-}
-
-static void unbind_program() {
-    for (int i = 0; i < BUF_COUNT; ++i) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_BUFFER, 0);
-    }
-    glActiveTexture(GL_TEXTURE3);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glActiveTexture(GL_TEXTURE0);
-    glUseProgram(0);
-}
-
-void glyphs_draw(const GlyphRepresentation& g, const ViewParam& view, uint32_t base) {
-    const GlyphData* d = g.data;
-    if (!d || d->num == 0 || !d->tex[BUF_SIZE] || !d->tex[BUF_POINT] || !ensure_program()) return;
-    bind_program(g, *d, view, view.matrix.curr.proj, false);
-    glUniform1ui(glGetUniformLocation(gl_state.program, "u_pick_base"), base);
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_CULL_FACE);
-    glBindVertexArray(gl_state.vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)d->num);
-    glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
-    unbind_program();
-}
-
-void glyphs_draw_marks(const GlyphRepresentation& g, uint32_t point, const GBuffer& gbuf, const ViewParam& view) {
-    const GlyphData* d = g.data;
-    if (!d || point >= d->num || !d->tex[BUF_SIZE] || !d->tex[BUF_POINT] || !ensure_program()) return;
-    // The marks are of the image shown: unjittered, at its size (gbuffer_marks_begin bound the target and blending)
-    glViewport(0, 0, gbuf.out_width, gbuf.out_height);
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    bind_program(g, *d, view, view.matrix.curr.proj_no_jitter, true);
-    const GLuint prog = gl_state.program;
-    glUniform1i(glGetUniformLocation(prog, "u_only"), (int)point);
-    glActiveTexture(GL_TEXTURE8);
-    glBindTexture(GL_TEXTURE_2D, gbuf.tex.depth);
-    const md_float4x4_t clip_to_view = md_float4x4_inverse(view.matrix.curr.proj);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
-    glUniform2f(glGetUniformLocation(prog, "u_inv_size"), 1.0f / gbuf.out_width, 1.0f / gbuf.out_height);
-    glBindVertexArray(gl_state.vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, 1);
-    glBindVertexArray(0);
-    glActiveTexture(GL_TEXTURE8);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    unbind_program();
-    glEnable(GL_CULL_FACE);
 }

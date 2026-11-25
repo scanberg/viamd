@@ -1828,7 +1828,7 @@ struct ApplicationState {
     PickingRange   picking_range_gap {};    // Reserved picking range for the gaps of the chains, one index per residue
 
     // The glyph under the cursor (PickingDomain_Glyph): its representation's id and its point. Marked in the marks of the
-    // highlight (glyphs_draw_marks). rep_id 0: none.
+    // highlight (md_render_bridge.cpp's glyph_marks). rep_id 0: none.
     struct {
         uint32_t rep_id = 0;
         uint32_t point  = 0;

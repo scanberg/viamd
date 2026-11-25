@@ -173,6 +173,17 @@ struct MdRenderBridge {
     uint64_t             meshes_key = 0;
     md_float4x4_t        mesh_model = {};     // their bohr to the world
 
+    // The glyph representations' (emit_glyphs), by representation
+    struct Glyphs {
+        uint32_t      rep_id = 0;
+        uint32_t      cap = 0;              // glyphs the buffers hold
+        md_gpu_addr_t points = 0, radius = 0, colors = 0, attr = 0, marks = 0;
+        uint32_t      count = 0, version = 0, color_version = 0;
+        bool          cylinders = false, valid = false, used = false;
+        uint32_t      marked = UINT32_MAX;  // the glyph marked as the highlight
+    };
+    md_array(Glyphs) glyphs = nullptr;
+
     // The shadows (draw_light): the view of the scene from the light, its depth alone, while they are on; its batches,
     // the scene's opaque ones. The boxes of what casts them: the atoms' as their positions were taken up, the meshes'
     // (bohr) as they were made.
@@ -905,7 +916,7 @@ static bool copy_transform(const MdRenderBridge* b, const ApplicationState& stat
 // representation. Shafts and heads hold the arrows of every dipole representation, in the order of `dipoles`.
 static constexpr uint64_t SHAPE_KEY = 0xFFull << 56;
 static uint64_t shape_key(uint32_t rep_id, uint32_t what) { return SHAPE_KEY | ((uint64_t)(rep_id + 1) << 16) | ((uint64_t)what << 8) | 0xFFu; }
-enum { SHAPE_SHAFTS, SHAPE_HEADS, SHAPE_CELL, SHAPE_IMAGES, SHAPE_AXES, SHAPE_ORIGIN };
+enum { SHAPE_SHAFTS, SHAPE_HEADS, SHAPE_CELL, SHAPE_IMAGES, SHAPE_AXES, SHAPE_ORIGIN, SHAPE_GLYPHS };
 static bool is_shape_key(uint64_t key) { return (key >> 56) == 0xFF && (key & 0xFF) == 0xFF; }
 
 // A batch of capsules over the shapes' points [first, first + 2 count), with their radius scales from `scale` (or
@@ -1088,6 +1099,140 @@ static void emit_shapes(MdRenderBridge* b, ApplicationState* state, md_allocator
         bt.transform_count = x.transform_count;
         md_array_push(b->batches, bt, alloc);
     }
+}
+
+// ---- Glyphs -------------------------------------------------------------------------------------------------------
+
+// The glyph under the cursor, in the view or in a table (glyph_hover_ui first, as it is marked in place of the other)
+static void glyph_hovered(const ApplicationState& state, uint32_t* rep_id, uint32_t* point) {
+    const bool ui = state.glyph_hover_ui.rep_id != 0;
+    *rep_id = ui ? state.glyph_hover_ui.rep_id : state.glyph_hover.rep_id;
+    *point  = ui ? state.glyph_hover_ui.point : state.glyph_hover.point;
+}
+
+static void free_glyphs(MdRenderBridge* b, MdRenderBridge::Glyphs* x) {
+    const md_gpu_addr_t a[5] = {x->points, x->radius, x->colors, x->attr, x->marks};
+    for (md_gpu_addr_t p : a) if (p) md_gpu_free(b->stream, p);
+    *x = {};
+}
+
+// The marks of the glyphs: the hovered one's highlight (state 1), the others none. Uploaded when it moved, the content's
+// state counted.
+static void glyph_marks(MdRenderBridge* b, const ApplicationState& state) {
+    uint32_t rep_id, point;
+    glyph_hovered(state, &rep_id, &point);
+    for (size_t i = 0; i < md_array_size(b->glyphs); ++i) {
+        MdRenderBridge::Glyphs& x = b->glyphs[i];
+        if (!x.valid) continue;
+        const uint32_t want = rep_id && x.rep_id == rep_id && point < x.count ? point : UINT32_MAX;
+        if (want == x.marked) continue;
+        md_temp_scope_t temp = md_temp_begin_in(state.allocator.frame);
+        const size_t n = MD_ALIGN_TO(x.count, 4);
+        uint8_t* m = (uint8_t*)md_vm_arena_push(state.allocator.frame, n);
+        md_memset(m, 0, n);
+        if (want != UINT32_MAX) m[want] = 2;
+        md_gpu_upload(b->stream, x.marks, m, n);
+        md_temp_end(temp);
+        x.marked = want;
+        b->content[MD_RENDER_CONTENT_STATE] += 1;
+    }
+}
+
+// The batches of the glyph representations shown (glyphs.h): spheres, or flat-ended cylinders with their glyph as the
+// attribute of both their points, over buffers of each representation's own, uploaded as their versions change.
+// Picked as their points (md_render_bridge_hit), the hovered one marked as the highlight (glyph_marks).
+static void emit_glyphs(MdRenderBridge* b, ApplicationState* state, md_allocator_i* alloc) {
+    for (size_t i = 0; i < md_array_size(b->glyphs); ++i) b->glyphs[i].used = false;
+    for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
+        const Representation& rep = state->representation.reps[i];
+        GlyphDraw d;
+        if (rep.type != RepresentationType::Glyphs || !representation_shown(*state, rep) || !rep.type_is_valid || !glyphs_draw_data(&d, rep.glyphs)) continue;
+        MdRenderBridge::Glyphs* x = nullptr;
+        for (size_t k = 0; k < md_array_size(b->glyphs) && !x; ++k) if (b->glyphs[k].rep_id == rep.node.id) x = &b->glyphs[k];
+        if (!x) {
+            md_array_push(b->glyphs, MdRenderBridge::Glyphs{}, state->allocator.persistent);
+            x = &b->glyphs[md_array_size(b->glyphs) - 1];
+            x->rep_id = rep.node.id;
+        }
+        x->used = true;
+        const uint32_t n = d.count, per = d.cylinders ? 2 : 1;
+        if (n > x->cap) {
+            const uint32_t rep_id = x->rep_id;
+            free_glyphs(b, x);
+            x->rep_id = rep_id;
+            x->used   = true;
+            x->points = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, (size_t)n * 2 * 4 * sizeof(float)).gpu;
+            x->radius = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, (size_t)n * sizeof(float)).gpu;
+            x->colors = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, (size_t)n * sizeof(uint32_t)).gpu;
+            x->attr   = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, (size_t)n * 2 * sizeof(uint32_t)).gpu;
+            x->marks  = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, MD_ALIGN_TO(n, 4)).gpu;
+            if (!x->points || !x->radius || !x->colors || !x->attr || !x->marks) {
+                free_glyphs(b, x);
+                x->rep_id = rep.node.id;
+                x->used   = true;
+                continue;
+            }
+            x->cap = n;
+            // A cylinder's two points are of its glyph
+            md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+            uint32_t* attr = (uint32_t*)md_vm_arena_push(state->allocator.frame, (size_t)n * 2 * sizeof(uint32_t));
+            for (uint32_t j = 0; j < 2 * n; ++j) attr[j] = j / 2;
+            md_gpu_upload(b->stream, x->attr, attr, (size_t)n * 2 * sizeof(uint32_t));
+            md_temp_end(temp);
+            md_gpu_memset(b->stream, x->marks, 0, MD_ALIGN_TO(n, 4));
+        }
+        if (!x->valid || d.version != x->version || d.cylinders != x->cylinders || n != x->count) {
+            md_gpu_upload(b->stream, x->points, d.points, (size_t)n * per * 4 * sizeof(float));
+            md_gpu_upload(b->stream, x->radius, d.radius, (size_t)n * sizeof(float));
+            b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
+        }
+        if (!x->valid || d.color_version != x->color_version || n != x->count) {
+            md_gpu_upload(b->stream, x->colors, d.colors, (size_t)n * sizeof(uint32_t));
+            b->content[MD_RENDER_CONTENT_APPEARANCE] += 1;
+        }
+        if (n != x->count) {
+            md_gpu_memset(b->stream, x->marks, 0, MD_ALIGN_TO(n, 4));
+            x->marked = UINT32_MAX;
+        }
+        x->version = d.version;
+        x->color_version = d.color_version;
+        x->cylinders = d.cylinders;
+        x->count = n;
+        x->valid = true;
+
+        md_render_batch_t bt = {};
+        bt.key   = shape_key(rep.node.id, SHAPE_GLYPHS);
+        bt.count = n;
+        bt.points.count    = n * per;
+        bt.points.position = x->points;
+        bt.points.stride   = 16;
+        bt.points.color    = x->colors;
+        bt.points.marks    = x->marks;
+        bt.color.mode      = MD_RENDER_COLOR_POINTS;
+        bt.color.sharpness = 1.0f;
+        bt.color.unlit     = d.unlit;
+        if (d.cylinders) {
+            bt.kind = MD_RENDER_CAPSULES;
+            bt.points.attr_index = x->attr;
+            bt.points.attr_count = n;
+            bt.style.capsules.radius = 1.0f;
+            bt.style.capsules.radius_scale = x->radius;
+            bt.style.capsules.flat = true;
+        } else {
+            bt.kind = MD_RENDER_SPHERES;
+            bt.points.radius = x->points + 12;
+            bt.points.radius_stride = 16;
+            bt.style.spheres.radius_scale = 1.0f;
+        }
+        md_array_push(b->batches, bt, alloc);
+    }
+    // Of representations no more
+    for (size_t i = 0; i < md_array_size(b->glyphs);) {
+        if (b->glyphs[i].used) { ++i; continue; }
+        free_glyphs(b, &b->glyphs[i]);
+        md_array_swap_back_and_pop(b->glyphs, i);
+    }
+    glyph_marks(b, *state);
 }
 
 // ---- The isosurfaces drawn as meshes ------------------------------------------------------------------------------
@@ -1754,6 +1899,7 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         }
     }
     emit_shapes(b, state, alloc);
+    emit_glyphs(b, state, alloc);
     emit_meshes(b, state, alloc);
     }
 
@@ -1841,6 +1987,7 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
     // The marks changed without the scene being made: md_render's masks again (only they are made)
     if (marks && b->has_last && b->last_ui_frame != ImGui::GetFrameCount() && b->last.width == b->width && b->last.height == b->height) {
         if (take_up(b, state)) {
+            glyph_marks(b, *state);
             md_render_frame_t f = b->last;
             for (int i = 0; i < MD_RENDER_CONTENT_COUNT; ++i) f.content[i] = b->content[i];
             if (md_render_view_draw(b->stream, b->view, &f, nullptr)) {
@@ -2010,8 +2157,11 @@ bool md_render_bridge_hit(ApplicationState* state, PickingHit* hit) {
         if ((what == SHAPE_SHAFTS || what == SHAPE_HEADS) && found->element < md_array_size(b->dipoles)) {
             const MdRenderBridge::Dipole& d = b->dipoles[found->element];
             set_hit(*state, hit, PickingDomain_Dipole, d.key, d.index);
+        } else if (what == SHAPE_GLYPHS) {
+            // A glyph as its point, of its representation's range
+            set_hit(*state, hit, PickingDomain_Glyph, ((found->key >> 16) & 0xFFFFFFFFFFull) - 1, found->element);
         }
-        return true;     // the cells' edges as nothing to pick
+        return true;     // the cells' edges and the meshes as nothing to pick
     }
     md_render_mol_hit_t mh = {};
     // Of a system no more (or not known): nothing, rather than what md_render drew there taken for something else
@@ -2139,6 +2289,7 @@ void md_render_bridge_destroy(ApplicationState* state) {
         if (b->shape_pos)   md_gpu_free(b->stream, b->shape_pos);
         if (b->shape_col)   md_gpu_free(b->stream, b->shape_col);
         if (b->shape_scale) md_gpu_free(b->stream, b->shape_scale);
+        for (size_t i = 0; i < md_array_size(b->glyphs); ++i) free_glyphs(b, &b->glyphs[i]);
         free_targets(b);
         if (b->light_view) md_render_view_destroy(b->stream, b->light_view);
         if (b->view) md_render_view_destroy(b->stream, b->view);
@@ -2156,6 +2307,7 @@ void md_render_bridge_destroy(ApplicationState* state) {
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
     md_array_free(b->light_batches, state->allocator.persistent);
+    md_array_free(b->glyphs, state->allocator.persistent);
     md_array_free(b->parts, state->allocator.persistent);
     md_array_free(b->shape_pos_cpu, state->allocator.persistent);
     md_array_free(b->shape_col_cpu, state->allocator.persistent);
