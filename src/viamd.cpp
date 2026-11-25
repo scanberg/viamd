@@ -4773,6 +4773,10 @@ bool qm_system_candidate(const SystemContext& sc) {
     return qm_system_carries(sc);
 }
 
+const md_float4x4_t& qm_placement(const ApplicationState& app) {
+    return system_instance(qm_system(app)).scene.placement_curr;
+}
+
 void qm_system_set(ApplicationState* app, uint32_t id) {
     MD_ASSERT(app);
     SystemContext& cur = qm_system(*app);

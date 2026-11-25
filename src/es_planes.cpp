@@ -19,6 +19,18 @@ static inline md_float3_t transform_point(const md_float4x4_t& m, md_float3_t p)
 }
 
 
+// The planes are in the coordinates of the quantum chemistry system, which its placement puts in the world
+// (qm_placement): the view of them is the camera's of the world, after the placement
+static md_float4x4_t planes_view(const ApplicationState* state) {
+    return state->view.param.matrix.curr.view * qm_placement(*state);
+}
+
+// An axis of the camera (in its view space) in the coordinates of the planes
+static md_float3_t camera_axis(const ApplicationState* state, md_float3_t v) {
+    const md_float4_t w = md_float4x4_mul_float4(md_float4x4_inverse(planes_view(state)), md_float4_set(v.x, v.y, v.z, 0.0f));
+    return md_float3_set(w.x, w.y, w.z);
+}
+
 bool es_volume_box(md_float4x4_t* box_to_world, const ElectronicStructureRepresentation& es) {
     if (!es.has_box) return false;
     *box_to_world = es.box_to_world;
@@ -134,8 +146,8 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
     ElectronicStructurePlaneSet& set = electronic_structure_planes(*es);
     if (set.count >= ES_MAX_PLANES || !es_volume_box(&box, *es)) return -1;
     const md_float3_t centre = transform_point(box, md_float3_set(0.5f, 0.5f, 0.5f));
-    const md_float3_t forward = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(0, 0, -1));
-    const md_float3_t right = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(1, 0, 0));
+    const md_float3_t forward = camera_axis(state, md_float3_set(0, 0, -1));
+    const md_float3_t right = camera_axis(state, md_float3_set(1, 0, 0));
     const bool slice = es->display == ElectronicStructureDisplay::Planes;
     const int i = set.count++;
     // a cut facing away from the camera keeps the half behind it; a slice faces the camera, its rectangle around where
@@ -354,7 +366,7 @@ static inline float point_distance(ImVec2 a, ImVec2 b) {
 // by the direction it looks along, as every point sees the plane alike. In the space the planes are in (the view
 // matrix's world).
 static bool faces_camera(const ApplicationState* state, const Plane& p) {
-    const md_float4x4_t inv = md_float4x4_inverse(state->view.param.matrix.curr.view);
+    const md_float4x4_t inv = md_float4x4_inverse(planes_view(state));
     if (state->view.mode == CameraMode::Orthographic) {
         const md_float4_t back = md_float4x4_mul_float4(inv, md_float4_set(0, 0, 1, 0));
         return md_float3_dot(p.normal, md_float3_set(back.x, back.y, back.z)) >= 0.0f;
@@ -467,7 +479,8 @@ struct SliceHandle {
 bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_t canvas_size) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImGuiIO& io = ImGui::GetIO();
-    const md_float4x4_t& view = state->view.param.matrix.curr.view;
+    // "world": of the planes (planes_view)
+    const md_float4x4_t view = planes_view(state);
     const md_float4x4_t& proj = state->view.param.matrix.curr.proj_no_jitter;
     const md_float4x4_t world_to_clip = proj * view;
     const ImVec2 mouse = ImGui::GetMousePos();
@@ -588,7 +601,7 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
 
         // its size on screen, and the normal's length in the world that makes the arrow as long as the ring's radius
         const float ring_radius = 64.0f;
-        const md_float3_t right = md_quat_mul_float3(state->view.camera.orientation, md_float3_set(1, 0, 0));
+        const md_float3_t right = camera_axis(state, md_float3_set(1, 0, 0));
         ImVec2 sc, sr;
         const bool visible = project(&sc, world_to_clip, anchor, canvas_min, canvas_size) &&
                              project(&sr, world_to_clip, md_float3_add(anchor, right), canvas_min, canvas_size);
@@ -757,7 +770,7 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
                     const md_float3_t pivot = slice ? item.center : gizmo_drag.anchor;
                     if (len > 0.0f) {
                         // the front of a ball under the mouse moves with it: about (dy, dx, 0) in the view, by len / radius
-                        const md_float3_t axis = md_float3_normalize(md_quat_mul_float3(state->view.camera.orientation, md_float3_set(dm.y, dm.x, 0.0f)));
+                        const md_float3_t axis = md_float3_normalize(camera_axis(state, md_float3_set(dm.y, dm.x, 0.0f)));
                         const float angle = len / ring_radius;
                         plane = plane_from_point_normal(pivot, md_float3_normalize(rotate_about(plane.normal, axis, angle)));
                         // the rectangle turned with it

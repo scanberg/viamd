@@ -2265,10 +2265,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 md_bitset_iter_t it = md_bitmask_iter(&critical_points.selection_mask);
                                 while (md_bitset_iter_next(&it)) {
                                     size_t idx = it.idx;
-                                    md_float3_t xyz = { critical_points.simp_graph.vertices[idx].x,
-                                                   critical_points.simp_graph.vertices[idx].y,
-                                                   critical_points.simp_graph.vertices[idx].z };
-                                    xyz *= BOHR_TO_ANGSTROM;
+                                    const md_float3_t xyz = critical_point_world(idx);
                                     md_float2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
@@ -2278,10 +2275,7 @@ struct QuantumChemistry : viamd::EventHandler {
                                 }
                             } else {
                                 for (size_t i = 0; i < critical_points.simp_graph.num_vertices; ++i) {
-                                    md_float3_t xyz = { critical_points.simp_graph.vertices[i].x,
-                                                   critical_points.simp_graph.vertices[i].y,
-                                                   critical_points.simp_graph.vertices[i].z };
-                                    xyz *= BOHR_TO_ANGSTROM;
+                                    const md_float3_t xyz = critical_point_world(i);
                                     md_float2_t coord = world_to_surface_project(xyz, event->world_to_clip, event->surface_size);
                                     if (coord.x >= event->region_min.x && coord.x <= event->region_max.x &&
                                         coord.y >= event->region_min.y && coord.y <= event->region_max.y)
@@ -2467,10 +2461,10 @@ struct QuantumChemistry : viamd::EventHandler {
                             if (dst_xyzw) {
                                 md_bitset_iter_t it = md_bitmask_iter(bf);
                                 while (md_bitset_iter_next(&it)) {
-                                    size_t idx = it.idx;
-                                    dst_xyzw->x = (float)(critical_points.simp_graph.vertices[idx].x * BOHR_TO_ANGSTROM);
-                                    dst_xyzw->y = (float)(critical_points.simp_graph.vertices[idx].y * BOHR_TO_ANGSTROM);
-                                    dst_xyzw->z = (float)(critical_points.simp_graph.vertices[idx].z * BOHR_TO_ANGSTROM);
+                                    const md_float3_t p = critical_point_world(it.idx);
+                                    dst_xyzw->x = p.x;
+                                    dst_xyzw->y = p.y;
+                                    dst_xyzw->z = p.z;
                                     dst_xyzw->w = 1.0f;
                                     dst_xyzw++;
                                 }
@@ -2493,6 +2487,15 @@ struct QuantumChemistry : viamd::EventHandler {
     // highlight's colour, a selected one inside a ring of the selection's; while any are selected, the others
     // keep only part of their colour, as atoms do. Sizes are in Å, so they scale with the view as the atoms do
     // (and an orthographic view does not make them huge, as points of a size by depth did).
+    // A critical point where it is in the world: the graph is in bohr, in the coordinates of the quantum chemistry
+    // system, which its placement puts in the world (qm_placement)
+    md_float3_t critical_point_world(size_t i) const {
+        const md_topo_vert_t& v = critical_points.simp_graph.vertices[i];
+        const md_float4_t p = md_float4x4_mul_float4(qm_placement(*app),
+            md_float4_set((float)(v.x * BOHR_TO_ANGSTROM), (float)(v.y * BOHR_TO_ANGSTROM), (float)(v.z * BOHR_TO_ANGSTROM), 1.0f));
+        return md_float3_set(p.x, p.y, p.z);
+    }
+
     void draw_critical_points(const ApplicationState& state, md_temp_scope_t temp) {
         const md_topo_extremum_graph_t& g = critical_points.simp_graph;
         const size_t num_cp = g.num_vertices;
@@ -2513,9 +2516,7 @@ struct QuantumChemistry : viamd::EventHandler {
         rcp_path_color.w = 0.75f;
         const float scale = critical_points.point_scale;
 
-        auto pos = [&g](size_t i) {
-            return md_float3_t{g.vertices[i].x, g.vertices[i].y, g.vertices[i].z} * (float)BOHR_TO_ANGSTROM;
-        };
+        auto pos = [this](size_t i) { return critical_point_world(i); };
 
         // The paths: the bond paths, from a bond critical point to the attractors it joins, and the RCP attractor
         // paths, from a ring critical point to the cage critical points beside it (md_topo traces each from the

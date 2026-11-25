@@ -1677,7 +1677,7 @@ struct SystemScene {
     // state), which the script measures and the operations write, are not moved by it - unlike centering. Side by side,
     // and superposed on another by a fit of a selection of each, are placements. Applied wherever the instance's
     // coordinates meet the world: its draws (as a model matrix, under its copies), the box and dipoles drawn of it,
-    // region selection, framing; not yet to its electronic structure (of the quantum chemistry system alone: qm_system).
+    // region selection, framing; its electronic structure (of the quantum chemistry system alone: qm_placement).
     md_float4x4_t placement = MD_MAT4_IDENT_INIT;
 
     // DERIVED, NOT SAVED: the copies drawn of what is above, made from it every frame (update_view_param)
@@ -2990,6 +2990,10 @@ SystemContext& qm_system(ApplicationState& app);
 const SystemContext& qm_system(const ApplicationState& app);
 // Whether it could be: loaded, with electronic structure (es_source_mask)
 bool qm_system_candidate(const SystemContext& sc);
+// Where its coordinates are in the world, as drawn this frame: the placement of its first instance, whose coordinates its
+// quantum chemistry is of (the electronic structure evaluated, the windows). What is drawn of it in the view (the
+// isosurfaces, volumes and planes of its representations, the critical points) is placed by it.
+const md_float4x4_t& qm_placement(const ApplicationState& app);
 // It is the system with the id from now on: what is under way of the one before is taken first, and the representations
 // of both are made again
 void qm_system_set(ApplicationState* app, uint32_t id);

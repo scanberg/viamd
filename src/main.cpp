@@ -8685,6 +8685,8 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
     isomesh::Surface surfaces[MAX_SURFACES];
     size_t num_surfaces = 0;
     uint64_t scene_hash = opaque_scene_hash(state);
+    // Of the quantum chemistry system, the only one whose are valid: where it is placed
+    const md_float4x4_t& placement = qm_placement(*state);
 
     for (size_t s = 0; s < state->num_systems; ++s)
     for (size_t i = 0; i < md_array_size(state->systems[s]->representation.reps); ++i) {
@@ -8702,13 +8704,14 @@ static bool draw_representations_transparent_mesh(ApplicationState* state) {
 
         // A field is evaluated at the vertices (Coloring_VertexField, set by electronic_structure_mesh_surfaces);
         // the colour volume spans the box of the density volume
-        const md_float4x4_t world_to_volume = md_float4x4_inverse(es.density_vol.texture_to_world);
+        const md_float4x4_t world_to_volume = md_float4x4_inverse(placement * es.density_vol.texture_to_world);
         const bool use_field  = es.coloring == SurfaceColoring::Field;
         const bool use_colors = es.coloring == SurfaceColoring::AtomColors && es.color_vol.tex_id;
         const uint32_t colormap = use_field ? surface_field_colormap_texture(&es.field_vol, es.field_map.colormap) : 0;
         const IsolineDesc isolines = color_scale_isoline_desc(es.field_isolines, isoline_px_per_point(state));
         for (size_t j = num_surfaces; j < num_surfaces + n; ++j) {
             isomesh::Surface& s = surfaces[j];
+            s.model = placement * s.model;
             s.world_to_volume = world_to_volume;
             if (s.coloring == isomesh::Coloring_VertexField) {
                 s.field_colormap = colormap;
@@ -8813,7 +8816,7 @@ static bool draw_representations_volumes(ApplicationState* state, bool target_wr
         desc.render_target.clear_color = !(target_written || written);
         desc.texture.density_volume = es.density_vol.tex_id;
         desc.texture.transfer_function = es_volume_transfer_function(&es);
-        desc.matrix.model = es.box_to_world;
+        desc.matrix.model = qm_placement(*state) * es.box_to_world;     // the planes are of the box ([0,1]^3)
         desc.matrix.view = state->view.param.matrix.curr.view;
         desc.matrix.proj = state->view.param.matrix.curr.proj;
         desc.matrix.inv_proj = state->view.param.matrix.inv.proj;
@@ -8893,7 +8896,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
                     .normal_volume = es_normals_of(rep.electronic_structure.density_vol.tex_id),
                 },
                 .matrix = {
-                    .model = rep.electronic_structure.density_vol.texture_to_world,
+                    .model = qm_placement(*state) * rep.electronic_structure.density_vol.texture_to_world,
                     .view = state->view.param.matrix.curr.view,
                     .proj = state->view.param.matrix.curr.proj,
                     .inv_proj = state->view.param.matrix.inv.proj,
@@ -8935,7 +8938,7 @@ static bool draw_representations_transparent(ApplicationState* state) {
 #if MD_DEBUG
             {
 				immediate::Scope scope(state->gfx.world, "debug_electronic_structure");
-                immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
+                immediate::box_wireframe(scope, { 0,0,0 }, { 1,1,1 }, qm_placement(*state) * rep.electronic_structure.density_vol.texture_to_world, immediate::COLOR_BLACK);
             }
 #endif
         }
