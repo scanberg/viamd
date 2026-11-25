@@ -12,10 +12,9 @@
 #include <property_grid.h>
 #include <filter_input.h>
 
-#include <gfx/gl_utils.h>
-#include <gfx/volumerender_utils.h>
-#include <gfx/immediate_draw_utils.h>
 #include <color_utils.h>
+#include <gpu_volume.h>
+#include <md_render_bridge.h>
 
 #include <imgui_internal.h>
 #include <imgui_widgets.h>
@@ -35,31 +34,28 @@ enum LegendColorMapMode_ {
     LegendColorMapMode_Split,
 };
 
-// Of an ensemble of reference structures, at most this many are drawn: each is a subset of the molecule per
-// representation (md_gl_subset_t), drawn under its own transform
+// Of an ensemble of reference structures, at most this many are drawn: each is a part of the molecule per
+// representation, drawn under its own transform
 constexpr size_t DENSITY_VOLUME_MAX_SHOWN_STRUCTURES = 256;
 
 // A representation of the reference structures. Its settings, name, filter and colours are those of a representation of
-// the Representations window: the same Representation, edited and drawn by the same code (representation.h). Its
-// filter is evaluated within each reference structure, which is its context as a group's filter is the context of what
-// is in the group: 'all' is the structure, residue(1) its first residue, and 'out' reaches outside of it. What it picks
-// within each structure shown is a subset of the molecule, drawn under the transform of that structure. A Cartoon draws
-// the cartoon of the lipids and nucleic acids within it too: the glyphs whose molecule the subset holds the reference
-// atom of (md_gl_subset_set_derived).
+// the Representations window: the same Representation, edited with the same code (representation.h) and drawn as the
+// main view draws it (md_render_bridge.h's panels). Its filter is evaluated within each reference structure, which is
+// its context as a group's filter is the context of what is in the group: 'all' is the structure, residue(1) its first
+// residue, and 'out' reaches outside of it. What it picks within each structure shown is drawn under the transform of
+// that structure; a Cartoon's of it the lipids and nucleic acids too.
 struct DensityVolumeRep {
     Representation rep = {};
-    md_array(md_gl_subset_t) subsets = nullptr;       // [structures shown] What the filter picks within each
-    md_array(md_gl_subset_t) glyph_subsets = nullptr; // [structures shown] Of a Cartoon: the glyphs of what each subset holds
-    md_gl_rep_t members = {};                         // The colours of the structures after the first, faded (ensemble_fade)
-    md_gl_rep_t members_glyphs = {};                  // And of their glyphs
+    md_array(md_bitset_t) picked = nullptr;       // [structures shown] What the filter picks within each (heap)
+    md_array(uint32_t) colors = nullptr;          // Its colours, per atom of the system, opaque
+    md_array(uint32_t) faded = nullptr;           // Those of the structures after the first (ensemble_fade); empty: none
     bool dirty = true;                            // What its filter picks within the structures to be found again, then its colours
     bool colors_dirty = true;                     // Its colours to be made again
 
-    // What the subsets and colours were made for
+    // What the parts and colours were made for
     uint64_t built_version = 0;                   // DensityVolume::structures_version
     size_t   built_shown = 0;
     float    built_fade = 0.0f;
-    bool     built_cartoon = false;               // With the glyphs of a Cartoon
 };
 
 // An empty filter, or 'all' (v1's) or 'particles' (VIAL's), picks all of a structure: nothing to evaluate
@@ -82,7 +78,7 @@ struct DensityVolume : viamd::EventHandler {
     struct {
         bool enabled = true;
         struct {
-            uint32_t id = 0;
+            uint32_t lut[PANEL_TRANSFER_RES] = {};   // RGBA8 (ImU32): md_compose's transfer function, and the legend's
             float alpha_scale = 1.f;
             int colormap = DEFAULT_COLORMAP;
             bool dirty = true;
@@ -98,11 +94,9 @@ struct DensityVolume : viamd::EventHandler {
         size_t count = 0;
     } iso;
 
-    struct {
-        uint32_t id = 0;
-        bool dirty = false;
-        int  dim[3] = {0};
-    } volume_texture;
+    // The volume on the GPU (gpu_volume.h), and where it was put when it was written
+    uint32_t      volume_gpu = 0;
+    md_float4x4_t volume_model = {};
 
 
     struct {
@@ -191,8 +185,7 @@ struct DensityVolume : viamd::EventHandler {
     // Base model matrix to position the volume correctly in the world.
     md_float4x4_t model_mat = md_float4x4_ident();
 
-    GBuffer gbuf = {};
-    PickingSurface picking_surface = {};
+    MdRenderPanels* view = nullptr;     // The view: one panel (md_render_bridge.h)
     Camera camera = {};
 	ViewTransform target = {};
     ViewTransform default_view = {};
@@ -213,35 +206,28 @@ struct DensityVolume : viamd::EventHandler {
         return md_array_last(reps);
     }
 
-    // What a representation holds on the GPU and of its evaluation, which belong to the molecule of the system: it
-    // is made again from its settings when it is drawn next
-    static void release_rep_resources(DensityVolumeRep& r) {
-        for (size_t i = 0; i < md_array_size(r.subsets); ++i) {
-            md_gl_subset_destroy(r.subsets[i]);
+    // What a representation holds of its evaluation, which belongs to the molecule of the system: it is made again
+    // from its settings when it is drawn next
+    static void release_picked(DensityVolumeRep& r) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        for (size_t i = 0; i < md_array_size(r.picked); ++i) {
+            md_bitset_free(&r.picked[i], heap);
         }
-        md_array_free(r.subsets, md_get_heap_allocator());
-        r.subsets = nullptr;
-        release_glyph_subsets(r);
-        md_gl_rep_destroy(r.rep.md_rep);
-        md_gl_rep_destroy(r.members);
-        md_gl_rep_destroy(r.rep.glyph_rep);
-        md_gl_rep_destroy(r.members_glyphs);
-        r.rep.md_rep = {};
-        r.members = {};
-        r.rep.glyph_rep = {};
-        r.members_glyphs = {};
-        r.rep.glyphs_shown = false;
-        md_bitset_free(&r.rep.atom_mask, md_get_heap_allocator());
-        r.dirty = true;
-        r.colors_dirty = true;
+        md_array_shrink(r.picked, 0);
     }
 
-    static void release_glyph_subsets(DensityVolumeRep& r) {
-        for (size_t i = 0; i < md_array_size(r.glyph_subsets); ++i) {
-            md_gl_subset_destroy(r.glyph_subsets[i]);
-        }
-        md_array_free(r.glyph_subsets, md_get_heap_allocator());
-        r.glyph_subsets = nullptr;
+    static void release_rep_resources(DensityVolumeRep& r) {
+        md_allocator_i* heap = md_get_heap_allocator();
+        release_picked(r);
+        md_array_free(r.picked, heap);
+        md_array_free(r.colors, heap);
+        md_array_free(r.faded, heap);
+        r.picked = nullptr;
+        r.colors = nullptr;
+        r.faded = nullptr;
+        md_bitset_free(&r.rep.atom_mask, heap);
+        r.dirty = true;
+        r.colors_dirty = true;
     }
 
     void remove_rep(size_t idx) {
@@ -257,9 +243,7 @@ struct DensityVolume : viamd::EventHandler {
         MD_ASSERT(idx < md_array_size(reps));
         DensityVolumeRep copy = {};
         copy.rep = reps[idx].rep;
-        // Its own GPU side and atoms, made when it is drawn
-        copy.rep.md_rep = {};
-        copy.rep.glyph_rep = {};
+        // Its own atoms and colours, made when it is drawn
         copy.rep.atom_mask = {};
         copy.rep.node.id = next_rep_id++;
         md_array_push(reps, copy, md_get_heap_allocator());
@@ -328,8 +312,8 @@ struct DensityVolume : viamd::EventHandler {
         return show_reference_ensemble ? n : MD_MIN(n, (size_t)1);
     }
 
-    // The subsets of a representation: what its filter picks within each structure shown
-    void build_subsets(ApplicationState* state, DensityVolumeRep& r, size_t shown) {
+    // What a representation's filter picks within each structure shown
+    void build_picked(ApplicationState* state, DensityVolumeRep& r, size_t shown) {
         md_allocator_i* heap = md_get_heap_allocator();
         md_allocator_i* frame = state->allocator.frame;
         md_temp_scope_t temp = md_temp_begin_in(frame);
@@ -338,26 +322,14 @@ struct DensityVolume : viamd::EventHandler {
         Representation& rep = r.rep;
         rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
 
-        // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
-        // id 0 would draw all of the molecule.
-        while (md_array_size(r.subsets) < shown) {
-            const md_gl_subset_t subset = md_gl_subset_create(state->mold.gl_mol);
-            if (!subset.id) break;
-            md_array_push(r.subsets, subset, heap);
-        }
-        while (md_array_size(r.subsets) > shown) {
-            md_gl_subset_destroy(*md_array_last(r.subsets));
-            md_array_pop(r.subsets);
-        }
-
         // Within each structure what the filter picks, the structure its context. The first that fails says why.
         const bool all = filter_is_all(rep.filter.text);
         script::FilterResult failure = {};
         bool failed = false;
         bool dynamic = false;
         md_bitset_t picked_all = md_bitset_empty_set();
-        const size_t made = MD_MIN(shown, md_array_size(r.subsets));
-        for (size_t i = 0; i < made; ++i) {
+        release_picked(r);
+        for (size_t i = 0; i < shown; ++i) {
             md_bitset_t picked = structures[i];
             if (!all) {
                 script::FilterCtx ctx = filter_context(state);
@@ -375,35 +347,14 @@ struct DensityVolume : viamd::EventHandler {
                     }
                 }
             }
-            const size_t count = (size_t)md_bitset_count(picked);
-            uint32_t* indices = (uint32_t*)md_temp_alloc(temp, MD_MAX(count, (size_t)1) * sizeof(uint32_t));
-            md_bitset_extract_indices(indices, count, picked);
-            md_gl_subset_set_atoms(r.subsets[i], indices, (uint32_t)count);
+            md_array_push(r.picked, md_bitset_copy(picked, heap), heap);
             picked_all = md_bitset_or(picked_all, picked, frame);
         }
 
-        // Of a Cartoon, the glyphs of the lipids and nucleic acids of each subset
-        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
-        if (rep.type == RepresentationType::Cartoon && cartoon_glyphs_valid(glyphs)) {
-            while (md_array_size(r.glyph_subsets) < made) {
-                const md_gl_subset_t subset = md_gl_subset_create(glyphs.gl_mol);
-                if (!subset.id) break;
-                md_array_push(r.glyph_subsets, subset, heap);
-            }
-            while (md_array_size(r.glyph_subsets) > made) {
-                md_gl_subset_destroy(*md_array_last(r.glyph_subsets));
-                md_array_pop(r.glyph_subsets);
-            }
-            for (size_t i = 0; i < md_array_size(r.glyph_subsets); ++i) {
-                md_gl_subset_set_derived(r.glyph_subsets[i], r.subsets[i]);
-            }
-        } else {
-            release_glyph_subsets(r);
-        }
         if (all) {
             rep.filter.result = {};
             rep.filter.result.success = true;
-        } else if (made == 0) {
+        } else if (shown == 0) {
             // No structure to evaluate it within: whether it is valid at all, within the whole system
             md_bitset_t out = md_bitset_empty_set();
             filter_evaluate(&rep.filter, &out, state->script.language, filter_context(state), frame);
@@ -418,54 +369,35 @@ struct DensityVolume : viamd::EventHandler {
 
         r.built_version = structures_version;
         r.built_shown = shown;
-        r.built_cartoon = rep.type == RepresentationType::Cartoon;
         r.dirty = false;
         r.colors_dirty = true;
     }
 
     // The colours of a representation, and those of the structures after the first of an ensemble, faded
     void build_colors(ApplicationState* state, DensityVolumeRep& r, size_t shown, float fade) {
-        md_allocator_i* frame = state->allocator.frame;
-        md_temp_scope_t temp = md_temp_begin_in(frame);
-        MD_DEFER { md_temp_end(temp); };
-
+        md_allocator_i* heap = md_get_heap_allocator();
         const size_t num_atoms = md_system_atom_count(&state->mold.sys);
         Representation& rep = r.rep;
-        if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(state->mold.gl_mol);
 
-        // Opaque: what is drawn is what the subsets hold
-        uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MD_MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
-        representation_atom_colors(colors, num_atoms, state, &rep, &rep.atom_mask);
+        // Opaque: what is drawn is what the filter picks
+        md_array_resize(r.colors, num_atoms, heap);
+        representation_atom_colors(r.colors, num_atoms, state, &rep, &rep.atom_mask);
         for (size_t i = 0; i < num_atoms; ++i) {
-            colors[i] |= 0xFF000000u;
-        }
-        md_gl_rep_set_atom_colors(rep.md_rep, 0, (uint32_t)num_atoms, colors, 0);
-
-        // Of a Cartoon, its glyphs in the colours of their atoms
-        const CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
-        const bool with_glyphs = md_array_size(r.glyph_subsets) > 0;
-        rep.glyphs_shown = false;
-        if (with_glyphs) {
-            if (!rep.glyph_rep.id) rep.glyph_rep = cartoon_glyphs_rep_create(glyphs);
-            rep.glyphs_shown = cartoon_glyphs_rep_set_colors(glyphs, rep.glyph_rep, colors, num_atoms, rep.two_head_spheres);
+            r.colors[i] |= 0xFF000000u;
         }
 
         // The other structures of an ensemble, towards the background
+        md_array_shrink(r.faded, 0);
         if (shown > 1 && fade > 0.0f) {
-            if (!r.members.id) r.members = md_gl_rep_create(state->mold.gl_mol);
+            md_array_resize(r.faded, num_atoms, heap);
             const md_float3_t bg = state->visuals.background.color;
             const float t = MD_CLAMP(fade, 0.0f, 1.0f);
             for (size_t i = 0; i < num_atoms; ++i) {
-                md_float4_t c = convert_color(colors[i]);
+                md_float4_t c = convert_color(r.colors[i]);
                 c.x = c.x + (bg.x - c.x) * t;
                 c.y = c.y + (bg.y - c.y) * t;
                 c.z = c.z + (bg.z - c.z) * t;
-                colors[i] = convert_color(c);
-            }
-            md_gl_rep_set_atom_colors(r.members, 0, (uint32_t)num_atoms, colors, 0);
-            if (rep.glyphs_shown) {
-                if (!r.members_glyphs.id) r.members_glyphs = cartoon_glyphs_rep_create(glyphs);
-                cartoon_glyphs_rep_set_colors(glyphs, r.members_glyphs, colors, num_atoms, rep.two_head_spheres);
+                r.faded[i] = convert_color(c);
             }
         }
 
@@ -475,20 +407,19 @@ struct DensityVolume : viamd::EventHandler {
 
     // Those that need it, of those shown
     void update_reps(ApplicationState* state, bool frame_changed) {
-        if (!state->mold.gl_mol.id || !show_reference_structures) return;
+        if (md_system_atom_count(&state->mold.sys) == 0 || !show_reference_structures) return;
         const size_t shown = shown_structures();
         const float fade = shown > 1 ? ensemble_fade : 0.0f;
         for (size_t i = 0; i < md_array_size(reps); ++i) {
             DensityVolumeRep& r = reps[i];
             if (r.built_version != structures_version || r.built_shown != shown) r.dirty = true;
-            if (r.built_cartoon != (r.rep.type == RepresentationType::Cartoon)) r.dirty = true;
             if (r.built_fade != fade) r.colors_dirty = true;
             if (frame_changed) {
                 if (r.rep.filter.result.is_dynamic) r.dirty = true;
                 if (r.rep.color_mapping == ColorMapping::SecondaryStructure || r.rep.color_mapping == ColorMapping::Attribute) r.colors_dirty = true;
             }
             if (!r.rep.enabled) continue;
-            if (r.dirty) build_subsets(state, r, shown);
+            if (r.dirty) build_picked(state, r, shown);
             if (r.colors_dirty) build_colors(state, r, shown, fade);
         }
     }
@@ -754,8 +685,14 @@ struct DensityVolume : viamd::EventHandler {
 
         if (dvr.tf.dirty) {
             dvr.tf.dirty = false;
-            // Update colormap texture
-            volume::compute_transfer_function_texture_simple(&dvr.tf.id, dvr.tf.colormap, dvr.tf.alpha_scale);
+            // The colour map's colours, and an opacity rising with the value to a third (that of a slab 1/150 of the
+            // box thick), scaled
+            for (int i = 0; i < PANEL_TRANSFER_RES; ++i) {
+                const float t = (float)i / (float)(PANEL_TRANSFER_RES - 1);
+                ImVec4 c = ImPlot::SampleColormap(t, dvr.tf.colormap);
+                c.w = MD_CLAMP(MD_MIN(160.0f * t * t, 0.341176f) * dvr.tf.alpha_scale, 0.0f, 1.0f);
+                dvr.tf.lut[i] = ImGui::ColorConvertFloat4ToU32(c);
+            }
         }
 
         // Resolved by path every frame: the evaluation's table is rebuilt when the script recompiles
@@ -870,7 +807,12 @@ struct DensityVolume : viamd::EventHandler {
                         const float s = vis.sdf.extent;
                         md_float3_t min_aabb = md_float3_set1(-s);
                         md_float3_t max_aabb = md_float3_set1( s);
-                        model_mat = volume::compute_model_to_world_matrix(min_aabb, max_aabb);
+                        const md_float3_t ext = max_aabb - min_aabb;
+                        model_mat = md_float4x4_ident();
+                        model_mat.col[0].x = ext.x;
+                        model_mat.col[1].y = ext.y;
+                        model_mat.col[2].z = ext.z;
+                        model_mat.col[3] = md_float4_from_float3(min_aabb, 1.0f);
                         voxel_spacing = md_float3_t{2*s / vol_dim[0], 2*s / vol_dim[1], 2*s / vol_dim[2]};
                         default_view = compute_optimal_view((min_aabb + max_aabb) * 0.5f, (max_aabb - min_aabb) * 0.5f);
                         if (view_pending) {
@@ -902,15 +844,13 @@ struct DensityVolume : viamd::EventHandler {
                 dirty_vol = true;
             }
         }
+        // Put elsewhere: written again, where it is now
+        if (md_memcmp(&volume_model, &model_mat, sizeof(model_mat)) != 0) dirty_vol = true;
         if (dirty_vol) {
             if (vol_data) {
                 dirty_vol = false;
-                // Its innermost axis is the texture's width; v2's volumes differ in size, so the texture follows
-                int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
-                if (!volume_texture.id || md_memcmp(volume_texture.dim, dim, sizeof(dim)) != 0) {
-                    gl::init_texture_3D(&volume_texture.id, dim[0], dim[1], dim[2], GL_R16F);
-                    md_memcpy(volume_texture.dim, dim, sizeof(dim));
-                }
+                // Its innermost axis is the texture's width
+                const int dim[3] = { (int)vol_dim[2], (int)vol_dim[1], (int)vol_dim[0] };
                 const size_t n = (size_t)dim[0] * dim[1] * dim[2];
                 const bool compared = cmp.placed && cmp.show != CompareShow_This && cmp.sampled_count == n;
                 // Relative to bulk: each by its own bulk density; the other's from its file, which has it when viamd
@@ -930,8 +870,12 @@ struct DensityVolume : viamd::EventHandler {
                     }
                     data = out;
                 }
-                gl::set_texture_3D_data(volume_texture.id, 0, data, GL_R32F);
-                volume::notify_data_changed(volume_texture.id);
+                volume_model = model_mat;
+#if MD_ENABLE_GPU
+                if (!gpu_volume_upload(gpu_volume_ensure(&volume_gpu), MD_GPU_FORMAT_R32_FLOAT, dim, data, model_mat)) {
+                    MD_LOG_ERROR("Density Volume: the volume (%d x %d x %d) could not be put on the GPU", dim[0], dim[1], dim[2]);
+                }
+#endif
             }
         }
     }
@@ -1330,8 +1274,7 @@ struct DensityVolume : viamd::EventHandler {
         ImGui::SetItemTooltip("Remove");
 
         if (open) {
-            // Its type only says what is drawn of the subsets, its geometry how: neither is found again, but for the
-            // glyphs of a Cartoon (update_reps)
+            // Its type and geometry only say how what it picks is drawn: nothing is found again
             if (draw_representation_type(state, rep, true)) {
                 rep.type_is_valid = representation_particle_type_valid(*state, rep.type);
             }
@@ -1354,11 +1297,7 @@ struct DensityVolume : viamd::EventHandler {
                 prop::section_end();
             }
             if (!one_row && prop::section("Geometry", false)) {
-                // Only what the args of the draws take, but whether the head of a lipid is two spheres, which its glyphs'
-                // colours do
-                const bool two_heads = rep.two_head_spheres;
                 draw_representation_geometry(state, rep);
-                if (rep.two_head_spheres != two_heads) r.colors_dirty = true;
                 prop::section_end();
             }
             ImGui::Spacing();
@@ -1414,6 +1353,102 @@ struct DensityVolume : viamd::EventHandler {
         draw_section_clipping();
         draw_section_overlays();
         prop::end();
+    }
+
+    // The edges of a box of the volume's texture space, in the colour, over the view
+    void box_edges(md_array(OverlayItem)* out, md_float3_t lo, md_float3_t hi, md_float4_t color, float half_px, md_allocator_i* alloc) const {
+        md_float3_t c[8];
+        for (int k = 0; k < 8; ++k) {
+            const md_float3_t t = {(k & 1) ? hi.x : lo.x, (k & 2) ? hi.y : lo.y, (k & 4) ? hi.z : lo.z};
+            c[k] = md_float4x4_mul_float3(model_mat, t, 1.0f);
+        }
+        // the corners differing in one axis
+        for (int k = 0; k < 8; ++k) {
+            for (int a = 1; a < 8; a <<= 1) {
+                if (k & a) continue;
+                OverlayItem it = {};
+                it.shape  = OverlayShape::Segment;
+                it.p[0]   = c[k];
+                it.p[1]   = c[k | a];
+                it.size   = half_px;
+                it.color  = convert_color(color);
+                it.pixels = true;
+                it.depth  = true;
+                md_array_push(*out, it, alloc);
+            }
+        }
+    }
+
+    // The view (md_render_bridge.h's panels, one): each representation once per structure shown, what its filter picks
+    // within that structure where the structure aligns with the reference (a rigid transform), the volume within its
+    // clip box, through its transfer function or as its isosurfaces, and the edges of the boxes over them
+    void draw_view(ApplicationState* state, const md_float4x4_t& world_to_view, const md_float4x4_t& view_to_clip, uint32_t width, uint32_t height) {
+        md_allocator_i* temp = state->allocator.frame;
+        const size_t num_atoms = md_system_atom_count(&state->mold.sys);
+        const bool selected_property = volume_key.path[0] != '\0';
+
+        md_array(const uint32_t*) colors = nullptr;
+        md_array(PanelRep) panel_reps = nullptr;
+        if (selected_property && show_reference_structures) {
+            for (size_t i = 0; i < md_array_size(reps); ++i) {
+                const DensityVolumeRep& r = reps[i];
+                if (!r.rep.enabled || !r.rep.type_is_valid || r.dirty || md_array_size(r.colors) != num_atoms) continue;
+                const uint32_t first = (uint32_t)md_array_size(colors);
+                md_array_push(colors, r.colors, temp);
+                const bool faded = md_array_size(r.faded) == num_atoms;
+                if (faded) md_array_push(colors, r.faded, temp);
+                const size_t n = MD_MIN(md_array_size(r.picked), md_array_size(structure_mats));
+                for (size_t j = 0; j < n; ++j) {
+                    const PanelRep pr = {&r.rep, (j > 0 && faded) ? first + 1 : first, &r.picked[j], &structure_mats[j]};
+                    md_array_push(panel_reps, pr, temp);
+                }
+            }
+        }
+
+        PanelVolume vol = {};
+        PanelSurfaces surfaces = {};
+        if (show_density_volume && volume_gpu && (dvr.enabled || iso.enabled)) {
+            vol.volume = volume_gpu;
+            vol.clip_min = clip_volume.min;
+            vol.clip_max = clip_volume.max;
+            if (dvr.enabled) {
+                vol.transfer = dvr.tf.lut;
+                vol.transfer_range[0] = dvr.tf.min_val;
+                vol.transfer_range[1] = dvr.tf.max_val;
+            } else {
+                vol.iso_count = (uint32_t)iso.count;
+                vol.iso_values = iso.values;
+                vol.iso_colors = iso.colors;
+            }
+            surfaces.volumes = &vol;
+            surfaces.volume_count = 1;
+        }
+
+        md_array(OverlayItem) overlay = nullptr;
+        if (show_bounding_box && selected_property) {
+            const float half_px = 0.5f * ImGui::GetIO().DisplayFramebufferScale.x;
+            box_edges(&overlay, {0, 0, 0}, {1, 1, 1}, bounding_box_color, half_px, temp);
+            box_edges(&overlay, clip_volume.min, clip_volume.max, clip_volume_color, half_px, temp);
+        }
+
+        postprocess_pipeline::Settings settings;
+        panel_view_settings(&settings, *state, state->visuals.background.color);
+        PanelsDesc d = {};
+        d.view = world_to_view;
+        d.proj = view_to_clip;
+        d.width = width;
+        d.height = height;
+        d.count = 1;
+        d.columns = 1;
+        d.panels = &surfaces;
+        d.colors = colors;
+        d.color_count = (uint32_t)md_array_size(colors);
+        d.reps = panel_reps;
+        d.rep_count = (uint32_t)md_array_size(panel_reps);
+        d.overlay = overlay;
+        d.overlay_count = (uint32_t)md_array_size(overlay);
+        d.settings = &settings;
+        md_render_bridge_panels_draw(state, &view, d);
     }
 
     void draw(ApplicationState* state) {
@@ -1484,11 +1519,8 @@ struct DensityVolume : viamd::EventHandler {
 
             const ImVec2 canvas_sz = ImMax(ImVec2(avail.x - panel_w, avail.y), ImVec2(50.0f, 50.0f));
 
-            int width  = (int)(canvas_sz.x * ImGui::GetIO().DisplayFramebufferScale.x);
-            int height = (int)(canvas_sz.y * ImGui::GetIO().DisplayFramebufferScale.y);
-            if ((int)gbuf.width != width || (int)gbuf.height != height) {
-                gbuffer_init(&gbuf, width, height);
-            }
+            const int width  = MD_MAX((int)(canvas_sz.x * ImGui::GetIO().DisplayFramebufferScale.x), 1);
+            const int height = MD_MAX((int)(canvas_sz.y * ImGui::GetIO().DisplayFramebufferScale.y), 1);
 
             const float aspect_ratio = canvas_sz.x / canvas_sz.y;
             const md_float4x4_t world_to_view = camera_world_to_view_matrix(camera);
@@ -1521,17 +1553,12 @@ struct DensityVolume : viamd::EventHandler {
                 ImGui::EndDragDropTarget();
             }
 
-            if (surface_state.hovered) {
-                InteractionSurfaceHitArgs args = {
-                    .picking_surface = &picking_surface,
-                    .picking_handler = state->picking_handler,
-                    .fbo = gbuf.fbo,
-                    .width = gbuf.width,
-                    .height = gbuf.height,
-                    .clip_to_world = clip_to_world,
-                };
+            // The view, drawn before it goes into the draw list: it records the image's texture, which a size changed
+            // later in the frame would replace
+            draw_view(state, world_to_view, view_to_clip, (uint32_t)width, (uint32_t)height);
 
-                interaction_surface_hit_extract(&hit, surface_state, args);
+            if (surface_state.hovered) {
+                md_render_bridge_panels_surface_hit(&hit, state, view, 0, surface_state, interaction_surface_density_vol, clip_to_world, width, height);
 
                 InteractionSurfaceEvent event = {};
                 interaction_surface_event_extract(&event, surface_state, hit);
@@ -1560,9 +1587,18 @@ struct DensityVolume : viamd::EventHandler {
                 target = reset_transform;
             }
 
-            // Draw border and background color
+            // The view, or its background while there is none, and a border
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            draw_list->AddImage((ImTextureID)(intptr_t)gbuf.tex.transparency, canvas_p0, canvas_p1, { 0,1 }, { 1,0 });
+            {
+                uint32_t tex = 0;
+                md_float2_t uv0, uv1;
+                if (md_render_bridge_panels_image(view, 0, &tex, &uv0, &uv1)) {
+                    draw_list->AddImage((ImTextureID)(intptr_t)tex, canvas_p0, canvas_p1, vec_cast(uv0), vec_cast(uv1));
+                } else {
+                    const md_float3_t bg = state->visuals.background.color;
+                    draw_list->AddRectFilled(canvas_p0, canvas_p1, ImGui::ColorConvertFloat4ToU32(ImVec4(bg.x, bg.y, bg.z, 1.0f)));
+                }
+            }
             draw_list->AddRect(canvas_p0, canvas_p1, IM_COL32(50, 50, 50, 255));
 
             if (volume_key.path[0] == '\0') {
@@ -1630,8 +1666,12 @@ struct DensityVolume : viamd::EventHandler {
                         // Checkerboard
                         ImGui::DrawCheckerboard(draw_list, transp_rect.Min, transp_rect.Max, checker_bg, checker_fg, checker_size, checker_offset);
                     }
-                    // Transparent
-                    draw_list->AddImage((ImTextureID)(intptr_t)dvr.tf.id, transp_rect.Min, transp_rect.Max);
+                    // Transparent: the transfer function's colours and opacities, each texel to the next
+                    const float x0 = transp_rect.Min.x, dx = transp_rect.GetWidth() / (float)(PANEL_TRANSFER_RES - 1);
+                    for (int i = 0; i + 1 < PANEL_TRANSFER_RES; ++i) {
+                        const ImU32 a = dvr.tf.lut[i], b = dvr.tf.lut[i + 1];
+                        draw_list->AddRectFilledMultiColor(ImVec2(x0 + dx * (float)i, transp_rect.Min.y), ImVec2(x0 + dx * (float)(i + 1), transp_rect.Max.y), a, b, b, a);
+                    }
                 }
 
                 // Boarder
@@ -1653,252 +1693,6 @@ struct DensityVolume : viamd::EventHandler {
                 }
             }
 
-            PUSH_GPU_SECTION("RENDER DENSITY VOLUME");
-            gbuffer_clear(&gbuf);
-
-            const GLenum draw_buffers[] = { GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
-                GL_COLOR_ATTACHMENT_PICKING, GL_COLOR_ATTACHMENT_TRANSPARENCY };
-
-            glEnable(GL_CULL_FACE);
-            glCullFace(GL_BACK);
-
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-            glDepthFunc(GL_LESS);
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffers((int)MD_COUNTOF(draw_buffers), draw_buffers);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0,  gbuf.width, gbuf.height);
-
-            const bool selected_property = volume_key.path[0] != '\0';
-
-            if (selected_property && show_reference_structures) {
-                // Each representation, once per structure shown: what its filter picks within that structure, where the
-                // structure aligns with the reference (a rigid transform)
-                const bool has_backbone = state->mold.sys.protein_backbone.range.count > 0;
-                md_array(md_gl_draw_op_t) draw_ops = nullptr;
-                md_array(md_gl_draw_op_t) glyph_ops = nullptr;
-                CartoonGlyphs& glyphs = state->mold.cartoon_glyphs;
-                for (size_t i = 0; i < md_array_size(reps); ++i) {
-                    const DensityVolumeRep& r = reps[i];
-                    if (!r.rep.enabled || !r.rep.type_is_valid || r.dirty || !r.rep.md_rep.id) continue;
-                    if (r.rep.glyphs_shown && md_array_size(r.glyph_subsets) > 0) {
-                        // Derived from the positions of the atoms when a cartoon of the main view has not
-                        if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, state->mold.state);
-                        md_array(md_gl_draw_op_t) ops = nullptr;
-                        representation_glyph_draw_ops(&ops, *state, r.rep, temp_arena);
-                        const size_t n = MD_MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
-                        for (size_t k = 0; k < md_array_size(ops); ++k) {
-                            for (size_t j = 0; j < n; ++j) {
-                                if (!r.glyph_subsets[j].id) continue;
-                                md_gl_draw_op_t op = ops[k];
-                                op.rep = (j > 0 && r.members_glyphs.id) ? r.members_glyphs : r.rep.glyph_rep;
-                                op.subset = r.glyph_subsets[j];
-                                op.copies.transforms = &structure_mats[j].elem[0][0];
-                                op.copies.count = 1;
-                                md_array_push(glyph_ops, op, temp_arena);
-                            }
-                        }
-                    }
-                    if ((r.rep.type == RepresentationType::Ribbons || r.rep.type == RepresentationType::Cartoon) && !has_backbone) continue;
-                    const md_gl_draw_op_t base = representation_draw_op(r.rep);
-                    const size_t n = MD_MIN(md_array_size(r.subsets), md_array_size(structure_mats));
-                    for (size_t j = 0; j < n; ++j) {
-                        if (!r.subsets[j].id) continue;
-                        md_gl_draw_op_t op = base;
-                        op.rep = (j > 0 && r.members.id) ? r.members : r.rep.md_rep;
-                        op.subset = r.subsets[j];
-                        op.copies.transforms = &structure_mats[j].elem[0][0];
-                        op.copies.count = 1;
-                        md_array_push(draw_ops, op, temp_arena);
-                    }
-                }
-
-                md_gl_draw_args_t draw_args = {
-                    .shaders = state->gl.shaders,
-                    .draw_operations = {
-                        .count = md_array_size(draw_ops),
-                        .ops = draw_ops
-                    },
-                    .view_transform = {
-                        .view_matrix = &world_to_view.elem[0][0],
-                        .proj_matrix = &view_to_clip.elem[0][0],
-                    },
-                    .picking_offset = gl_picking_offset(*state),
-                };
-                if (md_array_size(draw_ops) > 0) {
-                    md_gl_draw(&draw_args);
-                }
-                // The glyphs, picked as those of the main view are
-                if (md_array_size(glyph_ops) > 0) {
-                    draw_args.draw_operations = { .count = md_array_size(glyph_ops), .ops = glyph_ops };
-                    draw_args.picking_offset = gl_picking_offset_glyphs(*state);
-                    md_gl_draw(&draw_args);
-                }
-
-                glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            }
-
-            bool iso_written = false;
-            if (show_density_volume) {
-                if (dvr.enabled) {
-                    volume::DvrRenderDesc vol_desc = {
-                        .render_target = {
-                            .depth  = gbuf.tex.depth,
-                            .color  = gbuf.tex.transparency,
-                            .width  = gbuf.width,
-                            .height = gbuf.height,
-                        },
-                        .texture = {
-                            .density_volume = volume_texture.id,
-                            .transfer_function = dvr.tf.id,
-                        },
-                        .matrix = {
-                            .model = model_mat,
-                            .view = world_to_view,
-                            .proj = view_to_clip,
-                            .inv_proj = clip_to_view,
-                        },
-                        .clip_volume = {
-                            .min = clip_volume.min,
-                            .max = clip_volume.max,
-                        },
-                        .tf = {
-                            .min_value = dvr.tf.min_val,
-                            .max_value = dvr.tf.max_val,
-                        },
-                    };
-                    volume::render_dvr(vol_desc);
-                } else if (iso.enabled) {
-                    volume::IsoRenderDesc vol_desc = {
-                        .render_target = {
-                            .depth  = gbuf.tex.depth,
-                            .color  = gbuf.tex.transparency_hdr,
-                            .width  = gbuf.width,
-                            .height = gbuf.height,
-                            .clear_color = true,
-                        },
-                        .texture = {
-                            .density_volume = volume_texture.id,
-                        },
-                        .matrix = {
-                            .model = model_mat,
-                            .view = world_to_view,
-                            .proj = view_to_clip,
-                            .inv_proj = clip_to_view,
-                        },
-                        .clip_volume = {
-                            .min = clip_volume.min,
-                            .max = clip_volume.max,
-                        },
-                        .iso = {
-                            .count = iso.count,
-                            .values = iso.values,
-                            .colors = iso.colors,
-                            .exact = state->settings.exact_isosurfaces,
-                        },
-                        .shading = {
-                            .roughness = 0.3f,
-                            .ior = 1.5f,
-                            .mode = state->visuals.shading.mode,
-                            .ambient = state->visuals.shading.ambient,
-                            .specular = state->visuals.shading.specular,
-                            .colors = state->visuals.shading.colors,
-                            .light = state->visuals.shading.light,
-                            .environment = state->visuals.shading.environment,
-                        },
-                    };
-                    iso_written = volume::render_isosurfaces(vol_desc);
-                }
-            }
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf.fbo);
-            glDrawBuffer(GL_COLOR_ATTACHMENT_TRANSPARENCY);
-            glViewport(0, 0, gbuf.width, gbuf.height);
-            glScissor(0, 0, gbuf.width, gbuf.height);
-
-            if (show_bounding_box && selected_property) {
-                glEnable(GL_DEPTH_TEST);
-                glDepthMask(GL_TRUE);
-                glEnable(GL_BLEND);
-                // Into the transparency buffer, which holds premultiplied colour
-                glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
-				immediate::Queue* queue = immediate::queue_create("Density Volume Bounds");
-
-                immediate::set_model(queue, model_mat);
-
-                uint32_t box_color = convert_color(bounding_box_color);
-                uint32_t clip_color = convert_color(clip_volume_color);
-                immediate::box_wireframe(queue, {0,0,0}, {1,1,1}, box_color);
-                immediate::box_wireframe(queue, clip_volume.min, clip_volume.max, clip_color);
-
-                immediate::RenderParams params = {};
-                params.view = world_to_view;
-                params.proj = view_to_clip;
-                immediate::render(queue, params);
-
-				immediate::queue_destroy(queue);
-
-                glDisable(GL_BLEND);
-            }
-
-            PUSH_GPU_SECTION("Postprocessing")
-            postprocess_pipeline::Settings postprocess_settings = {};
-            postprocess_pipeline::Inputs postprocess_inputs = {};
-
-            postprocess_settings.background_color = state->visuals.background.color;
-            postprocess_settings.shading.mode = state->visuals.shading.mode;
-            postprocess_settings.shading.ambient = state->visuals.shading.ambient;
-            postprocess_settings.shading.specular = state->visuals.shading.specular;
-            postprocess_settings.shading.colors = state->visuals.shading.colors;
-            postprocess_settings.shading.light = state->visuals.shading.light;
-            postprocess_settings.shading.environment = state->visuals.shading.environment;
-            postprocess_settings.tonemap.enabled = state->visuals.tonemapping.enabled;
-            postprocess_settings.tonemap.mode = state->visuals.tonemapping.tonemapper;
-            postprocess_settings.tonemap.exposure = state->visuals.tonemapping.exposure;
-            postprocess_settings.tonemap.gamma = state->visuals.tonemapping.gamma;
-            postprocess_settings.shadows.enabled = false;
-            postprocess_settings.ssao.enabled = false;
-            postprocess_settings.dof.enabled = false;
-            postprocess_settings.fxaa.enabled = true;
-            postprocess_settings.taa.enabled = false;
-            postprocess_settings.sharpen.enabled = false;
-
-            postprocess_inputs.depth = gbuf.tex.depth;
-            postprocess_inputs.color = gbuf.tex.color;
-            postprocess_inputs.normal = gbuf.tex.normal;
-            postprocess_inputs.velocity = gbuf.tex.velocity;
-            postprocess_inputs.transparency = gbuf.tex.transparency;
-            postprocess_inputs.transparency_hdr = iso_written ? gbuf.tex.transparency_hdr : 0;
-
-            ViewParam view_param = {
-                .matrix = {
-                    .curr = {
-                        .view = world_to_view,
-                        .proj = view_to_clip,
-                        .norm = world_to_view,
-                    },
-                    .inv = {
-                        .proj = clip_to_view,
-                    }
-                },
-                .clip_planes = {
-                    .near = camera.near_plane,
-                    .far = camera.far_plane,
-                },
-                .resolution = {canvas_sz.x, canvas_sz.y},
-                .fov_y = camera.fov_y,
-            };
-
-            postprocess_pipeline::execute(postprocess_inputs, postprocess_settings, view_param);
-            POP_GPU_SECTION()
-
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glDrawBuffer(GL_BACK);
-
-            POP_GPU_SECTION();
         }
 
         ImGui::End();
@@ -1914,7 +1708,6 @@ struct DensityVolume : viamd::EventHandler {
                 ApplicationState* state = (ApplicationState*)e.payload;
                 app = state;
                 arena = md_arena_allocator_create(state->allocator.persistent, MD_MEGABYTES(1));
-                picking_surface_init(&picking_surface, interaction_surface_density_vol);
                 workspace_register_window("DensityVolume", &show_window);
                 add_rep();
                 break;
@@ -1941,7 +1734,12 @@ struct DensityVolume : viamd::EventHandler {
                 deserialize_end();
                 break;
             case viamd::EventType_ViamdShutdown: {
-                // Cleanup component. The GPU side goes with md_gl.
+                // Cleanup component
+                if (app) md_render_bridge_panels_destroy(app, &view);
+#if MD_ENABLE_GPU
+                gpu_volume_destroy(&volume_gpu);
+#endif
+                release_all_rep_resources();
                 clear_structures();
                 compare_clear();
                 md_arena_allocator_destroy(arena);
@@ -1949,8 +1747,7 @@ struct DensityVolume : viamd::EventHandler {
             }
             case viamd::EventType_ViamdSystemInit: {
                 // Also when the system is refreshed after its structure was inferred (system_inferred_refresh), when
-                // there is no ViamdSystemFree first: the glyphs of the cartoon are made again then, of a new molecule,
-                // so the glyph subsets and representations made of the previous one name a molecule that is gone
+                // there is no ViamdSystemFree first: what the representations hold is of a molecule that is gone
                 release_all_rep_resources();
                 dirty_rep = true;
                 break;

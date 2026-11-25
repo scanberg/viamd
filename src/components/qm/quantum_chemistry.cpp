@@ -1709,19 +1709,8 @@ struct QuantumChemistry : viamd::EventHandler {
                             uint32_t width, uint32_t height, uint32_t count, uint32_t columns, const PanelSurfaces* surfaces,
                             const uint32_t* atom_colors, md_float3_t background) {
         if (!atom_colors || md_array_size(atom_colors) != state.mold.sys.atom.count) return;
-        postprocess_pipeline::Settings settings = {};
-        settings.background_color     = background;
-        settings.shading.mode         = state.visuals.shading.mode;
-        settings.shading.ambient      = state.visuals.shading.ambient;
-        settings.shading.specular     = state.visuals.shading.specular;
-        settings.shading.colors       = state.visuals.shading.colors;
-        settings.shading.light        = state.visuals.shading.light;
-        settings.shading.environment  = state.visuals.shading.environment;
-        settings.tonemap.enabled      = state.visuals.tonemapping.enabled;
-        settings.tonemap.mode         = state.visuals.tonemapping.tonemapper;
-        settings.tonemap.exposure     = state.visuals.tonemapping.exposure;
-        settings.tonemap.gamma        = state.visuals.tonemapping.gamma;
-        marks_settings(&settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
+        postprocess_pipeline::Settings settings;
+        panel_view_settings(&settings, state, background);
         PanelsDesc d = {};
         d.view = view;
         d.proj = proj;
@@ -1730,24 +1719,22 @@ struct QuantumChemistry : viamd::EventHandler {
         d.count = count;
         d.columns = columns;
         d.panels = surfaces;
-        d.atom_colors = atom_colors;
+        // As md_gl's ball and stick of the windows had it
+        static const Representation ball_and_stick = [] {
+            Representation r = {};
+            r.type = RepresentationType::BallAndStick;
+            r.scale = {1.0f, 1.0f, 1.0f, 1.0f};
+            r.bond_orders = true;
+            r.chain_gaps = false;
+            return r;
+        }();
+        const PanelRep rep = {&ball_and_stick, 0, nullptr, nullptr};
+        d.colors = &atom_colors;
+        d.color_count = 1;
+        d.reps = &rep;
+        d.rep_count = 1;
         d.settings = &settings;
         md_render_bridge_panels_draw(&state, panels, d);
-    }
-
-    // The hit under the mouse in panel i of a window's panels: md_render asked about the pixel, its answer of a frame or
-    // two ago taken, as a surface's hit (of the source, where it is in the world: clip_to_world, the panels' camera's)
-    static void panel_hit(PickingHit* hit, ApplicationState& state, MdRenderPanels* panels, uint32_t i, const InteractionSurfaceState& surface,
-                          PickingSourceID source, const md_float4x4_t& clip_to_world, int width, int height) {
-        const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
-        md_render_bridge_panels_pick(&state, panels, i, surface.mouse_local.x * scale.x, surface.mouse_local.y * scale.y);
-        *hit = {};
-        if (md_render_bridge_panels_hit(&state, panels, hit)) {
-            hit->source = source;
-            hit->screen_coord = surface.mouse_local;
-            const md_float4_t viewport = {0, 0, (float)width, (float)height};
-            hit->world_pos = md_float4x4_unproject({hit->surface_coord.x, hit->surface_coord.y, hit->depth}, clip_to_world, viewport);
-        }
     }
 
     // The Orbital Grid's and the Transition Analysis' panels and volumes (the charge transfer views': ctv_free)
@@ -8302,6 +8289,7 @@ struct QuantumChemistry : viamd::EventHandler {
             // the draw list: it records the image's texture, which a size changed later in the frame would replace
             {
                 PanelSurfaces surfaces[16] = {};
+                PanelVolume volumes[16] = {};
                 PanelSheet sheets[16][2] = {};
                 // The sheet of each sign in the colour of the isovalue of that sign
                 const bool pos_first = orb.iso.values[0] >= 0.0f;
@@ -8314,10 +8302,12 @@ struct QuantumChemistry : viamd::EventHandler {
                         ps.sheets = sheets[i];
                         ps.sheet_count = mesh_sheets(sheets[i], orb.mesh.meshes, orb.mesh.slot[i], sheet_colors);
                     } else {
-                        ps.volume = orb.vol[i].gpu;
-                        ps.iso_count = (uint32_t)orb.iso.count;
-                        ps.iso_values = orb.iso.values;
-                        ps.iso_colors = orb.iso.colors;
+                        volumes[i].volume = orb.vol[i].gpu;
+                        volumes[i].iso_count = (uint32_t)orb.iso.count;
+                        volumes[i].iso_values = orb.iso.values;
+                        volumes[i].iso_colors = orb.iso.colors;
+                        ps.volumes = &volumes[i];
+                        ps.volume_count = 1;
                     }
                 }
                 draw_panels(state, &orb.panels, view_mat, proj_mat, (uint32_t)width, (uint32_t)height, (uint32_t)num_mos, (uint32_t)num_x,
@@ -8345,7 +8335,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     PickingHit hit = {};
                     if (surface_state.hovered) {
-                        panel_hit(&hit, state, orb.panels, (uint32_t)i, surface_state, interaction_surface_orb, clip_to_world, width, height);
+                        md_render_bridge_panels_surface_hit(&hit, &state, orb.panels, (uint32_t)i, surface_state, interaction_surface_orb, clip_to_world, width, height);
 
                         InteractionSurfaceEvent event = {};
                         interaction_surface_event_extract(&event, surface_state, hit);
@@ -9414,6 +9404,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 // drawn before they go into the draw list: it records the image's texture
                 {
                     PanelSurfaces surfaces[2] = {};
+                    PanelVolume volumes[2] = {};
                     PanelSheet sheets[2][2] = {};
                     float values[2] = {};
                     md_float4_t colors[2][2] = {};
@@ -9427,10 +9418,12 @@ struct QuantumChemistry : viamd::EventHandler {
                             ps.sheets = sheets[i];
                             ps.sheet_count = mesh_sheets(sheets[i], nto.mesh.meshes, nto.mesh.slot[i], colors[i]);
                         } else {
-                            ps.volume = nto.vol[i].gpu;
-                            ps.iso_count = 1;
-                            ps.iso_values = &values[i];
-                            ps.iso_colors = colors[i];
+                            volumes[i].volume = nto.vol[i].gpu;
+                            volumes[i].iso_count = 1;
+                            volumes[i].iso_values = &values[i];
+                            volumes[i].iso_colors = colors[i];
+                            ps.volumes = &volumes[i];
+                            ps.volume_count = 1;
                         }
                     }
                     draw_panels(state, &nto.panels, view_mat, proj_mat, (uint32_t)width, (uint32_t)height, 2, 1, surfaces, nto.atom_colors,
@@ -9470,7 +9463,7 @@ struct QuantumChemistry : viamd::EventHandler {
 
                     if (surface.hovered) {
                         PickingHit hit = {};
-                        panel_hit(&hit, state, nto.panels, (uint32_t)idx, surface, interaction_surface_nto, clip_to_world, width, height);
+                        md_render_bridge_panels_surface_hit(&hit, &state, nto.panels, (uint32_t)idx, surface, interaction_surface_nto, clip_to_world, width, height);
 
                         InteractionSurfaceEvent event = {};
                         interaction_surface_event_extract(&event, surface, hit);
@@ -11538,7 +11531,7 @@ struct QuantumChemistry : viamd::EventHandler {
             if (view_result.reset_requested) ctv.target = default_view;
             if (surface.hovered) {
                 PickingHit hit = {};
-                panel_hit(&hit, state, ctv.panels, (uint32_t)i, surface, interaction_surface_flow, clip_to_world, width, height);
+                md_render_bridge_panels_surface_hit(&hit, &state, ctv.panels, (uint32_t)i, surface, interaction_surface_flow, clip_to_world, width, height);
                 InteractionSurfaceEvent event = {};
                 interaction_surface_event_extract(&event, surface, hit);
                 event.clip_to_world = clip_to_world;

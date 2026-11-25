@@ -3279,6 +3279,24 @@ static inline void marks_settings(postprocess_pipeline::Settings* settings, cons
     settings->marks.outline_step = outline_step;
 }
 
+// The look of a component window's view as the main view's (md_render_bridge.h's panels): its shading and tone
+// mapping, over a background, with the marks of the selection and the highlight
+static inline void panel_view_settings(postprocess_pipeline::Settings* settings, const ApplicationState& state, md_float3_t background) {
+    *settings = {};
+    settings->background_color     = background;
+    settings->shading.mode         = state.visuals.shading.mode;
+    settings->shading.ambient      = state.visuals.shading.ambient;
+    settings->shading.specular     = state.visuals.shading.specular;
+    settings->shading.colors       = state.visuals.shading.colors;
+    settings->shading.light        = state.visuals.shading.light;
+    settings->shading.environment  = state.visuals.shading.environment;
+    settings->tonemap.enabled      = state.visuals.tonemapping.enabled;
+    settings->tonemap.mode         = state.visuals.tonemapping.tonemapper;
+    settings->tonemap.exposure     = state.visuals.tonemapping.exposure;
+    settings->tonemap.gamma        = state.visuals.tonemapping.gamma;
+    marks_settings(settings, state, 1.0f, MD_MAX(1, (int)roundf(ImGui::GetIO().DisplayFramebufferScale.x)));
+}
+
 void picking_surface_init(PickingSurface* surface, PickingSourceID source);
 void picking_surface_free(PickingSurface* surface);
 

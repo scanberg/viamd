@@ -738,19 +738,70 @@ static uint32_t bond_kinds(const Representation& rep) {
 }
 
 // The profile of a cartoon: of the secondary structure shown and its scales
-static md_gpu_addr_t cartoon_profile(MdRenderBridge* b, BridgeRep* r, const Representation& rep, uint64_t secondary) {
+static md_gpu_addr_t cartoon_profile(MdRenderBridge* b, md_gpu_addr_t* profile, uint64_t* profile_key, const Representation& rep, uint64_t secondary) {
     const float scale[3] = {rep.scale.x, rep.scale.z, rep.scale.y};     // coil, helix, sheet
     uint64_t key = md_hash64(scale, sizeof(scale), secondary) | 1;
-    if (!r->profile) {
-        r->profile = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&b->topo)).gpu;
-        r->profile_key = 0;
-        if (!r->profile) return 0;
+    if (!*profile) {
+        *profile = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, md_render_mol_cartoon_size(&b->topo)).gpu;
+        *profile_key = 0;
+        if (!*profile) return 0;
     }
-    if (key != r->profile_key) {
-        if (!md_render_mol_cartoon_profile(b->mol, b->stream, &b->topo, r->profile, secondary ? b->secondary : 0, scale, b->content)) return 0;
-        r->profile_key = key;
+    if (key != *profile_key) {
+        if (!md_render_mol_cartoon_profile(b->mol, b->stream, &b->topo, *profile, secondary ? b->secondary : 0, scale, b->content)) return 0;
+        *profile_key = key;
     }
-    return r->profile;
+    return *profile;
+}
+
+// A representation of atoms as md_render_mol's: its type, its parameters and its bonds' styles (into styles, which emit
+// reads), its cartoon's profile (in *profile, of *profile_key). False of a type of something else, and of Bonds (the
+// pairs of the main view's: md_render_bridge_rep_pairs). Its key, colours and visibility are the caller's.
+static bool mol_rep_params(md_render_mol_rep_t* mr, md_render_mol_bond_style_t styles[MD_RENDER_MOL_BOND_KIND_COUNT], MdRenderBridge* b,
+                           const Representation& rep, md_gpu_addr_t* profile, uint64_t* profile_key, uint64_t secondary) {
+    mr->color.sharpness = rep.bond_color == BondColorMode::SmoothAtom ? 1.0f - MD_CLAMP(rep.bond_sharpness, 0.0f, 1.0f) : 1.0f;
+    mr->chain_gaps = rep.chain_gaps;
+    // While the system's bonds are being inferred, every type as spheres (representation_draw_op)
+    const RepresentationType type = rep.sphere_fallback ? RepresentationType::SpaceFill : rep.type;
+    switch (type) {
+    case RepresentationType::SpaceFill:
+        mr->type = MD_RENDER_MOL_REP_SPACEFILL;
+        mr->params.spacefill.radius_scale = rep.sphere_fallback ? 1.0f : rep.scale.x;
+        return true;
+    case RepresentationType::Licorice:
+        mr->type = MD_RENDER_MOL_REP_LICORICE;
+        mr->params.licorice.radius = 0.2f * rep.scale.x;                  // md_gl's scales
+        mr->bond_orders = rep.bond_orders;
+        break;
+    case RepresentationType::BallAndStick:
+        mr->type = MD_RENDER_MOL_REP_BALL_AND_STICK;
+        mr->params.ball_and_stick.ball_scale = 0.2f * rep.scale.x;
+        mr->params.ball_and_stick.stick_radius = 0.2f * rep.scale.y;
+        mr->bond_orders = rep.bond_orders;
+        break;
+    case RepresentationType::Ribbons:
+        mr->type = MD_RENDER_MOL_REP_RIBBONS;
+        mr->params.ribbons.half_width = rep.scale.x;
+        mr->params.ribbons.half_thickness = 0.1f * rep.scale.y;
+        return true;
+    case RepresentationType::Cartoon: {
+        mr->type = MD_RENDER_MOL_REP_CARTOON;
+        const float w = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
+        mr->params.cartoon.profile = cartoon_profile(b, profile, profile_key, rep, secondary);
+        mr->params.cartoon.band_radius = MD_MAX(rep.nucleic_band_radius, 0.01f) * w;
+        mr->params.cartoon.ring_radius = MD_MAX(rep.nucleic_ring_radius, 0.01f) * w;
+        mr->params.cartoon.ring_plate  = 0.6f;
+        mr->params.cartoon.lipid_scale = w;
+        mr->params.cartoon.split_heads = rep.two_head_spheres;
+        return true;
+    }
+    default:
+        return false;
+    }
+    // the sticks
+    bond_styles(styles, rep);
+    mr->bond_kinds = bond_kinds(rep);
+    mr->bond_style = styles;
+    return true;
 }
 
 // A representation's batches, after those in *out
@@ -1797,8 +1848,7 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     update_parts(b, state);
     md_allocator_i* alloc = state->allocator.persistent;     // the batches' array is kept
 
-    md_render_mol_bond_style_t styles[64][MD_RENDER_MOL_BOND_KIND_COUNT];
-    size_t num_styles = 0;
+    md_render_mol_bond_style_t styles[MD_RENDER_MOL_BOND_KIND_COUNT];     // a representation's, read by its emit
     const float dim = md_bitmask_empty(&state->selection.selection_mask) ? 0.0f : 1.0f - MD_CLAMP(state->selection.color.saturation, 0.0f, 1.0f);
     for (size_t i = 0; i < md_array_size(state->representation.reps); ++i) {
         const Representation& rep = state->representation.reps[i];
@@ -1811,65 +1861,22 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         mr.color.mode = MD_RENDER_COLOR_POINTS;
         // What is not selected, dimmed while something is (to the selection colour's saturation)
         mr.color.desaturate_unmarked = dim;
-        mr.color.sharpness = rep.bond_color == BondColorMode::SmoothAtom ? 1.0f - MD_CLAMP(rep.bond_sharpness, 0.0f, 1.0f) : 1.0f;
         mr.atom_color = r->color;
         mr.visible = r->visible;
-        mr.chain_gaps = rep.chain_gaps;
-        // While the system's bonds are being inferred, every type as spheres (representation_draw_op)
-        const RepresentationType type = rep.sphere_fallback ? RepresentationType::SpaceFill : rep.type;
-        switch (type) {
-        case RepresentationType::SpaceFill:
-            mr.type = MD_RENDER_MOL_REP_SPACEFILL;
-            mr.params.spacefill.radius_scale = rep.sphere_fallback ? 1.0f : rep.scale.x;
-            break;
-        case RepresentationType::Licorice:
-            mr.type = MD_RENDER_MOL_REP_LICORICE;
-            mr.params.licorice.radius = 0.2f * rep.scale.x;                  // md_gl's scales
-            mr.bond_orders = rep.bond_orders;
-            break;
-        case RepresentationType::BallAndStick:
-            mr.type = MD_RENDER_MOL_REP_BALL_AND_STICK;
-            mr.params.ball_and_stick.ball_scale = 0.2f * rep.scale.x;
-            mr.params.ball_and_stick.stick_radius = 0.2f * rep.scale.y;
-            mr.bond_orders = rep.bond_orders;
-            break;
-        case RepresentationType::Ribbons:
-            mr.type = MD_RENDER_MOL_REP_RIBBONS;
-            mr.params.ribbons.half_width = rep.scale.x;
-            mr.params.ribbons.half_thickness = 0.1f * rep.scale.y;
-            break;
-        case RepresentationType::Cartoon: {
-            mr.type = MD_RENDER_MOL_REP_CARTOON;
-            const float w = rep.scale.w > 0.0f ? rep.scale.w : 1.0f;
-            mr.params.cartoon.profile = cartoon_profile(b, r, rep, secondary);
-            mr.params.cartoon.band_radius = MD_MAX(rep.nucleic_band_radius, 0.01f) * w;
-            mr.params.cartoon.ring_radius = MD_MAX(rep.nucleic_ring_radius, 0.01f) * w;
-            mr.params.cartoon.ring_plate  = 0.6f;
-            mr.params.cartoon.lipid_scale = w;
-            mr.params.cartoon.split_heads = rep.two_head_spheres;
-            break;
-        }
-        case RepresentationType::Bonds:
+        if (rep.type == RepresentationType::Bonds && !rep.sphere_fallback) {
             // The pairs its filter picks (md_render_bridge_rep_pairs), as thick as a licorice's sticks of the same scale
             if (pair_count(r->pairs) == 0) continue;
             mr.type = MD_RENDER_MOL_REP_PAIRS;
+            mr.color.sharpness = rep.bond_color == BondColorMode::SmoothAtom ? 1.0f - MD_CLAMP(rep.bond_sharpness, 0.0f, 1.0f) : 1.0f;
+            mr.chain_gaps = rep.chain_gaps;
             mr.params.pairs.radius = 0.2f * rep.scale.x;
             mr.pairs = r->pairs.pairs;
             mr.pair_id = r->pairs.ids;
             mr.pair_offset = r->pairs.offset;
-            break;
-        default:
+            pair_styles(styles, rep);
+            mr.bond_style = styles;
+        } else if (!mol_rep_params(&mr, styles, b, rep, &r->profile, &r->profile_key, secondary)) {
             continue;
-        }
-        if (type == RepresentationType::Licorice || type == RepresentationType::BallAndStick || type == RepresentationType::Bonds) {
-            if (num_styles == MD_COUNTOF(styles)) continue;
-            if (type == RepresentationType::Bonds) {
-                pair_styles(styles[num_styles], rep);
-            } else {
-                bond_styles(styles[num_styles], rep);
-                mr.bond_kinds = bond_kinds(rep);
-            }
-            mr.bond_style = styles[num_styles++];
         }
         emit_placed(b, state, atoms, mr, rep, alloc);
     }
@@ -1965,16 +1972,11 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
 
 // Over the image (md_post_overlay), of the camera the scene was drawn with and hidden behind its depth where asked;
 // kept for picking it
-static bool draw_overlay(MdRenderBridge* b, ApplicationState* state, const Overlay* o) {
-    md_array_shrink(b->overlay, 0);
-    const size_t n = o ? md_array_size(o->items) : 0;
-    if (n == 0 || !b->has_last) return true;
-    md_array_push_array(b->overlay, o->items, n, state->allocator.persistent);
-    b->overlay_camera = b->last.camera;
-    md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
-    md_post_overlay_item_t* items = (md_post_overlay_item_t*)md_vm_arena_push(state->allocator.frame, n * sizeof(md_post_overlay_item_t));
+// The overlay's items as md_post_overlay's, in alloc
+static md_post_overlay_item_t* overlay_items(const OverlayItem* src, size_t n, md_allocator_i* alloc) {
+    md_post_overlay_item_t* items = (md_post_overlay_item_t*)md_vm_arena_push(alloc, MD_MAX(n, (size_t)1) * sizeof(md_post_overlay_item_t));
     for (size_t i = 0; i < n; ++i) {
-        const OverlayItem& it = o->items[i];
+        const OverlayItem& it = src[i];
         md_post_overlay_item_t& x = items[i];
         x = {};
         x.kind   = it.shape == OverlayShape::Disc ? MD_POST_OVERLAY_DISC : it.shape == OverlayShape::Segment ? MD_POST_OVERLAY_SEGMENT : MD_POST_OVERLAY_TRIANGLE;
@@ -1987,6 +1989,17 @@ static bool draw_overlay(MdRenderBridge* b, ApplicationState* state, const Overl
         x.color  = it.color;
         x.color2 = it.color2;
     }
+    return items;
+}
+
+static bool draw_overlay(MdRenderBridge* b, ApplicationState* state, const Overlay* o) {
+    md_array_shrink(b->overlay, 0);
+    const size_t n = o ? md_array_size(o->items) : 0;
+    if (n == 0 || !b->has_last) return true;
+    md_array_push_array(b->overlay, o->items, n, state->allocator.persistent);
+    b->overlay_camera = b->last.camera;
+    md_temp_scope_t temp = md_temp_begin_in(state->allocator.frame);
+    md_post_overlay_item_t* items = overlay_items(o->items, n, state->allocator.frame);
     md_post_overlay_t ov = {};
     ov.target = b->out.tex;
     ov.camera = b->overlay_camera;
@@ -2150,12 +2163,22 @@ static void set_hit(const ApplicationState& state, PickingHit* hit, PickingDomai
 
 // Whether a hit on the stick between a pair of atoms is in its middle half (md_gl's bond.frag: the bond), not a quarter at
 // an end (its atom), with the pair's ends where the hit's copy has them
-static bool pair_middle(const MdRenderBridge* b, const ApplicationState& state, const md_render_mol_hit_t& mh, md_atom_pair_t pair, bool copies) {
+struct MdRenderPanels;
+static bool panel_rep_transform(const MdRenderPanels* p, uint64_t rep_key, md_float4x4_t* out);
+
+// The transform of the copy a hit is in: of the main view's copies (panels null, emit_placed), or of a panel's
+// representation
+static bool hit_transform(const MdRenderBridge* b, const MdRenderPanels* panels, const ApplicationState& state, const md_render_mol_hit_t& mh,
+                          md_float4x4_t* out) {
+    return panels ? panel_rep_transform(panels, mh.rep_key, out) : copy_transform(b, state, mh.rep_key, mh.instance, out);
+}
+
+static bool pair_middle(const MdRenderBridge* b, const MdRenderPanels* panels, const ApplicationState& state, const md_render_mol_hit_t& mh, md_atom_pair_t pair) {
     const md_float3_t* xyz = state.mold.state.xyz;
     const md_float3_t p = {mh.position[0], mh.position[1], mh.position[2]};
     md_float3_t a = xyz[pair.idx[0]], e = xyz[pair.idx[1]];
     md_float4x4_t T;
-    if (copies && copy_transform(b, state, mh.rep_key, mh.instance, &T)) {
+    if (hit_transform(b, panels, state, mh, &T)) {
         a = md_float3_from_float4(md_float4x4_mul_float4(T, md_float4_from_float3(a, 1.0f)));
         e = md_float3_from_float4(md_float4x4_mul_float4(T, md_float4_from_float3(e, 1.0f)));
     }
@@ -2166,9 +2189,9 @@ static bool pair_middle(const MdRenderBridge* b, const ApplicationState& state, 
 }
 
 // The hit of an answer of md_render's on what md_render_mol drew (an atom, a bond, a segment of the cartoon, a ring, a
-// gap), in their domains as md_gl's were; nothing of a system no more. copies: whether the representations are drawn in
-// the copies of the scene (emit_placed), the main view's
-static void mol_hit(const MdRenderBridge* b, ApplicationState* state, const md_render_pick_t& found, PickingHit* hit, bool copies) {
+// gap), in their domains as md_gl's were; nothing of a system no more. Of the main view's representations (panels null)
+// or a panel set's.
+static void mol_hit(const MdRenderBridge* b, const MdRenderPanels* panels, ApplicationState* state, const md_render_pick_t& found, PickingHit* hit) {
     md_render_mol_hit_t mh = {};
     // Of a system no more (or not known): nothing, rather than what md_render drew there taken for something else
     if (!b->has_topo || !md_render_mol_decode_pick(&found, &mh) || mh.kind == MD_RENDER_MOL_HIT_NONE) return;
@@ -2179,7 +2202,7 @@ static void mol_hit(const MdRenderBridge* b, ApplicationState* state, const md_r
         // interaction over the sticks of a licorice (past the system's bonds), of the representation's range of them.
         if (mh.bond >= sys.bond.count) {
             set_hit(*state, hit, PickingDomain_Bond, (mh.rep_key >> 16) - 1, (uint32_t)(mh.bond - sys.bond.count));
-        } else if (pair_middle(b, *state, mh, sys.bond.pairs[mh.bond], copies)) {
+        } else if (pair_middle(b, panels, *state, mh, sys.bond.pairs[mh.bond])) {
             set_hit(*state, hit, PickingDomain_Bond, 0, mh.bond);
         } else {
             set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
@@ -2210,7 +2233,7 @@ static void mol_hit(const MdRenderBridge* b, ApplicationState* state, const md_r
             set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
             break;
         }
-        if (pair_middle(b, *state, mh, pair, copies)) {
+        if (pair_middle(b, panels, *state, mh, pair)) {
             set_hit(*state, hit, PickingDomain_Bond, key, local);
         } else {
             set_hit(*state, hit, PickingDomain_Atom, 0, mh.atom);
@@ -2273,7 +2296,7 @@ bool md_render_bridge_hit(ApplicationState* state, PickingHit* hit) {
         }
         return true;     // the cells' edges and the meshes as nothing to pick
     }
-    mol_hit(b, state, *found, hit, true);
+    mol_hit(b, nullptr, state, *found, hit);
     return true;
 }
 
@@ -2284,10 +2307,12 @@ void md_render_bridge_buffers(ApplicationState* state, uint32_t dirty) {
 
 // ---- Panels ------------------------------------------------------------------------------------------------------
 
-static constexpr uint32_t PANEL_MAX     = 16;
-static constexpr uint32_t PANEL_SAMPLES = 16;                    // a still panel's: it settles over as many frames
-static constexpr uint64_t PANEL_REP_KEY = 0xFFFFFFull << 16;     // the molecule's: of no representation, of no part
-static constexpr uint64_t PANEL_MESH    = 0xFEull << 56;         // the meshes' (their low byte none of md_render_mol's)
+static constexpr uint32_t PANEL_MAX      = 16;
+static constexpr uint32_t PANEL_SAMPLES  = 16;               // a still panel's: it settles over as many frames
+static constexpr uint64_t PANEL_REP_BASE = 0xFF0001;         // a representation's key: (base + its index) << 16, of no
+                                                             // representation of the main view's, of no part
+static constexpr uint64_t PANEL_MESH     = 0xFEull << 56;    // the meshes' (their low byte none of md_render_mol's)
+static_assert(PANEL_TRANSFER_RES == LUT_RES, "a transfer function's texels");
 
 struct MdRenderPanels {
     uint32_t width = 0, height = 0, count = 0, columns = 0;     // as made
@@ -2307,11 +2332,18 @@ struct MdRenderPanels {
     uint32_t  atlas_w = 0, atlas_h = 0;
     GLuint    gl_tex = 0, fbo = 0;
     bool      has_image = false;
-    // The molecule's atoms: their colours and which it shows; what they were
-    md_gpu_addr_t color = 0, visible = 0;
+    // The molecule: its sets of colours, and of each representation which atoms it shows (of its set's, and of its own),
+    // its transform; what they were made of. The cartoons' profiles, by what they are of, kept while drawn.
+    struct Colors { md_gpu_addr_t color; uint32_t cap; uint64_t key; md_array(uint64_t) shown; };
+    struct Rep    { md_gpu_addr_t visible; uint32_t cap; uint64_t key; md_float4x4_t xf; bool has_xf; };
+    struct Profile { uint64_t key; md_gpu_addr_t addr; uint64_t made; bool used; };
+    md_array(Colors)  colors = nullptr;
+    md_array(Rep)     reps = nullptr;
+    md_array(Profile) profiles = nullptr;
     uint32_t atom_count = 0;
-    uint64_t colors_key = 0, visible_key = 0;
-    uint64_t look_key = 0, marks_key = 0;       // the shading and display, the marks
+    uint64_t topology = 0;                      // the system's they are of (its topology_version)
+    uint64_t look_key = 0, present_key = 0;     // the shading and display; the marks and the overlay
+    bool     too_many_logged = false;
     md_array(md_render_batch_t) batches = nullptr;
     md_float4x4_t mesh_model = {};              // the meshes' bohr to the world
     // The view asked about last (PANEL_MAX: none) and its newest answer
@@ -2319,6 +2351,14 @@ struct MdRenderPanels {
     bool     has_pick = false;
     md_render_pick_t pick = {};
 };
+
+// The transform of a panel representation's hit (its key's), if it has one
+static bool panel_rep_transform(const MdRenderPanels* p, uint64_t rep_key, md_float4x4_t* out) {
+    const uint64_t i = (rep_key >> 16) - PANEL_REP_BASE;
+    if ((rep_key >> 16) < PANEL_REP_BASE || i >= md_array_size(p->reps) || !p->reps[i].has_xf) return false;
+    *out = p->reps[i].xf;
+    return true;
+}
 
 // The views but the first (each panel's own), gone
 static void panels_free_views(MdRenderBridge* b, MdRenderPanels* p, uint32_t first) {
@@ -2358,7 +2398,7 @@ static bool panels_ensure(MdRenderBridge* b, MdRenderPanels* p, uint32_t w, uint
     const md_gpu_tex_usage_t SS = MD_GPU_TEX_STORAGE | MD_GPU_TEX_SAMPLED;
     p->scene = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, w, h, "panel scene");
     p->frame = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, w, h, "panel frame");
-    p->image = gpu_texture(b, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE, w, h, "panel image");
+    p->image = gpu_texture(b, MD_GPU_FORMAT_RGBA8_UNORM, MD_GPU_TEX_STORAGE | MD_GPU_TEX_RENDER_TARGET, w, h, "panel image");
     bool ok = p->scene && p->frame && p->image;
     for (uint32_t i = 0; i < count && ok; ++i) {
         for (int k = 0; k < 2; ++k) {
@@ -2393,36 +2433,96 @@ static bool panels_ensure(MdRenderBridge* b, MdRenderPanels* p, uint32_t w, uint
     return true;
 }
 
-// The molecule's atoms' colours, and which it shows (those not transparent), taken when they changed
-static bool panels_colors(MdRenderBridge* b, MdRenderPanels* p, const uint32_t* colors, md_allocator_i* temp_alloc) {
+// The molecule's sets of colours (taken when they changed: then also which atoms they show), and each representation's
+// atoms shown (of its set's, and of its own), uploaded when they changed. False when they cannot be.
+static bool panels_molecule(MdRenderBridge* b, MdRenderPanels* p, const PanelsDesc& d, md_allocator_i* alloc, md_allocator_i* temp_alloc) {
     const uint32_t n = b->atom_count;
-    if (p->atom_count != n) {
-        p->color   = realloc_gpu(b, p->color, (size_t)n * 4);
-        p->visible = realloc_gpu(b, p->visible, bitset_words32(n) * 4);
-        p->atom_count = p->color && p->visible ? n : 0;
-        p->colors_key = p->visible_key = 0;
-    }
-    if (!p->atom_count || !colors) return false;
-    const uint64_t key = md_hash64(colors, (size_t)n * 4, 0xc010125) | 1;
-    if (key == p->colors_key) return true;
-    p->colors_key = key;
-    md_gpu_upload(b->stream, p->color, colors, (size_t)n * 4);
-    md_temp_scope_t temp = md_temp_begin_in(temp_alloc);
     const size_t words = ((size_t)n + 63) / 64;
-    uint64_t* bits = (uint64_t*)md_vm_arena_push(temp_alloc, words * 8);
-    md_memset(bits, 0, words * 8);
-    for (uint32_t i = 0; i < n; ++i) {
-        if (colors[i] >> 24) bits[i >> 6] |= 1ull << (i & 63);
+    // Of another system: all of it again, and the profiles (of its topology's size) gone
+    if (p->atom_count != n || p->topology != b->topo.topology_version) {
+        for (size_t i = 0; i < md_array_size(p->colors); ++i) p->colors[i].key = 0;
+        for (size_t i = 0; i < md_array_size(p->reps); ++i) p->reps[i].key = 0;
+        for (size_t i = 0; i < md_array_size(p->profiles); ++i) if (p->profiles[i].addr) md_gpu_free(b->stream, p->profiles[i].addr);
+        md_array_shrink(p->profiles, 0);
+        p->atom_count = n;
+        p->topology = b->topo.topology_version;
     }
-    const uint64_t vkey = md_hash64(bits, words * 8, 0x815181e) | 1;
-    if (vkey != p->visible_key) {
-        md_gpu_upload(b->stream, p->visible, bits, words * 8);
-        p->visible_key = vkey;
+    // A set's colours, and its atoms not transparent
+    while (md_array_size(p->colors) < d.color_count) md_array_push(p->colors, (MdRenderPanels::Colors{}), alloc);
+    for (uint32_t c = 0; c < d.color_count; ++c) {
+        MdRenderPanels::Colors& cs = p->colors[c];
+        const uint32_t* src = d.colors[c];
+        if (!src) return false;
+        const uint64_t key = md_hash64(src, (size_t)n * 4, 0xc010125) | 1;
+        if (key == cs.key) continue;
+        if (cs.cap < n) {
+            cs.color = realloc_gpu(b, cs.color, (size_t)n * 4);
+            cs.cap = cs.color ? n : 0;
+            if (!cs.color) return false;
+        }
+        md_gpu_upload(b->stream, cs.color, src, (size_t)n * 4);
+        md_array_resize(cs.shown, words, alloc);
+        md_memset(cs.shown, 0, words * 8);
+        for (uint32_t i = 0; i < n; ++i) {
+            if (src[i] >> 24) cs.shown[i >> 6] |= 1ull << (i & 63);
+        }
+        cs.key = key;
+        for (uint32_t v = 0; v < PANEL_MAX; ++v) p->content[v][MD_RENDER_CONTENT_APPEARANCE] += 1;
+    }
+    // A representation's atoms: of its set's, those of its own
+    while (md_array_size(p->reps) > d.rep_count) {
+        if (md_array_last(p->reps)->visible) md_gpu_free(b->stream, md_array_last(p->reps)->visible);
+        md_array_pop(p->reps);
+    }
+    while (md_array_size(p->reps) < d.rep_count) md_array_push(p->reps, (MdRenderPanels::Rep{}), alloc);
+    for (uint32_t r = 0; r < d.rep_count; ++r) {
+        const PanelRep& pr = d.reps[r];
+        MdRenderPanels::Rep& rp = p->reps[r];
+        rp.has_xf = pr.transform != nullptr;
+        rp.xf = pr.transform ? *pr.transform : md_float4x4_ident();
+        if (pr.colors >= d.color_count) return false;
+        const MdRenderPanels::Colors& cs = p->colors[pr.colors];
+        uint64_t key = md_hash64(&cs.key, sizeof(cs.key), 0x815181e);
+        if (pr.atoms) key = md_bitset_hash64(*pr.atoms, key);
+        key |= 1;
+        if (key == rp.key && rp.visible) continue;
+        if (rp.cap < n) {
+            rp.visible = realloc_gpu(b, rp.visible, bitset_words32(n) * 4);
+            rp.cap = rp.visible ? n : 0;
+            if (!rp.visible) return false;
+        }
+        md_temp_scope_t temp = md_temp_begin_in(temp_alloc);
+        uint64_t* bits = (uint64_t*)md_vm_arena_push(temp_alloc, MD_MAX(words, (size_t)1) * 8);
+        for (size_t k = 0; k < words; ++k) {
+            bits[k] = cs.shown[k] & (pr.atoms ? md_bitset_word(*pr.atoms, (uint32_t)(k * 64)) : ~0ull);
+        }
+        md_gpu_upload(b->stream, rp.visible, bits, words * 8);
+        md_temp_end(temp);
+        rp.key = key;
         for (uint32_t v = 0; v < PANEL_MAX; ++v) p->content[v][MD_RENDER_CONTENT_GEOMETRY] += 1;
     }
-    md_temp_end(temp);
-    for (uint32_t v = 0; v < PANEL_MAX; ++v) p->content[v][MD_RENDER_CONTENT_APPEARANCE] += 1;
     return true;
+}
+
+// A cartoon's profile for the panels: one of those kept, of what it is of, made when none is
+static md_gpu_addr_t panel_profile(MdRenderBridge* b, MdRenderPanels* p, const Representation& rep, uint64_t secondary, md_allocator_i* alloc,
+                                   md_render_mol_rep_t* mr, md_render_mol_bond_style_t styles[MD_RENDER_MOL_BOND_KIND_COUNT]) {
+    const float scale[3] = {rep.scale.x, rep.scale.z, rep.scale.y};
+    const uint64_t key = md_hash64(scale, sizeof(scale), secondary) | 1;     // cartoon_profile's
+    size_t at = md_array_size(p->profiles);
+    for (size_t i = 0; i < md_array_size(p->profiles); ++i) {
+        if (p->profiles[i].key == key) at = i;
+    }
+    if (at == md_array_size(p->profiles)) md_array_push(p->profiles, (MdRenderPanels::Profile{key, 0, 0, false}), alloc);
+    MdRenderPanels::Profile& pf = p->profiles[at];
+    pf.used = true;
+    mol_rep_params(mr, styles, b, rep, &pf.addr, &pf.made, secondary);
+    return pf.addr;
+}
+
+// A panel volume's transfer function's lookup table's key (lut_texture)
+static uint64_t panel_transfer_key(const uint32_t* transfer) {
+    return md_hash64(transfer, sizeof(uint32_t) * PANEL_TRANSFER_RES, 0x7a2f);
 }
 
 // Whether a panel's meshes are there to draw
@@ -2433,16 +2533,22 @@ static bool panel_has_meshes(const PanelSurfaces& s) {
 
 // What a panel's surfaces are: its image made again when it changed
 static uint64_t panel_surfaces_key(const PanelSurfaces& s) {
-    uint64_t k = md_hash64(&s.volume, sizeof(s.volume), 0x5afe5);
-    if (s.volume) {
-        const uint64_t v = gpu_volume_version(s.volume);
-        k = md_hash64(&v, sizeof(v), k);
-    }
-    const uint32_t ni = s.iso_values && s.iso_colors ? MD_MIN(s.iso_count, (uint32_t)MD_COMPOSE_MAX_ISO) : 0;
-    k = md_hash64(&ni, sizeof(ni), k);
-    if (ni) {
-        k = md_hash64(s.iso_values, sizeof(float) * ni, k);
-        k = md_hash64(s.iso_colors, sizeof(md_float4_t) * ni, k);
+    uint64_t k = 0x5afe5;
+    const uint32_t nv = s.volumes ? MD_MIN(s.volume_count, (uint32_t)MD_COMPOSE_MAX_VOLUMES) : 0;
+    for (uint32_t j = 0; j < nv; ++j) {
+        const PanelVolume& v = s.volumes[j];
+        const uint64_t ver = v.volume ? gpu_volume_version(v.volume) : 0;
+        k = md_hash64(&v.volume, sizeof(v.volume), k);
+        k = md_hash64(&ver, sizeof(ver), k);
+        const uint32_t ni = v.iso_values && v.iso_colors ? MD_MIN(v.iso_count, (uint32_t)MD_COMPOSE_MAX_ISO) : 0;
+        k = md_hash64(&ni, sizeof(ni), k);
+        if (ni) {
+            k = md_hash64(v.iso_values, sizeof(float) * ni, k);
+            k = md_hash64(v.iso_colors, sizeof(md_float4_t) * ni, k);
+        }
+        if (v.transfer) k = md_hash64(v.transfer, sizeof(uint32_t) * PANEL_TRANSFER_RES, k);
+        const float box[8] = {v.transfer_range[0], v.transfer_range[1], v.clip_min.x, v.clip_min.y, v.clip_min.z, v.clip_max.x, v.clip_max.y, v.clip_max.z};
+        k = md_hash64(box, sizeof(box), k);
     }
     if (panel_has_meshes(s)) {
         k = md_hash64(&s.meshes->version, sizeof(s.meshes->version), k);
@@ -2486,32 +2592,40 @@ static void panel_meshes(MdRenderBridge* b, MdRenderPanels* p, const PanelSurfac
 // Panel i composed over the raster of its view as it is (st), displayed and settled into its history: a sample more,
 // or the first
 static bool panel_make(MdRenderBridge* b, MdRenderPanels* p, uint32_t i, md_render_view_t view, const md_render_camera_t& cam,
-                       const md_render_status_t& st, const PanelSurfaces& s, const md_compose_shading_t& sh, const md_post_display_t& disp) {
-    md_compose_volume_t vol = {};
+                       const md_render_status_t& st, const PanelSurfaces& s, const md_compose_shading_t& sh, const md_post_display_t& disp,
+                       md_allocator_i* alloc) {
+    md_compose_volume_t vols[MD_COMPOSE_MAX_VOLUMES] = {};
     uint32_t nv = 0;
-    const uint32_t ni = s.iso_values && s.iso_colors ? MD_MIN(s.iso_count, (uint32_t)MD_COMPOSE_MAX_ISO) : 0;
-    if (s.volume && ni) {
-        const GpuVolume gv = gpu_volume_get(s.volume);
-        if (gv.tex) {
-            vol.field = volume_take(b, gv);
-            mat_store(vol.model, gv.texture_to_world);
-            for (int k = 0; k < 3; ++k) {
-                vol.clip_min[k] = 0.0f;
-                vol.clip_max[k] = 1.0f;
-            }
-            vol.iso_count = ni;
-            for (uint32_t j = 0; j < ni; ++j) {
-                vol.iso_values[j] = s.iso_values[j];
-                for (int k = 0; k < 4; ++k) vol.iso_colors[j][k] = s.iso_colors[j].elem[k];
-            }
-            vol.normals = gv.normals;
-            nv = 1;
+    for (uint32_t j = 0; s.volumes && j < s.volume_count && nv < MD_COMPOSE_MAX_VOLUMES; ++j) {
+        const PanelVolume& pv = s.volumes[j];
+        const uint32_t ni = pv.iso_values && pv.iso_colors ? MD_MIN(pv.iso_count, (uint32_t)MD_COMPOSE_MAX_ISO) : 0;
+        const GpuVolume gv = pv.volume ? gpu_volume_get(pv.volume) : GpuVolume{};
+        if (!gv.tex || (!ni && !pv.transfer)) continue;
+        md_compose_volume_t& vol = vols[nv];
+        vol.field = volume_take(b, gv);
+        mat_store(vol.model, gv.texture_to_world);
+        for (int k = 0; k < 3; ++k) {
+            vol.clip_min[k] = MD_CLAMP(pv.clip_min.elem[k], 0.0f, 1.0f);
+            vol.clip_max[k] = MD_CLAMP(pv.clip_max.elem[k], 0.0f, 1.0f);
         }
+        vol.iso_count = ni;
+        for (uint32_t q = 0; q < ni; ++q) {
+            vol.iso_values[q] = pv.iso_values[q];
+            for (int k = 0; k < 4; ++k) vol.iso_colors[q][k] = pv.iso_colors[q].elem[k];
+        }
+        vol.normals = gv.normals;
+        if (pv.transfer) {
+            vol.transfer = lut_texture(b, panel_transfer_key(pv.transfer), pv.transfer, alloc);
+            vol.transfer_range[0] = pv.transfer_range[0];
+            vol.transfer_range[1] = pv.transfer_range[1];
+            if (!vol.transfer && !ni) continue;
+        }
+        nv += 1;
     }
     md_compose_desc_t cd = {};
     cd.camera = cam;
     cd.shading = sh;
-    cd.volumes = &vol;
+    cd.volumes = vols;
     cd.volume_count = nv;
     cd.frame = st.sample;
     cd.jitter[0] = st.jitter[0];
@@ -2537,15 +2651,22 @@ static bool panel_make(MdRenderBridge* b, MdRenderPanels* p, uint32_t i, md_rend
     return ok;
 }
 
-// Panel i's image, with the marks of its view over it (null: none), into its place in the atlas
-static bool panel_present(MdRenderBridge* b, MdRenderPanels* p, uint32_t i, md_render_view_t marks_view, const md_post_marks_t* marks) {
+// Panel i's image, with the marks of its view over it (null: none) and the overlay (ov's: its items and camera; null:
+// none), into its place in the atlas
+static bool panel_present(MdRenderBridge* b, MdRenderPanels* p, uint32_t i, md_render_view_t view, const md_post_marks_t* marks,
+                          md_post_overlay_t* ov) {
     md_post_present_t pd = {};
     pd.image = p->history[i][p->hist[i]];
-    pd.marks_view = marks ? marks_view : nullptr;
+    pd.marks_view = marks ? view : nullptr;
     pd.marks = marks;
     pd.target = p->image;
     pd.frame = b->presents++;
     if (!md_post_present(b->stream, b->post, &pd)) return false;
+    if (ov) {
+        ov->target = p->image;
+        ov->depth  = md_render_view_targets(view).depth;
+        if (!md_post_overlay(b->stream, b->post, ov)) return false;
+    }
     md_gpu_tex_region_t src = {};
     src.extent[0] = p->width;
     src.extent[1] = p->height;
@@ -2598,15 +2719,15 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
     const md_system_t& sys = state->mold.sys;
     if (!b->has_topo || !b->updated || b->atom_count != sys.atom.count || b->topo.topology_version != sys.topology_version) return false;
     const uint32_t count = MD_MIN(d.count, PANEL_MAX);
-    if (count == 0 || d.width == 0 || d.height == 0 || !d.settings || !d.atom_colors) return false;
+    if (count == 0 || d.width == 0 || d.height == 0 || !d.settings || (d.rep_count && !d.reps)) return false;
     if (!*pp) *pp = new MdRenderPanels();
     MdRenderPanels* p = *pp;
     if (!panels_ensure(b, p, d.width, d.height, count, MD_CLAMP(d.columns, 1u, count))) return false;
     md_allocator_i* alloc = state->allocator.persistent;
     md_allocator_i* temp_alloc = state->allocator.frame;
-    if (!panels_colors(b, p, d.atom_colors, temp_alloc)) return false;
+    if (!panels_molecule(b, p, d, alloc, temp_alloc)) return false;
 
-    // The look: when it changed every panel is made again; the marks: presented again
+    // The look: when it changed every panel is made again; the marks and the overlay: presented again
     md_compose_shading_t sh;
     shading_of(&sh, *d.settings);
     md_post_display_t disp = {};
@@ -2616,8 +2737,7 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
                               sh.dir_radiance[0], sh.dir_radiance[1], sh.dir_radiance[2], sh.sky_radiance[0], sh.sky_radiance[1],
                               sh.sky_radiance[2], sh.ground_radiance[0], sh.ground_radiance[1], sh.ground_radiance[2],
                               sh.light_strength, sh.roughness, sh.f0, sh.ambient, sh.specular, (float)disp.curve, disp.exposure,
-                              disp.gamma, disp.background[0], disp.background[1], disp.background[2],
-                              d.ball_scale, d.stick_radius, (float)d.bond_orders};
+                              disp.gamma, disp.background[0], disp.background[1], disp.background[2]};
         const uint64_t key = md_hash64(look, sizeof(look), 0x100c) | 1;
         if (key != p->look_key) {
             p->look_key = key;
@@ -2626,24 +2746,57 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
     }
     md_post_marks_t mk = {};
     if (d.marks) marks_of(&mk, *d.settings);
-    const uint64_t marks_key = md_hash64(&mk, sizeof(mk), d.marks ? 2 : 1);
-    const bool marks_changed = marks_key != p->marks_key;
-    p->marks_key = marks_key;
+    md_render_camera_t cam;
+    camera_from(&cam, d.view, d.proj);
+    uint64_t present_key = md_hash64(&mk, sizeof(mk), d.marks ? 2 : 1);
+    if (d.overlay_count) {
+        present_key = md_hash64(d.overlay, sizeof(OverlayItem) * d.overlay_count, present_key);
+        present_key = md_hash64(&cam, sizeof(cam), present_key);
+    }
+    const bool present_changed = present_key != p->present_key;
+    p->present_key = present_key;
 
-    // The molecule, as balls and sticks
+    // The molecule: each representation, of its atoms in its set's colours (the same marks as the main view's)
     md_array_shrink(p->batches, 0);
+    for (size_t i = 0; i < md_array_size(p->profiles); ++i) p->profiles[i].used = false;
     const md_render_mol_atoms_t atoms = atoms_of(b, state);
-    md_render_mol_rep_t mr = {};
-    mr.key = PANEL_REP_KEY;
-    mr.type = MD_RENDER_MOL_REP_BALL_AND_STICK;
-    mr.params.ball_and_stick.ball_scale = 0.2f * d.ball_scale;      // md_gl's scales
-    mr.params.ball_and_stick.stick_radius = 0.2f * d.stick_radius;
-    mr.bond_orders = d.bond_orders;
-    mr.color.mode = MD_RENDER_COLOR_POINTS;
-    mr.color.sharpness = 1.0f;
-    mr.atom_color = p->color;
-    mr.visible = p->visible;
-    emit(b, &p->batches, atoms, mr, alloc);
+    const uint64_t secondary = update_secondary(b, state);
+    for (uint32_t r = 0; r < d.rep_count; ++r) {
+        const PanelRep& pr = d.reps[r];
+        if (!pr.rep) continue;
+        // md_render takes at most 4095 batches a frame; a representation emits up to about a dozen
+        if (md_array_size(p->batches) > 4000) {
+            if (!p->too_many_logged) MD_LOG_INFO("A view draws %u representations of the molecule: those past %u are left out", d.rep_count, r);
+            p->too_many_logged = true;
+            break;
+        }
+        md_render_mol_rep_t mr = {};
+        md_render_mol_bond_style_t styles[MD_RENDER_MOL_BOND_KIND_COUNT];
+        if (pr.rep->type == RepresentationType::Cartoon && !pr.rep->sphere_fallback) {
+            panel_profile(b, p, *pr.rep, secondary, alloc, &mr, styles);
+        } else {
+            md_gpu_addr_t none = 0;
+            uint64_t none_key = 0;
+            if (!mol_rep_params(&mr, styles, b, *pr.rep, &none, &none_key, secondary)) continue;
+        }
+        mr.key = (PANEL_REP_BASE + r) << 16;
+        mr.color.mode = MD_RENDER_COLOR_POINTS;
+        mr.atom_color = p->colors[pr.colors].color;
+        mr.visible = p->reps[r].visible;
+        if (pr.transform) {
+            mr.transform = &p->reps[r].xf.elem[0][0];
+            mr.transform_count = 1;
+        }
+        emit(b, &p->batches, atoms, mr, alloc);
+    }
+    for (size_t i = 0; i < md_array_size(p->profiles);) {
+        if (!p->profiles[i].used) {
+            if (p->profiles[i].addr) md_gpu_free(b->stream, p->profiles[i].addr);
+            md_array_swap_back_and_pop(p->profiles, i);
+        } else {
+            ++i;
+        }
+    }
     const size_t mol_count = md_array_size(p->batches);
 
     // One view for all of them, unless they have meshes of their own
@@ -2664,9 +2817,23 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
         c[MD_RENDER_CONTENT_APPEARANCE] += 1;
         if (!shared) c[MD_RENDER_CONTENT_GEOMETRY] += 1;
     }
+    // Their transfer functions kept while they are shown (luts_sweep), whether made again this frame or not
+    for (uint32_t i = 0; i < count; ++i) {
+        const PanelSurfaces& s = d.panels[i];
+        for (uint32_t j = 0; s.volumes && j < s.volume_count; ++j) {
+            if (s.volumes[j].transfer) lut_texture(b, panel_transfer_key(s.volumes[j].transfer), nullptr, alloc);
+        }
+    }
 
-    md_render_camera_t cam;
-    camera_from(&cam, d.view, d.proj);
+    // The overlay, over each panel presented
+    md_temp_scope_t ov_temp = md_temp_begin_in(temp_alloc);
+    md_post_overlay_t ov = {};
+    if (d.overlay_count && d.overlay) {
+        ov.camera = cam;
+        ov.items = overlay_items(d.overlay, d.overlay_count, temp_alloc);
+        ov.count = d.overlay_count;
+    }
+
     const uint32_t num_views = shared ? 1 : count;
     bool presented = false, ok = true;
     for (uint32_t v = 0; v < num_views && ok; ++v) {
@@ -2696,18 +2863,19 @@ bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** pp, 
         md_temp_end(temp);
         if (!ok) break;
         const bool made = (st.work & (MD_RENDER_WORK_RASTER | MD_RENDER_WORK_RESOLVE)) != 0;
-        const bool marked = (st.work & MD_RENDER_WORK_MASK) != 0 || marks_changed || !p->has_image;
+        const bool marked = (st.work & MD_RENDER_WORK_MASK) != 0 || present_changed || !p->has_image;
         const uint32_t i0 = shared ? 0 : v, i1 = shared ? count : v + 1;
         for (uint32_t i = i0; i < i1 && ok; ++i) {
             const bool make = made || !p->settled[i];
             if (!make && !marked) continue;
-            if (make) ok = panel_make(b, p, i, p->view[v], cam, st, d.panels[i], sh, disp);
+            if (make) ok = panel_make(b, p, i, p->view[v], cam, st, d.panels[i], sh, disp, alloc);
             if (!ok) break;
             if (!presented) share_write_begin(b, &p->atlas);
             presented = true;
-            ok = panel_present(b, p, i, p->view[v], d.marks ? &mk : nullptr);
+            ok = panel_present(b, p, i, p->view[v], d.marks ? &mk : nullptr, ov.count ? &ov : nullptr);
         }
     }
+    md_temp_end(ov_temp);
     if (presented) share_write_end(b, &p->atlas);
     if (!ok) {
         MD_LOG_ERROR("The panels could not be drawn (see the log)");
@@ -2765,21 +2933,41 @@ bool md_render_bridge_panels_hit(ApplicationState* state, MdRenderPanels* p, Pic
     hit->surface_coord = {(float)found.x + 0.5f, (float)p->height - (float)found.y - 0.5f};
     hit->depth         = found.key ? 1.0f - found.depth : 1.0f;
     // The meshes as nothing to pick
-    if (found.key && (found.key >> 56) != (PANEL_MESH >> 56)) mol_hit(b, state, found, hit, false);
+    if (found.key && (found.key >> 56) != (PANEL_MESH >> 56)) mol_hit(b, p, state, found, hit);
     return true;
+}
+
+void md_render_bridge_panels_surface_hit(PickingHit* hit, ApplicationState* state, MdRenderPanels* panels, uint32_t i,
+                                         const InteractionSurfaceState& surface, uint64_t source, const md_float4x4_t& clip_to_world,
+                                         int width, int height) {
+    const ImVec2 scale = ImGui::GetIO().DisplayFramebufferScale;
+    md_render_bridge_panels_pick(state, panels, i, surface.mouse_local.x * scale.x, surface.mouse_local.y * scale.y);
+    *hit = {};
+    if (md_render_bridge_panels_hit(state, panels, hit)) {
+        hit->source = source;
+        hit->screen_coord = surface.mouse_local;
+        const md_float4_t viewport = {0, 0, (float)width, (float)height};
+        hit->world_pos = md_float4x4_unproject({hit->surface_coord.x, hit->surface_coord.y, hit->depth}, clip_to_world, viewport);
+    }
 }
 
 void md_render_bridge_panels_destroy(ApplicationState* state, MdRenderPanels** pp) {
     if (!pp || !*pp) return;
     MdRenderPanels* p = *pp;
     MdRenderBridge* b = state->md_render_bridge;
+    md_allocator_i* alloc = state->allocator.persistent;
     if (b && b->stream) {
         panels_free_views(b, p, 0);
         panels_free_targets(b, p);
-        if (p->color) md_gpu_free(b->stream, p->color);
-        if (p->visible) md_gpu_free(b->stream, p->visible);
+        for (size_t i = 0; i < md_array_size(p->colors); ++i) if (p->colors[i].color) md_gpu_free(b->stream, p->colors[i].color);
+        for (size_t i = 0; i < md_array_size(p->reps); ++i) if (p->reps[i].visible) md_gpu_free(b->stream, p->reps[i].visible);
+        for (size_t i = 0; i < md_array_size(p->profiles); ++i) if (p->profiles[i].addr) md_gpu_free(b->stream, p->profiles[i].addr);
     }
-    md_array_free(p->batches, state->allocator.persistent);
+    for (size_t i = 0; i < md_array_size(p->colors); ++i) md_array_free(p->colors[i].shown, alloc);
+    md_array_free(p->colors, alloc);
+    md_array_free(p->reps, alloc);
+    md_array_free(p->profiles, alloc);
+    md_array_free(p->batches, alloc);
     delete p;
     *pp = nullptr;
 }
@@ -2894,6 +3082,8 @@ bool md_render_bridge_panels_draw(ApplicationState*, MdRenderPanels**, const Pan
 bool md_render_bridge_panels_image(const MdRenderPanels*, uint32_t, uint32_t*, md_float2_t*, md_float2_t*) { return false; }
 void md_render_bridge_panels_pick(ApplicationState*, MdRenderPanels*, uint32_t, float, float) {}
 bool md_render_bridge_panels_hit(ApplicationState*, MdRenderPanels*, PickingHit*) { return false; }
+void md_render_bridge_panels_surface_hit(PickingHit* hit, ApplicationState*, MdRenderPanels*, uint32_t, const InteractionSurfaceState&, uint64_t,
+                                         const md_float4x4_t&, int, int) { *hit = {}; }
 void md_render_bridge_panels_destroy(ApplicationState*, MdRenderPanels**) {}
 
 #endif

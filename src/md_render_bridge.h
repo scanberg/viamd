@@ -22,7 +22,10 @@ struct PickingHit;
 struct MdRenderBridge;
 struct MdRenderPanels;
 struct Overlay;
+struct OverlayItem;
 struct IsoMeshes;
+struct md_bitset_t;
+struct InteractionSurfaceState;
 
 namespace postprocess_pipeline { struct Settings; }
 
@@ -65,15 +68,30 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
 bool md_render_bridge_present(ApplicationState* state, const postprocess_pipeline::Settings* marks, const Overlay* overlay);
 
 // ---- Panels -------------------------------------------------------------------------------------------------------
-// The component windows' views of the molecule (the Orbital Grid's, the Transition Analysis', the Charge Transfer side
-// views): panels of one size and one camera, each the system's atoms as balls and sticks in the window's colours with
-// surfaces of its own: the isosurfaces of a volume (gpu_volume.h), raycast by md_compose, or the sheets of meshes on
-// md_gpu (iso_meshes.h, gpu_mesh), md_render's triangles. The panels share one md_render view while none has meshes
-// (the molecule rasterised once), else each has its own. Composed, displayed and settled (md_render's samples of a
-// still view, a jittered raster each frame, averaged by md_post's resolve until there are enough, after which nothing
-// is drawn until something changes), presented with the marks of the selection and the highlight, side by side in an
-// image of them all: a GL texture for ImGui. The system's positions and marks are the main view's (taken up by
-// md_render_bridge_render): the panels follow them a frame later.
+// The component windows' views (the Orbital Grid's, the Transition Analysis', the Charge Transfer side views, the
+// Density Volume's): panels of one size and one camera, each the molecule (representations of the system's atoms)
+// with surfaces of its own: volumes (gpu_volume.h) raycast by md_compose, as isosurfaces or through a transfer function,
+// or the sheets of meshes on md_gpu (iso_meshes.h, gpu_mesh), md_render's triangles. The panels share one md_render view
+// while none has meshes (the molecule rasterised once), else each has its own. Composed, displayed and settled
+// (md_render's samples of a still view, a jittered raster each frame, averaged by md_post's resolve until there are
+// enough, after which nothing is drawn until something changes), presented with the marks of the selection and the
+// highlight and an overlay, side by side in an image of them all: a GL texture for ImGui. The system's positions and
+// marks are the main view's (taken up by md_render_bridge_render): the panels follow them a frame later.
+
+constexpr int PANEL_TRANSFER_RES = 256;     // a transfer function's texels (PanelVolume::transfer)
+
+// A volume of a panel (gpu_volume.h), within a box of its texture space: its isosurfaces, raycast, and its emission and
+// absorption through a transfer function (direct volume rendering); either or both
+struct PanelVolume {
+    uint32_t           volume = 0;
+    uint32_t           iso_count = 0;               // at most 8
+    const float*       iso_values = nullptr;
+    const md_float4_t* iso_colors = nullptr;        // sRGB, alpha: coverage
+    const uint32_t*    transfer = nullptr;          // PANEL_TRANSFER_RES RGBA8: sRGB colour, the opacity of a slab 1/150 of
+                                                    // the box thick; null: none
+    float              transfer_range[2] = {0.0f, 1.0f};   // the values at its ends
+    md_float3_t        clip_min = {0.0f, 0.0f, 0.0f}, clip_max = {1.0f, 1.0f, 1.0f};
+};
 
 // The sheets of a mesh shown in a panel: a range of its triangles each, in its colour (sRGB, alpha: coverage)
 struct PanelSheet {
@@ -82,13 +100,21 @@ struct PanelSheet {
 };
 
 struct PanelSurfaces {
-    uint32_t           volume = 0;              // gpu_volume.h; 0: none
-    uint32_t           iso_count = 0;           // its isosurfaces (at most 8)
-    const float*       iso_values = nullptr;
-    const md_float4_t* iso_colors = nullptr;    // sRGB, alpha: coverage
-    const IsoMeshes*   meshes = nullptr;        // on md_gpu (gpu_mesh); null: none
+    const PanelVolume* volumes = nullptr;           // at most 4
+    uint32_t           volume_count = 0;
+    const IsoMeshes*   meshes = nullptr;            // on md_gpu (gpu_mesh); null: none
     const PanelSheet*  sheets = nullptr;
     uint32_t           sheet_count = 0;
+};
+
+// A representation of the molecule in the panels: of the atoms of `atoms` (null: all) those not transparent in its
+// colours (PanelsDesc::colors[colors]), under a transform (null: none). Of rep its type and parameters (spacefill,
+// licorice, ball and stick, ribbons, cartoon), not its colours nor its filter.
+struct PanelRep {
+    const Representation* rep = nullptr;
+    uint32_t              colors = 0;
+    const md_bitset_t*    atoms = nullptr;
+    const md_float4x4_t*  transform = nullptr;
 };
 
 struct PanelsDesc {
@@ -96,17 +122,20 @@ struct PanelsDesc {
     uint32_t width = 0, height = 0;             // each panel's, pixels
     uint32_t count = 0;                         // at most 16
     uint32_t columns = 1;                       // the image's: panel i at column i % columns, row i / columns
-    const PanelSurfaces* panels = nullptr;      // count of them, read at the call
-    const uint32_t* atom_colors = nullptr;      // RGBA8 per atom of the system, alpha 0: not shown
-    float ball_scale = 1.0f, stick_radius = 1.0f;  // md_gl's ball and stick scales
-    bool  bond_orders = true;
+    const PanelSurfaces* panels = nullptr;      // count of them
+    const uint32_t* const* colors = nullptr;    // sets of colours, RGBA8 per atom of the system, alpha 0: not shown
+    uint32_t color_count = 0;
+    const PanelRep* reps = nullptr;             // the molecule, in every panel
+    uint32_t rep_count = 0;
+    const OverlayItem* overlay = nullptr;       // over every panel (viamd.h), not picked
+    uint32_t overlay_count = 0;
     const postprocess_pipeline::Settings* settings = nullptr;  // the shading, tone mapping, background; the marks
     bool  marks = true;                         // shown
 };
 
 // Brings the panels' image up to date (made at the first call, *panels null, and again at another size or count):
-// what changed drawn again, another sample of what settles, nothing of what has. False: no image (the bridge does not
-// run, or has no system yet).
+// what changed drawn again, another sample of what settles, nothing of what has. All of the desc is read at the call.
+// False: no image (the bridge does not run, or has no system yet).
 bool md_render_bridge_panels_draw(ApplicationState* state, MdRenderPanels** panels, const PanelsDesc& desc);
 // The image: its GL texture (GL_TEXTURE_2D, RGBA8, rows from the bottom) and panel i's corners in it, as ImGui's
 // AddImage takes them (uv0 its top left, uv1 its bottom right). False: none (yet).
@@ -115,4 +144,10 @@ bool md_render_bridge_panels_image(const MdRenderPanels* panels, uint32_t i, uin
 // (md_render_bridge_pick, md_render_bridge_hit): an atom or a bond, or nothing (a mesh, the background)
 void md_render_bridge_panels_pick(ApplicationState* state, MdRenderPanels* panels, uint32_t i, float x, float y);
 bool md_render_bridge_panels_hit(ApplicationState* state, MdRenderPanels* panels, PickingHit* hit);
+// The two for the mouse over panel i, an interaction surface (its points, as ImGui has them) of the size of a panel,
+// width x height pixels: the hit (*hit, empty for none) as a surface's, of the source, where it is in the world
+// (clip_to_world: the panels' camera's)
+void md_render_bridge_panels_surface_hit(PickingHit* hit, ApplicationState* state, MdRenderPanels* panels, uint32_t i,
+                                         const InteractionSurfaceState& surface, uint64_t source, const md_float4x4_t& clip_to_world,
+                                         int width, int height);
 void md_render_bridge_panels_destroy(ApplicationState* state, MdRenderPanels** panels);
