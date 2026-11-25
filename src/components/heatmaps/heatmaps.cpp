@@ -247,8 +247,8 @@ struct Heatmaps : viamd::EventHandler {
                 for (const auto& h : maps) {
                     viamd::write_str(state, MD_STR_LIT("Matrix"), md_str_from_cstr(h->name));
                     // Of another instance than the first
-                    const SystemInstance& inst = instance_resolve(app->system_context, h->instance);
-                    if (&inst != &system_instance(app->system_context)) viamd::write_int(state, MD_STR_LIT("Instance"), (int)inst.id);
+                    const SystemInstance& inst = instance_resolve(first_system(*app), h->instance);
+                    if (&inst != &system_instance(first_system(*app))) viamd::write_int(state, MD_STR_LIT("Instance"), (int)inst.id);
                     viamd::write_str(state, MD_STR_LIT("Over"), over_ini[h->over]);
                     if (h->over == Over_Period) viamd::write_int(state, MD_STR_LIT("Period"), (int)h->period);
                 }
@@ -313,7 +313,7 @@ struct Heatmaps : viamd::EventHandler {
         h.labels_stale = true;
     }
 
-    const SystemInstance& instance_of(const Heatmap& h) const { return instance_resolve(app->system_context, h.instance); }
+    const SystemInstance& instance_of(const Heatmap& h) const { return instance_resolve(first_system(*app), h.instance); }
 
     // The evaluation of the run of its instance: the first instance's run's for one without a run
     const script::Eval* eval_of(const Heatmap& h) const {
@@ -325,7 +325,7 @@ struct Heatmaps : viamd::EventHandler {
     bool frames_of(const Heatmap& h, uint32_t* beg, uint32_t* end) const {
         const SystemInstance& inst = instance_of(h);
         const SystemRun* run = instance_run(inst);
-        const int nf = (int)run_num_frames(app->system_context, run);
+        const int nf = (int)run_num_frames(first_system(*app), run);
         if (nf <= 0) return false;
         switch (h.over) {
         case Over_Frame: {
@@ -341,7 +341,7 @@ struct Heatmaps : viamd::EventHandler {
         case Over_Period: {
             const TimelinePeriod* p = timeline_periods_find(&app->timeline.periods, h.period);
             int b = 0, e = 0;
-            if (!p || !run_period_frames(&b, &e, app, app->system_context, run, *p) || b >= nf) return false;
+            if (!p || !run_period_frames(&b, &e, app, first_system(*app), run, *p) || b >= nf) return false;
             e = MD_MIN(e, nf - 1);
             *beg = (uint32_t)b;
             *end = (uint32_t)e + 1;
@@ -559,9 +559,9 @@ struct Heatmaps : viamd::EventHandler {
         const View* v = h.view.get();
         h.wanted.clear();       // Of what is drawn below
         // Of which instance's run, where the first system has several
-        if (app->system_context.num_instances > 1) {
+        if (first_system(*app).num_instances > 1) {
             ImGui::SetNextItemWidth(200);
-            instance_combo("Instance", &h.instance, app->system_context);
+            instance_combo("Instance", &h.instance, first_system(*app));
             ImGui::SetItemTooltip("Of the evaluation of its run: its frames, and the frame it shows");
             ImGui::SameLine();
         }
@@ -820,7 +820,7 @@ struct Heatmaps : viamd::EventHandler {
         if (hovered_map >= 0 && hovered_map < (int)maps.size() && app->script.eval_ir) {
             const Heatmap& h = *maps[hovered_map];
             const md_str_t name = md_str_from_cstr(h.name);
-            md_bitmask_t* mask = &app->system_context.selection.highlight_mask;
+            md_bitmask_t* mask = &first_system(*app).selection.highlight_mask;
             md_bitmask_clear(mask);
             std::vector<uint32_t> atoms;
             for (int d = 0; d < 2; ++d) {
@@ -832,7 +832,7 @@ struct Heatmaps : viamd::EventHandler {
             }
             highlighting = true;
         } else if (highlighting) {
-            md_bitmask_clear(&app->system_context.selection.highlight_mask);
+            md_bitmask_clear(&first_system(*app).selection.highlight_mask);
             highlighting = false;
         }
     }

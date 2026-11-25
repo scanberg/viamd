@@ -1928,7 +1928,7 @@ void instance_show(SystemInstance& inst, int run, int64_t frame) {
 
     // The timeline shows the clock (clock.h), whose reference this is likely to be: all of it, in its unit, which the
     // display unit only changes the printing of (frame_axis.h)
-    if (&sys == &app->system_context && run_num_frames(sys, instance_run(inst)) > 0) {
+    if (&sys == &first_system(*app) && run_num_frames(sys, instance_run(inst)) > 0) {
         clock_update(app);
         double beg, end;
         clock_span(app, &beg, &end);
@@ -2304,7 +2304,7 @@ void free_system_data(ApplicationState* data, SystemContext& sys) {
 
     // The script is compiled against the first system and evaluated in it (until it is per system): what it computed
     // goes with that one alone
-    if (&sys == &data->system_context) {
+    if (&sys == &first_system(*data)) {
         // The frames selected are of its run, which the timeline shows
         frame_selection_clear(data);
         md_bitmask_clear(&data->selection.frame_highlight_mask);
@@ -2380,21 +2380,8 @@ bool system_loaded(const SystemContext& sys) {
 
 SystemContext* system_add(ApplicationState* app) {
     MD_ASSERT(app);
-    SystemContext* first = &app->system_context;
-    if (!system_loaded(*first)) {
-        // Listed last, as an added one is
-        size_t i = 0;
-        while (i < app->num_systems && app->systems[i] != first) ++i;
-        for (; i + 1 < app->num_systems; ++i) app->systems[i] = app->systems[i + 1];
-        app->systems[app->num_systems - 1] = first;
-        // Of whatever was loaded into it before, nothing refers to it by its id now, nor by its directory
-        if (app->num_systems > 1) {
-            first->id = app->next_system_id++;
-            first->dir[0] = '\0';
-            system_dir_number(*first);
-        }
-        return first;
-    }
+    // Nothing loaded: the empty one there is
+    if (app->num_systems == 1 && !system_loaded(first_system(*app))) return &first_system(*app);
     return system_alloc(app);
 }
 
@@ -2409,16 +2396,36 @@ SystemContext* system_alloc(ApplicationState* app) {
     return sys;
 }
 
+// The first system is another: what follows the first (see SystemContext) follows this one now. What it had of the one
+// before went with that one's data (free_system_data).
+static void first_system_changed(ApplicationState* app) {
+    SystemContext& first = first_system(*app);
+    // The script is compiled against it and evaluated in it, and the editor completes the names of its system
+    app->script.compile_ir = true;
+    script_editor::enable_autocomplete(app->editor, app->script.language, &first.data.sys);
+    // The series of the timeline and the distributions: keyed on versions which only mean something within one table
+    series_cache_free(app);
+    clock_update(app);
+    // To what follows the first alone, it is the first system loaded. One still inferred is told when it is
+    // (system_inferred_refresh).
+    if (system_loaded(first) && !first.data.inference.pending) {
+        viamd::event_system_broadcast_event(viamd::EventType_ViamdSystemInit, viamd::EventPayloadType_System, &first);
+    }
+}
+
 void system_release(ApplicationState* app, SystemContext* sys) {
     MD_ASSERT(app && sys);
-    if (sys == &app->system_context) return;
     size_t i = 0;
     while (i < app->num_systems && app->systems[i] != sys) ++i;
     if (i == app->num_systems) return;
+    const bool first = i == 0;
     for (; i + 1 < app->num_systems; ++i) app->systems[i] = app->systems[i + 1];
     app->systems[--app->num_systems] = nullptr;
     system_context_destroy(sys);
     delete sys;
+    // There is always one
+    if (app->num_systems == 0) system_alloc(app);
+    if (first) first_system_changed(app);
 }
 
 SystemContext* system_find(ApplicationState* app, uint32_t id) {
@@ -3353,7 +3360,7 @@ struct WorkspacePending {
 
     // The systems it loads, by the ids it names them by ([System] Id), and what refers to the atoms of each: kept until
     // its files are loaded. In the order the workspace names them, which the Scene window lists them in; the first is
-    // loaded into the first system held (system_context), the others into systems of their own.
+    // loaded into the first system held (first_system), the others into systems of their own.
     struct System {
         int            id;
         SystemContext* sys;
@@ -3434,8 +3441,8 @@ static void workspace_reset(ApplicationState* data) {
 
     // The workspace's files are loaded onto nothing, as they were when they were first loaded: what a file
     // is to the system can depend on what is there (a VeloxChem file of the loaded atoms supplements them,
-    // and builds the system otherwise). A workspace that names no files leaves nothing loaded. Every system goes:
-    // the first is emptied, which the workspace's first is loaded into, the others are taken out.
+    // and builds the system otherwise). A workspace that names no files leaves nothing loaded. Every system goes, and
+    // the empty one made for the last (system_release) is what the workspace's first is loaded into.
     interrupt_async_tasks(data);
     for (size_t i = data->num_systems; i-- > 0;) {
         SystemContext* sc = data->systems[i];
@@ -3444,9 +3451,6 @@ static void workspace_reset(ApplicationState* data) {
     }
     // The quantum chemistry of the one the workspace chooses ([QuantumChemistry] System=), else the first with any
     data->qm = {};
-    // The first's directory, as the workspace gives it ([SystemScene] Dir=), else the first number
-    data->system_context.dir[0] = '\0';
-    system_dir_number(data->system_context);
 
     // The fields rather than the struct: whether the window is open is decided by [Windows]. No unit to the time yet:
     // what the workspace holds on the clock is taken into the clock's unit once its runs are loaded, not converted from
@@ -3506,7 +3510,7 @@ static WorkspacePending::System* workspace_system(WorkspacePending* p, int id) {
             p->skipped_systems += 1;
             return nullptr;
         }
-        SystemContext* sys = p->num_systems == 0 ? &app->system_context : system_alloc(app);
+        SystemContext* sys = p->num_systems == 0 ? &first_system(*app) : system_alloc(app);
         if (!sys) {
             p->skipped_systems += 1;
             return nullptr;
@@ -4100,7 +4104,7 @@ void load_workspace(ApplicationState* data, md_str_t filename) {
         }
     }
 
-    // A system it names with no files at all is not one: taken out (the first stays, empty)
+    // A system it names with no files at all is not one: taken out (an empty one is made when none is left)
     for (size_t k = pending.num_systems; k-- > 0;) {
         SystemContext* sc = pending.systems[k].sys;
         if (!system_loaded(*sc)) {
@@ -4251,7 +4255,7 @@ bool save_workspace(ApplicationState* app_state, md_str_t filename) {
         viamd::write_section_header(state, MD_STR_LIT("TimelineView"));
         viamd::write_int(state, MD_STR_LIT("PeriodLayout"), (int)tl.periods.layout);
         viamd::write_bool(state, MD_STR_LIT("PeriodShadeAll"), tl.periods.shade_all);
-        if (run_num_frames(app_state->system_context) > 0) {
+        if (run_num_frames(first_system(*app_state)) > 0) {
             const double view[2] = { tl.view_range.beg_x, tl.view_range.end_x };
             viamd::write_dbl_vec(state, MD_STR_LIT("ViewTime"), view, 2);
         }
@@ -4404,7 +4408,7 @@ script::FilterCtx filter_context(const SystemContext& sys) {
 script::FilterCtx filter_context(const SystemInstance& inst) {
     const SystemContext& sys = *inst.sys;
     const ApplicationState* app = sys.app;
-    const bool names = app && &sys == &app->system_context;
+    const bool names = app && &sys == &first_system(*app);
     const SystemRun* run = instance_run(inst);
     return script::FilterCtx{&sys.data.sys, &inst.state, names ? app->script.ir : nullptr, nullptr, run ? md_str_from_cstr(run->path) : md_str_t{}};
 }
@@ -9425,7 +9429,7 @@ const SystemContext& scene_frame_system(const ApplicationState& app) {
     for (size_t i = 0; i < app.num_systems; ++i) {
         if (system_loaded(*app.systems[i])) return *app.systems[i];
     }
-    return app.system_context;
+    return first_system(app);
 }
 
 void reset_view_scene(ViewTransform* transform, const ApplicationState& app, float fov_y, float aspect_ratio) {
@@ -9901,7 +9905,7 @@ void script_set_language(ApplicationState* state, script::Language lang) {
     if (state->script.language == lang) return;
     state->script.language = lang;
     state->editor.SetLanguage(script_editor::language(lang));
-    script_editor::enable_autocomplete(state->editor, lang, &state->mold.sys);
+    script_editor::enable_autocomplete(state->editor, lang, &first_system(*state).data.sys);
     state->script.compile_ir = true;
     state->script.time_since_last_change = 1.0e9;     // now, not after the pause that follows an edit
     flag_all_representations_as_dirty(state);
@@ -9962,7 +9966,7 @@ static bool run_shown(const SystemContext& sys, md_str_t run) {
 
 void script_run_evals_sync(ApplicationState* state) {
     auto& sc = state->script;
-    const SystemContext& sys = state->system_context;
+    const SystemContext& sys = first_system(*state);
     // Of the script evaluated, as it was made: an evaluation of a script being made anew is made with it (main.cpp)
     if (!sc.eval || !script::valid(sc.eval_ir) || script::eval_fingerprint(sc.eval) != script::fingerprint(sc.eval_ir)) return;
 
@@ -9991,7 +9995,7 @@ void script_run_evals_sync(ApplicationState* state) {
         if (!r || r->path[0] == '\0') continue;
         const md_str_t run = md_str_from_cstr(r->path);
         if (script_eval_of_run(state, run)) continue;
-        const script::EvalDesc desc = { .num_frames = run_num_frames(sys, r), .sys = &state->mold.sys, .run = run,
+        const script::EvalDesc desc = { .num_frames = run_num_frames(sys, r), .sys = &first_system(*state).data.sys, .run = run,
                                         .executor = task_system::executor() };
         if (desc.num_frames == 0) continue;
         ScriptRunEval e;
@@ -10134,10 +10138,10 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
     job->target.str = md_alloc_str(job->arena, t.str);
     job->ir = ir;
     script::program_retain(ir);
-    job->sys = &state->mold.sys;
-    job->run = md_alloc_str(job->arena, run_path(state->system_context));
+    job->sys = &first_system(*state).data.sys;
+    job->run = md_alloc_str(job->arena, run_path(first_system(*state)));
     job->state.alloc = job->arena;
-    md_system_state_copy(&job->state, &system_instance(state->system_context).state);
+    md_system_state_copy(&job->state, &system_instance(first_system(*state)).state);
     script::drawing_init(&job->vis, job->arena);
     if (t.kind == ScriptVisTarget::Ref) {
         // The value in the unit its mark shows it in
@@ -10183,10 +10187,10 @@ static void vis_job_dispatch(ApplicationState* state, uint64_t key, uint64_t sta
 bool energy_term_groups(md_edr_term_groups_t* out, const ApplicationState* state, const md_attribute_t* attr) {
     MD_ASSERT(out);
     MD_ASSERT(state);
-    if (!attr || state->mold.sys.group.count == 0) return false;
+    if (!attr || first_system(*state).data.sys.group.count == 0) return false;
     // The label is the name as the file has it; an unlabelled series has its leaf as its name
     const md_str_t name = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
-    return md_edr_term_groups(out, &state->mold.sys, name);
+    return md_edr_term_groups(out, &first_system(*state).data.sys, name);
 }
 
 bool energy_term_names_groups(const md_attribute_t* attr) {
@@ -10196,7 +10200,7 @@ bool energy_term_names_groups(const md_attribute_t* attr) {
 
 size_t energy_term_groups_text(char* buf, size_t cap, const ApplicationState* state, const md_edr_term_groups_t& tg) {
     MD_ASSERT(state);
-    const md_group_data_t& g = state->mold.sys.group;
+    const md_group_data_t& g = first_system(*state).data.sys.group;
     if (!cap) return 0;
     buf[0] = '\0';
     if (tg.group[0] >= g.count || tg.group[1] >= g.count) return 0;
@@ -10211,17 +10215,17 @@ bool highlight_energy_term_groups(ApplicationState* state, const md_attribute_t*
     MD_ASSERT(state);
     md_edr_term_groups_t tg;
     if (!energy_term_groups(&tg, state, attr)) return false;
-    const md_group_data_t& g = state->mold.sys.group;
+    const md_group_data_t& g = first_system(*state).data.sys.group;
     const uint32_t count = (tg.count == 2 && tg.group[0] != tg.group[1]) ? 2 : 1;
     // Group 0 in the highlight's own colour, group 1 in the first colour of the groups after it
     md_bitset_t* sets = (md_bitset_t*)md_alloc(state->allocator.frame, 2 * sizeof(md_bitset_t));
     sets[0] = g.atoms[tg.group[0]];
     sets[1] = g.atoms[tg.group[1]];
-    md_bitmask_assign(&state->system_context.selection.highlight_mask, sets[0]);
-    if (count == 2) md_bitmask_or(&state->system_context.selection.highlight_mask, sets[1]);
+    md_bitmask_assign(&first_system(*state).selection.highlight_mask, sets[0]);
+    if (count == 2) md_bitmask_or(&first_system(*state).selection.highlight_mask, sets[1]);
     if (count == 2) {
         // Indices of groups: of the topology and of the groups as they are now
-        uint64_t key = md_hash64(tg.group, sizeof(tg.group), state->mold.sys.topology_version ^ (state->mold.sys.group.version * 0x9E3779B97F4A7C15ull));
+        uint64_t key = md_hash64(tg.group, sizeof(tg.group), first_system(*state).data.sys.topology_version ^ (first_system(*state).data.sys.group.version * 0x9E3779B97F4A7C15ull));
         state->selection.highlight_groups = {sets, count, key ? key : 1};
     }
     state->selection.term_groups_highlighted = true;
@@ -10242,7 +10246,7 @@ void script_vis_update(ApplicationState* state) {
     // The groups of an energy term are hovered no more
     auto& sel = state->selection;
     if (sel.term_groups_highlighted_prev && !sel.term_groups_highlighted) {
-        md_bitmask_clear(&state->system_context.selection.highlight_mask);
+        md_bitmask_clear(&first_system(*state).selection.highlight_mask);
     }
     sel.term_groups_highlighted_prev = sel.term_groups_highlighted;
     sel.term_groups_highlighted = false;
@@ -10260,7 +10264,7 @@ void script_vis_update(ApplicationState* state) {
     }
 
     const uint64_t key = vis_target_key(state, sc.vis_target);
-    const uint64_t state_key = vis_state_key(system_instance(state->system_context).state);
+    const uint64_t state_key = vis_state_key(system_instance(first_system(*state)).state);
 
     // At most one at a time. While one runs, whatever is set when it has finished is what comes next: the
     // targets in between are never computed.
@@ -10273,7 +10277,7 @@ void script_vis_update(ApplicationState* state) {
     if (sc.vis_result && sc.vis_result->ok && sc.vis_result->key == key) {
         sc.vis_shown = &sc.vis_result->vis;
         if (!md_bitset_empty(sc.vis_shown->atom_mask)) {
-            md_bitmask_assign(&state->system_context.selection.highlight_mask, sc.vis_shown->atom_mask);
+            md_bitmask_assign(&first_system(*state).selection.highlight_mask, sc.vis_shown->atom_mask);
             // Its elements, a colour each, when there is more than one. Known by what is visualized, not where the
             // atoms are: playing, the atoms' flags are not made again every frame for them
             const size_t num_groups = md_array_size(sc.vis_shown->groups);
@@ -10324,7 +10328,7 @@ const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
     // A run's errors change version with every run that ends: what the plot is of
     const uint64_t run = script::eval_errors(eval).version;
     if (!run) return nullptr;
-    const int64_t frame = (int64_t)floor(system_instance(state->system_context).state.frame);
+    const int64_t frame = (int64_t)floor(system_instance(first_system(*state)).state.frame);
     uint64_t h = md_hash64(&run, sizeof(run), key);
     h = md_hash64(&eval, sizeof(eval), h);
     h = md_hash64(&frame, sizeof(frame), h);
@@ -10334,10 +10338,10 @@ const script::ValuePlot* script_vis_value_plot(ApplicationState* state) {
         md_arena_allocator_reset(sc.trajectory_plot_arena);
         script::DrawCtx ctx = {
             .prog  = ir,
-            .sys   = &state->mold.sys,
-            .state = &system_instance(state->system_context).state,
+            .sys   = &first_system(*state).data.sys,
+            .state = &system_instance(first_system(*state)).state,
             .eval  = eval,
-            .run   = run_path(state->system_context),
+            .run   = run_path(first_system(*state)),
         };
         script::value_plot(&sc.trajectory_plot, sc.vis_target.ref, sc.vis_target.subidx, ctx, sc.trajectory_plot_arena);
     }

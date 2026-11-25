@@ -1080,8 +1080,9 @@ struct Dataset : viamd::EventHandler {
                 break;
             }
             case viamd::EventType_ViamdSystemFree: {
+                // Of whichever system: one loaded again is set up anew (ViamdSystemInit), one removed is freed
                 const SystemContext* sc = event_system(e);
-                if (sc && sc != &sc->app->system_context) forget_system(sc->id);
+                if (sc) forget_system(sc->id);
                 break;
             }
             case viamd::EventType_ViamdFrameTick: {

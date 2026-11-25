@@ -204,7 +204,7 @@ struct Contacts : viamd::EventHandler {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, MD_STR_LIT("Contacts"));
                 // Of another system than the first, another instance than its first: by their ids
-                if (&system() != &app_state->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+                if (&system() != &first_system(*app_state)) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
                 if (&instance() != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)instance().id);
                 viamd::write_int(state, MD_STR_LIT("GroupBy"), (int)group_by);
                 viamd::write_flt(state, MD_STR_LIT("Cutoff"), cutoff);
@@ -423,7 +423,7 @@ struct Contacts : viamd::EventHandler {
         static const char* selector[GroupBy_Count] = { "residue", "molecule", "chain", "part" };
         const bool v2 = app_state->script.language == script::Language::V2;
         // The script is of the first system
-        const bool first = &system() == &app_state->system_context;
+        const bool first = &system() == &first_system(*app_state);
         const size_t n = num_groups_now();
         const bool too_many = n > 5000;
         ImGui::BeginDisabled(!v2 || !first || too_many || n < 2);

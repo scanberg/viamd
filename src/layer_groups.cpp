@@ -320,7 +320,7 @@ bool layer_group_inspector(LayerGroup& g, const ApplicationState* app, const cha
         ImGui::BeginDisabled(g.follow_selection);
         const bool invalid = !g.follow_selection && !g.valid && g.filter.text[0];
         if (invalid) ImGui::PushInvalid();
-        if (filter_input("##filter", &g.filter, app->script.language, filter_context(app->system_context), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
+        if (filter_input("##filter", &g.filter, app->script.language, filter_context(first_system(*app)), 0, nullptr, g.follow_selection ? "the selection" : "none: the group only groups")) {
             changed = true;
         }
         if (invalid) ImGui::PopInvalid();

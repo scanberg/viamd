@@ -308,8 +308,8 @@ static void init_representation(SystemContext& sys, Representation* rep) {
     surface_field_invalidate(&rep->electronic_structure.source_vol);
     // the points of the old one
     glyphs_invalidate(&rep->glyphs);
-    if (rep->type == RepresentationType::Glyphs && !glyphs_is_point_set(state->mold.sys, rep->glyphs.points)) {
-        glyphs_select(&rep->glyphs, state->mold.sys, MD_ATTRIBUTE_INVALID);
+    if (rep->type == RepresentationType::Glyphs && !glyphs_is_point_set(first_system(*state).data.sys, rep->glyphs.points)) {
+        glyphs_select(&rep->glyphs, first_system(*state).data.sys, MD_ATTRIBUTE_INVALID);
     }
     // and its meshes of the old one's basis
     electronic_structure_mesh_free(state, &rep->electronic_structure);
@@ -3221,7 +3221,7 @@ static bool draw_electronic_structure_planes(ApplicationState* state, Representa
     // the display's: the volume's cuts, or the planes display's slices (whose normal points either way)
     ElectronicStructurePlaneSet& set = electronic_structure_planes(es);
     const bool slices = es.display == ElectronicStructureDisplay::Planes;
-    auto& gizmo = state->representation.gizmo;
+    auto& gizmo = first_system(*state).representation.gizmo;
     bool changed = false;
     const float bw = ImGui::GetFrameHeight();
     const float gap = ImGui::GetStyle().ItemInnerSpacing.x;
@@ -5193,8 +5193,8 @@ void draw_representations_window(ApplicationState* state) {
     for (size_t i = 0; i < num_listed; ++i) {
         Listed& l = listed[i];
         if (l.remove) {
-            // The rows were drawn from what it held; nothing else is done to them. Taken out of the list, but for the
-            // first, which stays empty for the next to be loaded into.
+            // The rows were drawn from what it held; nothing else is done to them. Taken out of the list and freed: the
+            // next is the first when it was, and an empty one is made when it was the last (system_release).
             system_remove(*l.sys);
             system_release(state, l.sys);
             continue;

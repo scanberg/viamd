@@ -1477,7 +1477,7 @@ struct Shapespace : viamd::EventHandler {
     void serialize(viamd::serialization_state_t& state) {
         viamd::write_section_header(state, MD_STR_LIT("ShapeSpace"));
         // Of another system than the first: by its id, as the workspace names it
-        if (&system() != &app->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+        if (&system() != &first_system(*app)) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
         viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, MD_STR_LIT("ShowGrid"), show_grid);
         viamd::write_str(state, MD_STR_LIT("View"), md_str_from_cstr(view_mode_names[view_mode]));

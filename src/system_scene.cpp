@@ -348,7 +348,7 @@ static void draw_system_menu(SystemContext& sys, bool* remove_request, InstanceA
                           "a structure replaces it");
     if (bool* show = workspace_window_flag("System")) {
         // The System window is of the first system until it has a system picker of its own
-        const bool first = &sys == &app->system_context;
+        const bool first = &sys == &first_system(*app);
         if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " Details", nullptr, false, first)) {
             *show = true;
         }

@@ -211,7 +211,7 @@ struct Attributes : viamd::EventHandler {
             if (!system_loaded(sc)) continue;
             const md_str_t dir = md_alloc_printf(alloc, "%s/", sc.dir);
             md_array_push(sources, (Source{ &sc, SeriesSource_System, 0, "", dir }), alloc);
-            if (&sc != &state.system_context || !state.script.eval) continue;
+            if (&sc != &first_system(state) || !state.script.eval) continue;
             const char* eval_run = state.script.eval_run;
             const md_str_t eval_prefix = eval_run[0] ? md_alloc_printf(alloc, "%s/%s/", sc.dir, eval_run) : dir;
             md_array_push(sources, (Source{ &sc, SeriesSource_Script, 0, "", eval_prefix }), alloc);
@@ -229,7 +229,7 @@ struct Attributes : viamd::EventHandler {
         const md_str_t filter_str = md_str_from_cstr(filter);
         for (int si = 0; si < num_sources; ++si) {
             const Source& src = sources[si];
-            const bool first = src.sys == &state.system_context;
+            const bool first = src.sys == &first_system(state);
             SeriesKey table_key = series_key(src.source, md_str_t{}, SeriesVariant_Values, src.period);
             snprintf(table_key.run, sizeof(table_key.run), "%s", src.run);
             const md_attributes_t* table = src.source == SeriesSource_System ? &src.sys->data.sys.attributes : series_table(&state, table_key, md_str_t{});

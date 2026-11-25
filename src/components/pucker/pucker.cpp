@@ -204,7 +204,7 @@ struct Pucker : viamd::EventHandler {
                 viamd::serialization_state_t& state = *(viamd::serialization_state_t*)e.payload;
                 viamd::write_section_header(state, MD_STR_LIT("RingPucker"));
                 // Of another system than the first, another instance than its first: by their ids
-                if (&system() != &app_state->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+                if (&system() != &first_system(*app_state)) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
                 if (&instance() != &system_instance(system())) viamd::write_int(state, MD_STR_LIT("Instance"), (int)instance().id);
                 viamd::write_int(state, MD_STR_LIT("Kind"), kind);
                 viamd::write_int(state, MD_STR_LIT("Size"), size);

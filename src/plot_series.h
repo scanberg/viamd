@@ -60,7 +60,7 @@ struct deserialization_state_t;
 }
 
 enum SeriesSource : uint8_t {
-    SeriesSource_System = 0,        // mold.sys.attributes: loaded along the run
+    SeriesSource_System = 0,        // the system's attributes (SystemData::sys): loaded along the run
     SeriesSource_Script,            // the script evaluation
     SeriesSource_Count
 };

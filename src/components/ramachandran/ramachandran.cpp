@@ -1193,7 +1193,7 @@ struct Ramachandran : viamd::EventHandler {
         viamd::write_bool(state, MD_STR_LIT("ShowLayers"), show_sidebar);
         viamd::write_bool(state, MD_STR_LIT("ShowTicks"), show_ticks);
         // Of another system than the first: by its id, as the workspace names it
-        if (&system() != &app->system_context) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
+        if (&system() != &first_system(*app)) viamd::write_int(state, MD_STR_LIT("System"), (int)system().id);
         // Said even when there are none, so that none stays none (rather than the defaults) once read again
         viamd::write_int(state, MD_STR_LIT("Layers"), num_layers);
 

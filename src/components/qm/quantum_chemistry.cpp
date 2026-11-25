@@ -10392,7 +10392,7 @@ struct QuantumChemistry : viamd::EventHandler {
         // compatibility branch that has to be carried forever.
         viamd::write_section_header(ser, MD_STR_LIT("QuantumChemistry"));
         // The system whose quantum chemistry is studied, when it is not the first
-        if (app && &qm_system(*app) != &app->system_context) viamd::write_int(ser, MD_STR_LIT("System"), (int)qm_system(*app).id);
+        if (app && &qm_system(*app) != &first_system(*app)) viamd::write_int(ser, MD_STR_LIT("System"), (int)qm_system(*app).id);
 
         write_settings(ser);
 

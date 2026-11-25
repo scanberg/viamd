@@ -159,8 +159,8 @@ int es_planes_add(ApplicationState* state, ElectronicStructureRepresentation* es
         if (!faces_camera(state, p.plane)) plane_flip(&p.plane);
         slice_fit_box(&p, box, right);
     }
-    state->representation.gizmo.rep_id = rep_id;
-    state->representation.gizmo.plane = i;
+    first_system(*state).representation.gizmo.rep_id = rep_id;
+    first_system(*state).representation.gizmo.plane = i;
     return i;
 }
 
@@ -328,7 +328,7 @@ void es_planes_remove(ApplicationState* state, Representation* rep, int i) {
         es.plane_images[ES_MAX_PLANES - 1] = ElectronicStructurePlaneImage{};
     }
     const uint32_t id = rep->node.id;
-    auto& sel = state->representation.gizmo;
+    auto& sel = first_system(*state).representation.gizmo;
     if (sel.rep_id == id) {
         if (sel.plane == i) sel.plane = -1;
         else if (sel.plane > i) sel.plane -= 1;
@@ -497,7 +497,7 @@ bool es_planes_gizmo(ApplicationState* state, md_float2_t canvas_min, md_float2_
         if (rep.type == RepresentationType::ElectronicStructure) es_slices_conform(&rep.electronic_structure);
     }
 
-    auto& sel = state->representation.gizmo;
+    auto& sel = first_system(*state).representation.gizmo;
     Representation* target = gizmo_target(state, sel.rep_id, sel.plane);
     if (!target) {
         sel.plane = -1;

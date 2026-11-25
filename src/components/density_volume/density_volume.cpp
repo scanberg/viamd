@@ -333,8 +333,8 @@ struct DensityVolume : viamd::EventHandler {
         return show_reference_ensemble ? n : MD_MIN(n, (size_t)1);
     }
 
-    const SystemInstance& inst() const { return instance_resolve(app->system_context, instance_id); }
-    SystemInstance& inst_mut() { return instance_resolve(app->system_context, instance_id); }
+    const SystemInstance& inst() const { return instance_resolve(first_system(*app), instance_id); }
+    SystemInstance& inst_mut() { return instance_resolve(first_system(*app), instance_id); }
 
     // The volume shown as a series: of the evaluation of its instance's run
     SeriesKey shown_key() const {
@@ -349,7 +349,7 @@ struct DensityVolume : viamd::EventHandler {
     void take_key(const SeriesKey& key) {
         volume_key = key;
         if (key.run[0]) {
-            const SystemContext& sc = app->system_context;
+            const SystemContext& sc = first_system(*app);
             for (size_t k = 0; k < sc.num_instances; ++k) {
                 const SystemRun* r = instance_run(*sc.instances[k]);
                 if (r && strcmp(r->path, key.run) == 0) {
@@ -370,7 +370,7 @@ struct DensityVolume : viamd::EventHandler {
         MD_DEFER { md_temp_end(temp); };
 
         Representation& rep = r.rep;
-        rep.type_is_valid = representation_particle_type_valid(state->system_context, rep.type);
+        rep.type_is_valid = representation_particle_type_valid(first_system(*state), rep.type);
 
         // A subset per structure shown. Should md_gl run out of them, those that are left are not drawn: a subset of
         // id 0 would draw all of the molecule.
@@ -463,13 +463,13 @@ struct DensityVolume : viamd::EventHandler {
         md_temp_scope_t temp = md_temp_begin_in(frame);
         MD_DEFER { md_temp_end(temp); };
 
-        const size_t num_atoms = md_system_atom_count(&state->mold.sys);
+        const size_t num_atoms = md_system_atom_count(&first_system(*state).data.sys);
         Representation& rep = r.rep;
         if (!rep.md_rep.id) rep.md_rep = md_gl_rep_create(inst().gl_mol);
 
         // Opaque: what is drawn is what the subsets hold
         uint32_t* colors = (uint32_t*)md_temp_alloc(temp, MD_MAX(num_atoms, (size_t)1) * sizeof(uint32_t));
-        representation_atom_colors(colors, num_atoms, state->system_context, &rep, &rep.atom_mask);
+        representation_atom_colors(colors, num_atoms, first_system(*state), &rep, &rep.atom_mask);
         for (size_t i = 0; i < num_atoms; ++i) {
             colors[i] |= 0xFF000000u;
         }
@@ -574,7 +574,7 @@ struct DensityVolume : viamd::EventHandler {
     void write_settings(viamd::serialization_state_t& s) {
         viamd::PathPrefix p;
         // Of another instance than the first
-        if (&inst() != &system_instance(app->system_context)) viamd::write_int(s, p("Instance"), (int)inst().id);
+        if (&inst() != &system_instance(first_system(*app))) viamd::write_int(s, p("Instance"), (int)inst().id);
         // The volume shown, by the series it is of
         if (volume_key.path[0] != '\0') {
             viamd::PathPrefix q = p.sub("Property");
@@ -700,7 +700,7 @@ struct DensityVolume : viamd::EventHandler {
         // of a representation of the Representations window
         for (size_t i = 0; i < md_array_size(reps); ++i) {
             viamd::write_section_header(state, MD_STR_LIT("DensityVolumeRepresentation"));
-            representation_write_entries(state, app->system_context, reps[i].rep);
+            representation_write_entries(state, first_system(*app), reps[i].rep);
         }
     }
 
@@ -874,7 +874,7 @@ struct DensityVolume : viamd::EventHandler {
                     const SeriesKey key = shown_key();
                     script::DrawCtx ctx = {
                         .prog = state->script.eval_ir,
-                        .sys = &state->mold.sys,
+                        .sys = &first_system(*state).data.sys,
                         .state = &inst().state,
                         .eval = series_eval(state, key),
                         .run = md_str_from_cstr(key.run),
@@ -1034,16 +1034,16 @@ struct DensityVolume : viamd::EventHandler {
         }
         // This volume's first structure where the volume is made: frame 0, in the volume's frame
         md_system_state_t st0 = {.alloc = temp};
-        md_system_state_init(&st0, state->mold.sys.atom.count);
+        md_system_state_init(&st0, first_system(*state).data.sys.atom.count);
         md_array(int32_t) atoms = nullptr;
         md_float3_t* xyz = nullptr;
         const SeriesKey key = shown_key();
-        if (script::valid(state->script.eval_ir) && extract_frame(state->system_context, instance_run(inst()), 0, &st0)) {
+        if (script::valid(state->script.eval_ir) && extract_frame(first_system(*state), instance_run(inst()), 0, &st0)) {
             script::Drawing vis = {};
             script::drawing_init(&vis, temp);
             script::DrawCtx ctx = {
                 .prog = state->script.eval_ir,
-                .sys = &state->mold.sys,
+                .sys = &first_system(*state).data.sys,
                 .state = &st0,
                 .eval = series_eval(state, key),
                 .run = md_str_from_cstr(key.run),
@@ -1064,7 +1064,7 @@ struct DensityVolume : viamd::EventHandler {
             // Two densities of the run's frame (density()): as they are
             cmp.al = density_volume::Alignment{};
             cmp.same_frame = true;
-        } else if (!density_volume::align(&cmp.al, &state->mold.sys, atoms, md_array_size(atoms), xyz, cmp.cube, temp, cmp.err, sizeof(cmp.err))) {
+        } else if (!density_volume::align(&cmp.al, &first_system(*state).data.sys, atoms, md_array_size(atoms), xyz, cmp.cube, temp, cmp.err, sizeof(cmp.err))) {
             return;
         }
         const size_t n = (size_t)v.dim[0] * v.dim[1] * v.dim[2];
@@ -1199,9 +1199,9 @@ struct DensityVolume : viamd::EventHandler {
             series_label(preview, sizeof(preview), state, key);
         }
         // Of which instance's run, where the first system has several
-        if (state->system_context.num_instances > 1) {
+        if (first_system(*state).num_instances > 1) {
             prop::row("instance", "Of the evaluation of its run: the volume, and the reference structures in its coordinates");
-            instance_combo("##instance", &instance_id, state->system_context);
+            instance_combo("##instance", &instance_id, first_system(*state));
         }
         prop::row("property", "A volume of the script (sdf(...) and the like), which can also be dragged here from its mark in the script editor");
         if (ImGui::BeginCombo("##property", preview, ImGuiComboFlags_HeightLarge)) {
@@ -1391,8 +1391,8 @@ struct DensityVolume : viamd::EventHandler {
         if (open) {
             // Its type only says what is drawn of the subsets, its geometry how: neither is found again, but for the
             // glyphs of a Cartoon (update_reps)
-            if (draw_representation_type(state->system_context, rep, true)) {
-                rep.type_is_valid = representation_particle_type_valid(state->system_context, rep.type);
+            if (draw_representation_type(first_system(*state), rep, true)) {
+                rep.type_is_valid = representation_particle_type_valid(first_system(*state), rep.type);
             }
 
             // Completed within the first structure, as each is evaluated within its own
@@ -1405,9 +1405,9 @@ struct DensityVolume : viamd::EventHandler {
             }
 
             const bool one_row = representation_geometry_is_one_row(rep);
-            if (one_row) draw_representation_geometry(state->system_context, rep);
+            if (one_row) draw_representation_geometry(first_system(*state), rep);
             if (prop::section("Color")) {
-                if (draw_representation_coloring(state->system_context, rep)) {
+                if (draw_representation_coloring(first_system(*state), rep)) {
                     r.colors_dirty = true;
                 }
                 prop::section_end();
@@ -1416,7 +1416,7 @@ struct DensityVolume : viamd::EventHandler {
                 // Only what the args of the draws take, but whether the head of a lipid is two spheres, which its glyphs'
                 // colours do
                 const bool two_heads = rep.two_head_spheres;
-                draw_representation_geometry(state->system_context, rep);
+                draw_representation_geometry(first_system(*state), rep);
                 if (rep.two_head_spheres != two_heads) r.colors_dirty = true;
                 prop::section_end();
             }
@@ -1734,7 +1734,7 @@ struct DensityVolume : viamd::EventHandler {
             if (selected_property && show_reference_structures) {
                 // Each representation, once per structure shown: what its filter picks within that structure, where the
                 // structure aligns with the reference (a rigid transform)
-                const bool has_backbone = state->mold.sys.protein_backbone.range.count > 0;
+                const bool has_backbone = first_system(*state).data.sys.protein_backbone.range.count > 0;
                 md_array(md_gl_draw_op_t) draw_ops = nullptr;
                 md_array(md_gl_draw_op_t) glyph_ops = nullptr;
                 CartoonGlyphs& glyphs = inst_mut().cartoon_glyphs;
@@ -1745,7 +1745,7 @@ struct DensityVolume : viamd::EventHandler {
                         // Derived from the positions of the atoms when a cartoon of the main view has not
                         if (!glyphs.positions_valid) cartoon_glyphs_update_positions(&glyphs, inst().state);
                         md_array(md_gl_draw_op_t) ops = nullptr;
-                        representation_glyph_draw_ops(&ops, state->system_context, r.rep, temp_arena);
+                        representation_glyph_draw_ops(&ops, first_system(*state), r.rep, temp_arena);
                         const size_t n = MD_MIN(md_array_size(r.glyph_subsets), md_array_size(structure_mats));
                         for (size_t k = 0; k < md_array_size(ops); ++k) {
                             for (size_t j = 0; j < n; ++j) {

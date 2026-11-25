@@ -261,7 +261,7 @@ struct ScriptPlan {
 static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* alloc) {
     ScriptPlan plan;
     const script::Program* ir = state.script.ir;
-    plan.num_frames = (uint32_t)run_num_frames(state.system_context);
+    plan.num_frames = (uint32_t)run_num_frames(first_system(state));
     plan.valid = script::valid(ir) && plan.num_frames > 0;
     plan.running = state.tasks.evaluate.running();
     if (!plan.valid) return plan;
@@ -273,7 +273,7 @@ static ScriptPlan script_plan(const ApplicationState& state, md_allocator_i* all
     // The runs Evaluate evaluates: the first, that of the evaluation which goes on (script.eval's) or of the one made
     // anew (the first instance's), then every other the first system's instances show. Each against the evaluation of
     // it there is, which a new one takes over from.
-    const SystemContext& sc = state.system_context;
+    const SystemContext& sc = first_system(state);
     md_str_t first = plan.same ? md_str_from_cstr(state.script.eval_run) : run_path(sc);
     const script::Eval* first_eval = script_eval_of_run(&state, first);
     md_array(md_str_t) runs = nullptr;
@@ -509,7 +509,7 @@ static inline bool screenshot_offscreen(const ApplicationState* state) {
 // gizmo is); faint for a hidden one
 static md_float4_t es_slice_edge_color(const ApplicationState* state, uint32_t rep_id, int i, bool enabled) {
     if (screenshot_offscreen(state)) return md_float4_set(0, 0, 0, 0);
-    if (state->representation.gizmo.rep_id == rep_id && state->representation.gizmo.plane == i) return md_float4_set(0, 0, 0, 0);
+    if (first_system(*state).representation.gizmo.rep_id == rep_id && first_system(*state).representation.gizmo.plane == i) return md_float4_set(0, 0, 0, 0);
     return enabled ? md_float4_set(1.0f, 1.0f, 1.0f, 0.85f) : md_float4_set(0.78f, 0.78f, 0.78f, 0.4f);
 }
 
@@ -719,7 +719,7 @@ static void apply_visual_settings(void* user_data) {
 
 static void modify_selection(ApplicationState* state, md_bitset_t atom_mask, SelectionOperator op = SelectionOperator::Set) {
     MD_ASSERT(state);
-    modify_field(&state->system_context.selection.selection_mask, atom_mask, op);
+    modify_field(&first_system(*state).selection.selection_mask, atom_mask, op);
 }
 
 int main(int argc, char** argv) {
@@ -788,9 +788,8 @@ int main(int argc, char** argv) {
     state.allocator.persistent = persistent_alloc;
     state.allocator.frame = frame_alloc;
     state.file_queue.ring = md_ring_allocator_create(md_alloc(persistent_alloc, MD_MEGABYTES(1)), MD_MEGABYTES(1));
-    // The first system, which is held in place: its arena and its masks
-    system_context_init(&state.system_context, &state);
-    system_dir_number(state.system_context);
+    // The system there always is, empty until something is loaded into it
+    system_alloc(&state);
 
     md_temp_arena_system_init();
 
@@ -978,7 +977,7 @@ int main(int argc, char** argv) {
     state.editor.SetInsertSpacesOnTabs(true);
     // The marks of how each property stands, left of the line numbers (see draw_script_gutter_mark)
     state.editor.SetDecorationsBeforeLineNumbers(true);
-    script_editor::enable_autocomplete(state.editor, state.script.language, &state.mold.sys);
+    script_editor::enable_autocomplete(state.editor, state.script.language, &first_system(state).data.sys);
 
     {
         // Assume argv[1..] are files to load
@@ -1130,7 +1129,7 @@ int main(int argc, char** argv) {
             if (surface_state.deactivated && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
                 ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 9.0f &&
                 hit.raw_idx == INVALID_PICKING_IDX && hit.depth >= 1.0f) {
-                state.representation.gizmo.plane = -1;
+                first_system(state).representation.gizmo.plane = -1;
             }
 
             if (event.kind == InteractionSurfaceEventKind::RegionSelect) {
@@ -1419,7 +1418,7 @@ int main(int argc, char** argv) {
                     md_str_t cwd = {};
                     if (state.files.workspace[0] != '\0') {
                         cwd = md_path_folder(md_str_from_cstr(state.files.workspace));
-                    } else if (const FileEntry* run_file = file_list_run_file(&state.file_list)) {
+                    } else if (const FileEntry* run_file = file_list_run_file(&first_system(state).files)) {
                         // The trajectory's folder, else the structure's
                         cwd = md_path_folder(md_str_from_cstr(run_file->path));
                     }
@@ -1429,7 +1428,7 @@ int main(int argc, char** argv) {
 
                     // The user's groups, which v1 names as identifiers, as it named the stored selections they were. VIAL
                     // selects them as every group, group('name'), and is given none.
-                    const md_group_data_t& groups = state.mold.sys.group;
+                    const md_group_data_t& groups = first_system(state).data.sys.group;
                     script::NamedSet* sets = (script::NamedSet*)md_alloc(frame_alloc, MD_MAX(groups.count, 1) * sizeof(script::NamedSet));
                     size_t num_sets = 0;
                     if (state.script.language == script::Language::V1) {
@@ -1441,7 +1440,7 @@ int main(int argc, char** argv) {
 
                     // The previous IR is freed once nothing uses it (script_ir_collect). Empty text is not compiled:
                     // the IR holds the named sets only.
-                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&state.mold.sys, sets, num_sets, run_path(state.system_context)});
+                    state.script.ir = script_ir_create(&state, src_str, script::CompileDesc{&first_system(state).data.sys, sets, num_sets, run_path(first_system(state))});
                     
                     if (src_str) {
                         // The markers copy what they need from the IR (it is freed below if it did not compile)
@@ -1504,7 +1503,7 @@ int main(int argc, char** argv) {
 
         // Over the frames of the runs of the first system its instances show, which the script reads: an evaluation of
         // each, script.eval of the first instance's
-        const size_t num_frames = run_num_frames(state.system_context);
+        const size_t num_frames = run_num_frames(first_system(state));
         if (num_frames > 0) {
             if (state.script.eval_init) {
                 if (state.tasks.evaluate.running()) {
@@ -1539,9 +1538,9 @@ int main(int argc, char** argv) {
                     if (script::valid(state.script.ir)) {
                         state.script.eval_ir = state.script.ir;
                         // The slots over periods come along, and what they hold where their property is taken over
-                        const md_str_t run = run_path(state.system_context);
+                        const md_str_t run = run_path(first_system(state));
                         const script::Eval* from = prev_of(run);
-                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &state.mold.sys, .run = run,
+                        const script::EvalDesc desc = { .num_frames = num_frames, .sys = &first_system(state).data.sys, .run = run,
                                                         .executor = task_system::executor() };
                         state.script.eval = script::eval_create(from, state.script.eval_ir, desc, state.allocator.persistent);
                         anew |= !from;
@@ -1549,12 +1548,12 @@ int main(int argc, char** argv) {
                             md_str_copy_to_char_buf(state.script.eval_run, sizeof(state.script.eval_run), run);
                             viamd::event_system_broadcast_event(viamd::EventType_ViamdScriptEvalInit, viamd::EventPayloadType_ApplicationState, &state);
                             // The other runs shown
-                            const SystemContext& sc = state.system_context;
+                            const SystemContext& sc = first_system(state);
                             for (size_t k = 0; k < sc.num_instances; ++k) {
                                 const SystemRun* r = instance_run(*sc.instances[k]);
                                 const md_str_t other = r ? md_str_from_cstr(r->path) : md_str_t{};
                                 if (md_str_empty(other) || script_eval_of_run(&state, other)) continue;
-                                const script::EvalDesc d = { .num_frames = run_num_frames(sc, r), .sys = &state.mold.sys, .run = other,
+                                const script::EvalDesc d = { .num_frames = run_num_frames(sc, r), .sys = &first_system(state).data.sys, .run = other,
                                                              .executor = task_system::executor() };
                                 if (d.num_frames == 0) continue;
                                 const script::Eval* other_from = prev_of(other);
@@ -1657,11 +1656,11 @@ int main(int argc, char** argv) {
                     if (script::eval_whole(eval)) {
                         // v2: one call evaluates every pending frame, spreading them over the pool itself
                         state.tasks.evaluate.start(MD_STR_LIT("Evaluate script"), [&state, ir, eval, run_str]() {
-                            script::eval_frames(eval, ir, &state.mold.sys, md_str_t{run_str.data(), run_str.size()}, nullptr, 0);
+                            script::eval_frames(eval, ir, &first_system(state).data.sys, md_str_t{run_str.data(), run_str.size()}, nullptr, 0);
                         }, on_main);
                     } else {
                         state.tasks.evaluate.start_for(MD_STR_LIT("Evaluate script"), (uint32_t)n, 1, [&state, ir, eval, frames, run_str](uint32_t beg, uint32_t end) {
-                            script::eval_frames(eval, ir, &state.mold.sys, md_str_t{run_str.data(), run_str.size()}, frames + beg, end - beg);
+                            script::eval_frames(eval, ir, &first_system(state).data.sys, md_str_t{run_str.data(), run_str.size()}, frames + beg, end - beg);
                         }, on_main);
                     }
                 }
@@ -1838,7 +1837,7 @@ int main(int argc, char** argv) {
             const uint64_t sel = md_bitset_hash64(md_bitmask_view(&sc.selection.selection_mask), 0);
             uint64_t f = md_hash64_combine(v, md_hash64_combine(h, md_hash64_combine(sel, any_selected)));
             // The groups of the highlight are of the script's, the first system's (update_md_buffers)
-            if (&sc == &state.system_context) f = md_hash64_combine(f, state.selection.highlight_groups.key);
+            if (&sc == &first_system(state)) f = md_hash64_combine(f, state.selection.highlight_groups.key);
             for (size_t k = 0; k < sc.num_instances; ++k) {
                 SystemInstance& inst = *sc.instances[k];
                 if (f != inst.flags_hash) {
@@ -2208,7 +2207,7 @@ static void draw_main_menu(ApplicationState* data) {
                         data->view.camera.fov_y = MD_DEG_TO_RAD(fov);
                     }
                 }
-                if (data->mold.sys.assembly.count > 0 || md_unitcell_flags(&system_instance(data->system_context).state.unitcell) != 0) {
+                if (first_system(*data).data.sys.assembly.count > 0 || md_unitcell_flags(&system_instance(first_system(*data)).state.unitcell) != 0) {
                     // What the system is shown as is the system's, listed with it
                     prop::row("shown as", "The periodic images and the assemblies are the system's: 'Shown as', under the\n"
                                           "system in the Scene window");
@@ -2948,7 +2947,7 @@ AtomElementMapping* add_atom_elem_mapping(ApplicationState* data, md_str_t lbl, 
 }
 
 void apply_atom_elem_mappings(ApplicationState* data) {
-    if (data->mold.sys.atom.count == 0 || !data->mold.sys.atom.element) {
+    if (first_system(*data).data.sys.atom.count == 0 || !first_system(*data).data.sys.atom.element) {
         return;
     }
 
@@ -2958,30 +2957,30 @@ void apply_atom_elem_mappings(ApplicationState* data) {
         float radius = md_atomic_number_vdw_radius(elem);
         float mass = md_atomic_number_mass(elem);
 
-        for (size_t i = 0; i < data->mold.sys.atom.count; ++i) {
-            if (md_str_eq(lbl, data->mold.sys.atom.type[i])) {
-                data->mold.sys.atom.element[i] = elem;
-                data->mold.sys.atom.radius[i] = radius;
-                data->mold.sys.atom.mass[i] = mass;
-                data->mold.dirty_buffers |= MolBit_DirtyRadius;
+        for (size_t i = 0; i < first_system(*data).data.sys.atom.count; ++i) {
+            if (md_str_eq(lbl, first_system(*data).data.sys.atom.type[i])) {
+                first_system(*data).data.sys.atom.element[i] = elem;
+                first_system(*data).data.sys.atom.radius[i] = radius;
+                first_system(*data).data.sys.atom.mass[i] = mass;
+                first_system(*data).data.dirty_buffers |= MolBit_DirtyRadius;
             }
         }
     }
-    md_system_t* mol = &data->mold.sys;
+    md_system_t* mol = &first_system(*data).data.sys;
     
     
-    md_array_free(mol->bond.pairs, data->mold.sys.alloc);
-    md_array_free(mol->bond.order, data->mold.sys.alloc);
+    md_array_free(mol->bond.pairs, first_system(*data).data.sys.alloc);
+    md_array_free(mol->bond.order, first_system(*data).data.sys.alloc);
 
-    md_array_free(mol->bond.conn.atom_idx, data->mold.sys.alloc);
-    md_array_free(mol->bond.conn.bond_idx, data->mold.sys.alloc);
+    md_array_free(mol->bond.conn.atom_idx, first_system(*data).data.sys.alloc);
+    md_array_free(mol->bond.conn.bond_idx, first_system(*data).data.sys.alloc);
 
     md_index_data_free(&mol->molecule);
-    md_ring_data_free(&mol->ring, data->mold.sys.alloc);
+    md_ring_data_free(&mol->ring, first_system(*data).data.sys.alloc);
     
     md_system_state_t mol_state = {0};
-    md_system_infer(mol, &mol_state, data->mold.sys.alloc, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT, NULL);
-    data->mold.dirty_buffers |= MolBit_DirtyBonds;
+    md_system_infer(mol, &mol_state, first_system(*data).data.sys.alloc, MD_SYSTEM_INFER_BOND_BIT | MD_SYSTEM_INFER_MOLECULE_BIT, NULL);
+    first_system(*data).data.dirty_buffers |= MolBit_DirtyBonds;
 
     flag_all_representations_as_dirty(data);
 }
@@ -3372,15 +3371,15 @@ static void draw_context_popup(SystemContext& sc, const PickingHit& hit) {
         }
 
         /*
-        if (data->selection.atom_idx.right_click != -1 && data->mold.sys.atom.element) {
+        if (data->selection.atom_idx.right_click != -1 && first_system(*data).data.sys.atom.element) {
             int idx = data->selection.atom_idx.right_click;
-            if (0 <= idx && idx < (int)data->mold.sys.atom.count) {
+            if (0 <= idx && idx < (int)first_system(*data).data.sys.atom.count) {
                 char label[64] = "";
-                md_str_t type = data->mold.sys.atom.type[idx];
+                md_str_t type = first_system(*data).data.sys.atom.type[idx];
                 snprintf(label, sizeof(label), "Remap Element for '%.*s'", (int)type.len, type.ptr);
                 if (ImGui::BeginMenu(label)) {
                     static char input_buf[32] = "";
-                    md_atomic_number_t elem = data->mold.sys.atom.element[idx];
+                    md_atomic_number_t elem = first_system(*data).data.sys.atom.element[idx];
                     md_str_t name = md_atomic_number_name(elem);
                     md_str_t sym  = md_atomic_number_symbol(elem);
 
@@ -3483,7 +3482,7 @@ static void draw_selection_grow_window(ApplicationState* data) {
     if (ImGui::Begin("Selection Grow", &data->selection.grow.show_window, ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoCollapse)) {
         ImGui::PushItemWidth(-1);
         static uint64_t sel_popcount = 0;
-        const uint64_t popcount = md_bitmask_count(&data->system_context.selection.selection_mask);
+        const uint64_t popcount = md_bitmask_count(&first_system(*data).selection.selection_mask);
         const bool mode_changed = ImGui::Combo("##Mode", (int*)(&data->selection.grow.mode), "Covalent Bond\0Radial\0\0");
         const char* fmt = (data->selection.grow.mode == SelectionGrowthMode::CovalentBond) ? "%.0f" : "%.2f";
         const bool extent_changed = ImGui::SliderFloat("##Extent", &data->selection.grow.extent, 1.0f, 20.f, fmt);
@@ -3500,22 +3499,22 @@ static void draw_selection_grow_window(ApplicationState* data) {
             sel_popcount = popcount;
             data->selection.grow.mask_invalid = false;
             md_bitmask_t* grow = &data->selection.grow.mask;
-            md_bitmask_assign(grow, md_bitmask_view(&data->system_context.selection.selection_mask));
-            const md_bitset_t viable = md_bitmask_view(&data->representation.visibility_mask);
+            md_bitmask_assign(grow, md_bitmask_view(&first_system(*data).selection.selection_mask));
+            const md_bitset_t viable = md_bitmask_view(&first_system(*data).representation.visibility_mask);
 
             switch (data->selection.grow.mode) {
             case SelectionGrowthMode::CovalentBond:
-                md_bond_mask_grow(grow, &data->mold.sys.bond, data->mold.sys.atom.count, (size_t)data->selection.grow.extent, &viable);
+                md_bond_mask_grow(grow, &first_system(*data).data.sys.bond, first_system(*data).data.sys.atom.count, (size_t)data->selection.grow.extent, &viable);
                 break;
             case SelectionGrowthMode::Radial: {
-                mask_grow_by_radius(grow, &system_instance(data->system_context).state, data->selection.grow.extent, &viable);
+                mask_grow_by_radius(grow, &system_instance(first_system(*data)).state, data->selection.grow.extent, &viable);
                 break;
             }
             default:
                 MD_ASSERT(false);
             }
 
-            grow_mask_by_selection_granularity(grow, data->selection.granularity, data->mold.sys);
+            grow_mask_by_selection_granularity(grow, data->selection.granularity, first_system(*data).data.sys);
         }
 
         const bool show_preview =   (ImGui::GetHoveredID() == ImGui::GetID("##Extent")) ||
@@ -3523,10 +3522,10 @@ static void draw_selection_grow_window(ApplicationState* data) {
                                     (ImGui::GetHoveredID() == ImGui::GetID("Apply"));
 
         if (show_preview) {
-            md_bitmask_assign(&data->system_context.selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
+            md_bitmask_assign(&first_system(*data).selection.highlight_mask, md_bitmask_view(&data->selection.grow.mask));
         }
         if (apply) {
-            md_bitmask_assign(&data->system_context.selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
+            md_bitmask_assign(&first_system(*data).selection.selection_mask, md_bitmask_view(&data->selection.grow.mask));
             data->selection.grow.mask_invalid = true;
         }
     }
@@ -3547,7 +3546,7 @@ static void draw_selection_query_window(ApplicationState* data) {
 
         ImGui::PushItemWidth(-1);
         bool apply = false;
-        if (filter_input("##query", &query.filter, data->script.language, filter_context(data->system_context), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
+        if (filter_input("##query", &query.filter, data->script.language, filter_context(first_system(*data)), ImGuiInputTextFlags_AutoSelectAll, &apply)) {
             query.query_invalid = true;
         }
         ImGui::PopItemWidth();
@@ -3571,19 +3570,19 @@ static void draw_selection_query_window(ApplicationState* data) {
         if (query.query_invalid) {
             query.query_invalid = false;
             md_bitset_t result = md_bitset_empty_set();
-            filter_evaluate(&query.filter, &result, data->script.language, filter_context(data->system_context), frame_alloc);
+            filter_evaluate(&query.filter, &result, data->script.language, filter_context(first_system(*data)), frame_alloc);
             query_frame = data->animation.time;
 
             md_bitmask_assign(&query.mask, query.filter.result.success ? result : md_bitset_empty_set());
-            grow_mask_by_selection_granularity(&query.mask, data->selection.granularity, data->mold.sys);
+            grow_mask_by_selection_granularity(&query.mask, data->selection.granularity, first_system(*data).data.sys);
         }
 
         if (preview) {
-            md_bitmask_assign(&data->system_context.selection.highlight_mask, md_bitmask_view(&query.mask));
+            md_bitmask_assign(&first_system(*data).selection.highlight_mask, md_bitmask_view(&query.mask));
         }
 
         if (apply && query.filter.result.success) {
-            md_bitmask_assign(&data->system_context.selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
+            md_bitmask_assign(&first_system(*data).selection.selection_mask, md_bitmask_view(&data->selection.query.mask));
             data->selection.query.show_window = false;
         }
     }
@@ -4109,13 +4108,13 @@ static void for_each_script_run(const ApplicationState* data, const SeriesKey& k
 // The series loaded along the run, one submenu per file
 static void plot_system_series_menu(ApplicationState* data, const char* dnd_type, PlotSubplot& first) {
     md_str_t groups[64];
-    const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data->system_context), MD_COUNTOF(groups));
+    const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), first_system(*data)), MD_COUNTOF(groups));
     size_t num_listed = 0;
     for (size_t g = 0; g < num_groups; ++g) {
         md_temp_scope_t temp = md_temp_begin();
-        const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
+        const size_t num = system_series_members(nullptr, 0, first_system(*data), groups[g]);
         md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
-        system_series_members(paths, num, data->system_context, groups[g]);
+        system_series_members(paths, num, first_system(*data), groups[g]);
         if (num > 0) {
             char group_label[256];
             system_series_group_label(group_label, sizeof(group_label), data, groups[g]);
@@ -4724,7 +4723,7 @@ static void draw_timeline_window(ApplicationState* data) {
                     bool print_timeline_tooltip = false;
 
                     if (plot_input_hovered()) {
-                        md_bitmask_clear(&data->system_context.selection.highlight_mask);
+                        md_bitmask_clear(&first_system(*data).selection.highlight_mask);
                         script_set_hovered_property(data,  MD_STR_LIT(""));
 
                         print_timeline_tooltip = true;
@@ -4843,7 +4842,7 @@ static void draw_timeline_window(ApplicationState* data) {
                             script_set_hovered_property(data, md_str_from_cstr(views[hovered_idx].script_ident), hovered_pop_idx);
                         } else if (hovered_idx != -1 && sp.series[hovered_idx].key.source == SeriesSource_System) {
                             // The curve of an energy term of groups: the groups
-                            highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
+                            highlight_energy_term_groups(data, md_attributes_find(&first_system(*data).data.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
                         }
                     } else if (data->hovered_property_label[0] != '\0') {
                         // Hovered in another view of it (the other plot window, a list): light up its values here
@@ -4874,7 +4873,7 @@ static void draw_timeline_window(ApplicationState* data) {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
-                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
+                                highlight_energy_term_groups(data, md_attributes_find(&first_system(*data).data.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to plot at '%s' right now", s.key.path);
@@ -5724,7 +5723,7 @@ static void draw_distribution_window(ApplicationState* data) {
                             const int member = v.num_periods > 0 ? -1 : hovered_pop_idx;
                             if (v.script_ident[0] == '\0' && sp.series[hovered_idx].key.source == SeriesSource_System) {
                                 // The bars of an energy term of groups: the groups
-                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
+                                highlight_energy_term_groups(data, md_attributes_find(&first_system(*data).data.sys.attributes, md_str_from_cstr(sp.series[hovered_idx].key.path)));
                             }
                             if (v.script_ident[0] != '\0') {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident), member);
@@ -5761,7 +5760,7 @@ static void draw_distribution_window(ApplicationState* data) {
                                 script_set_hovered_property(data, md_str_from_cstr(v.script_ident));
                             } else if (s.key.source == SeriesSource_System) {
                                 // An energy term of groups: the groups
-                                highlight_energy_term_groups(data, md_attributes_find(&data->mold.sys.attributes, md_str_from_cstr(s.key.path)));
+                                highlight_energy_term_groups(data, md_attributes_find(&first_system(*data).data.sys.attributes, md_str_from_cstr(s.key.path)));
                             }
                             if (!resolved[j]) {
                                 ImGui::SetTooltip("Nothing to show for '%s' right now", s.key.path);
@@ -6588,14 +6587,14 @@ static void draw_script_editor_window(ApplicationState* state) {
         }
 
         if (editor_hovered) {
-            md_bitmask_clear(&state->system_context.selection.highlight_mask);
+            md_bitmask_clear(&first_system(*state).selection.highlight_mask);
         }
 
         if (hovered_marker) {
             if (hovered_marker->atoms || !script::ref_empty(hovered_marker->vis_ref)) {
                 if (hovered_marker->atoms) {
                     // Errors and warnings: the atoms the message is about
-                    md_bitmask_assign(&state->system_context.selection.highlight_mask, *hovered_marker->atoms);
+                    md_bitmask_assign(&first_system(*state).selection.highlight_mask, *hovered_marker->atoms);
                 }
                 else if (hovered_marker->type == script_editor::MarkerType_Visualization) {
                     // Clear hovered property
@@ -6625,7 +6624,7 @@ static void draw_script_editor_window(ApplicationState* state) {
                 bool rm_click = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
                 if (ImGui::IsKeyDown(ImGuiMod_Shift) && (lm_click || rm_click)) {
                     SelectionOperator op = lm_click ? SelectionOperator::Or : SelectionOperator::AndNot;
-                    modify_selection(state, md_bitmask_view(&state->system_context.selection.highlight_mask), op);
+                    modify_selection(state, md_bitmask_view(&first_system(*state).selection.highlight_mask), op);
                 }
             }
 
@@ -6753,11 +6752,11 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
 	md_temp_scope_t temp = md_temp_begin_in(frame_alloc);
 	MD_DEFER { md_temp_end(temp); };
 
-    const md_system_t& sys = data.mold.sys;
+    const md_system_t& sys = first_system(data).data.sys;
     // Frame 0, with room for its coordinates: an extract fills what has storage and allocates none
     md_system_state_t state = { .alloc = temp.arena };
     md_system_state_init(&state, sys.atom.count);
-    if (!extract_frame(data.system_context, 0, &state)) {
+    if (!extract_frame(first_system(data), 0, &state)) {
         return false;
     }
 
@@ -6770,10 +6769,10 @@ static bool export_cube(const ApplicationState& data, const SeriesVolumeView& vo
         // reference by the frame shown, as it always has.)
         script::DrawCtx ctx = {
             .prog = data.script.eval_ir,
-            .sys = &data.mold.sys,
-            .state = volume.placed ? &state : &system_instance(data.system_context).state,
+            .sys = &first_system(data).data.sys,
+            .state = volume.placed ? &state : &system_instance(first_system(data)).state,
             .eval = data.script.eval,
-            .run = run_path(data.system_context),
+            .run = run_path(first_system(data)),
         };
         // The structures of the volume exported: of an array, those of its member
         result = script::draw_ref(&vis, vis_ref, (int)volume.member, ctx, script::DRAW_ATOMS | script::DRAW_SDF);
@@ -6960,11 +6959,11 @@ static void draw_property_export_window(ApplicationState* data) {
             }
             if (kind != ExportKind_Volume) {
                 md_str_t groups[64];
-                const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), data->system_context), MD_COUNTOF(groups));
+                const size_t num_groups = MD_MIN(system_series_groups(groups, MD_COUNTOF(groups), first_system(*data)), MD_COUNTOF(groups));
                 for (size_t g = 0; g < num_groups; ++g) {
-                    const size_t num = system_series_members(nullptr, 0, data->system_context, groups[g]);
+                    const size_t num = system_series_members(nullptr, 0, first_system(*data), groups[g]);
                     md_str_t* paths = md_temp_alloc_array(temp, md_str_t, num + 1);
-                    system_series_members(paths, num, data->system_context, groups[g]);
+                    system_series_members(paths, num, first_system(*data), groups[g]);
                     for (size_t i = 0; i < num; ++i) {
                         md_array_push(candidates, series_key(SeriesSource_System, paths[i]), alloc);
                     }
@@ -7140,7 +7139,7 @@ static void draw_property_export_window(ApplicationState* data) {
                     if (series_resolve_temporal(&view, data, selected)) {
                         num_rows = (size_t)view.num_samples;
                         char time_unit_str[32] = "";
-                        const double time_scl = display_units::factor_print(time_unit_str, sizeof(time_unit_str), run_time_unit(data->system_context));
+                        const double time_scl = display_units::factor_print(time_unit_str, sizeof(time_unit_str), run_time_unit(first_system(*data)));
                         x_label = time_unit_str[0] == '\0' ? MD_STR_LIT("Frame") : md_alloc_printf(alloc, "Time (%s)", time_unit_str);
                         if (view.unit_str[0]) y_label = md_alloc_printf(alloc, "%s (%s)", label, view.unit_str);
 
@@ -7544,7 +7543,7 @@ static void update_md_buffers(SystemInstance& inst) {
             // The colour of the group of the highlight each atom is in: of the last group it is in. The groups are of
             // what the script shows, whose atoms are the first system's (the script is not per system yet).
             auto groups = data->selection.highlight_groups;
-            if (&sc != &data->system_context) groups = {};
+            if (&sc != &first_system(*data)) groups = {};
             for (size_t g = 0; g < groups.count; ++g) {
                 const uint8_t color = (uint8_t)((g % HIGHLIGHT_GROUP_COLORS) << AtomBit_GroupShift);
                 md_bitset_iter_t it = md_bitset_iter(groups.sets[g]);

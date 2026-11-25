@@ -115,7 +115,7 @@ static bool is_script(SeriesSource source) {
 const md_attributes_t* series_table(const ApplicationState* app, SeriesSource source) {
     MD_ASSERT(app);
     if (source == SeriesSource_System) {
-        return &app->mold.sys.attributes;
+        return &first_system(*app).data.sys.attributes;
     }
     const script::Eval* eval = is_script(source) ? app->script.eval : nullptr;
     return eval ? script::attributes(eval) : nullptr;
@@ -146,7 +146,7 @@ size_t series_script_runs(md_str_t* out, size_t cap, const ApplicationState* app
 // The run the evaluation of a script series is over, NULL when there is none
 static const SystemRun* series_run(const ApplicationState* app, const SeriesKey& key) {
     const md_str_t run = key.run[0] ? md_str_from_cstr(key.run) : md_str_from_cstr(app->script.eval_run);
-    const SystemContext& sc = app->system_context;
+    const SystemContext& sc = first_system(*app);
     for (size_t i = 0; i < sc.num_runs; ++i) {
         if (md_str_eq_cstr(run, sc.runs[i]->path)) return sc.runs[i];
     }
@@ -313,7 +313,7 @@ ImVec4 series_default_color(const ApplicationState* app, const SeriesKey& key) {
         // The same property of another run a step around the hue circle per run, far enough to tell the two apart where
         // they overlap: by the run's place in the system, which is its own whichever instance shows it first
         const SystemRun* run = series_run(app, key);
-        const SystemContext& sc = app->system_context;
+        const SystemContext& sc = first_system(*app);
         size_t r = 0;
         while (run && r < sc.num_runs && sc.runs[r] != run) ++r;
         if (run && r > 0 && r < sc.num_runs) {
@@ -546,7 +546,7 @@ static const SystemRun* run_of_path(const SystemContext& sc, md_str_t path) {
 // run's frames are. In place without one, a copy for this frame with one.
 static const double* shifted_by_run(ApplicationState* app, const double* x, size_t count, const SystemRun* run) {
     if (!x || !run) return x;
-    const ClockAxis a = run_clock_axis(app, app->system_context, run);
+    const ClockAxis a = run_clock_axis(app, first_system(*app), run);
     const double shift = clock_axis_timed(a) ? a.offset * a.scale : 0.0;
     if (shift == 0.0) return x;
     double* shifted = (double*)md_alloc(app->allocator.frame, sizeof(double) * count);
@@ -699,7 +699,7 @@ uint32_t series_views(const ApplicationState* app, const SeriesKey& key, const c
         const size_t n = attr->format.shape[0];
         if (is_script(key.source)) {
             // Over a period it is the same over time, so only the one over every frame is offered for that
-            if (key.period == 0 && n == run_num_frames(app->system_context, series_run(app, key))) views |= SeriesView_Timeline;
+            if (key.period == 0 && n == run_num_frames(first_system(*app), series_run(app, key))) views |= SeriesView_Timeline;
         } else {
             // What series_resolve_temporal needs of the axis, short of converting it
             const md_attribute_t* axis = md_attributes_axis(table, attr);
@@ -785,10 +785,10 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
     if (is_script(key.source)) {
         // Evaluated over the frames of a run of the first system, on whose axis it is, on the clock
         const SystemRun* run = series_run(app, key);
-        const md_attribute_t* axis = run_time_axis(app->system_context, run);
+        const md_attribute_t* axis = run_time_axis(first_system(*app), run);
         if (!axis || axis->format.shape[0] != n) return false;
         size_t count = 0;
-        x = timeline_times(app, &app->system_context.data.sys.attributes, axis, &count);
+        x = timeline_times(app, &first_system(*app).data.sys.attributes, axis, &count);
         if (!x || count != n) return false;
         x = shifted_by_run(app, x, count, run);
     } else {
@@ -797,7 +797,7 @@ bool series_resolve_temporal(SeriesTemporalView* out, ApplicationState* app, con
         size_t count = 0;
         x = timeline_times(app, table, axis, &count);
         if (!x || count != n) return false;
-        x = shifted_by_run(app, x, count, run_of_path(app->system_context, path));
+        x = shifted_by_run(app, x, count, run_of_path(first_system(*app), path));
     }
 
     // ### y
@@ -1118,7 +1118,7 @@ bool series_periodic(SeriesPeriodic* out, const ApplicationState* app, const Ser
 
 bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* app, const SeriesKey& key, uint32_t period) {
     const script::Eval* eval = is_script(key.source) ? series_eval(app, key) : app->script.eval;
-    const uint32_t num_frames = eval ? (uint32_t)script::eval_num_frames(eval) : (uint32_t)run_num_frames(app->system_context);
+    const uint32_t num_frames = eval ? (uint32_t)script::eval_num_frames(eval) : (uint32_t)run_num_frames(first_system(*app));
     if (num_frames == 0) return false;
     // The key's own: every frame, or its period's
     if (period == 0) period = key.period;
@@ -1130,9 +1130,9 @@ bool series_period_frames(uint32_t* beg, uint32_t* end, const ApplicationState* 
     // The frames of the run on the clock within the period: of a script property the run evaluated over, of anything
     // else the first system's
     const TimelinePeriod* r = timeline_periods_find(&app->timeline.periods, period);
-    const SystemRun* run = is_script(key.source) ? series_run(app, key) : system_run(app->system_context);
+    const SystemRun* run = is_script(key.source) ? series_run(app, key) : system_run(first_system(*app));
     int b = 0, e = 0;
-    if (!r || !run_period_frames(&b, &e, app, app->system_context, run, *r) || (uint32_t)b >= num_frames) return false;
+    if (!r || !run_period_frames(&b, &e, app, first_system(*app), run, *r) || (uint32_t)b >= num_frames) return false;
     *beg = (uint32_t)b;
     *end = MD_MIN((uint32_t)e + 1, num_frames);
     return true;
@@ -1688,11 +1688,11 @@ md_str_t system_series_group_source(const SystemContext& sys, md_str_t group) {
 void system_series_group_label(char* buf, size_t cap, const ApplicationState* app, md_str_t group) {
     MD_ASSERT(buf && cap > 0);
     md_str_t rel = group;
-    const md_str_t run = run_path(app->system_context);
+    const md_str_t run = run_path(first_system(*app));
     if (!md_str_empty(run) && md_str_begins_with(group, run) && group.len > run.len + 1) {
         rel = md_str_substr(group, run.len + 1);
     }
-    md_str_t file = system_series_group_source(app->system_context, group);
+    md_str_t file = system_series_group_source(first_system(*app), group);
     file = md_path_filename(file);
     if (md_str_empty(file)) {
         snprintf(buf, cap, MD_STR_FMT, MD_STR_ARG(rel));

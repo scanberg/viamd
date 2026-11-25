@@ -1485,7 +1485,7 @@ struct SystemInference {
 };
 
 // THE DATA OF A SYSTEM: the system itself (md_system_t), its state as shown, what is derived from it to draw it, its
-// run and the frames read of it. ApplicationState::mold of the one system loaded (SystemContext::data).
+// run and the frames read of it. SystemContext::data of each system.
 struct SystemData {
     // The arena backing this dataset is sys.alloc - there is no second handle to it. It is
     // created once at startup and survives every load: free_system_data rewinds it and puts the
@@ -1866,17 +1866,14 @@ struct SystemInstance {
 
 // A SYSTEM, as viamd holds it: what is had of each one loaded, apart from what the application has once.
 //
-// ApplicationState holds the systems (systems, at most SYSTEM_MAX). The first is held in place (system_context), with
-// references to its parts under the names the code has always used for them (mold, system, representation, run,
-// trajectory_data, file_list). Those names are the transition: a place that works on a system is given the system it
-// works on (a SystemContext, or the part it needs) instead of reaching it through the application, one place at a
-// time, and the references go when nothing uses them. What has not been given its system yet works on the first,
-// through those names or through system_context.
+// ApplicationState holds the systems (systems, at most SYSTEM_MAX), every one alike: allocated when added (system_add)
+// and freed when removed (system_release), so that what captures one (a task, a cache) can hold its address. There is
+// always one at least: an empty one while nothing is loaded, which the next system added is loaded into. No system is
+// listed, drawn or saved while it is empty (system_loaded).
 //
-// The others are allocated when added (system_add) and freed when removed (system_release), so that what captures one
-// (a task, a cache) can hold its address. The first stays in place, empty when it is removed while others are loaded,
-// and is the one the next system added is loaded into: no system is listed, drawn or saved while it is empty
-// (system_loaded).
+// The first (first_system) is the one what is not per system yet follows: the script, the timeline, the selection
+// tools, some components (event_of_first_system). When it is removed the next is the first, and they follow that one
+// (system_release).
 //
 // What is not here yet, though it is of a system, and why:
 //   timeline.x_values     the times of a run, in the unit the timeline shows: moved with the global time axis
@@ -2075,18 +2072,11 @@ struct ApplicationState {
     } gl;
 
     // --- THE SYSTEMS ---
-    // The first system (SystemContext), held in place, and its parts under the names the code knows them by (see
-    // SystemContext). It is there whether or not anything is loaded into it.
-    SystemContext system_context = {};
-    SystemData&            mold            = system_context.data;
-    SystemRepresentations& representation  = system_context.representation;
-    FileList&              file_list       = system_context.files;
-
-    // Every system, in the order the Scene window lists them, the first being system_context. Not owned past the
-    // first: what adds one allocates it (none does yet).
-    SystemContext* systems[SYSTEM_MAX] = { &system_context };
-    size_t         num_systems = 1;
-    uint32_t       next_system_id = 1;      // The first is 0, as a workspace before several systems names it
+    // Every system, in the order the Scene window lists them (see SystemContext): one at least once viamd has started,
+    // the first (first_system) empty while nothing is loaded
+    SystemContext* systems[SYSTEM_MAX] = {};
+    size_t         num_systems = 0;
+    uint32_t       next_system_id = 0;      // The first made is 0, as a workspace before several systems names it
 
     // The quantum chemistry system (qm_system): its id, and whether it was chosen (by the user, a workspace) rather
     // than taken for having electronic structure
@@ -2524,6 +2514,16 @@ struct LoadDataPayload {
     md_str_t path_to_file;
 };
 
+// The first system: what is not per system yet follows it (see SystemContext). Always there (ApplicationState::systems).
+static inline SystemContext& first_system(ApplicationState& app) {
+    MD_ASSERT(app.num_systems > 0);
+    return *app.systems[0];
+}
+static inline const SystemContext& first_system(const ApplicationState& app) {
+    MD_ASSERT(app.num_systems > 0);
+    return *app.systems[0];
+}
+
 // The system a system event (its payload EventPayloadType_System, or EventPayloadType_LoadData) is of, null for
 // another event
 static inline const SystemContext* event_system(const viamd::Event& e) {
@@ -2532,11 +2532,12 @@ static inline const SystemContext* event_system(const viamd::Event& e) {
     return nullptr;
 }
 
-// Whether a system event is of the first system (ApplicationState::system_context). What is not per system yet (some
-// components, the System window) acts on that one alone, and leaves the events of the others be.
+// Whether a system event is of the first system (first_system). What is not per system yet (some components) acts on
+// that one alone, and leaves the events of the others be. When the first is removed, the next is told it is initialised
+// (system_release): to those it is the first system loaded.
 static inline bool event_of_first_system(const viamd::Event& e) {
     const SystemContext* sys = event_system(e);
-    return sys && sys->app && sys == &sys->app->system_context;
+    return sys && sys->app && sys->app->num_systems > 0 && sys == sys->app->systems[0];
 }
 
 // A picking tooltip, gathered from every handler that recognises the hit and drawn as one window: a title names what
@@ -2954,15 +2955,16 @@ void system_context_destroy(SystemContext* sys);
 // Whether anything is loaded into it: atoms, or files (which may be missing). An empty system is not listed or drawn.
 bool system_loaded(const SystemContext& sys);
 
-// A new, empty system to load into, listed last: the first's place when that is empty, else one allocated with a new
-// id. NULL when SYSTEM_MAX are loaded.
+// An empty system to load into: the one there is while nothing is loaded, else a new one allocated with a new id, listed
+// last. NULL when SYSTEM_MAX are loaded.
 SystemContext* system_add(ApplicationState* app);
 
 // A new, empty system allocated with a new id, listed last, whether the first is empty or not (a workspace's systems):
 // NULL when SYSTEM_MAX are held
 SystemContext* system_alloc(ApplicationState* app);
 
-// Takes the system, which has been unloaded (system_remove), out of the list and frees it; the first only stays empty
+// Takes the system, which has been unloaded (system_remove), out of the list and frees it. An empty one is made when it
+// was the last. When it was the first, what follows the first follows the next (see SystemContext).
 void system_release(ApplicationState* app, SystemContext* sys);
 
 // The system with the id, NULL when there is none
@@ -2971,11 +2973,11 @@ const SystemContext* system_find(const ApplicationState& app, uint32_t id);
 // The system with the id, the first when there is none: what a tool of a system reads, its system gone
 static inline SystemContext& system_or_first(ApplicationState* app, uint32_t id) {
     SystemContext* sys = system_find(app, id);
-    return sys ? *sys : app->system_context;
+    return sys ? *sys : first_system(*app);
 }
 static inline const SystemContext& system_or_first(const ApplicationState& app, uint32_t id) {
     const SystemContext* sys = system_find(app, id);
-    return sys ? *sys : app.system_context;
+    return sys ? *sys : first_system(app);
 }
 
 // How many are loaded (system_loaded)
@@ -3167,7 +3169,7 @@ void   clock_update(ApplicationState* app);
 bool   run_period_frames(int* beg, int* end, const ApplicationState* app, const SystemContext& sys, const SystemRun* run, const TimelinePeriod& period);
 // Of the first system's run, which the tools read
 static inline bool period_frames(int* beg, int* end, const ApplicationState* app, const TimelinePeriod& period) {
-    return run_period_frames(beg, end, app, app->system_context, system_run(app->system_context), period);
+    return run_period_frames(beg, end, app, first_system(*app), system_run(first_system(*app)), period);
 }
 
 // One frame of a run (the one shown, without it) into out: coordinates when out has storage for them, and the cell.
@@ -3302,7 +3304,7 @@ bool* workspace_window_flag(const char* name);
 
 // Selections
 // What filters are evaluated and completed against: the system as it is shown, its run (which attr() reads), and the
-// names of the script in the editor. The script is compiled against the first system (system_context) alone until it
+// names of the script in the editor. The script is compiled against the first system (first_system) alone until it
 // is per system, so its names are of that one: another system's filters see none of them.
 script::FilterCtx filter_context(const SystemContext& sys);
 // The same of an instance: its coordinates and its run, as a tool of it evaluates its filters in. The first instance's
@@ -3746,7 +3748,7 @@ void recenter_update_target_data(SystemContext& sys);
 // return value says whether it is not.
 bool recenter_calculate_transform(md_float4x4_t* translation, md_float4x4_t* rotation, const SystemInstance& inst);
 
-// Applies the coordinate operations to mold.state in the one order that keeps them valid together:
+// Applies the coordinate operations to an instance's state in the one order that keeps them valid together:
 //     take off operations.state_rotation -> translate -> wrap -> make whole -> turn
 // Wrapping and making whole are only defined in the lattice frame of the cell, and turning before the
 // periodic images are settled turns the arbitrary image each atom arrived in into a real displacement
