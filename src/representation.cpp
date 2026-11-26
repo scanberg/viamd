@@ -2600,6 +2600,7 @@ static void write_representation(viamd::serialization_state_t& s, const Represen
         write_attribute_path(s, q("Quantity"), attributes, v.quantity);
         write_color_scale(s, q, v.color_scale);
         viamd::write_flt(s, q("Smoothing"), v.smoothing);
+        write_isolines(s, q, v.isolines);
     }
 }
 
@@ -2801,6 +2802,7 @@ static void read_representation(viamd::Entries& e, Representation& rep) {
     read_attribute_path(e, w("Quantity"), v.quantity);
     read_color_scale(e, w, v.color_scale, true);
     viamd::get(e, w("Smoothing"), v.smoothing);
+    read_isolines(e, w, v.isolines);
 }
 
 void representation_read(Representation* rep, viamd::deserialization_state_t& state, md_str_t section) {
@@ -4403,6 +4405,8 @@ static bool draw_representation_vdw_surface(ApplicationState* state, Representat
                                    "of a density (the GOSTSHYP energy of its energy per area) is the same however smooth. 0: as they are.");
             update_rep |= ImGui::SliderFloat("##vdw_smoothing", &v.smoothing, 0.0f, 5.0f, v.smoothing > 0.0f ? "%.2f Å" : "none", ImGuiSliderFlags_AlwaysClamp);
             update_rep |= color_scale_draw_controls(&v.color_scale, vdw_surface_span(v), display ? a->unit : md_unit_none(), "surface", "Over the points on the surface: the 1st to 99th percentile");
+            // Drawn per pixel, like the colours: nothing to re-evaluate
+            color_scale_draw_isoline_controls(&v.isolines, v.color_scale, display ? a->unit : md_unit_none());
         } else {
             update_rep |= draw_representation_coloring(state, rep);
         }
@@ -4923,6 +4927,7 @@ void draw_representation_legends(ApplicationState& state) {
         Representation& rep = state.representation.reps[i];
         // The value under the cursor of a legend is of this frame only: none unless its legend is drawn and hovered
         rep.electronic_structure.field_isolines.hover = false;
+        rep.vdw.isolines.hover = false;
         if (!representation_shown(state, rep)) continue;
 
         if (rep.type == RepresentationType::ElectronicStructure) {
@@ -4957,7 +4962,7 @@ void draw_representation_legends(ApplicationState& state) {
                 char label[160];
                 if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
                 else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
-                color_scale_draw_legend(rep.vdw.color_scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+                color_scale_draw_legend(rep.vdw.color_scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++, &rep.vdw.isolines);
             }
             continue;
         }

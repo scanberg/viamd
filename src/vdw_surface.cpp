@@ -472,6 +472,13 @@ uint64_t vdw_surface_hash(const VdwSurfaceRepresentation& v) {
     h = md_hash64(&v.quantity, sizeof(v.quantity), h);
     h = md_hash64(&v.color_scale, sizeof(v.color_scale), h);
     h = md_hash64(&v.smoothing, sizeof(v.smoothing), h);
+    const ColorScaleIsolines& l = v.isolines;
+    h = md_hash64(&l.show, sizeof(l.show), h);
+    h = md_hash64(&l.count, sizeof(l.count), h);
+    h = md_hash64(l.values, sizeof(l.values[0]) * (size_t)MD_CLAMP(l.count, 0, ISOLINES_MAX), h);
+    h = md_hash64(&l.width, sizeof(l.width), h);
+    h = md_hash64(&l.hover, sizeof(l.hover), h);
+    if (l.hover) h = md_hash64(&l.hover_value, sizeof(l.hover_value), h);
     if (v.data) h = md_hash64(&v.data->version, sizeof(v.data->version), h);
     return h;
 }
@@ -480,35 +487,38 @@ uint64_t vdw_surface_hash(const VdwSurfaceRepresentation& v) {
 // Drawing
 // ---------------------------------------------------------------------------
 
+// The program without the isolines and with them (vdw_surface.frag's ISOLINES)
 static struct {
-    GLuint program = 0;
+    GLuint program[2] = {};
     GLuint vao = 0;
-    bool   failed = false;
+    bool   failed[2] = {};
 } gl_state;
 
-static bool ensure_program() {
-    if (gl_state.failed) return false;
-    if (!gl_state.program) {
+static GLuint ensure_program(int isolines) {
+    if (gl_state.failed[isolines]) return 0;
+    GLuint& prog = gl_state.program[isolines];
+    if (!prog) {
+        const md_str_t defines = isolines ? MD_STR_LIT("#define ISOLINES") : md_str_t{};
         GLuint vs = gl::compile_shader_from_source({(const char*)vdw_surface_vert, vdw_surface_vert_size}, GL_VERTEX_SHADER);
-        GLuint fs = gl::compile_shader_from_source({(const char*)vdw_surface_frag, vdw_surface_frag_size}, GL_FRAGMENT_SHADER);
+        GLuint fs = gl::compile_shader_from_source({(const char*)vdw_surface_frag, vdw_surface_frag_size}, GL_FRAGMENT_SHADER, defines);
         if (vs && fs) {
-            gl_state.program = glCreateProgram();
+            prog = glCreateProgram();
             const GLuint shaders[] = {vs, fs};
-            if (!gl::attach_link_detach(gl_state.program, shaders, 2)) {
+            if (!gl::attach_link_detach(prog, shaders, 2)) {
                 MD_LOG_ERROR("VdW Surface: the program did not link");
-                glDeleteProgram(gl_state.program);
-                gl_state.program = 0;
+                glDeleteProgram(prog);
+                prog = 0;
             }
         }
         if (vs) glDeleteShader(vs);
         if (fs) glDeleteShader(fs);
-        if (!gl_state.program) {
-            gl_state.failed = true;
-            return false;
+        if (!prog) {
+            gl_state.failed[isolines] = true;
+            return 0;
         }
     }
     if (!gl_state.vao) glGenVertexArrays(1, &gl_state.vao);
-    return true;
+    return prog;
 }
 
 static void jitter_uv(float out[2], const md_float4x4_t& P) {
@@ -522,10 +532,13 @@ static void jitter_uv(float out[2], const md_float4x4_t& P) {
     }
 }
 
-void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base) {
+void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base, const IsolineDesc& isolines) {
     VdwSurfaceData* d = v.data;
-    if (!d || d->num_spheres == 0 || !d->tex[BUF_SPHERE] || !ensure_program()) return;
-    const GLuint prog = gl_state.program;
+    if (!d || d->num_spheres == 0 || !d->tex[BUF_SPHERE]) return;
+    const bool by_points = v.quantity != MD_ATTRIBUTE_INVALID && d->num_points > 0 && d->tex[BUF_POINT];
+    const bool lines = by_points && isolines_active(isolines);
+    const GLuint prog = ensure_program(lines ? 1 : 0);
+    if (!prog) return;
     glUseProgram(prog);
     const char* names[BUF_COUNT] = {"u_sphere", "u_sphere_color", "u_sphere_atom", "u_point", "u_point_w", "u_cell"};
     for (int i = 0; i < BUF_COUNT; ++i) {
@@ -533,7 +546,6 @@ void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, 
         glBindTexture(GL_TEXTURE_BUFFER, d->tex[i]);
         glUniform1i(glGetUniformLocation(prog, names[i]), i);
     }
-    const bool by_points = v.quantity != MD_ATTRIBUTE_INVALID && d->num_points > 0 && d->tex[BUF_POINT];
     glActiveTexture(GL_TEXTURE0 + BUF_COUNT);
     glBindTexture(GL_TEXTURE_2D, colormap_texture(d, v.color_scale.colormap));
     glUniform1i(glGetUniformLocation(prog, "u_colormap"), BUF_COUNT);
@@ -556,6 +568,18 @@ void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, 
     glUniform1f(glGetUniformLocation(prog, "u_grid_cell"), d->grid_cell);
     glUniform3i(glGetUniformLocation(prog, "u_grid_dim"), d->grid_dim[0], d->grid_dim[1], d->grid_dim[2]);
     glUniform1ui(glGetUniformLocation(prog, "u_pick_base"), atom_base);
+    if (lines) {
+        GLint vp[4];
+        glGetIntegerv(GL_VIEWPORT, vp);
+        const md_float4x4_t clip_to_view = md_float4x4_inverse(P);
+        glUniform1i(glGetUniformLocation(prog, "u_isoline_count"), (GLint)isolines.count);
+        glUniform1fv(glGetUniformLocation(prog, "u_isoline_values"), ISOLINES_MAX, isolines.values);
+        glUniform1i(glGetUniformLocation(prog, "u_isoline_hover"), isolines.hover ? 1 : 0);
+        glUniform1f(glGetUniformLocation(prog, "u_isoline_hover_value"), isolines.hover_value);
+        glUniform1f(glGetUniformLocation(prog, "u_isoline_width"), isolines.width);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
+        glUniform2f(glGetUniformLocation(prog, "u_inv_res"), 1.0f / (float)MD_MAX(vp[2], 1), 1.0f / (float)MD_MAX(vp[3], 1));
+    }
 
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);

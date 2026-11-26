@@ -5,6 +5,7 @@
 
 #include <system/md_attributes.h>
 #include <color_scale.h>
+#include <gfx/isolines.h>
 
 struct md_system_t;
 struct md_system_state_t;
@@ -37,6 +38,10 @@ struct VdwSurfaceData;
 // pattern would be that of the areas. Nor is what is of the discretization (MD_ATTRIBUTE_FLAG_SAMPLING: a quadrature
 // weight, a switching, an exponent from the area), whose pattern would be that of the tessellation.
 //
+// ISOLINES: of the colour's quantity, where it takes given values (gfx/isolines.h), painted per pixel from its exact
+// gradient along the surface. Only while there are lines to show does the shader compute the gradient (a variant
+// of its own): a few more sums beside the value, from the same Gaussians.
+//
 // UNITS: Angstrom, as the system's.
 
 struct VdwSurfaceRepresentation {
@@ -45,6 +50,7 @@ struct VdwSurfaceRepresentation {
     md_attribute_id_t quantity = MD_ATTRIBUTE_INVALID;      // a point set's quantity it is coloured by; else the atoms'
     ColorScale color_scale = {COLOR_SCALE_COLORMAP_VIRIDIS, 0.0f, 1.0f, false, true, false};
     float smoothing = 0.0f;                                 // the diffusion length over the surface, Angstrom
+    ColorScaleIsolines isolines = {};                       // lines where the colour's quantity takes given values
 
     VdwSurfaceData* data = nullptr;                         // owned, made by vdw_surface_update
 };
@@ -80,5 +86,6 @@ ColorScaleSpan vdw_surface_span(const VdwSurfaceRepresentation& v);
 // A hash of what the image depends on, for the lazy rendering
 uint64_t vdw_surface_hash(const VdwSurfaceRepresentation& v);
 
-// Into the G-buffer bound for drawing (the opaque pass), picking as the atoms (atom_base + the atom's index)
-void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base);
+// Into the G-buffer bound for drawing (the opaque pass), picking as the atoms (atom_base + the atom's index), with
+// the isolines of the colour's quantity (color_scale_isoline_desc of v.isolines)
+void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base, const IsolineDesc& isolines);

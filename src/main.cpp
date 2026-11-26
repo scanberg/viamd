@@ -555,6 +555,7 @@ static void draw_ops_timed(md_gl_draw_args_t args, const md_gl_draw_op_t* ops, s
 }
 
 static void draw_representations_opaque(ApplicationState* state);
+static float isoline_px_per_point(const ApplicationState* state);
 // The marks of the selected and highlighted atoms into the marks target (gbuffer_marks_begin), unjittered
 static void draw_representations_marks(ApplicationState* state);
 static void draw_glyph_marks(ApplicationState* state);
@@ -8183,7 +8184,7 @@ static void draw_representations_opaque(ApplicationState* state) {
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
         if (rep.type != RepresentationType::VdwSurface || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-        vdw_surface_draw(rep.vdw, state->view.param, state->picking_range_atom.beg);
+        vdw_surface_draw(rep.vdw, state->view.param, state->picking_range_atom.beg, color_scale_isoline_desc(rep.vdw.isolines, isoline_px_per_point(state)));
     }
 }
 
