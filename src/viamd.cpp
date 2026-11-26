@@ -4474,8 +4474,8 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
 // orbitals, an excited state's attachment, detachment or difference factors, sliced by the state), made into tiles
 // once (density_cache.h) and read from those, on the device from their copy (density_gpu_tiles_prepare).
 // The density a representation's volume is evaluated from, for the sources that are one: its path and slice
-// (all of it: num_idx 0). False for the orbitals, and for a density property the system no longer has.
-static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slice, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
+// (all of it: num_idx 0). False for the orbitals.
+static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slice, const ElectronicStructureRepresentation& es) {
     *out_slice = md_attribute_slice_all();
     switch (es.shown.source) {
     case ElectronicStructureSource::TransitionDensity:
@@ -4486,12 +4486,6 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
     case ElectronicStructureSource::ElectronDensity:
         *out_path = es_electron_density_path(es.shown.spin);
         return true;
-    case ElectronicStructureSource::DensityProperty: {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, es.shown.density_property_key);
-        if (!attr) return false;
-        *out_path = attr->path;
-        return true;
-    }
     default:
         return false;
     }
@@ -4701,11 +4695,10 @@ static bool es_evaluate_into(ApplicationState* state, const ElectronicStructureR
         return orbital_evaluate(state, tex_id, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, es_gto_op(es.shown.use_magnitude), DEFAULT_GTO_CUTOFF_VALUE);
     }
     case ElectronicStructureSource::TransitionDensity:
-    case ElectronicStructureSource::ElectronDensity:
-    case ElectronicStructureSource::DensityProperty: {
+    case ElectronicStructureSource::ElectronDensity: {
         md_str_t path = {};
         md_attribute_slice_t slice = {};
-        if (!es_volume_density(&path, &slice, es, state->mold.sys)) {
+        if (!es_volume_density(&path, &slice, es)) {
             return false;
         }
         // A spin difference is signed, so it is the one density the magnitude toggle applies to.
@@ -5450,7 +5443,6 @@ static uint64_t es_source_hash(const ApplicationState* state, const ElectronicSt
     h = md_hash64(&es.shown.orbital_idx,                  sizeof(es.shown.orbital_idx), h);
     h = md_hash64(&es.shown.excited_state_idx,            sizeof(es.shown.excited_state_idx), h);
     h = md_hash64(&es.shown.nto_lambda_idx,               sizeof(es.shown.nto_lambda_idx), h);
-    h = md_hash64(&es.shown.density_property_key,         sizeof(es.shown.density_property_key), h);
     return h;
 }
 
@@ -5463,7 +5455,7 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
     // a density's tiles on the device, made on a worker thread
     md_str_t path = {};
     md_attribute_slice_t slice = {};
-    if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_tiles_prepare(state, path, slice.num_idx ? &slice : nullptr)) return 0;
+    if (es_volume_density(&path, &slice, es) && !density_tiles_prepare(state, path, slice.num_idx ? &slice : nullptr)) return 0;
 #endif
     if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.shown.excited_state_idx)) return 0;
     if (electronic_structure_source_is_surface_field(es.shown.source)) return -1;   // as a surface field, into the volume
@@ -5670,7 +5662,7 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             md_attribute_slice_t slice = {};
             if ((es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) || gpu_density_job_pending(state)) {
                 ready = false;
-            } else if (es_volume_density(&path, &slice, es, state->mold.sys)) {
+            } else if (es_volume_density(&path, &slice, es)) {
                 ready = density_tiles_prepare(state, path, slice.num_idx ? &slice : nullptr);
             }
         }
@@ -5724,25 +5716,6 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
     return done;
 }
 
-// Every leaf under the density property group is one property, in the table's own path order. The
-// label is the attribute's own, falling back to the last segment of its path when the file gave it
-// none - both borrowed from the table, so nothing is copied and nothing has to be freed.
-//
-// Counts past 'cap' on purpose: the return value is how many the system HAS, so a caller with a
-// fixed buffer can tell that it saw all of them.
-size_t density_properties_gather(DensityProperty out[], size_t cap, const md_system_t& sys) {
-    size_t count = 0;
-    for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, es_path::density_property); md_attributes_next(&it);) {
-        const md_attribute_t* attr = it.attr;
-        if (out && count < cap) {
-            const md_str_t label = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
-            out[count] = { .key = attr->id, .label = label };
-        }
-        count += 1;
-    }
-    return count;
-}
-
 ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     ElectronicStructureSourceFlags mask = 0;
 
@@ -5750,7 +5723,6 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     if (attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
     if (attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
     if (md_qm_density_factors_available(&sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
-    if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
     // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose
     // derivatives are within what is evaluated (no g functions)
     if (attribute_exists(sys, es_path::alpha_coefficient) && md_qm_kinetic_available(&sys)) {
@@ -5782,23 +5754,6 @@ bool electronic_structure_select_available_source(ElectronicStructureRepresentat
                 electronic_structure_set_source_defaults(es);
                 break;
             }
-        }
-    }
-
-    // The same rule the representation window applies when it draws: a key naming none of the
-    // properties this system has is replaced by the first one.
-    if (es->shown.source == ElectronicStructureSource::DensityProperty) {
-        DensityProperty props[DensityProperty::MaxCount];
-        const size_t num_props = MD_MIN(density_properties_gather(props, MD_COUNTOF(props), sys), MD_COUNTOF(props));
-        bool found = false;
-        for (size_t i = 0; i < num_props; ++i) {
-            if (props[i].key == es->shown.density_property_key) {
-                found = true;
-                break;
-            }
-        }
-        if (!found && num_props > 0) {
-            es->shown.density_property_key = props[0].key;
         }
     }
 

@@ -173,7 +173,6 @@ enum class ElectronicStructureSource {
     NaturalTransitionOrbital,
     TransitionDensity,
     ElectronDensity,
-    DensityProperty,
     ElectronLocalization,       // the electron localization function, ELF (md_qm_elf)
     LocalizedOrbitalLocator,    // the localized orbital locator, LOL (md_qm_lol)
     // Fields of the system as a whole, evaluated as the fields a surface is coloured by are (surface_field.h, the kind
@@ -336,7 +335,6 @@ inline const char* electronic_structure_source_str[(int)ElectronicStructureSourc
     "Natural Transition Orbital",
     "Transition Density",
     "Electron Density",
-    "Density Property",
     "Electron Localization (ELF)",
     "Localized Orbital Locator (LOL)",
     "Electrostatic Potential",
@@ -382,7 +380,7 @@ static inline bool electronic_structure_source_is_surface_field(ElectronicStruct
 static inline bool electronic_structure_source_meshable(ElectronicStructureSource s) {
     return s == ElectronicStructureSource::MolecularOrbital || s == ElectronicStructureSource::NaturalTransitionOrbital ||
            s == ElectronicStructureSource::TransitionDensity || s == ElectronicStructureSource::ElectronDensity ||
-           s == ElectronicStructureSource::DensityProperty || s == ElectronicStructureSource::ElectronLocalization ||
+           s == ElectronicStructureSource::ElectronLocalization ||
            s == ElectronicStructureSource::LocalizedOrbitalLocator || s == ElectronicStructureSource::GostshypWallPotential ||
            s == ElectronicStructureSource::GostshypEffectivePotential;
 }
@@ -392,7 +390,6 @@ enum ElectronicStructureSourceFlag_ : uint32_t {
     ElectronicStructureSourceFlag_NaturalTransitionOrbital  = 1u << (int)ElectronicStructureSource::NaturalTransitionOrbital,
     ElectronicStructureSourceFlag_TransitionDensity         = 1u << (int)ElectronicStructureSource::TransitionDensity,
     ElectronicStructureSourceFlag_ElectronDensity           = 1u << (int)ElectronicStructureSource::ElectronDensity,
-    ElectronicStructureSourceFlag_DensityProperty           = 1u << (int)ElectronicStructureSource::DensityProperty,
     ElectronicStructureSourceFlag_ElectronLocalization      = 1u << (int)ElectronicStructureSource::ElectronLocalization,
     ElectronicStructureSourceFlag_LocalizedOrbitalLocator   = 1u << (int)ElectronicStructureSource::LocalizedOrbitalLocator,
     ElectronicStructureSourceFlag_ElectrostaticPotential    = 1u << (int)ElectronicStructureSource::ElectrostaticPotential,
@@ -635,19 +632,6 @@ struct DipoleGroup {
     md_unit_t unit = md_unit_none();
 };
 
-// One density property out of the system's attribute table: a leaf under es_path::density_property,
-// named by its own label or, failing that, by the last segment of its path.
-// Build these with density_properties_gather; nothing owns or caches them, and 'label' points into
-// the attribute table rather than at a copy - so it is good for as long as the system is loaded and
-// must not outlive it.
-struct DensityProperty {
-    // How many a caller gathers into a buffer on its stack: well past what any file carries
-    static constexpr size_t MaxCount = 512;
-
-    uint64_t key    = 0;    // attribute id, stable across a reload
-    md_str_t label     = { 0 };
-};
-
 // ---------------------------------------------------------------------------
 // Volume geometry
 // ---------------------------------------------------------------------------
@@ -732,8 +716,8 @@ struct ElectronicStructurePlaneImage {
     float     ms = 0.0f;
 };
 
-// A field over R^3 of the electronic structure: what it is (its path, field.h, names the source and a density
-// property's attribute) and the parameters that tell the fields of one family apart. What a representation draws is one.
+// A field over R^3 of the electronic structure: what it is (its path, field.h, names the source) and the parameters that
+// tell the fields of one family apart. What a representation draws is one.
 struct FieldRef {
     ElectronicStructureSource source = ElectronicStructureSource::MolecularOrbital;
     bool use_magnitude = false;
@@ -744,10 +728,6 @@ struct FieldRef {
     int orbital_idx = 0;
     int excited_state_idx = 0;
     int nto_lambda_idx = 0;
-    // The density property, named by the id of its attribute rather than by a position in a list. An index silently
-    // re-points at a different property whenever the set changes across a reload; an id is derived from the path, so
-    // it names the same thing or nothing at all.
-    md_attribute_id_t density_property_key = MD_ATTRIBUTE_INVALID;
 };
 
 struct ElectronicStructureRepresentation {
@@ -777,12 +757,6 @@ struct ElectronicStructureRepresentation {
     md_float4_t tint_den     = { 1.0f, 1.0f, 1.0f, 0.75f };
     md_float4_t tint_att     = { 1.0f, 1.0f, 1.0f, 0.75f };
     md_float4_t tint_det     = { 1.0f, 1.0f, 1.0f, 0.75f };
-
-    struct {
-        int num_isos = 0;
-        double values[8];
-        md_float4_t colors[8];
-    } density_property;
 
     // Scaling factor of *power* in the gaussians to splat the color volume (when using atom colors for volumes)
     double gaussian_splatting_power = 10.0;
@@ -875,10 +849,6 @@ static inline bool electronic_structure_source_supported(ElectronicStructureSour
     return (mask & electronic_structure_source_flag(source)) != 0;
 }
 
-static inline bool electronic_structure_is_density_property(const ElectronicStructureRepresentation& rep) {
-    return rep.shown.source == ElectronicStructureSource::DensityProperty;
-}
-
 // What the values of a representation's field are, which its colour map is set up for (es_volume_map_update)
 enum class ElectronicStructureValueKind {
     Density,        // >= 0, largest at the nuclei
@@ -920,9 +890,6 @@ static inline bool electronic_structure_uses_spin(const ElectronicStructureRepre
 }
 
 static inline bool electronic_structure_is_signed(const ElectronicStructureRepresentation& rep) {
-    if (electronic_structure_is_density_property(rep)) {
-        return false;
-    }
     const SurfaceFieldKind fk = electronic_structure_source_field_kind(rep.shown.source);
     if (fk != SurfaceFieldKind::Count) {
         return surface_field_kind_info(fk).scale == SurfaceFieldScale::Diverging;
@@ -947,38 +914,11 @@ static inline bool electronic_structure_uses_density_iso_squared(const Electroni
            rep.shown.source == ElectronicStructureSource::ElectronDensity;
 }
 
-static inline md_float4_t electronic_structure_density_property_default_color(const ElectronicStructureRepresentation& rep, int idx) {
-    switch (idx) {
-    case 0: return rep.col_psi_pos;
-    case 1: return rep.col_psi_neg;
-    case 2: return rep.col_den;
-    case 3: return rep.col_att;
-    case 4: return rep.col_det;
-    default: return rep.col_den;
-    }
-}
-
-static inline void electronic_structure_density_property_init_defaults(ElectronicStructureRepresentation* rep) {
-    MD_ASSERT(rep);
-    rep->density_property.num_isos = 2;
-    rep->density_property.values[0] =  0.05;
-    rep->density_property.values[1] = -0.05;
-    rep->density_property.colors[0] = rep->col_psi_pos;
-    rep->density_property.colors[1] = rep->col_psi_neg;
-    for (int i = 2; i < (int)MD_COUNTOF(rep->density_property.values); ++i) {
-        rep->density_property.values[i] = 0.05 * (double)(i + 1);
-        rep->density_property.colors[i] = electronic_structure_density_property_default_color(*rep, i);
-    }
-}
-
 static inline const char* electronic_structure_iso_value_label() {
     return "isovalue (*)";
 }
 
 static inline const char* electronic_structure_iso_value_tooltip(const ElectronicStructureRepresentation& rep) {
-    if (electronic_structure_is_density_property(rep)) {
-        return "User-defined isosurfaces for arbitrary density-property volumes.";
-    }
     if (electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count) {
         return electronic_structure_is_signed(rep) ?
             "Where the surfaces are: the field at +isovalue and -isovalue, in its unit" :
@@ -997,17 +937,6 @@ static inline const char* electronic_structure_iso_value_tooltip(const Electroni
 static inline void electronic_structure_iso_desc_init(IsoDesc* iso, const ElectronicStructureRepresentation& rep) {
     MD_ASSERT(iso);
     *iso = {};    
-
-    if (electronic_structure_is_density_property(rep)) {
-        const int num_isos = MD_CLAMP(rep.density_property.num_isos, 0, (int)MD_COUNTOF(rep.density_property.values));
-        iso->count = (size_t)num_isos;
-        for (int i = 0; i < num_isos; ++i) {
-            iso->values[i] = (float)rep.density_property.values[i];
-            iso->colors[i] = rep.density_property.colors[i];
-            iso->optical_densities[i] = (float)rep.iso_optical_density;
-        }
-        return;
-    }
 
     const bool field = electronic_structure_source_field_kind(rep.shown.source) != SurfaceFieldKind::Count;
     const float iso_value = field ? (float)rep.field_iso_value : (float)rep.iso_value;
@@ -1091,15 +1020,6 @@ static inline void electronic_structure_set_source_defaults(ElectronicStructureR
         // a field of the system as a whole: an isovalue in its unit
         rep->field_iso_value = surface_field_kind_info(fk).iso;
         rep->source_span = {};
-    }
-    if (rep->shown.source == ElectronicStructureSource::DensityProperty) {
-        // The atoms' colours are not offered for a density property; a field is, as it is evaluated on the same grid
-        if (rep->coloring == SurfaceColoring::AtomColors) {
-            rep->coloring = SurfaceColoring::Uniform;
-        }
-        if (rep->density_property.num_isos <= 0) {
-            electronic_structure_density_property_init_defaults(rep);
-        }
     }
 }
 
@@ -2781,10 +2701,6 @@ bool dipole_group_from_key(DipoleGroup* out, const md_system_t& sys, md_attribut
 // the (key, index) they already hold and come straight here.
 bool dipole_moment_read(md_float3_t* out_vec, md_float3_t* out_origin, const md_system_t& sys, md_attribute_id_t key, uint32_t index);
 
-// Every density property the system carries, in the attribute table's own path order. Returns how
-// many there are, which may exceed 'cap' - only the first 'cap' are written. Pass (NULL, 0) to count.
-size_t density_properties_gather(DensityProperty out[], size_t cap, const md_system_t& sys);
-
 // Which electronic structure sources this system can actually show. Asked of the attribute table on
 // the spot rather than cached: each source needs particular attributes, so their presence IS the
 // answer, and a second reader publishing them satisfies it without anyone being told.
@@ -2792,11 +2708,8 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys);
 
 // Points an electronic structure representation at something this system carries. A source the
 // system has is left as it is; otherwise the first one it has, in the enum's order, is taken with that
-// source's defaults - so orbitals stay the first choice wherever there are any, and a file with only
-// density properties gets a density property rather than an orbital source it cannot evaluate. A
-// density property source is also pointed at an actual property, as it otherwise evaluates nothing
-// until the representation's window has been drawn. Returns false when the system carries no
-// electronic structure at all, and leaves the representation untouched.
+// source's defaults - so orbitals stay the first choice wherever there are any. Returns false when the
+// system carries no electronic structure at all, and leaves the representation untouched.
 bool electronic_structure_select_available_source(ElectronicStructureRepresentation* es, const md_system_t& sys);
 
 // Takes what the field a representation is coloured by has finished evaluating (surface_field_poll):
@@ -3080,7 +2993,6 @@ namespace es_path {
     inline const md_str_t detachment_density  = MD_STR_INIT("vlx/rsp/transition_density/detachment");
     inline const md_str_t transition_diff     = MD_STR_INIT("vlx/rsp/transition_density/difference");
 
-    inline const md_str_t density_property    = MD_STR_INIT("vlx/density_property");
 }
 
 // The only interpretation of use_magnitude there is. ABS is a MODIFIER bit on an accumulate op, not

@@ -8609,7 +8609,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 for (int i = 0; i < (int)ElectronicStructureSource::Count; i++) {
                     ElectronicStructureSource source = (ElectronicStructureSource)i;
                     bool is_selected = (export_state.source == source);
-                    bool disabled = source == ElectronicStructureSource::DensityProperty || electronic_structure_source_field_kind(source) != SurfaceFieldKind::Count ||
+                    bool disabled = electronic_structure_source_field_kind(source) != SurfaceFieldKind::Count ||
                                     ((source == ElectronicStructureSource::NaturalTransitionOrbital ||
                                      source == ElectronicStructureSource::TransitionDensity) &&
                                     (num_excited == 0));

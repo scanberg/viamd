@@ -5,8 +5,7 @@
 
 #include <core/md_common.h>
 
-// The fields of the electronic structure: each a source of the representation (the density properties apart, a leaf
-// each under es/density_property)
+// The fields of the electronic structure: each a source of the representation
 struct EsField {
     const char* path;
     const char* label;
@@ -31,8 +30,6 @@ static const EsField es_fields[] = {
     { "es/gostshyp/energy_density",       "Energy Density",                    ElectronicStructureSource::GostshypEnergyDensity,         "pressure cavity wall energy" },
 };
 
-static const md_str_t density_property_prefix = MD_STR_LIT("es/density_property/");
-
 struct GroupLabel {
     const char* group;
     const char* label;
@@ -41,7 +38,6 @@ struct GroupLabel {
 static const GroupLabel group_labels[] = {
     { "es",                  "Electronic Structure" },
     { "es/gostshyp",         "GOSTSHYP" },
-    { "es/density_property", "Density Properties" },
 };
 
 md_str_t field_group_label(md_str_t group) {
@@ -50,13 +46,6 @@ md_str_t field_group_label(md_str_t group) {
     }
     const size_t slash = md_str_rfind_char(group, '/');
     return slash == MD_STR_NPOS ? group : md_str_substr(group, slash + 1);
-}
-
-// A density property's path below its group in the attributes (vlx/density_property/<this>)
-static md_str_t density_property_rel(md_str_t attr_path) {
-    md_str_t rel = md_str_substr(attr_path, es_path::density_property.len);
-    if (rel.len && rel.ptr[0] == '/') rel = md_str_substr(rel, 1);
-    return rel;
 }
 
 static void entry_path(FieldEntry* e, const char* path) {
@@ -78,29 +67,10 @@ size_t field_catalog(md_array(FieldEntry)* out, const md_system_t& sys, md_alloc
         md_array_push(*out, e, alloc);
         count += 1;
     }
-    // A leaf each, after the densities they are of
-    for (md_attribute_iter_t it = md_attributes_iter(&sys.attributes, es_path::density_property); md_attributes_next(&it);) {
-        const md_attribute_t* attr = it.attr;
-        const md_str_t rel = density_property_rel(attr->path);
-        FieldEntry e = {};
-        snprintf(e.path, sizeof(e.path), "%.*s%.*s", (int)density_property_prefix.len, density_property_prefix.ptr, (int)rel.len, rel.ptr);
-        e.label = md_str_empty(attr->label) ? md_attribute_leaf(attr) : attr->label;
-        e.keywords = "density property";
-        e.source = ElectronicStructureSource::DensityProperty;
-        e.density_property_key = attr->id;
-        md_array_push(*out, e, alloc);
-        count += 1;
-    }
     return count;
 }
 
-size_t field_path_of_source(char* buf, size_t cap, ElectronicStructureSource source, md_attribute_id_t key, const md_system_t& sys) {
-    if (source == ElectronicStructureSource::DensityProperty) {
-        const md_attribute_t* attr = md_attributes_get(&sys.attributes, key);
-        if (!attr) return 0;
-        const md_str_t rel = density_property_rel(attr->path);
-        return (size_t)snprintf(buf, cap, "%.*s%.*s", (int)density_property_prefix.len, density_property_prefix.ptr, (int)rel.len, rel.ptr);
-    }
+size_t field_path_of_source(char* buf, size_t cap, ElectronicStructureSource source) {
     for (const EsField& f : es_fields) {
         if (f.source == source) return (size_t)snprintf(buf, cap, "%s", f.path);
     }
@@ -116,20 +86,10 @@ size_t field_path_of_kind(char* buf, size_t cap, SurfaceFieldKind kind) {
     return 0;
 }
 
-bool field_resolve(ElectronicStructureSource* source, md_attribute_id_t* key, md_str_t path) {
-    if (md_str_begins_with(path, density_property_prefix)) {
-        char attr[FIELD_PATH_MAX];
-        const md_str_t rel = md_str_substr(path, density_property_prefix.len);
-        const int n = snprintf(attr, sizeof(attr), "%.*s/%.*s", (int)es_path::density_property.len, es_path::density_property.ptr, (int)rel.len, rel.ptr);
-        if (n <= 0 || n >= (int)sizeof(attr)) return false;
-        *source = ElectronicStructureSource::DensityProperty;
-        *key = md_attributes_id_from_path(md_str_t{attr, (size_t)n});
-        return true;
-    }
+bool field_resolve(ElectronicStructureSource* source, md_str_t path) {
     for (const EsField& f : es_fields) {
         if (md_str_eq_cstr(path, f.path)) {
             *source = f.source;
-            *key = MD_ATTRIBUTE_INVALID;
             return true;
         }
     }

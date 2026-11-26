@@ -877,8 +877,7 @@ struct EsIsoMesh {
 static bool field_spec_equal(const FieldRef& a, const FieldRef& b) {
     return a.source == b.source && a.spin == b.spin && a.nto_component == b.nto_component &&
            a.transition_density_component == b.transition_density_component && a.orbital_idx == b.orbital_idx &&
-           a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx &&
-           a.density_property_key == b.density_property_key;
+           a.excited_state_idx == b.excited_state_idx && a.nto_lambda_idx == b.nto_lambda_idx;
 }
 
 // What a representation's field is of, copied for the task that makes it: the field (FieldRef), as that is all a
@@ -936,10 +935,6 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
         md_gto_iso_field_set_maxima_at_atoms(f, true);
         return f;
     }
-    case ElectronicStructureSource::DensityProperty: {
-        const md_attribute_t* attr = md_attributes_get(&g.sys->attributes, es.density_property_key);
-        return attr ? field_create_density(g, attr->path, nullptr) : nullptr;
-    }
     case ElectronicStructureSource::ElectronLocalization:
     case ElectronicStructureSource::LocalizedOrbitalLocator: {
         // made of each spin's density and kinetic energy density, which it takes; bounded through theirs
@@ -980,7 +975,6 @@ static uint64_t electronic_structure_field_key(const ApplicationState* state, co
     h = md_hash64(&es.shown.orbital_idx, sizeof(es.shown.orbital_idx), h);
     h = md_hash64(&es.shown.excited_state_idx, sizeof(es.shown.excited_state_idx), h);
     h = md_hash64(&es.shown.nto_lambda_idx, sizeof(es.shown.nto_lambda_idx), h);
-    h = md_hash64(&es.shown.density_property_key, sizeof(es.shown.density_property_key), h);
     return h ? h : 1;
 }
 
