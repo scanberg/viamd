@@ -15,8 +15,8 @@ struct VdwSurfaceData;
 // VDW SURFACE
 //
 // The surface of a union of spheres, one per atom the representation shows: the van der Waals surface, or a solvation
-// cavity grown from it (a GOSTSHYP or C-PCM cavity: the spheres the file gives the QM atoms, 1.5 and 1.2 times the
-// van der Waals radii in VeloxChem). Exact per pixel: each sphere ray cast, the depth test keeping what is outside the
+// cavity grown from it (a GOSTSHYP or C-PCM cavity: the spheres the file gives the QM atoms, in VeloxChem 1.2 times its
+// van der Waals radii unless the run set another factor). Exact per pixel: each sphere ray cast, the depth test keeping what is outside the
 // others. It picks as the atoms.
 //
 // RADII: the atoms' van der Waals radii (md_system's, with the element remappings) times the scale, or a radius series

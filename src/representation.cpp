@@ -1998,10 +1998,16 @@ done:
         box->enabled = false;
     }
 
+    // Every cavity (the spheres of a run under pressure, in a continuum)
+    md_attribute_id_t cavities[16];
+    const size_t nc = MD_MIN(vdw_surface_radii_sets(cavities, MD_COUNTOF(cavities), state->mold.sys), MD_COUNTOF(cavities));
     {
-        // Every cavity (the spheres of a run under pressure, in a continuum): its surface, coloured by its tesserae
-        md_attribute_id_t cavities[16];
-        const size_t nc = MD_MIN(vdw_surface_radii_sets(cavities, MD_COUNTOF(cavities), state->mold.sys), MD_COUNTOF(cavities));
+        md_attribute_id_t sets[16];
+        const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
+
+        // Its surface, coloured by its tesserae; and the tesserae themselves as points, hidden: on the surface they
+        // would stand half out of it over the colour they give it (shown with the surface hidden, they are where
+        // the values come from)
         for (size_t i = 0; i < nc; ++i) {
             Representation* v = create_representation(state, RepresentationType::VdwSurface);
             vdw_surface_select_cavity(&v->vdw, state->mold.sys, cavities[i]);
@@ -2010,11 +2016,20 @@ done:
             const md_str_t nm = sl == MD_STR_NPOS ? grp : md_str_substr(grp, sl + 1, grp.len);
             snprintf(v->name, sizeof(v->name), "%.*s cavity", (int)nm.len, nm.ptr);
             v->enabled = true;
+
+            for (size_t k = 0; k < n; ++k) {
+                if (!md_str_begins_with(glyphs_group(state->mold.sys, sets[k]), grp)) continue;
+                Representation* g = create_representation(state, RepresentationType::Glyphs);
+                glyphs_select(&g->glyphs, state->mold.sys, sets[k]);
+                g->glyphs.shape  = GlyphShape::Sphere;
+                g->glyphs.radius = {MD_ATTRIBUTE_INVALID, 0.1f};
+                snprintf(g->name, sizeof(g->name), "%.*s tesserae", (int)nm.len, nm.ptr);
+                g->enabled = false;
+                break;
+            }
         }
 
-        // Every other oriented point set: its glyphs (a cavity's tesserae are on its surface, their glyphs one click away)
-        md_attribute_id_t sets[16];
-        const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
+        // Every other oriented point set: its glyphs
         for (size_t i = 0; i < n; ++i) {
             if (!glyphs_is_oriented(state->mold.sys, sets[i])) continue;
             bool on_cavity = false;
@@ -2036,9 +2051,10 @@ done:
     }
 
     if (electronic_structure_present) {
+        // Hidden where there is a cavity: what it would show of the molecule is within the cavity's surface
         Representation* rep = create_representation(state, RepresentationType::ElectronicStructure);
         snprintf(rep->name, sizeof(rep->name), "field");
-        rep->enabled = true;
+        rep->enabled = nc == 0;
         electronic_structure_select_available_source(&rep->electronic_structure, state->mold.sys);
 
 
@@ -4335,29 +4351,33 @@ static bool draw_representation_vdw_surface(ApplicationState* state, Representat
     bool update_rep = false;
     const md_system_t& sys = state->mold.sys;
     VdwSurfaceRepresentation& v = rep.vdw;
+    md_attribute_id_t sets[16];
+    const size_t num_sets = MD_MIN(vdw_surface_radii_sets(sets, MD_COUNTOF(sets), sys), MD_COUNTOF(sets));
     if (prop::section("Surface")) {
-        prop::row("radii", "Van der Waals: each atom's van der Waals radius times the scale (Scale 1: the van der Waals surface).\n"
-                           "A cavity's: the spheres a solvation model put about the QM atoms, as its tesserae lie (GOSTSHYP,\n"
-                           "C-PCM: their van der Waals radii scaled up, by 1.5 and 1.2 in VeloxChem). Only the QM atoms have one.");
-        {
-            md_attribute_id_t sets[16];
-            const size_t n = MD_MIN(vdw_surface_radii_sets(sets, MD_COUNTOF(sets), sys), MD_COUNTOF(sets));
-            const md_attribute_t* cur = v.radii != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.radii) : nullptr;
-            char preview[160];
-            if (cur) snprintf(preview, sizeof(preview), "%.*s", (int)md_attribute_group(cur).len, md_attribute_group(cur).ptr);
-            else snprintf(preview, sizeof(preview), "Van der Waals");
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::BeginCombo("##vdw_radii", preview)) {
-                if (ImGui::Selectable("Van der Waals", !cur)) { v.radii = MD_ATTRIBUTE_INVALID; update_rep = true; }
-                for (size_t i = 0; i < n; ++i) {
-                    const md_attribute_t* a = md_attributes_get(&sys.attributes, sets[i]);
-                    const md_str_t grp = md_attribute_group(a);
-                    char label[176];
-                    snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
-                    if (ImGui::Selectable(label, sets[i] == v.radii)) { vdw_surface_select_cavity(&v, sys, sets[i]); update_rep = true; }
-                    if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
+        // The radii to choose only where there is a cavity (or a workspace kept one the system does not have)
+        if (num_sets > 0 || v.radii != MD_ATTRIBUTE_INVALID) {
+            prop::row("radii", "Van der Waals: each atom's van der Waals radius times the scale (Scale 1: the van der Waals surface).\n"
+                               "A cavity's: the spheres a solvation model put about the QM atoms, as its tesserae lie (GOSTSHYP,\n"
+                               "C-PCM: their van der Waals radii scaled up, by 1.2 unless the run said otherwise). Only the QM atoms have one.");
+            {
+                const size_t n = num_sets;
+                const md_attribute_t* cur = v.radii != MD_ATTRIBUTE_INVALID ? md_attributes_get(&sys.attributes, v.radii) : nullptr;
+                char preview[160];
+                if (cur) snprintf(preview, sizeof(preview), "%.*s", (int)md_attribute_group(cur).len, md_attribute_group(cur).ptr);
+                else snprintf(preview, sizeof(preview), "Van der Waals");
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::BeginCombo("##vdw_radii", preview)) {
+                    if (ImGui::Selectable("Van der Waals", !cur)) { v.radii = MD_ATTRIBUTE_INVALID; update_rep = true; }
+                    for (size_t i = 0; i < n; ++i) {
+                        const md_attribute_t* a = md_attributes_get(&sys.attributes, sets[i]);
+                        const md_str_t grp = md_attribute_group(a);
+                        char label[176];
+                        snprintf(label, sizeof(label), "%.*s##%u", (int)grp.len, grp.ptr, (unsigned)i);
+                        if (ImGui::Selectable(label, sets[i] == v.radii)) { vdw_surface_select_cavity(&v, sys, sets[i]); update_rep = true; }
+                        if (a->description.len && ImGui::IsItemHovered()) attribute_description_tooltip(a);
+                    }
+                    ImGui::EndCombo();
                 }
-                ImGui::EndCombo();
             }
         }
         if (v.radii == MD_ATTRIBUTE_INVALID) {
