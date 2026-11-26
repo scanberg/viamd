@@ -6172,14 +6172,14 @@ struct QuantumChemistry : viamd::EventHandler {
         if (skin > 0) {
             ImGui::Text("Effective volume:       %.2f Å³  (V^eff = Σ a λ)", skin);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("V^eff = Σ_j a_j g~_j / f~_j (eq 13): each tessera's area times its decay length λ_j = g~_j / f~_j,\n"
+                ImGui::SetTooltip("V^eff = Σ_j a_j g~_j / f~_j: each tessera's area times its decay length λ_j = g~_j / f~_j,\n"
                                   "the density under its Gaussian over how fast that falls as the Gaussian moves out.\n"
                                   "As the V of a pV term (E^GOST = p_inp V^eff); not the volume of the cavity");
             }
             if (area > 0) ImGui::Text("Decay length:           %.4f Å mean by area (%.4f to %.4f)", skin / area, g.lambda_min, g.lambda_max);
             ImGui::Text("GOSTSHYP energy:        %.2f kJ/mol  (%.6f au)", energy_kj, energy_kj / HARTREE_TO_KJ_PER_MOL);
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("E^GOST = Σ_j p_j g~_j = p_inp V^eff (eq 5): the amplitudes hold the input pressure, p_j = p_inp a_j / f~_j (eq 6)");
+                ImGui::SetTooltip("E^GOST = Σ_j p_j g~_j = p_inp V^eff: the amplitudes hold the input pressure, p_j = p_inp a_j / f~_j");
             }
             if (area > 0) ImGui::Text("Energy per area:        %.4f kJ/mol/Å² mean (p_inp λ)", energy_kj / area);
         }

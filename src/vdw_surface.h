@@ -34,7 +34,8 @@ struct VdwSurfaceData;
 //     further: continuous, conservative (within its neighbours' values), seamless across the spheres.
 // Points of no area (a tessera its switching buried) take part in neither. What a point set marks as a total of its
 // point rather than a density (MD_ATTRIBUTE_FLAG_EXTENSIVE: an energy, a charge) is not offered: on the surface its
-// pattern would be that of the areas.
+// pattern would be that of the areas. Nor is what is of the discretization (MD_ATTRIBUTE_FLAG_SAMPLING: a quadrature
+// weight, a switching, an exponent from the area), whose pattern would be that of the tessellation.
 //
 // UNITS: Angstrom, as the system's.
 
@@ -53,7 +54,7 @@ struct VdwSurfaceRepresentation {
 size_t vdw_surface_radii_sets(md_attribute_id_t out[], size_t cap, const md_system_t& sys);
 
 // The quantities it can be coloured by: those of the point sets of the system (glyphs_quantities) but their indices
-// and what is marked a total (MD_ATTRIBUTE_FLAG_EXTENSIVE)
+// and what is marked a total (MD_ATTRIBUTE_FLAG_EXTENSIVE) or of the discretization (MD_ATTRIBUTE_FLAG_SAMPLING)
 size_t vdw_surface_quantities(md_attribute_id_t out[], size_t cap, const md_system_t& sys);
 
 // As a new one of a system with a cavity starts out: its radii, coloured by its principal quantity (the decay length

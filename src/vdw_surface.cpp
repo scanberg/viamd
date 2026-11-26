@@ -98,7 +98,7 @@ size_t vdw_surface_quantities(md_attribute_id_t out[], size_t cap, const md_syst
             const md_attribute_t* a = get(sys, q[i]);
             const md_str_t leaf = md_attribute_leaf(a);
             if (md_str_eq(leaf, MD_STR_LIT("atom_index")) || md_str_eq(leaf, MD_STR_LIT("system_index"))) continue;
-            if (a->flags & MD_ATTRIBUTE_FLAG_EXTENSIVE) continue;
+            if (a->flags & (MD_ATTRIBUTE_FLAG_EXTENSIVE | MD_ATTRIBUTE_FLAG_SAMPLING)) continue;
             if (n < cap) out[n] = q[i];
             n++;
         }
