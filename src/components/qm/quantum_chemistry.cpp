@@ -9064,74 +9064,6 @@ struct QuantumChemistry : viamd::EventHandler {
         ImGui::End();
     }
 
-    // Calculates the transition matrix heuristic
-    static inline void compute_transition_matrix(float* out_matrix, const size_t num_groups, const float* hole_charges, const float* part_charges) {
-        md_temp_scope_t temp = md_temp_begin();
-        MD_DEFER { md_temp_end(temp); };
-
-        if (num_groups == 0) return;
-
-        int* donors         = md_temp_alloc_zero_array(temp, int, num_groups);
-        int* acceptors      = md_temp_alloc_zero_array(temp, int, num_groups);
-        double* charge_diff = md_temp_alloc_zero_array(temp, double, num_groups);
-
-        int num_donors = 0;
-        int num_acceptors = 0;
-
-        // Sanitize inputs: clamp small negative numerical noise to zero before normalization.
-        double hole_sum = 0;
-        double part_sum = 0;
-
-        for (size_t i = 0; i < num_groups; i++) {
-            const double h = MD_MAX(0.0, (double)hole_charges[i]);
-            const double p = MD_MAX(0.0, (double)part_charges[i]);
-            hole_sum += h;
-            part_sum += p;
-        }
-
-        // Guard against degenerate inputs (no charge to attribute).
-        if (hole_sum <= 0.0 || part_sum <= 0.0) {
-            md_memset(out_matrix, 0, sizeof(float) * num_groups * num_groups);
-            return;
-        }
-
-        for (size_t i = 0; i < num_groups; i++) {
-            // percentages (clamped, normalized so each sums to 1)
-            double gsCharge = MD_MAX(0.0, (double)hole_charges[i]) / hole_sum;
-            double esCharge = MD_MAX(0.0, (double)part_charges[i]) / part_sum;
-
-            if (gsCharge > esCharge) {
-                donors[num_donors++] = (int)i;
-            } else {
-                acceptors[num_acceptors++] = (int)i;
-            }
-
-            out_matrix[i * num_groups + i] = (float)MD_MIN(gsCharge, esCharge);
-            charge_diff[i] = esCharge - gsCharge;
-        }
-
-        double total_acceptor_charge = 0;
-        for (int i = 0; i < num_acceptors; i++) {
-            total_acceptor_charge += MD_MAX(0.0, charge_diff[acceptors[i]]);
-        }
-
-        if (total_acceptor_charge <= 0.0) {
-            return;
-        }
-
-        for (int i = 0; i < num_donors; i++) {
-            int donor = donors[i];
-            double charge_deficit = MD_MAX(0.0, -charge_diff[donor]);
-            for (int j = 0; j < num_acceptors; j++) {
-                int acceptor = acceptors[j];
-                double acc = MD_MAX(0.0, charge_diff[acceptor]);
-                double contrib = charge_deficit * acc / total_acceptor_charge;
-                if (contrib < 0.0) contrib = 0.0;
-                out_matrix[acceptor * num_groups + donor] = (float)contrib;
-            }
-        }
-    }
-
     void delete_group(int index) {
         md_float4_t deleted_color = nto.group.color[index];
         for (size_t i = 0; i < md_array_size(nto.atom_group_idx); i++) {
@@ -9727,7 +9659,6 @@ struct QuantumChemistry : viamd::EventHandler {
                 }
                 // Draw Sankey Diagram of Transition Matrix
                 {
-                    //compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
                     ImVec2 p0 = canvas_p0 + canvas_sz * ImVec2(0.5f, 0.0f);
                     ImVec2 p1 = canvas_p1;
                     im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto, hide_overlap_text);
@@ -13012,15 +12943,13 @@ struct QuantumChemistry : viamd::EventHandler {
         if (!ct_job) flow.ct_failed_state = sel;   // no NTO pairs to read: do not ask every frame
     }
 
-    // Bookkeeping rather than numerics: it owns the hashes and the transition matrix storage, and hands the numbers
-    // to compute_transition_matrix, which takes nothing but arrays.
-    //
-    // A group's hole and particle are the LOWDIN populations of the state's detachment and attachment densities over
-    // its atoms: in the Lowdin basis, where the NTOs are orthonormal, the detachment density on atom A is
-    // sum_k lambda_k H^A_kk (H^A the hole NTOs' block over A's AOs, md_qm_ct.h) and the attachment's the same of the
-    // particles - the row and column sums of the charge transfer numbers Omega, exactly. From the selected state's job
-    // (CtStateJob: its blocks per atom), made while the Transition Analysis window is shown; nothing until it is done.
-    // (Mulliken populations of the two matrices were here before: they can turn negative and depend on the basis.)
+    // The transition matrix is the state's charge transfer numbers between the groups: Omega_GH, the share of the
+    // excitation with its hole on group G and its electron on group H (md_qm_ct_omega, in the Lowdin basis), made
+    // exactly from the selected state's NTO blocks per atom (CtStateJob) summed over each group's atoms (blocks add),
+    // normalized to sum 1. A group's hole and particle are its row and column sums: the Lowdin populations of the
+    // detachment and attachment densities over its atoms. The job is made while the Transition Analysis window is
+    // shown; nothing until it is done. (Before: Mulliken populations of the two matrices, and between the groups a
+    // guess from them alone, which showed only net transfer and paired every donor with every acceptor.)
     void update_nto_derived_data(ApplicationState& state) {
         if (!nto.atom_group_idx) return;
         const md_system_t& sys = state.mold.sys;
@@ -13073,28 +13002,44 @@ struct QuantumChemistry : viamd::EventHandler {
         md_memset(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
         if (!job) return;
 
-        double hole[MAX_NTO_GROUPS] = {0};
-        double part[MAX_NTO_GROUPS] = {0};
-        const size_t K = job->K;
+        const size_t G = MD_MIN((size_t)nto.group.count, (size_t)MAX_NTO_GROUPS);
+        const size_t K = job->K, KK = K * K;
+        if (G == 0 || K == 0) return;
+        md_temp_scope_t temp = md_temp_begin();
+        MD_DEFER { md_temp_end(temp); };
+        double* hg = md_temp_alloc_zero_array(temp, double, G * KK);
+        double* pg = md_temp_alloc_zero_array(temp, double, G * KK);
+        double* om = md_temp_alloc_array(temp, double, G * G);
         // Bounded by the array actually being indexed as well as by the job's atoms
         const size_t n = MD_MIN(job->num_atoms, md_array_size(nto.atom_group_idx));
         for (size_t a = 0; a < n; ++a) {
             uint32_t g = nto.atom_group_idx[a];
-            if (g >= MAX_NTO_GROUPS) g = 0;
-            const double* H = job->hole_blocks + a * K * K;
-            const double* P = job->part_blocks + a * K * K;
-            for (size_t k = 0; k < K; ++k) {
-                const double l = MD_MAX(0.0, job->lambda[k]);
-                hole[g] += l * H[k * K + k];
-                part[g] += l * P[k * K + k];
+            if (g >= G) g = 0;
+            const double* H = job->hole_blocks + a * KK;
+            const double* P = job->part_blocks + a * KK;
+            double* hd = hg + g * KK;
+            double* pd = pg + g * KK;
+            for (size_t i = 0; i < KK; ++i) { hd[i] += H[i]; pd[i] += P[i]; }
+        }
+        md_qm_ct_omega(om, job->lambda, K, hg, G, pg, G);
+        double total = 0.0;
+        for (size_t i = 0; i < G * G; ++i) total += om[i];
+        if (!(total > 0.0)) return;
+        double hole[MAX_NTO_GROUPS] = {0};
+        double part[MAX_NTO_GROUPS] = {0};
+        for (size_t h = 0; h < G; ++h) {
+            for (size_t p = 0; p < G; ++p) {
+                const double w = om[h * G + p] / total;
+                // drawn from the hole's group (beg) to the particle's (end): [end * count + beg]
+                nto.transition_matrix[p * nto.group.count + h] = (float)w;
+                hole[h] += w;
+                part[p] += w;
             }
         }
-        for (size_t g = 0; g < nto.group.count && g < MAX_NTO_GROUPS; ++g) {
-            // sums of squares: never negative
-            nto.transition_density_hole[g] = (float)MD_MAX(0.0, hole[g]);
-            nto.transition_density_part[g] = (float)MD_MAX(0.0, part[g]);
+        for (size_t g = 0; g < G; ++g) {
+            nto.transition_density_hole[g] = (float)hole[g];
+            nto.transition_density_part[g] = (float)part[g];
         }
-        compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
     }
 
 };
