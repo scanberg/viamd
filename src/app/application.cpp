@@ -156,7 +156,8 @@ static struct {
     md_gpu_device_t  device = nullptr;
     md_gpu_stream_t  stream = nullptr;          // GRAPHICS: draws, presents
     md_gpu_surface_t surface = nullptr;         // the window's, unless through OpenGL
-    bool             vsync = true;              // as the surface was made
+    bool             vsync = true;              // the surfaces' present mode
+    md_gpu_sync_t    frame_done = {};           // the last frame's work: the next waits for it (update)
     // Through OpenGL
     bool                gl = false;
     GlFn                fn = {};
@@ -168,6 +169,10 @@ static struct {
     uint32_t            gl_tex = 0;             // the read back frame in GL
     uint32_t            fbo = 0;                // what the blit reads
 } present;
+
+static md_gpu_present_mode_t present_mode(bool vsync) {
+    return vsync ? MD_GPU_PRESENT_VSYNC : MD_GPU_PRESENT_IMMEDIATE;
+}
 
 static md_gpu_surface_t make_surface(GLFWwindow* window, int width, int height, bool vsync, const char* label) {
     md_gpu_surface_desc_t d = {};
@@ -185,7 +190,7 @@ static md_gpu_surface_t make_surface(GLFWwindow* window, int width, int height, 
     d.width  = (uint32_t)MD_MAX(width, 1);
     d.height = (uint32_t)MD_MAX(height, 1);
     d.format = MD_GPU_FORMAT_BGRA8_UNORM;
-    d.present_mode = vsync ? MD_GPU_PRESENT_VSYNC : MD_GPU_PRESENT_IMMEDIATE;
+    d.present_mode = present_mode(vsync);
     d.label  = label;
     return md_gpu_surface_create(present.device, &d);
 }
@@ -559,6 +564,7 @@ void shutdown(Context* ctx) {
     if (present.device) md_gpu_device_destroy(present.device);    // after the window's last present, before the window
     present.device = nullptr;
     present.stream = nullptr;
+    present.frame_done = {};
     glfwDestroyWindow((GLFWwindow*)data.internal_ctx.window.ptr);
     glfwTerminate();
 
@@ -566,6 +572,11 @@ void shutdown(Context* ctx) {
 }
 
 void update(Context* ctx) {
+    // The previous frame's work done before this one's input is taken: a frame ahead of the GPU at most. Acquire
+    // alone does not hold the CPU back where the driver hands an image back early (NVIDIA): frames queued up to
+    // md_gpu's limit of acquires, each a frame of the latency from input to the screen.
+    md_gpu_sync_wait(present.frame_done);
+    present.frame_done = {};
     glfwPollEvents();
     check_c_numeric_locale();
 
@@ -588,16 +599,18 @@ void update(Context* ctx) {
     data.internal_ctx.window.width = w;
     data.internal_ctx.window.height = h;
 
-    // The vertical sync: GL's swap interval, or the surface's present mode (made again)
+    // The vertical sync: GL's swap interval, or the surfaces' present mode, changed on them: a new surface for a
+    // window whose old one is still being destroyed is refused by some drivers (VK_ERROR_NATIVE_WINDOW_IN_USE_KHR)
     if (ctx->window.vsync != data.internal_ctx.window.vsync) {
         data.internal_ctx.window.vsync = ctx->window.vsync;
         present.vsync = ctx->window.vsync;
         if (present.gl) {
             glfwSwapInterval((int)ctx->window.vsync);
-        } else if (present.surface) {
-            md_gpu_surface_destroy(present.surface);
-            present.surface = make_surface(window, (int)data.internal_ctx.framebuffer.width, (int)data.internal_ctx.framebuffer.height, present.vsync, "window");
-            if (!present.surface) MD_LOG_ERROR("The window's surface could not be made again: %s", md_gpu_last_error());
+        } else {
+            if (present.surface) md_gpu_surface_set_present_mode(present.surface, present_mode(present.vsync));
+            for (ImGuiViewport* vp : ImGui::GetPlatformIO().Viewports) {
+                if (vp->RendererUserData) md_gpu_surface_set_present_mode((md_gpu_surface_t)vp->RendererUserData, present_mode(present.vsync));
+            }
         }
     }
 
@@ -640,6 +653,7 @@ void render_imgui(Context* ctx) {
         ImGui::UpdatePlatformWindows();
         ImGui::RenderPlatformWindowsDefault();
     }
+    if (present.stream) present.frame_done = md_gpu_stream_record(present.stream);
 }
 
 void swap_buffers(Context* ctx) {
