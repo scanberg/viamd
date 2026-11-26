@@ -9,6 +9,7 @@
 #define GL_COLOR_ATTACHMENT_VELOCITY     GL_COLOR_ATTACHMENT2
 #define GL_COLOR_ATTACHMENT_PICKING      GL_COLOR_ATTACHMENT3
 #define GL_COLOR_ATTACHMENT_TRANSPARENCY GL_COLOR_ATTACHMENT4
+#define GL_COLOR_ATTACHMENT_INDEX        GL_COLOR_ATTACHMENT5
 
 enum class GBufferFlags : uint32_t {
     None = 0,
@@ -30,6 +31,7 @@ struct GBuffer {
         uint32_t picking = 0;
         uint32_t transparency = 0;
         uint32_t transparency_hdr = 0;  // RGBA16F, premultiplied linear radiance blended over the scene before tone mapping (isosurfaces). Not attached to fbo.
+        uint32_t index = 0;         // R32UI, of fbo (GL_COLOR_ATTACHMENT_INDEX): an index per pixel for a pass that shades what it drew in a second pass over the pixels (the VdW Surface: its sphere + 1, 0 none). Written only by such a pass, which clears it; in no other draw buffers
         uint32_t history = 0;       // TAA history written this frame, at the output size
         uint32_t history_prev = 0;  // TAA history of the previous frame; swap the two after post-processing
         uint32_t marks = 0;         // RGBA8 at the output size, of fbo_marks: 1 where the selection is in view (r), there at all (g), the highlight the same (b, a)
@@ -39,6 +41,7 @@ struct GBuffer {
 
     uint32_t fbo = 0;
     uint32_t fbo_marks = 0;
+    uint32_t fbo_color = 0;         // tex.color alone: a pass that writes the colour while it reads the G-buffer's other textures (the depth, the index)
     uint32_t fbo_image = 0;
     uint32_t width = 0;
     uint32_t height = 0;

@@ -341,6 +341,7 @@ set(SHADER_FILES
     src/shaders/glyphs/point_glyph.frag
     src/shaders/vdw/vdw_surface.vert
     src/shaders/vdw/vdw_surface.frag
+    src/shaders/vdw/vdw_shade.frag
 )
 
 # Bake shaders into a single header file

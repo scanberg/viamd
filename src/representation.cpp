@@ -2005,9 +2005,8 @@ done:
         md_attribute_id_t sets[16];
         const size_t n = MD_MIN(glyphs_point_sets(sets, MD_COUNTOF(sets), state->mold.sys), MD_COUNTOF(sets));
 
-        // Its surface, coloured by its tesserae; and the tesserae themselves as points, hidden: on the surface they
-        // would stand half out of it over the colour they give it (shown with the surface hidden, they are where
-        // the values come from)
+        // Its surface, coloured by its tesserae; and the tesserae themselves as dots on it, all of one size, coloured
+        // as the surface is
         for (size_t i = 0; i < nc; ++i) {
             Representation* v = create_representation(state, RepresentationType::VdwSurface);
             vdw_surface_select_cavity(&v->vdw, state->mold.sys, cavities[i]);
@@ -2024,7 +2023,7 @@ done:
                 g->glyphs.shape  = GlyphShape::Sphere;
                 g->glyphs.radius = {MD_ATTRIBUTE_INVALID, 0.1f};
                 snprintf(g->name, sizeof(g->name), "%.*s tesserae", (int)nm.len, nm.ptr);
-                g->enabled = false;
+                g->enabled = true;
                 break;
             }
         }

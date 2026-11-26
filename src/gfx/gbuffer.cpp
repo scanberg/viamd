@@ -38,6 +38,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     if (!gbuf->tex.marks) glGenTextures(1, &gbuf->tex.marks);
     if (!gbuf->tex.marks_group) glGenTextures(1, &gbuf->tex.marks_group);
     if (!gbuf->tex.image) glGenTextures(1, &gbuf->tex.image);
+    if (!gbuf->tex.index) glGenTextures(1, &gbuf->tex.index);
 
     glBindTexture(GL_TEXTURE_2D, gbuf->tex.depth);
     // A DEPTH_STENCIL internal format requires format GL_DEPTH_STENCIL and type
@@ -83,6 +84,13 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, gbuf->tex.index);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
@@ -156,6 +164,7 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_VELOCITY, GL_TEXTURE_2D, gbuf->tex.velocity, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_PICKING, GL_TEXTURE_2D, gbuf->tex.picking, 0);
         glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_TRANSPARENCY, GL_TEXTURE_2D, gbuf->tex.transparency, 0);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT_INDEX, GL_TEXTURE_2D, gbuf->tex.index, 0);
     }
 
     // Not wrapped in MD_ASSERT: that macro expands to nothing in release builds, so the
@@ -193,6 +202,17 @@ void gbuffer_init(GBuffer* gbuf, int width, int height, int out_width, int out_h
         const GLenum image_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
         if (image_status != GL_FRAMEBUFFER_COMPLETE) {
             MD_LOG_ERROR("Image framebuffer is incomplete (0x%04X)", (unsigned int)image_status);
+        }
+    }
+
+    if (!gbuf->fbo_color) {
+        glGenFramebuffers(1, &gbuf->fbo_color);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuf->fbo_color);
+        glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuf->tex.color, 0);
+        glDrawBuffer(GL_COLOR_ATTACHMENT0);
+        const GLenum color_status = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER);
+        if (color_status != GL_FRAMEBUFFER_COMPLETE) {
+            MD_LOG_ERROR("Colour framebuffer is incomplete (0x%04X)", (unsigned int)color_status);
         }
     }
 
@@ -256,6 +276,8 @@ void gbuffer_free(GBuffer* gbuf) {
     if (gbuf->tex.marks) glDeleteTextures(1, &gbuf->tex.marks);
     if (gbuf->tex.marks_group) glDeleteTextures(1, &gbuf->tex.marks_group);
     if (gbuf->tex.image) glDeleteTextures(1, &gbuf->tex.image);
+    if (gbuf->tex.index) glDeleteTextures(1, &gbuf->tex.index);
+    if (gbuf->fbo_color) glDeleteFramebuffers(1, &gbuf->fbo_color);
     if (gbuf->fbo_image) glDeleteFramebuffers(1, &gbuf->fbo_image);
     if (gbuf->fbo_marks) glDeleteFramebuffers(1, &gbuf->fbo_marks);
 }

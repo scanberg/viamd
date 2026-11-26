@@ -5,6 +5,7 @@
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
 #include <gfx/view_param.h>
+#include <gfx/gbuffer.h>
 
 #include <md_system.h>
 #include <md_system_state.h>
@@ -487,38 +488,56 @@ uint64_t vdw_surface_hash(const VdwSurfaceRepresentation& v) {
 // Drawing
 // ---------------------------------------------------------------------------
 
-// The program without the isolines and with them (vdw_surface.frag's ISOLINES)
+// The programs: the spheres' (vdw_surface.vert/.frag), and the colouring pass over the pixels without the isolines
+// and with them (vdw_shade.frag, its ISOLINES), its vertex shader a triangle over the viewport
 static struct {
-    GLuint program[2] = {};
+    GLuint sphere = 0;
+    GLuint shade[2] = {};
     GLuint vao = 0;
-    bool   failed[2] = {};
+    bool   failed = false;
 } gl_state;
 
-static GLuint ensure_program(int isolines) {
-    if (gl_state.failed[isolines]) return 0;
-    GLuint& prog = gl_state.program[isolines];
-    if (!prog) {
-        const md_str_t defines = isolines ? MD_STR_LIT("#define ISOLINES") : md_str_t{};
-        GLuint vs = gl::compile_shader_from_source({(const char*)vdw_surface_vert, vdw_surface_vert_size}, GL_VERTEX_SHADER);
-        GLuint fs = gl::compile_shader_from_source({(const char*)vdw_surface_frag, vdw_surface_frag_size}, GL_FRAGMENT_SHADER, defines);
-        if (vs && fs) {
-            prog = glCreateProgram();
-            const GLuint shaders[] = {vs, fs};
-            if (!gl::attach_link_detach(prog, shaders, 2)) {
-                MD_LOG_ERROR("VdW Surface: the program did not link");
-                glDeleteProgram(prog);
-                prog = 0;
-            }
+static constexpr md_str_t shade_vert_src = MD_STR_LIT(
+    "#version 410 core\n"
+    "void main() {\n"
+    "    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));\n"
+    "    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);\n"
+    "}\n");
+
+static GLuint link_program(md_str_t vert, md_str_t frag, md_str_t defines, const char* what) {
+    GLuint vs = gl::compile_shader_from_source(vert, GL_VERTEX_SHADER);
+    GLuint fs = gl::compile_shader_from_source(frag, GL_FRAGMENT_SHADER, defines);
+    GLuint prog = 0;
+    if (vs && fs) {
+        prog = glCreateProgram();
+        const GLuint shaders[] = {vs, fs};
+        if (!gl::attach_link_detach(prog, shaders, 2)) {
+            MD_LOG_ERROR("VdW Surface: the %s program did not link", what);
+            glDeleteProgram(prog);
+            prog = 0;
         }
-        if (vs) glDeleteShader(vs);
-        if (fs) glDeleteShader(fs);
-        if (!prog) {
-            gl_state.failed[isolines] = true;
-            return 0;
+    }
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return prog;
+}
+
+static bool ensure_programs() {
+    if (gl_state.failed) return false;
+    if (!gl_state.sphere) {
+        const md_str_t vert = {(const char*)vdw_surface_vert, vdw_surface_vert_size};
+        const md_str_t frag_sphere = {(const char*)vdw_surface_frag, vdw_surface_frag_size};
+        const md_str_t frag_shade  = {(const char*)vdw_shade_frag, vdw_shade_frag_size};
+        gl_state.sphere   = link_program(vert, frag_sphere, {}, "sphere");
+        gl_state.shade[0] = link_program(shade_vert_src, frag_shade, {}, "colour");
+        gl_state.shade[1] = link_program(shade_vert_src, frag_shade, MD_STR_LIT("#define ISOLINES"), "colour (isolines)");
+        if (!gl_state.sphere || !gl_state.shade[0] || !gl_state.shade[1]) {
+            gl_state.failed = true;
+            return false;
         }
     }
     if (!gl_state.vao) glGenVertexArrays(1, &gl_state.vao);
-    return prog;
+    return true;
 }
 
 static void jitter_uv(float out[2], const md_float4x4_t& P) {
@@ -532,23 +551,17 @@ static void jitter_uv(float out[2], const md_float4x4_t& P) {
     }
 }
 
-void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base, const IsolineDesc& isolines) {
+static void bind_buffer(GLuint prog, int unit, const char* name, GLenum target, GLuint tex) {
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(target, tex);
+    glUniform1i(glGetUniformLocation(prog, name), unit);
+}
+
+void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, const GBuffer& gbuffer, uint32_t atom_base, const IsolineDesc& isolines) {
     VdwSurfaceData* d = v.data;
-    if (!d || d->num_spheres == 0 || !d->tex[BUF_SPHERE]) return;
+    if (!d || d->num_spheres == 0 || !d->tex[BUF_SPHERE] || !ensure_programs()) return;
     const bool by_points = v.quantity != MD_ATTRIBUTE_INVALID && d->num_points > 0 && d->tex[BUF_POINT];
     const bool lines = by_points && isolines_active(isolines);
-    const GLuint prog = ensure_program(lines ? 1 : 0);
-    if (!prog) return;
-    glUseProgram(prog);
-    const char* names[BUF_COUNT] = {"u_sphere", "u_sphere_color", "u_sphere_atom", "u_point", "u_point_w", "u_cell"};
-    for (int i = 0; i < BUF_COUNT; ++i) {
-        glActiveTexture(GL_TEXTURE0 + i);
-        glBindTexture(GL_TEXTURE_BUFFER, d->tex[i]);
-        glUniform1i(glGetUniformLocation(prog, names[i]), i);
-    }
-    glActiveTexture(GL_TEXTURE0 + BUF_COUNT);
-    glBindTexture(GL_TEXTURE_2D, colormap_texture(d, v.color_scale.colormap));
-    glUniform1i(glGetUniformLocation(prog, "u_colormap"), BUF_COUNT);
 
     const md_float4x4_t& P = view.matrix.curr.proj;
     const md_float4x4_t curr_view_to_prev_clip = view.matrix.prev.proj * view.matrix.prev.view * view.matrix.inv.view;
@@ -556,45 +569,87 @@ void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, 
     jitter_uv(jit + 0, view.matrix.curr.proj);
     jitter_uv(jit + 2, view.matrix.prev.proj);
     const bool ortho = P.elem[2][3] == 0.0f;
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_world_to_view"), 1, GL_FALSE, &view.matrix.curr.view.elem[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_world"), 1, GL_FALSE, &view.matrix.inv.view.elem[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_clip"), 1, GL_FALSE, &P.elem[0][0]);
-    glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip"), 1, GL_FALSE, &curr_view_to_prev_clip.elem[0][0]);
-    glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, jit);
-    glUniform1i(glGetUniformLocation(prog, "u_ortho"), ortho ? 1 : 0);
-    glUniform1i(glGetUniformLocation(prog, "u_by_points"), by_points ? 1 : 0);
-    glUniform2f(glGetUniformLocation(prog, "u_range"), v.color_scale.range_beg, v.color_scale.range_end);
-    glUniform3fv(glGetUniformLocation(prog, "u_grid_origin"), 1, d->grid_origin);
-    glUniform1f(glGetUniformLocation(prog, "u_grid_cell"), d->grid_cell);
-    glUniform3i(glGetUniformLocation(prog, "u_grid_dim"), d->grid_dim[0], d->grid_dim[1], d->grid_dim[2]);
-    glUniform1ui(glGetUniformLocation(prog, "u_pick_base"), atom_base);
-    if (lines) {
-        GLint vp[4];
-        glGetIntegerv(GL_VIEWPORT, vp);
-        const md_float4x4_t clip_to_view = md_float4x4_inverse(P);
-        glUniform1i(glGetUniformLocation(prog, "u_isoline_count"), (GLint)isolines.count);
-        glUniform1fv(glGetUniformLocation(prog, "u_isoline_values"), ISOLINES_MAX, isolines.values);
-        glUniform1i(glGetUniformLocation(prog, "u_isoline_hover"), isolines.hover ? 1 : 0);
-        glUniform1f(glGetUniformLocation(prog, "u_isoline_hover_value"), isolines.hover_value);
-        glUniform1f(glGetUniformLocation(prog, "u_isoline_width"), isolines.width);
-        glUniformMatrix4fv(glGetUniformLocation(prog, "u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
-        glUniform2f(glGetUniformLocation(prog, "u_inv_res"), 1.0f / (float)MD_MAX(vp[2], 1), 1.0f / (float)MD_MAX(vp[3], 1));
+
+    // The draw buffers as the caller had them, to give back
+    GLint prev_buffers[5];
+    for (int i = 0; i < 5; ++i) glGetIntegerv(GL_DRAW_BUFFER0 + i, &prev_buffers[i]);
+
+    // 1: the spheres, into the G-buffer; coloured by the points, each pixel marked with its sphere (+ 1) instead
+    {
+        const GLuint prog = gl_state.sphere;
+        glUseProgram(prog);
+        bind_buffer(prog, 0, "u_sphere",       GL_TEXTURE_BUFFER, d->tex[BUF_SPHERE]);
+        bind_buffer(prog, 1, "u_sphere_color", GL_TEXTURE_BUFFER, d->tex[BUF_SPHERE_COLOR]);
+        bind_buffer(prog, 2, "u_sphere_atom",  GL_TEXTURE_BUFFER, d->tex[BUF_SPHERE_ATOM]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_world_to_view"), 1, GL_FALSE, &view.matrix.curr.view.elem[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_clip"), 1, GL_FALSE, &P.elem[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_curr_view_to_prev_clip"), 1, GL_FALSE, &curr_view_to_prev_clip.elem[0][0]);
+        glUniform4fv(glGetUniformLocation(prog, "u_jitter_uv"), 1, jit);
+        glUniform1i(glGetUniformLocation(prog, "u_ortho"), ortho ? 1 : 0);
+        glUniform1ui(glGetUniformLocation(prog, "u_pick_base"), atom_base);
+
+        const GLenum buffers[5] = {GL_COLOR_ATTACHMENT_COLOR, GL_COLOR_ATTACHMENT_NORMAL, GL_COLOR_ATTACHMENT_VELOCITY,
+                                   GL_COLOR_ATTACHMENT_PICKING, by_points ? (GLenum)GL_COLOR_ATTACHMENT_INDEX : (GLenum)GL_NONE};
+        glDrawBuffers(5, buffers);
+        if (by_points) {
+            const GLuint zero[4] = {0, 0, 0, 0};
+            glClearBufferuiv(GL_COLOR, 4, zero);
+        }
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_CULL_FACE);
+        glBindVertexArray(gl_state.vao);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)d->num_spheres);
     }
 
-    glEnable(GL_DEPTH_TEST);
-    glDepthMask(GL_TRUE);
-    glDisable(GL_CULL_FACE);
-    glBindVertexArray(gl_state.vao);
-    glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)d->num_spheres);
+    // 2: coloured by the points, the colour of each pixel marked, once: into the colour alone, reading the marks
+    if (by_points) {
+        const GLuint prog = gl_state.shade[lines ? 1 : 0];
+        glUseProgram(prog);
+        bind_buffer(prog, 0, "u_sphere",   GL_TEXTURE_BUFFER, d->tex[BUF_SPHERE]);
+        bind_buffer(prog, 1, "u_point",    GL_TEXTURE_BUFFER, d->tex[BUF_POINT]);
+        bind_buffer(prog, 2, "u_point_w",  GL_TEXTURE_BUFFER, d->tex[BUF_POINT_W]);
+        bind_buffer(prog, 3, "u_cell",     GL_TEXTURE_BUFFER, d->tex[BUF_CELL]);
+        bind_buffer(prog, 4, "u_colormap", GL_TEXTURE_2D, colormap_texture(d, v.color_scale.colormap));
+        bind_buffer(prog, 5, "u_index",    GL_TEXTURE_2D, gbuffer.tex.index);
+
+        const md_float4x4_t clip_to_view = md_float4x4_inverse(P);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_world_to_view"), 1, GL_FALSE, &view.matrix.curr.view.elem[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_view_to_world"), 1, GL_FALSE, &view.matrix.inv.view.elem[0][0]);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "u_clip_to_view"), 1, GL_FALSE, &clip_to_view.elem[0][0]);
+        glUniform2f(glGetUniformLocation(prog, "u_inv_res"), 1.0f / (float)MD_MAX(gbuffer.width, 1u), 1.0f / (float)MD_MAX(gbuffer.height, 1u));
+        glUniform2f(glGetUniformLocation(prog, "u_range"), v.color_scale.range_beg, v.color_scale.range_end);
+        glUniform3fv(glGetUniformLocation(prog, "u_grid_origin"), 1, d->grid_origin);
+        glUniform1f(glGetUniformLocation(prog, "u_grid_cell"), d->grid_cell);
+        glUniform3i(glGetUniformLocation(prog, "u_grid_dim"), d->grid_dim[0], d->grid_dim[1], d->grid_dim[2]);
+        if (lines) {
+            glUniform1i(glGetUniformLocation(prog, "u_isoline_count"), (GLint)isolines.count);
+            glUniform1fv(glGetUniformLocation(prog, "u_isoline_values"), ISOLINES_MAX, isolines.values);
+            glUniform1i(glGetUniformLocation(prog, "u_isoline_hover"), isolines.hover ? 1 : 0);
+            glUniform1f(glGetUniformLocation(prog, "u_isoline_hover_value"), isolines.hover_value);
+            glUniform1f(glGetUniformLocation(prog, "u_isoline_width"), isolines.width);
+        }
+
+        // The G-buffer's colour alone bound, so that its index (and anything else) can be read
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo_color);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, gbuffer.fbo);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+    }
+
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
-
-    for (int i = 0; i < BUF_COUNT; ++i) {
+    GLenum buffers[5];
+    for (int i = 0; i < 5; ++i) buffers[i] = (GLenum)prev_buffers[i];
+    glDrawBuffers(5, buffers);
+    for (int i = 0; i < 6; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(GL_TEXTURE_BUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
     }
-    glActiveTexture(GL_TEXTURE0 + BUF_COUNT);
-    glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glUseProgram(0);
 }

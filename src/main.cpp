@@ -8184,7 +8184,7 @@ static void draw_representations_opaque(ApplicationState* state) {
     for (size_t i = 0; i < num_representations; ++i) {
         const Representation& rep = state->representation.reps[i];
         if (rep.type != RepresentationType::VdwSurface || !representation_shown(*state, rep) || !rep.type_is_valid) continue;
-        vdw_surface_draw(rep.vdw, state->view.param, state->picking_range_atom.beg, color_scale_isoline_desc(rep.vdw.isolines, isoline_px_per_point(state)));
+        vdw_surface_draw(rep.vdw, state->view.param, state->gbuffer, state->picking_range_atom.beg, color_scale_isoline_desc(rep.vdw.isolines, isoline_px_per_point(state)));
     }
 }
 

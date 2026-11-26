@@ -10,6 +10,7 @@
 struct md_system_t;
 struct md_system_state_t;
 struct ViewParam;
+struct GBuffer;
 struct VdwSurfaceData;
 
 // VDW SURFACE
@@ -86,6 +87,9 @@ ColorScaleSpan vdw_surface_span(const VdwSurfaceRepresentation& v);
 // A hash of what the image depends on, for the lazy rendering
 uint64_t vdw_surface_hash(const VdwSurfaceRepresentation& v);
 
-// Into the G-buffer bound for drawing (the opaque pass), picking as the atoms (atom_base + the atom's index), with
-// the isolines of the colour's quantity (color_scale_isoline_desc of v.isolines)
-void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, uint32_t atom_base, const IsolineDesc& isolines);
+// Into the G-buffer (its fbo bound, in the opaque pass), picking as the atoms (atom_base + the atom's index), with
+// the isolines of the colour's quantity (color_scale_isoline_desc of v.isolines). Coloured by the points, in two
+// passes: the spheres, each pixel they win marked in the G-buffer's index with the sphere; then the colour of the
+// marked pixels, once each, as the spheres' pass writes its depth and so runs for every sphere along a pixel's ray.
+// The caller's draw buffers are given back.
+void vdw_surface_draw(const VdwSurfaceRepresentation& v, const ViewParam& view, const GBuffer& gbuffer, uint32_t atom_base, const IsolineDesc& isolines);
