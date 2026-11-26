@@ -708,15 +708,15 @@ struct VolumeCriticalPointRun {
 #endif
 
 // One run of the analytic critical point search (md_topo_compute_extremum_graph_gto) on the task pool.
-// Everything the run reads - basis, geometry, density matrix - is copied in here before it starts, so
-// it never touches the attribute table, the component's arena or the system while the main thread
-// carries on, and a system freed or reloaded underneath it takes nothing away from it. The main thread
-// reads graph and info only once 'done' is set, and frees the job only after waiting for the task.
+// Everything the run reads - basis, geometry, the density's tiles - is copied in or held here before it
+// starts, so it never touches the attribute table, the component's arena or the system while the main
+// thread carries on, and a system freed or reloaded underneath it takes nothing away from it. The main
+// thread reads graph and info only once 'done' is set, and frees the job only after waiting for the task.
 struct GtoCriticalPointJob {
     md_allocator_i*    arena    = nullptr;   // owns the input copies below
     md_gto_basis_t     basis    = {};
     float*             atom_xyz = nullptr;   // [3 * num_atoms] Bohr
-    double*            density  = nullptr;   // [num_ao * num_ao]
+    std::shared_ptr<const DensityTiles> tiles;   // the cache's, held: a newer build or a clear leaves these be
     md_topo_gto_desc_t desc     = {};
 
     md_topo_extremum_graph_t graph   = {};   // heap, filled by the run
@@ -757,13 +757,11 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         return nullptr;
     }
 
-    // The density as the ESP keeps it too (density_cache.h): read from its file once, not for every search
+    // The density's tiles, as the ESP reads them too (density_cache.h): built from its orbitals once, at load
     const md_str_t path = critical_points_density_path(sys);
-    md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
-    const std::shared_ptr<const PackedDensity> density = density_cache_packed(density_cache_of(&app), sys, path, io);
-    md_attribute_io_destroy(io);
-    if (!density || density->dim != num_ao) {
-        MD_LOG_ERROR("Critical points: no density matrix matching the basis (%zu AOs) at '" MD_STR_FMT "'", num_ao, MD_STR_ARG(path));
+    std::shared_ptr<const DensityTiles> tiles = density_cache_tiles(density_cache_of(&app), sys, path, &basis, atom_pos[0].elem, sizeof(md_float3_t));
+    if (!tiles || tiles->dm.num_ao != num_ao) {
+        MD_LOG_ERROR("Critical points: no orbitals to make the density at '" MD_STR_FMT "' of, over the basis (%zu AOs)", MD_STR_ARG(path), num_ao);
         return nullptr;
     }
 
@@ -787,23 +785,12 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
         job->atom_xyz[3 * i + 2] = atom_pos[i].z;
     }
 
-    // The square matrix the search takes, of the kept triangle: its symmetric part, both halves
-    job->density = (double*)md_alloc(alloc, sizeof(double) * num_ao * num_ao);
-    {
-        const double* tri = density->tri;
-        size_t k = 0;
-        for (size_t i = 0; i < num_ao; ++i) {
-            for (size_t j = i; j < num_ao; ++j, ++k) {
-                job->density[i * num_ao + j] = tri[k];
-                job->density[j * num_ao + i] = tri[k];
-            }
-        }
-    }
+    job->tiles = std::move(tiles);
 
     job->desc.basis              = &job->basis;
     job->desc.atom_xyz           = job->atom_xyz;
     job->desc.atom_xyz_stride    = sizeof(float) * 3;
-    job->desc.density_matrix     = job->density;
+    job->desc.dmat               = &job->tiles->dm;
     job->desc.rho_min            = rho_min;
     job->desc.trace_separatrices = true;
     job->desc.executor           = task_system::executor();   // its loops on the pool, stopped with the job

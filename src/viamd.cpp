@@ -1889,15 +1889,21 @@ void init_system_data(ApplicationState* data) {
     // shown: the state a representation of them starts at
     es_nto_ready(data, 0);
 
-    // The SCF density the CPU paths read (the ESP, the critical points: the total density, the alpha one without
-    // it), into the density cache on the task pool while the geometry is shown: the first of them finds it there
-    // rather than reading it then (seconds on a protein). Only for a system with a basis to make a field of it with.
+    // The tiles of the SCF density the CPU paths read (the ESP, the critical points: the total density, the alpha one
+    // without it), built from its orbitals into the density cache on the task pool while the geometry is shown: the
+    // first of them finds them there. Only for a system with a basis to make a field of it with, at its atoms' places now.
     {
         const md_system_t& sys = data->mold.sys;
         const md_str_t path = md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
         const bool basis = md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
                            md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr;
-        if (basis) density_cache_preload(density_cache_of(data), sys, path);
+        if (basis) {
+            md_temp_scope_t temp = md_temp_begin();
+            size_t num_atoms = 0;
+            const md_float3_t* xyz = basis_atom_positions_extract(&num_atoms, temp, sys, data->mold.state);
+            density_cache_preload(density_cache_of(data), sys, path, xyz, num_atoms);
+            md_temp_end(temp);
+        }
     }
 }
 

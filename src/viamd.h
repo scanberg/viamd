@@ -1658,9 +1658,9 @@ struct ApplicationState {
         // The excited states whose natural transition orbitals have been read on a worker thread (viamd.cpp,
         // NtoWarm; es_nto_ready). Of the system: freed with it, once its tasks have ended.
         void*               nto_warm = nullptr;
-        // The SCF densities the CPU paths read (the ESP, the critical point search), each kept as its packed
-        // triangle in double once read (density_cache.h; density_cache_of). Its entries are of the system and go
-        // with it; the cache itself is the application's.
+        // The SCF densities the CPU paths read (the ESP, the critical point search), each kept as its tiles in
+        // double once built from its orbitals (density_cache.h; density_cache_of). Its entries are of the system and
+        // go with it; the cache itself is the application's.
         struct DensityCache* density_cache = nullptr;
 
 #if MD_ENABLE_GPU
