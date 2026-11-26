@@ -127,8 +127,9 @@ double iso_meshes_cell_size(VolumeResolution resolution);
 
 // Fields at the atoms of the current frame. NULL on failure. Free with iso_field_release once given to meshes.
 md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice);
+// A density from the factors it is the sum of (md_qm_density_factors): an SCF density's orbitals (slice NULL), an
+// excited state's attachment, detachment or difference factors (slice its state)
 md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
-md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim);
 // At a geometry the caller gives (a worker thread's copy of the positions, say), from data the caller holds: an
 // orbital from its AO coefficients, a density as a sum of orbital products (md_gto_iso_field_create_products:
 // right NULL for squares). Safe on any thread while g.sys lives.

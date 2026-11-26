@@ -1,10 +1,11 @@
 #pragma once
 
-// The SCF densities the CPU paths read - the ESP's charge distribution (surface_field.cpp), the critical point search
-// (quantum_chemistry.cpp) - kept once made, each in the one representation of a density matrix: md_gto_dmat_t's
-// tiles, in double, built from the density's orbitals (md_qm_density_orbitals) at DENSITY_TILES_CUTOFF and
-// DENSITY_TILES_MARGIN, never the whole matrix. 39 MB for a 1152 atom protein (9636 AOs), built in about a second on
-// 8 threads, where the matrix's packed triangle was 371 MB read from the file in seconds. The GPU reads their copy
+// The densities, kept once made, each in the one representation of a density matrix: md_gto_dmat_t's tiles, in
+// double, built from the factors the density is a sum of (md_qm_density_factors: an SCF density's orbitals, an
+// excited state's attachment, detachment or difference factors) at DENSITY_TILES_CUTOFF and DENSITY_TILES_MARGIN,
+// never the whole matrix. 39 MB for a 1152 atom protein (9636 AOs), built in about a second on 8 threads, where the
+// matrix's packed triangle was 371 MB read from the file in seconds. The CPU paths read them (the ESP's charge
+// distribution, surface_field.cpp; the critical point search, quantum_chemistry.cpp), the GPU their copy
 // (DensityGpuTiles, below): no density is built on the device.
 //
 // Built when a system is loaded (density_cache_preload, from init_system_data), on the task pool while the geometry
@@ -22,6 +23,7 @@
 
 struct md_system_t;
 struct md_float3_t;
+struct md_attribute_slice_t;
 struct DensityCache;
 
 // The one tile representation's cutoff and margin (bohr), for every consumer: at 1e-6 ELF and LOL are within 1.1e-4
@@ -59,14 +61,20 @@ DensityCache* density_cache_create();
 void density_cache_destroy(DensityCache* cache);
 void density_cache_clear(DensityCache* cache);
 
-// The density at path as tiles over basis, made from its orbitals the first time it is asked for, and again when the
-// orbitals' versions change or an atom has moved more than DENSITY_TILES_MARGIN / 2 from where the pattern was made
-// (atom_xyz: bohr, one per atom of the basis, stride bytes apart, 0 packed). Built through the task pool's executor.
-// Any thread: one that asks while another builds waits for it. Null when the system has no orbitals for that density.
-// cache null: built, not kept. What is handed out is never changed: a newer build replaces it, and who holds the old
-// one keeps it until they let it go.
-std::shared_ptr<const DensityTiles> density_cache_tiles(DensityCache* cache, const md_system_t& sys, md_str_t path, const md_gto_basis_t* basis,
-                                                         const float* atom_xyz, size_t atom_xyz_stride);
+// The density at path (slice: of an excited state's, its state; null for an SCF density) as tiles over basis, made
+// from its factors the first time it is asked for, and again when their versions change or an atom has moved more
+// than DENSITY_TILES_MARGIN / 2 from where the pattern was made (atom_xyz: bohr, one per atom of the basis, stride
+// bytes apart, 0 packed). Built through the task pool's executor. Any thread: one that asks while another builds waits
+// for it. Null when the system has no factors for that density. cache null: built, not kept. What is handed out is
+// never changed: a newer build replaces it, and who holds the old one keeps it until they let it go. Every SCF density
+// asked for is kept; of the sliced ones, the DENSITY_CACHE_MAX_SLICED last used.
+#define DENSITY_CACHE_MAX_SLICED 4
+std::shared_ptr<const DensityTiles> density_cache_tiles(DensityCache* cache, const md_system_t& sys, md_str_t path, const md_attribute_slice_t* slice,
+                                                         const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride);
+
+// What the tiles of the density at path (slice) are made of: the path, the slice and the versions of the attributes
+// its factors are read from. Never 0.
+uint64_t density_tiles_key(const md_system_t& sys, md_str_t path, const md_attribute_slice_t* slice);
 
 // Builds the tiles of the density at path into the cache on the task pool, now (a pool job of the cache's, listed
 // while it runs), at the basis atoms' positions given (bohr, copied): a consumer asking for them meanwhile waits for

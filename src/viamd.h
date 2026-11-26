@@ -1472,7 +1472,7 @@ struct ApplicationState {
     md_gpu_texture_t gpu_grad    = nullptr;
     md_gpu_texture_t gpu_normals = nullptr;
     int              gpu_grad_dim[3] = {};
-    md_gpu_addr_t   gpu_coeff   = 0;         // AO coefficients, sized to the widest basis
+    md_gpu_addr_t   gpu_coeff   = 0;         // one orbital's AO coefficients, sized to the widest basis
     size_t          gpu_coeff_capacity = 0;
 
     // A volume (or a plane's image) evaluated on the GPU, on its way to its GL texture: a step job (task_system.h)
@@ -1686,14 +1686,6 @@ struct ApplicationState {
         // AO cutoff, made by a pool task; and the key of one that could not be made
         void*               gpu_localization = nullptr;
         uint64_t            gpu_localization_failed_key = 0;
-        // Any other density a representation evaluates (a transition density, made by its provider on every
-        // read; a density property, read from its file) as the packed triangle the kernel reads, extracted on a
-        // worker thread straight into a device buffer of its own (viamd.cpp, DensityPackBuild) and kept: the
-        // last one, until another is asked for
-        md_gpu_addr_t       gpu_dpack = 0;
-        uint64_t            gpu_dpack_key = 0;     // the density, slice and version it holds, 0: none
-        void*               gpu_dpack_build = nullptr;
-        uint64_t            gpu_dpack_failed_key = 0;
 #endif
     } mold;
 
@@ -3033,23 +3025,19 @@ struct DensityCache* density_cache_of(ApplicationState* state);
 
 struct DensityGpuTiles;     // density_cache.h
 #if MD_ENABLE_GPU
-// The tiles on the device of the SCF density at density_path (orbital/{alpha,beta,total,difference}/density): the
-// upload of the density cache's tiles, one copy of each density, which every GPU path reads (the density volume, ELF
-// and LOL, isosurface sets, the critical point search), made by a pool task and kept while the orbitals keep their
-// versions and the atoms stay within the tiles' margin. 1 when they are there for the atoms where they are now (into
-// *out, held by whoever reads them for as long as it does), 0 while they are being made (begun here when they are
-// not), -1 when they cannot be (no GPU, not an SCF density, no orbitals). Main thread; out may be NULL.
-int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, std::shared_ptr<const DensityGpuTiles>* out = nullptr);
+// The tiles on the device of the density at density_path: an SCF density (orbital/{alpha,beta,total,difference}/
+// density, slice NULL), or one published as factors (an excited state's attachment, detachment or difference
+// density, slice its state): the upload of the density cache's tiles, one copy of each density, which every GPU path
+// reads (the density volume, ELF and LOL, isosurface sets, the critical point search), made by a pool task and kept
+// while the factors keep their versions and the atoms stay within the tiles' margin. 1 when they are there for the
+// atoms where they are now (into *out, held by whoever reads them for as long as it does), 0 while they are being
+// made (begun here when they are not), -1 when they cannot be (no GPU, no factors for it). Main thread; out may be
+// NULL.
+int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice,
+                              std::shared_ptr<const DensityGpuTiles>* out = nullptr);
 // The same, waiting for a build under way or for its own: NULL when they cannot be made. Main thread.
-std::shared_ptr<const DensityGpuTiles> density_gpu_tiles_ensure(ApplicationState* state, md_str_t density_path);
+std::shared_ptr<const DensityGpuTiles> density_gpu_tiles_ensure(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
 #endif
-
-// One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
-// double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow
-// it to one symmetric matrix. Either storage is read: square ({A,A}, or {S,A,A} with
-// md_attribute_slice_1(state)), or packed (MD_ATTRIBUTE_FLAG_PACKED_SYMMETRIC, as the density
-// properties are). out_dim receives A.
-double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice);
 
 // ---------------------------------------------------------------------------
 // The attribute paths an electronic structure representation draws from
@@ -3086,6 +3074,8 @@ namespace es_path {
     // indexing the same space as the two coefficient attributes above.
     inline const md_str_t nto_lambda          = MD_STR_INIT("vlx/rsp/nto/lambda");
 
+    // An excited state's densities, published as their factors (<path>/factor {S,R,A}, <path>/weight {S,R}: read with
+    // md_qm_density_factors, sliced by the state), never as matrices
     inline const md_str_t attachment_density  = MD_STR_INIT("vlx/rsp/transition_density/attachment");
     inline const md_str_t detachment_density  = MD_STR_INIT("vlx/rsp/transition_density/detachment");
     inline const md_str_t transition_diff     = MD_STR_INIT("vlx/rsp/transition_density/difference");
@@ -3109,6 +3099,17 @@ inline md_str_t es_electron_density_path(ElectronicStructureSpin spin) {
     case ElectronicStructureSpin::None:
     case ElectronicStructureSpin::Total:
     default:                                  return es_path::total_density;
+    }
+}
+
+// Which density path an excited state's component names: its factors are published there (md_qm_density_factors),
+// sliced by the state
+inline md_str_t es_transition_density_path(ElectronicStructureTransitionDensityComponent component) {
+    switch (component) {
+    case ElectronicStructureTransitionDensityComponent::Detachment: return es_path::detachment_density;
+    case ElectronicStructureTransitionDensityComponent::Difference: return es_path::transition_diff;
+    case ElectronicStructureTransitionDensityComponent::Attachment:
+    default:                                                        return es_path::attachment_density;
     }
 }
 
@@ -3136,12 +3137,6 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
                       const md_attribute_slice_t* slice, md_gto_op_t op, bool async = false);
 
-// density_evaluate over a matrix the caller already has in hand rather than a path to extract it from. The
-// transition densities are VIRTUAL and are rebuilt from the response solution on every read, so a caller which needs
-// one twice holds on to it and calls this instead.
-bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
-                             const double* density_matrix, size_t dim, md_gto_op_t op);
-
 // Whether the evaluations above can run: the GPU is there, and the main thread only queues them. False when they
 // cannot, and what would be evaluated ahead of being asked for should not be asked for.
 bool gpu_volume_evaluation_available(const ApplicationState* state);
@@ -3157,10 +3152,6 @@ uint32_t es_normals_of(uint32_t vol_tex);
 // is no scratch volume to run anything over.
 bool density_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
                                     const md_attribute_slice_t* slice, md_gto_op_t op);
-
-// The same, over a matrix the caller already holds - see density_matrix_evaluate.
-bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
-                                           const double* density_matrix, size_t dim, md_gto_op_t op);
 #endif
 
 // Points a representation at an attribute, and starts its colour scale out as fits the values: a

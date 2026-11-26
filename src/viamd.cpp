@@ -3578,13 +3578,6 @@ void system_gpu_data_free(ApplicationState* state) {
     state->mold.gpu_atoms_hash = 0;
     localization_gpu_free(state);   // it holds tiles: before them
     gpu_tiles_free(state);          // the builds under way waited for; tiles still held go with what holds them
-    dpack_build_take(state, true);
-    if (state->mold.gpu_dpack) {
-        md_gpu_free(state->gpu_stream, state->mold.gpu_dpack);
-        state->mold.gpu_dpack = 0;
-    }
-    state->mold.gpu_dpack_key = 0;
-    state->mold.gpu_dpack_failed_key = 0;
 #else
     (void)state;
 #endif
@@ -3621,9 +3614,8 @@ bool system_gpu_data_update(ApplicationState* state, double cutoff) {
     state->mold.gpu_atoms = md_gpu_malloc(state->gpu_stream, MD_GPU_MEM_DEVICE, md_gto_gpu_atom_buffer_size(num_atoms)).gpu;
     state->mold.gpu_atoms_hash = 0;
 
-    // Density coefficients are the larger of the two packings, so one size covers both the density
-    // and the MO evaluation paths.
-    const size_t coeff_size = md_gto_gpu_coeff_size_density(num_cgtos);
+    // One orbital's coefficients (orbital_evaluate, orbital_coefficients_evaluate): a density is read from its tiles
+    const size_t coeff_size = md_gto_gpu_coeff_size_mo(1, num_cgtos);
     if (coeff_size > state->gpu_coeff_capacity) {
         if (state->gpu_coeff) {
             md_gpu_free(state->gpu_stream, state->gpu_coeff);
@@ -4478,66 +4470,19 @@ md_float3_t* basis_atom_positions_extract(size_t* out_count, md_temp_scope_t tem
 // ---------------------------------------------------------------------------
 // Density evaluation
 // ---------------------------------------------------------------------------
-// A density in this table is an AO x AO matrix. It is either that on its own - the SCF densities,
-// the density properties - or the innermost two axes of something indexed by state, as the
-// transition densities are at {S,A,A}. Both are addressed the same way here: a path plus a slice
-// which narrows to one matrix. The caller names what it wants and this cares neither which of the
-// two shapes it came from, nor whether the values were stored or worked out on demand, because
-// md_attribute_slice_format answers the first and the extract answers the second.
-// The context a density is extracted through: a density built from its orbitals on demand (md_qm's providers)
-// spreads its tiles over the pool, at the priority of whoever asks. One per extraction, since a context is not
-// to be used by two threads at once.
-struct DensityIo {
-    md_attribute_io_t* io = md_attribute_io_create(task_system::executor(), md_get_heap_allocator());
-    DensityIo() = default;
-    DensityIo(const DensityIo&) = delete;
-    DensityIo& operator=(const DensityIo&) = delete;
-    ~DensityIo() { md_attribute_io_destroy(io); }
-};
-
-double* density_matrix_extract(size_t* out_dim, md_temp_scope_t temp, const md_system_t& sys, md_str_t density_path, const md_attribute_slice_t* slice_ptr) {
-    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
-    if (!attr) {
-        MD_LOG_DEBUG("No density published at '" MD_STR_FMT "'", MD_STR_ARG(density_path));
-        return nullptr;
-    }
-
-    // Square or packed, stored or computed on demand: md_qm reads either, and says why when the
-    // slice does not narrow it to one symmetric matrix
-    const size_t dim = md_qm_extract_symmetric_f64(nullptr, 0, &sys.attributes, attr, slice, nullptr);
-    if (dim == 0) {
-        return nullptr;
-    }
-    double* dst = (double*)md_temp_alloc(temp, sizeof(double) * dim * dim);
-    DensityIo io;
-    if (!dst || md_qm_extract_symmetric_f64(dst, dim * dim, &sys.attributes, attr, slice, io.io) != dim) {
-        return nullptr;
-    }
-
-    if (out_dim) *out_dim = dim;
-    return dst;
-}
-
+// A density is never a matrix here: it is the factors it is the sum of (md_qm_density_factors: an SCF density's
+// orbitals, an excited state's attachment, detachment or difference factors, sliced by the state), made into tiles
+// once (density_cache.h) and read from those, on the device from their copy (density_gpu_tiles_prepare).
 // The density a representation's volume is evaluated from, for the sources that are one: its path and slice
 // (all of it: num_idx 0). False for the orbitals, and for a density property the system no longer has.
 static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slice, const ElectronicStructureRepresentation& es, const md_system_t& sys) {
     *out_slice = md_attribute_slice_all();
     switch (es.shown.source) {
-    case ElectronicStructureSource::TransitionDensity: {
-        md_str_t path = es_path::attachment_density;
-        switch (es.shown.transition_density_component) {
-        case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
-        case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
-        case ElectronicStructureTransitionDensityComponent::Attachment:
-        default: break;
-        }
-        // These are VIRTUAL: the slice is what tells the provider to reconstruct one state rather
-        // than all of them, and it is the only reason asking for one is affordable.
-        *out_path  = path;
+    case ElectronicStructureSource::TransitionDensity:
+        // published as factors, sliced by the state (md_qm_density_factors): its tiles are made of one state's
+        *out_path  = es_transition_density_path(es.shown.transition_density_component);
         *out_slice = md_attribute_slice_1((uint32_t)es.shown.excited_state_idx);
         return true;
-    }
     case ElectronicStructureSource::ElectronDensity:
         *out_path = es_electron_density_path(es.shown.spin);
         return true;
@@ -4576,7 +4521,6 @@ static bool es_volume_density(md_str_t* out_path, md_attribute_slice_t* out_slic
 
 #if MD_ENABLE_GPU
 static bool gpu_evaluation_ready(const ApplicationState* state);
-static uint64_t density_dmat_key(const md_system_t& sys, md_str_t density_path);
 #endif
 
 #if MD_ENABLE_GPU
@@ -4585,7 +4529,7 @@ static uint64_t density_dmat_key(const md_system_t& sys, md_str_t density_path);
 // closed (the spins' orbitals the same); kept in state->mold.gpu_localization
 struct LocalizationGpu {
     task_system::Job   task;            // a cancelled one (a load) made nothing to be taken
-    uint64_t           key = 0;         // the orbitals and occupations it is made of (density_dmat_key)
+    uint64_t           key = 0;         // the orbitals and occupations it is made of (density_tiles_key)
     const md_system_t* sys = nullptr;
     md_gpu_stream_t    stream = nullptr;
     md_gto_basis_t     basis = {};      // heap
@@ -4642,7 +4586,7 @@ static void localization_gpu_free(ApplicationState* state) {
 static int localization_gpu_prepare(ApplicationState* state) {
     if (!gpu_evaluation_ready(state) || !state->gpu_device) return -1;
     const md_system_t& sys = state->mold.sys;
-    const uint64_t key = density_dmat_key(sys, MD_STR_LIT("localization"));
+    const uint64_t key = density_tiles_key(sys, MD_STR_LIT("localization"), nullptr);   // the orbitals' versions
     if (key == state->mold.gpu_localization_failed_key) return -1;
     LocalizationGpu* L = (LocalizationGpu*)state->mold.gpu_localization;
     if (L && L->task.running()) return 0;
@@ -4657,7 +4601,7 @@ static int localization_gpu_prepare(ApplicationState* state) {
         const md_str_t paths[2] = { L->num_spins == 1 ? es_path::total_density : es_path::alpha_density, es_path::beta_density };
         int r = 1;
         for (uint32_t k = 0; k < L->num_spins; ++k) {
-            const int rk = density_gpu_tiles_prepare(state, paths[k], &L->tiles[k]);
+            const int rk = density_gpu_tiles_prepare(state, paths[k], nullptr, &L->tiles[k]);
             r = rk < 0 || r < 0 ? -1 : MD_MIN(r, rk);
         }
         if (r < 0) {
@@ -4941,7 +4885,7 @@ static bool electronic_structure_field_update(ApplicationState* state, Represent
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
-    if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, &desc.gpu_density_tiles);
+    if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, nullptr, &desc.gpu_density_tiles);
 #endif
 
     const md_tick_t t0 = md_tick_now();
@@ -5115,49 +5059,12 @@ bool orbital_coefficients_evaluate(ApplicationState* state, uint32_t vol_tex, co
 }
 
 #if MD_ENABLE_GPU
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat = nullptr, md_gto_gpu_job_t** out_job = nullptr,
-                               md_gpu_addr_t coeff = 0);
-
-bool density_matrix_evaluate_to_gpu_volume(ApplicationState* state, const md_grid_t& grid,
-                                           const double* density_matrix, size_t dim, md_gto_op_t op) {
-    MD_ASSERT(state);
-    if (!density_matrix || dim == 0 || !gpu_evaluation_ready(state)) {
-        return false;
-    }
-
-    const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = state->mold.state;
-
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    if (num_cgtos != dim) {
-        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
-        return false;
-    }
-    gpu_density_jobs_settle(state);     // the inputs are changed below
-    if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
-        return false;
-    }
-
-    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
-    if (!dst) {
-        return false;
-    }
-    md_gto_gpu_coeff_pack_density(dst, density_matrix, num_cgtos);
-    md_gpu_upload_end(state->gpu_stream);
-
-    density_gpu_launch(state, grid, op);
-    return true;
-}
-
-// The density kernel over whatever was last uploaded to the coefficient buffer, or over a dmat, or over coeff (a
-// packed triangle of its own). out_job: as a job (md_gto_gpu_density_job_begin), which the caller completes, instead
-// of a launch that waits for its counts
-static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat, md_gto_gpu_job_t** out_job,
-                               md_gpu_addr_t coeff) {
+// The density kernel over a density's tiles on the device. out_job: as a job (md_gto_gpu_density_job_begin), which
+// the caller completes, instead of a launch that waits for its counts
+static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, md_gto_op_t op, md_gto_gpu_dmat_t dmat, md_gto_gpu_job_t** out_job) {
     md_gto_gpu_density_desc_t desc = {
         .basis         = state->mold.gpu_basis,
         .atom_xyz      = state->mold.gpu_atoms,
-        .coeff         = dmat ? 0 : (coeff ? coeff : state->gpu_coeff),
         .dmat          = dmat,
         .out_tex       = gpu_eval_target(state),
         .out_grad      = gpu_grad_target(state),
@@ -5172,32 +5079,29 @@ static void density_gpu_launch(ApplicationState* state, const md_grid_t& grid, m
     }
 }
 
-static bool density_is_scf(md_str_t density_path) {
+// Whether the density at path has tiles to be made (density_cache_tiles): an SCF density, or one published as factors
+static bool density_has_tiles(const md_system_t& sys, md_str_t density_path) {
     return md_str_eq(density_path, es_path::alpha_density) || md_str_eq(density_path, es_path::beta_density) ||
-           md_str_eq(density_path, es_path::total_density) || md_str_eq(density_path, es_path::difference_density);
+           md_str_eq(density_path, es_path::total_density) || md_str_eq(density_path, es_path::difference_density) ||
+           md_qm_density_factors_available(&sys, density_path);
 }
 
-// What a dmat holds: the density, and the versions of the orbitals and occupations it is made of
-static uint64_t density_dmat_key(const md_system_t& sys, md_str_t density_path) {
-    uint64_t key = md_hash64(density_path.ptr, density_path.len, 0x5cf0d3a7);
-    const md_str_t sources[4] = {es_path::alpha_coefficient, es_path::alpha_occupation, es_path::beta_coefficient, es_path::beta_occupation};
-    for (const md_str_t& p : sources) {
-        const md_attribute_t* a = md_attributes_find(&sys.attributes, p);
-        const uint64_t v = a ? md_attributes_version(&sys.attributes, a->id) : 0;
-        key = md_hash64(&v, sizeof(v), key);
-    }
-    return key ? key : 1;
+static bool slice_equal(const md_attribute_slice_t& a, const md_attribute_slice_t& b) {
+    if (a.num_idx != b.num_idx) return false;
+    for (uint32_t i = 0; i < a.num_idx; ++i) if (a.idx[i] != b.idx[i]) return false;
+    return true;
 }
 
-// The SCF densities' tiles on the device (DensityGpuTiles, density_cache.h): one per density of the system, the upload
-// (md_gto_gpu_dmat_upload) of the density cache's tiles (density_cache_tiles: kept since the load, or built from the
-// orbitals), made by a pool task on a GPU stream of its own and kept while the orbitals keep their versions and the
-// atoms stay within the tiles' margin. Made anew rather than refilled: the ones in use may be read by work still on
-// the GPU, and are held by what reads them.
+// The densities' tiles on the device (DensityGpuTiles, density_cache.h): one per density of the system (an excited
+// state's: per state, the DENSITY_CACHE_MAX_SLICED last used), the upload (md_gto_gpu_dmat_upload) of the density
+// cache's tiles (density_cache_tiles: kept since the load, or built from the factors), made by a pool task on a GPU
+// stream of its own and kept while the factors keep their versions and the atoms stay within the tiles' margin. Made
+// anew rather than refilled: the ones in use may be read by work still on the GPU, and are held by what reads them.
 struct GpuTilesBuild {
     task_system::Job task;              // a cancelled one (a load) made nothing to be taken
     uint64_t key = 0;
     std::string path;
+    md_attribute_slice_t slice = {};
     const md_system_t* sys = nullptr;
     DensityCache* cache = nullptr;
     std::vector<md_float3_t> xyz;       // bohr, its copy
@@ -5209,25 +5113,51 @@ struct GpuTilesBuild {
 
 struct GpuTilesEntry {
     std::string path;
-    uint64_t key = 0;                   // density_dmat_key of what tiles are made of
+    md_attribute_slice_t slice = {};
+    uint64_t key = 0;                   // density_tiles_key of what tiles are made of
     std::shared_ptr<const DensityGpuTiles> tiles;
-    uint64_t failed_key = 0;            // what could not be made (no orbitals): not tried again
+    uint64_t failed_key = 0;            // what could not be made (no factors): not tried again
     GpuTilesBuild* build = nullptr;     // under way
+    uint64_t used = 0;                  // when it was last asked for (GpuTilesRegistry::clock)
 };
 
 struct GpuTilesRegistry {
     std::vector<std::unique_ptr<GpuTilesEntry>> entries;    // where they are does not move as others are added
+    uint64_t clock = 0;
 };
 
-static GpuTilesEntry& gpu_tiles_entry(ApplicationState* state, md_str_t path) {
+static bool gpu_tiles_take(ApplicationState* state, GpuTilesEntry& e, bool wait);
+
+static GpuTilesEntry& gpu_tiles_entry(ApplicationState* state, md_str_t path, const md_attribute_slice_t& slice) {
     GpuTilesRegistry*& r = (GpuTilesRegistry*&)state->mold.gpu_tiles;
     if (!r) r = new GpuTilesRegistry();
     for (const std::unique_ptr<GpuTilesEntry>& e : r->entries) {
-        if (md_str_eq(md_str_t{e->path.data(), e->path.size()}, path)) return *e;
+        if (md_str_eq(md_str_t{e->path.data(), e->path.size()}, path) && slice_equal(e->slice, slice)) {
+            e->used = ++r->clock;
+            return *e;
+        }
+    }
+    if (slice.num_idx) {
+        // a new sliced one: the least recently used of the others goes once there are as many as are kept (what holds
+        // its tiles keeps them; the builds under way are waited for, and the jobs reading them issued first)
+        size_t n = 0, oldest = r->entries.size();
+        for (size_t i = 0; i < r->entries.size(); ++i) {
+            if (!r->entries[i]->slice.num_idx) continue;
+            ++n;
+            if (oldest == r->entries.size() || r->entries[i]->used < r->entries[oldest]->used) oldest = i;
+        }
+        if (n >= DENSITY_CACHE_MAX_SLICED) {
+            gpu_tiles_take(state, *r->entries[oldest], true);
+            gpu_density_jobs_settle(state);
+            r->entries.erase(r->entries.begin() + (ptrdiff_t)oldest);
+        }
     }
     r->entries.push_back(std::make_unique<GpuTilesEntry>());
-    r->entries.back()->path.assign(path.ptr, path.len);
-    return *r->entries.back();
+    GpuTilesEntry& e = *r->entries.back();
+    e.path.assign(path.ptr, path.len);
+    e.slice = slice;
+    e.used = ++r->clock;
+    return e;
 }
 
 // On a worker thread
@@ -5236,7 +5166,8 @@ static void gpu_tiles_build_run(GpuTilesBuild* b) {
     md_gto_basis_t basis = {};
     if (md_gto_basis_extract_attributes(&basis, &b->sys->attributes, heap)) {
         if (md_gto_basis_num_atoms(&basis) == b->xyz.size()) {
-            b->src = density_cache_tiles(b->cache, *b->sys, md_str_t{b->path.data(), b->path.size()}, &basis, b->xyz[0].elem, sizeof(md_float3_t));
+            b->src = density_cache_tiles(b->cache, *b->sys, md_str_t{b->path.data(), b->path.size()}, b->slice.num_idx ? &b->slice : nullptr, &basis,
+                                         b->xyz[0].elem, sizeof(md_float3_t));
             if (b->src) b->dm = md_gto_gpu_dmat_upload(b->stream, &b->src->dm);
         }
         md_gto_basis_free(&basis, heap);
@@ -5273,8 +5204,8 @@ static bool gpu_tiles_take(ApplicationState* state, GpuTilesEntry& e, bool wait)
             e.key = b->key;
             md_gto_gpu_dmat_info_t info;
             md_gto_gpu_dmat_info(&info, t->dm);
-            MD_LOG_DEBUG("The tiles of '" MD_STR_FMT "' on the device in %.1f ms (on a worker thread): %zu of %zu tile pairs, %.1f MB",
-                         (int)e.path.size(), e.path.data(), md_tick_to_milliseconds(md_tick_now() - b->t0), info.num_tiles, info.num_tiles_total,
+            MD_LOG_DEBUG("The tiles of '" MD_STR_FMT "'%s on the device in %.1f ms (on a worker thread): %zu of %zu tile pairs, %.1f MB",
+                         (int)e.path.size(), e.path.data(), e.slice.num_idx ? " (a slice)" : "", md_tick_to_milliseconds(md_tick_now() - b->t0), info.num_tiles, info.num_tiles_total,
                          info.bytes / (1024.0 * 1024.0));
         } else {
             e.failed_key = b->key;
@@ -5284,13 +5215,15 @@ static bool gpu_tiles_take(ApplicationState* state, GpuTilesEntry& e, bool wait)
     return true;
 }
 
-int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, std::shared_ptr<const DensityGpuTiles>* out) {
+int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice_ptr,
+                              std::shared_ptr<const DensityGpuTiles>* out) {
     if (out) out->reset();
-    if (!density_is_scf(density_path) || !state->gpu_device || !state->gpu_stream) return -1;
-    GpuTilesEntry& e = gpu_tiles_entry(state, density_path);
-    if (!gpu_tiles_take(state, e, false)) return 0;
     const md_system_t& sys = state->mold.sys;
-    const uint64_t key = density_dmat_key(sys, density_path);
+    if (!state->gpu_device || !state->gpu_stream || !density_has_tiles(sys, density_path)) return -1;
+    const md_attribute_slice_t slice = slice_ptr ? *slice_ptr : md_attribute_slice_all();
+    GpuTilesEntry& e = gpu_tiles_entry(state, density_path, slice);
+    if (!gpu_tiles_take(state, e, false)) return 0;
+    const uint64_t key = density_tiles_key(sys, density_path, slice.num_idx ? &slice : nullptr);
     if (key == e.failed_key) return -1;
 
     md_temp_scope_t temp = md_temp_begin();
@@ -5306,6 +5239,7 @@ int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, st
     GpuTilesBuild* b = new GpuTilesBuild();
     b->key = key;
     b->path.assign(density_path.ptr, density_path.len);
+    b->slice = slice;
     b->sys = &state->mold.sys;
     b->cache = density_cache_of(state);
     b->xyz.assign(xyz, xyz + num_atoms);
@@ -5320,13 +5254,13 @@ int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, st
     return 0;
 }
 
-std::shared_ptr<const DensityGpuTiles> density_gpu_tiles_ensure(ApplicationState* state, md_str_t density_path) {
+std::shared_ptr<const DensityGpuTiles> density_gpu_tiles_ensure(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
     std::shared_ptr<const DensityGpuTiles> t;
-    // at most twice: a build under way may be of what is no longer wanted (other orbitals, atoms since moved)
+    // at most twice: a build under way may be of what is no longer wanted (other factors, atoms since moved)
     for (int i = 0; i < 3; ++i) {
-        const int r = density_gpu_tiles_prepare(state, density_path, &t);
+        const int r = density_gpu_tiles_prepare(state, density_path, slice, &t);
         if (r != 0) return t;
-        gpu_tiles_take(state, gpu_tiles_entry(state, density_path), true);
+        gpu_tiles_take(state, gpu_tiles_entry(state, density_path, slice ? *slice : md_attribute_slice_all()), true);
     }
     return nullptr;
 }
@@ -5340,127 +5274,13 @@ static void gpu_tiles_free(ApplicationState* state) {
     state->mold.gpu_tiles = nullptr;
 }
 
-// Any other density a representation evaluates, as the packed float triangle the kernel reads: a transition density
-// is made by its provider on every read (seconds for a protein: md_attributes.h, VIRTUAL ATTRIBUTES), a density
-// property read from its file, either on the GL thread a stall of the frame as long. Extracted on a worker thread
-// straight into a device buffer of its own (the upload's staging), on a GPU stream of its own, and kept for the
-// evaluations that follow (state->mold.gpu_dpack): a new resolution or frame of the same density reads it again
-// from the device.
-struct DensityPackBuild {
-    task_system::Job task;              // a cancelled one (a load) made nothing to be taken
-    uint64_t key = 0;
-    md_str_t path = {};                    // an es_path constant, or a path owned by the system's attribute table
-    md_attribute_slice_t slice = {};
-    const md_system_t* sys = nullptr;
-    size_t num_cgtos = 0;
-    md_gpu_stream_t stream = nullptr;   // the task's, destroyed by it once its uploads are done
-    md_gpu_addr_t buf = 0;
-    bool ok = false;
-    md_tick_t t0 = 0;
-};
-
-// What a packed density holds: the attribute, the slice of it and its version
-static uint64_t density_pack_key(const md_system_t& sys, const md_attribute_t& attr, const md_attribute_slice_t& slice) {
-    uint64_t key = md_hash64(attr.path.ptr, attr.path.len, 0x3a9d07c1);
-    key = md_hash64(&slice.num_idx, sizeof(slice.num_idx), key);
-    if (slice.num_idx > 0) key = md_hash64(slice.idx, sizeof(uint32_t) * slice.num_idx, key);
-    const uint64_t v = md_attributes_version(&sys.attributes, attr.id);
-    key = md_hash64(&v, sizeof(v), key);
-    return key ? key : 1;
-}
-
-// The build under way, taken once it is done: its buffer becomes the one in use. wait: waited for if it is not
-// done. Returns false while it is under way.
-static bool dpack_build_take(ApplicationState* state, bool wait) {
-    DensityPackBuild* b = (DensityPackBuild*)state->mold.gpu_dpack_build;
-    if (!b) return true;
-    if (wait) b->task.wait();
-    if (b->task.running()) return false;
-    state->mold.gpu_dpack_build = nullptr;
-    const bool made = b->task.status() == task_system::Status::Completed;
-    if (made && b->ok) {
-        gpu_density_jobs_settle(state);     // one not yet all issued reads the buffer in use
-        if (state->mold.gpu_dpack) md_gpu_free(state->gpu_stream, state->mold.gpu_dpack);
-        state->mold.gpu_dpack = b->buf;
-        state->mold.gpu_dpack_key = b->key;
-        b->buf = 0;
-        MD_LOG_DEBUG("The density '" MD_STR_FMT "' extracted to the device in %.1f ms (on a worker thread)", MD_STR_ARG(b->path), md_tick_to_milliseconds(md_tick_now() - b->t0));
-    } else if (made) {
-        state->mold.gpu_dpack_failed_key = b->key;   // extracted where it is asked for, which fails as loudly
-    }
-    if (b->buf) md_gpu_free(state->gpu_stream, b->buf);
-    if (b->stream) md_gpu_stream_destroy(b->stream);    // of a task cancelled before it ran: nothing on it
-    delete b;
-    return true;
-}
-
-
-// For the representations' evaluations, which wait for it without waiting on it: true when the SCF density at
-// density_path has its tiles on the device for the atoms where they are (density_gpu_tiles_prepare: the evaluation can
-// be issued), or when the density does not go through them; false while they are being made on a worker thread,
-// which this begins when they are not.
-static bool density_dmat_prepare(ApplicationState* state, md_str_t density_path) {
-    if (!density_is_scf(density_path) || !gpu_evaluation_ready(state) || !state->gpu_device) {
-        return true;
-    }
-    return density_gpu_tiles_prepare(state, density_path) != 0;
-}
-
-// For the representations' evaluations, as density_dmat_prepare and for any density: true when the density at
-// density_path (sliced) can be issued now - an SCF density's tiles on the device, any other's packed triangle on the device
-// (state->mold.gpu_dpack) - or when it is not to be had this way (evaluated as it would have been); false while it
-// is being made on a worker thread, which this begins when it is not.
-static bool density_pack_prepare(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice_ptr) {
-    const md_attribute_slice_t s = slice_ptr ? *slice_ptr : md_attribute_slice_all();
-    if (s.num_idx == 0 && density_is_scf(density_path)) {
-        if (!density_dmat_prepare(state, density_path)) return false;
-        // through the tiles, unless they could not be made of the orbitals (not published): through the packed triangle
-        if (density_gpu_tiles_prepare(state, density_path) > 0) return true;
-    }
-    if (!gpu_evaluation_ready(state) || !state->gpu_device) {
-        return true;
-    }
-    if (!dpack_build_take(state, false)) return false;
-    const md_system_t& sys = state->mold.sys;
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
-    if (!attr) return true;
-    const uint64_t key = density_pack_key(sys, *attr, s);
-    if ((state->mold.gpu_dpack && key == state->mold.gpu_dpack_key) || key == state->mold.gpu_dpack_failed_key) return true;
-    const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    if (md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr) != num_cgtos) {
-        return true;    // the evaluation fails as it would have, and says why
-    }
-
-    DensityPackBuild* b = new DensityPackBuild();
-    b->key = key;
-    b->path = attr->path;
-    b->slice = s;
-    b->sys = &state->mold.sys;
-    b->num_cgtos = num_cgtos;
-    b->t0 = md_tick_now();
-    b->stream = md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "packed density");
-    if (!b->stream) {
-        delete b;
-        return true;    // extracted where it is asked for
-    }
-    b->task.start(MD_STR_LIT("Density matrix: reading"), [b]() {
-        const md_attribute_t* a = md_attributes_find(&b->sys->attributes, b->path);
-        const size_t len = b->num_cgtos * (b->num_cgtos + 1) / 2;
-        if (a) {
-            b->buf = md_gpu_malloc(b->stream, MD_GPU_MEM_DEVICE, sizeof(float) * len).gpu;
-            float* dst = b->buf ? (float*)md_gpu_upload_begin(b->stream, b->buf, sizeof(float) * len) : nullptr;
-            if (dst) {
-                DensityIo io;
-                const bool extracted = md_qm_extract_packed_symmetric_f32(dst, len, &b->sys->attributes, a, b->slice, io.io) == b->num_cgtos;
-                b->ok = md_gpu_upload_end(b->stream) && extracted;
-            }
-        }
-        md_gpu_stream_destroy(b->stream);   // once its uploads are done: the buffer is then ready for any stream
-        b->stream = nullptr;
-        md_temp_trim();     // what the provider made in this worker's temp arenas
-    });
-    state->mold.gpu_dpack_build = b;
-    return false;
+// For the representations' evaluations, which wait for it without waiting on it: true when the density at density_path
+// (sliced) has its tiles on the device for the atoms where they are (density_gpu_tiles_prepare: the evaluation can be
+// issued), or when they are not to be had (the evaluation fails, and says why); false while they are being made on a
+// worker thread, which this begins when they are not.
+static bool density_tiles_prepare(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
+    if (!gpu_evaluation_ready(state) || !state->gpu_device) return true;
+    return density_gpu_tiles_prepare(state, density_path, slice) != 0;
 }
 
 static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid, md_str_t density_path,
@@ -5481,67 +5301,30 @@ static bool density_to_gpu_volume(ApplicationState* state, const md_grid_t& grid
     }
     gpu_density_jobs_settle(state);     // the inputs are changed below
 
-    const md_system_t&       sys       = state->mold.sys;
-    const md_system_state_t& sys_state = state->mold.state;
-    const md_attribute_slice_t s = slice ? *slice : md_attribute_slice_all();
-    const md_attribute_t* attr = md_attributes_find(&sys.attributes, density_path);
-    if (!attr) {
-        MD_LOG_DEBUG("No density published at '" MD_STR_FMT "'", MD_STR_ARG(density_path));
+    const md_system_t& sys = state->mold.sys;
+    if (!gpu_atoms_ensure_uploaded(state, sys, state->mold.state)) {
         return false;
     }
 
+    // Through the density's tiles on the device (density_gpu_tiles_ensure), the one copy of it there: no matrix on the
+    // host, and only the AO pairs the evaluation reads. Kept until the next evaluation has been issued (gpu_tiles_take
+    // settles the jobs before it lets go of them)
+    const std::shared_ptr<const DensityGpuTiles> t = density_gpu_tiles_ensure(state, density_path, slice);
+    if (!t) {
+        MD_LOG_ERROR("No density to evaluate at '" MD_STR_FMT "': it is made of factors (orbitals, or an excited state's) the system does not have",
+                     MD_STR_ARG(density_path));
+        return false;
+    }
     const size_t num_cgtos = md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis);
-    const size_t dim = md_qm_extract_packed_symmetric_f32(nullptr, 0, &sys.attributes, attr, s, nullptr);
-    if (dim == 0) {
+    if (num_cgtos != t->src->dm.num_ao) {
+        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density's tiles %u", num_cgtos, t->src->dm.num_ao);
         return false;
     }
-    if (num_cgtos != dim) {
-        MD_LOG_ERROR("The uploaded basis spans %zu atomic orbitals and the density matrix %zu", num_cgtos, dim);
-        return false;
-    }
-    if (!gpu_atoms_ensure_uploaded(state, sys, sys_state)) {
-        return false;
-    }
-
-    // An SCF density through its tiles on the device (density_gpu_tiles_ensure), the one copy of it there: no matrix
-    // on the host, and only the AO pairs the evaluation reads. Kept until the next evaluation has been issued
-    // (gpu_tiles_take settles the jobs before it lets go of them)
-    if (s.num_idx == 0 && density_is_scf(density_path) && gpu_evaluation_ready(state)) {
-        const std::shared_ptr<const DensityGpuTiles> t = density_gpu_tiles_ensure(state, density_path);
-        if (t && md_gto_gpu_basis_num_cgtos(state->mold.gpu_basis) == t->src->dm.num_ao) {
-            density_gpu_launch(state, grid, op, t->dm, out_job);
-            return true;
-        }
-    }
-
-    // Extracted on a worker thread for a representation (density_pack_prepare): on the device already
-    dpack_build_take(state, false);
-    if (state->mold.gpu_dpack && state->mold.gpu_dpack_key == density_pack_key(sys, *attr, s)) {
-        density_gpu_launch(state, grid, op, nullptr, out_job, state->mold.gpu_dpack);
-        return true;
-    }
-
-    // Straight into the upload buffer: the packed float triangle is exactly what the kernel reads, so
-    // a packed attribute - a density property read from its file - never exists in any other form
-    float* dst = (float*)md_gpu_upload_begin(state->gpu_stream, state->gpu_coeff, md_gto_gpu_coeff_size_density(num_cgtos));
-    if (!dst) {
-        return false;
-    }
-    DensityIo io;
-    const bool extracted = md_qm_extract_packed_symmetric_f32(dst, dim * (dim + 1) / 2, &sys.attributes, attr, s, io.io) == dim;
-    md_gpu_upload_end(state->gpu_stream);
-    if (!extracted) {
-        return false;
-    }
-
-    density_gpu_launch(state, grid, op, nullptr, out_job);
+    density_gpu_launch(state, grid, op, t->dm, out_job);
     return true;
 }
 #endif
 
-// The backend choice, over a density matrix the caller already holds. density_evaluate below is
-// this plus the extract, and a caller which has cached the matrix - the QM residue does, because
-// the transition densities are rebuilt on every read - calls this one and skips the rebuild.
 bool gpu_volume_evaluation_available(const ApplicationState* state) {
 #if MD_ENABLE_GPU
     return state && gpu_evaluation_ready(state);
@@ -5549,23 +5332,6 @@ bool gpu_volume_evaluation_available(const ApplicationState* state) {
     (void)state;
     return false;
 #endif
-}
-
-bool density_matrix_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid,
-                             const double* density_matrix, size_t dim, md_gto_op_t op) {
-    MD_ASSERT(state);
-    if (!density_matrix || dim == 0) {
-        return false;
-    }
-
-#if MD_ENABLE_GPU
-    if (gpu_evaluation_ready(state)) {
-        return density_matrix_evaluate_to_gpu_volume(state, grid, density_matrix, dim, op) && gpu_volume_readback(state, vol_tex, grid);
-    }
-#endif
-    (void)vol_tex; (void)grid; (void)op;
-    gpu_evaluation_unavailable("a density");
-    return false;
 }
 
 bool density_evaluate(ApplicationState* state, uint32_t vol_tex, const md_grid_t& grid, md_str_t density_path,
@@ -5694,10 +5460,10 @@ static int es_source_ready(ApplicationState* state, const ElectronicStructureRep
 #if MD_ENABLE_GPU
     // a density job under way, of any representation: an evaluation now would wait for its counts
     if (gpu_density_job_pending(state)) return 0;
-    // a density's matrix, made on a worker thread (an SCF density's dmat, another's packed triangle)
+    // a density's tiles on the device, made on a worker thread
     md_str_t path = {};
     md_attribute_slice_t slice = {};
-    if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_pack_prepare(state, path, &slice)) return 0;
+    if (es_volume_density(&path, &slice, es, state->mold.sys) && !density_tiles_prepare(state, path, slice.num_idx ? &slice : nullptr)) return 0;
 #endif
     if (es.shown.source == ElectronicStructureSource::NaturalTransitionOrbital && !es_nto_ready(state, (size_t)es.shown.excited_state_idx)) return 0;
     if (electronic_structure_source_is_surface_field(es.shown.source)) return -1;   // as a surface field, into the volume
@@ -5895,8 +5661,8 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
         }
         // What the evaluation needs, which the frame does not wait for: the volume's last evaluation off the GPU
         // (its readback in flight: a new one now would wait for it, and the volume's texture be remade under
-        // it), and a density's matrix, made on a worker thread (an SCF density's dmat, another's packed
-        // triangle). Until then the volume shown stays, and this is asked again next frame.
+        // it), and a density's tiles on the device, made on a worker thread. Until then the volume shown stays,
+        // and this is asked again next frame.
         if (needs_volume) {
             // (a density job under way of any representation, not yet all issued: an evaluation now would issue
             // all it has left at once)
@@ -5905,7 +5671,7 @@ bool electronic_structure_representation_update(ApplicationState* state, Represe
             if ((es.density_vol.tex_id && gpu_volume_job_in_flight_for(state, es.density_vol.tex_id)) || gpu_density_job_pending(state)) {
                 ready = false;
             } else if (es_volume_density(&path, &slice, es, state->mold.sys)) {
-                ready = density_pack_prepare(state, path, &slice);
+                ready = density_tiles_prepare(state, path, slice.num_idx ? &slice : nullptr);
             }
         }
 #endif
@@ -5983,7 +5749,7 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     if (attribute_exists(sys, es_path::alpha_coefficient))  mask |= ElectronicStructureSourceFlag_MolecularOrbital;
     if (attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
     if (attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
-    if (attribute_exists(sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
+    if (md_qm_density_factors_available(&sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
     if (density_properties_gather(nullptr, 0, sys) > 0)        mask |= ElectronicStructureSourceFlag_DensityProperty;
     // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose
     // derivatives are within what is evaluated (no g functions)

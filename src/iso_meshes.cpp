@@ -90,25 +90,6 @@ md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_s
     return field_create_orbital(current_geometry(temp, state), coefficient_path, slice);
 }
 
-static md_gto_iso_field_t* field_create_density_matrix(const IsoFieldGeometry& g, const double* density_matrix, size_t dim) {
-    if (!density_matrix || dim == 0) return nullptr;
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    FieldContext ctx;
-    if (!field_context(&ctx, temp, g)) return nullptr;
-    if (dim != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the density matrix %zu", md_gto_basis_num_ao(&ctx.basis), dim);
-        return nullptr;
-    }
-    return md_gto_iso_field_create_density(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), density_matrix, md_get_heap_allocator());
-}
-
-md_gto_iso_field_t* iso_field_create_density_matrix(const ApplicationState* state, const double* density_matrix, size_t dim) {
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    return field_create_density_matrix(current_geometry(temp, state), density_matrix, dim);
-}
-
 md_gto_iso_field_t* iso_field_create_coefficients(const IsoFieldGeometry& g, const double* coeffs, size_t num_ao) {
     if (!coeffs || num_ao == 0) return nullptr;
     md_temp_scope_t temp = md_temp_begin();
@@ -136,25 +117,11 @@ md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const d
     return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), left, right, weight, count, md_get_heap_allocator());
 }
 
+// A density from the factors it is the sum of (md_qm_density_factors: an SCF density's orbitals, slice NULL; an
+// excited state's attachment, detachment or difference factors, slice its state): the field takes them as they are,
+// where from a matrix it would factorize it again, which for a protein's density is minutes rather than a second.
+// NULL when the system does not publish them, or the density is zero.
 static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    size_t dim = 0;
-    const double* D = density_matrix_extract(&dim, temp, *g.sys, density_path, slice);
-    return D ? field_create_density_matrix(g, D, dim) : nullptr;
-}
-
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
-    md_temp_scope_t temp = md_temp_begin();
-    MD_DEFER { md_temp_end(temp); };
-    return field_create_density(current_geometry(temp, state), density_path, slice);
-}
-
-// An SCF density (orbital/{alpha,beta,total,difference}/density) from the orbitals it is the sum of
-// (md_qm_density_orbitals): the field takes them as they are, where from the matrix it would factorize
-// it again, which for a protein's density is minutes rather than a second. NULL when the system does
-// not publish the orbitals, or the density is zero.
-static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, md_str_t density_path) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
@@ -162,13 +129,19 @@ static md_gto_iso_field_t* field_create_scf_density(const IsoFieldGeometry& g, m
     double* rows = nullptr;
     double* weights = nullptr;
     size_t num_ao = 0;
-    const size_t count = md_qm_density_orbitals(&rows, &weights, &num_ao, g.sys, density_path, md_temp_allocator(temp));
+    const size_t count = md_qm_density_factors(&rows, &weights, &num_ao, g.sys, density_path, slice, md_temp_allocator(temp));
     if (count == 0) return nullptr;
     if (num_ao != md_gto_basis_num_ao(&ctx.basis)) {
-        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the orbitals of '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(density_path), num_ao);
+        MD_LOG_ERROR("Isosurface meshes: the basis spans %zu atomic orbitals and the factors of '" MD_STR_FMT "' %zu", md_gto_basis_num_ao(&ctx.basis), MD_STR_ARG(density_path), num_ao);
         return nullptr;
     }
     return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), rows, nullptr, weights, count, md_get_heap_allocator());
+}
+
+md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
+    md_temp_scope_t temp = md_temp_begin();
+    MD_DEFER { md_temp_end(temp); };
+    return field_create_density(current_geometry(temp, state), density_path, slice);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -953,22 +926,13 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
         return field_create_orbital(g, path, &slice);
     }
     case ElectronicStructureSource::TransitionDensity: {
-        md_str_t path = es_path::attachment_density;
-        switch (es.transition_density_component) {
-        case ElectronicStructureTransitionDensityComponent::Detachment: path = es_path::detachment_density; break;
-        case ElectronicStructureTransitionDensityComponent::Difference: path = es_path::transition_diff;    break;
-        case ElectronicStructureTransitionDensityComponent::Attachment:
-        default: break;
-        }
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
-        return field_create_density(g, path, &slice);
+        return field_create_density(g, es_transition_density_path(es.transition_density_component), &slice);
     }
     case ElectronicStructureSource::ElectronDensity: {
-        // from its orbitals where the system has them, from its matrix otherwise. Its maxima are at the
-        // nuclei: the GPU extraction evaluates it only around the surface (the flood)
-        const md_str_t path = es_electron_density_path(es.spin);
-        md_gto_iso_field_t* f = field_create_scf_density(g, path);
-        if (!f) f = field_create_density(g, path, nullptr);
+        // from its orbitals. Its maxima are at the nuclei: the GPU extraction evaluates it only around the surface
+        // (the flood)
+        md_gto_iso_field_t* f = field_create_density(g, es_electron_density_path(es.spin), nullptr);
         md_gto_iso_field_set_maxima_at_atoms(f, true);
         return f;
     }
@@ -1036,12 +1000,16 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // one shown is (so after the meshes' update, which begins that): for a large density each is seconds of the CPU and
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
-// An SCF density's tiles on the device (density_gpu_tiles_prepare), the copy every GPU path reads, which the set of its
+// A density's tiles on the device (density_gpu_tiles_prepare), the copy every GPU path reads, which the set of its
 // field reads in place rather than building tiles of its own: 1 there (into out), 0 being made (begun here), -1 not to
 // be had (no GPU, not such a density)
 static int es_density_tiles(ApplicationState* state, const FieldRef& spec, std::shared_ptr<const DensityGpuTiles>* out) {
 #if MD_ENABLE_GPU
-    if (spec.source == ElectronicStructureSource::ElectronDensity) return density_gpu_tiles_prepare(state, es_electron_density_path(spec.spin), out);
+    if (spec.source == ElectronicStructureSource::ElectronDensity) return density_gpu_tiles_prepare(state, es_electron_density_path(spec.spin), nullptr, out);
+    if (spec.source == ElectronicStructureSource::TransitionDensity) {
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)spec.excited_state_idx);
+        return density_gpu_tiles_prepare(state, es_transition_density_path(spec.transition_density_component), &slice, out);
+    }
 #else
     (void)state; (void)spec;
 #endif
@@ -1183,7 +1151,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             }
 #if MD_ENABLE_GPU
             desc.gpu_stream = state->gpu_stream;
-            if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, &desc.gpu_density_tiles);
+            if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, nullptr, &desc.gpu_density_tiles);
 #endif
             SurfaceFieldPointSet points = {};
             points.xyz        = em.meshes.xyz;

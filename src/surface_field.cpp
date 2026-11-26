@@ -357,7 +357,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     }
     // Its tiles (density_cache.h): built from its orbitals once, kept while they and the atoms' places hold. On a
     // worker thread: their loops on the task pool.
-    const std::shared_ptr<const DensityTiles> D = density_cache_tiles(desc.density_cache, sys, d_attr->path, &basis, desc.basis_atom_xyz[0].elem,
+    const std::shared_ptr<const DensityTiles> D = density_cache_tiles(desc.density_cache, sys, d_attr->path, nullptr, &basis, desc.basis_atom_xyz[0].elem,
                                                                       sizeof(md_float3_t));
     if (!D) {
         MD_LOG_ERROR("Electrostatic potential: no orbitals for '" MD_STR_FMT "' over the %zu atomic orbitals of the basis", MD_STR_ARG(d_attr->path), num_ao);

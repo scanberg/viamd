@@ -487,48 +487,6 @@ enum broadening_mode_t {
 
 static const char* broadening_mode_str[] = { "Gaussian", "Lorentzian" };
 
-// Attribute charge contributions of an AO-basis density matrix D to atoms or groups
-// using a Mulliken-style partitioning: q_g = sum_{mu in g} sum_nu D[mu,nu] * S[mu,nu].
-// Both D and S are symmetric (num_ao x num_ao) row-major matrices.
-// The total tr(D*S) is exactly preserved: sum_g out_charge[g] == tr(D*S).
-static void attribute_charge_density(double out_charge[], const int* ao_to_idx, const double* D, const double* S, size_t num_ao) {
-	MD_ASSERT(D);
-	MD_ASSERT(S);
-	MD_ASSERT(ao_to_idx);
-
-	for (size_t mu = 0; mu < num_ao; ++mu) {
-		const int idx = ao_to_idx[mu];
-		const double* D_row = &D[mu * num_ao];
-		const double* S_row = &S[mu * num_ao];
-		double s = 0.0;
-		for (size_t nu = 0; nu < num_ao; ++nu) {
-			s += D_row[nu] * S_row[nu];
-		}
-		out_charge[idx] += s;
-	}
-}
-
-// Mulliken partitioning of a SINGLE orbital vector, which is the same quantity as above for the
-// rank-one density D = C C^T. Written out rather than routed through attribute_charge_density so
-// it does not have to materialize an N x N matrix per orbital - with 32 NTOs and a few hundred
-// AOs, forming those densities is most of the work and none of the answer.
-//
-//   q_g = sum_{mu in g} C[mu] * (S C)[mu],  and  sum_g q_g = C^T S C = 1 for a normalized orbital.
-static void attribute_orbital_density(double out_charge[], const int* ao_to_idx, const double* C, const double* S, size_t num_ao) {
-	MD_ASSERT(C);
-	MD_ASSERT(S);
-	MD_ASSERT(ao_to_idx);
-
-	for (size_t mu = 0; mu < num_ao; ++mu) {
-		const double* S_row = &S[mu * num_ao];
-		double sc = 0.0;
-		for (size_t nu = 0; nu < num_ao; ++nu) {
-			sc += S_row[nu] * C[nu];
-		}
-		out_charge[ao_to_idx[mu]] += C[mu] * sc;
-	}
-}
-
 // Column identifiers for the Orbital Grid's "Molecular Orbitals" table. File scope because the
 // active sort column is remembered in Orb across frames, and because the order it produces is
 // what the orbital grid takes its span from.
@@ -762,7 +720,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
 
     // The density's tiles, as the ESP reads them too (density_cache.h): built from its orbitals once, at load
     const md_str_t path = critical_points_density_path(sys);
-    std::shared_ptr<const DensityTiles> tiles = density_cache_tiles(density_cache_of(&app), sys, path, &basis, atom_pos[0].elem, sizeof(md_float3_t));
+    std::shared_ptr<const DensityTiles> tiles = density_cache_tiles(density_cache_of(&app), sys, path, nullptr, &basis, atom_pos[0].elem, sizeof(md_float3_t));
     if (!tiles || tiles->dm.num_ao != num_ao) {
         MD_LOG_ERROR("Critical points: no orbitals to make the density at '" MD_STR_FMT "' of, over the basis (%zu AOs)", MD_STR_ARG(path), num_ao);
         return nullptr;
@@ -808,7 +766,7 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     if (use_gpu && app.gpu_device) {
         job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
         std::shared_ptr<const DensityGpuTiles> g;
-        if (density_gpu_tiles_prepare(&app, path, &g) == 1 && g->src == job->tiles) {
+        if (density_gpu_tiles_prepare(&app, path, nullptr, &g) == 1 && g->src == job->tiles) {
             job->gpu_tiles = g;
             job->desc.gpu_dmat = g->dm;
         }
@@ -1609,25 +1567,6 @@ struct QuantumChemistry : viamd::EventHandler {
         bool show_coordinate_system_widget = true;
     } nto;
 
-    // One excited state's attachment and detachment densities in the AO basis.
-    //
-    // Both are VIRTUAL attributes: every read rebuilds the matrix from the response solution
-    // vector and the MO coefficients, which is by far the most expensive thing this component
-    // does. Selecting a state asks for exactly the same two matrices twice in the same frame -
-    // once for the Mulliken group attribution in update_nto_derived_data, once for the two
-    // volumes the Transition Analysis window evaluates - and the export window asks for a third
-    // copy. Rebuilt once here and held until the state or the dataset changes.
-    //
-    // Allocated from 'arena'; reset_data() rewinds that arena, so the pointers are dropped rather
-    // than freed there. The difference density is not cached: it is one subtraction away from the
-    // two that are, and only the export window asks for it.
-    struct TransitionDensityCache {
-        int     state_idx = -1;     // which excited state, -1 when nothing is cached
-        size_t  dim       = 0;      // atomic orbitals per side
-        double* attach    = nullptr;
-        double* detach    = nullptr;
-    } td_cache;
-
     // The charge transfer window's side views: the molecule with the hole density beside the diagram's hole column and
     // the particle density beside its particle column, one camera for both. Optional (they take room).
     //
@@ -2152,7 +2091,7 @@ struct QuantumChemistry : viamd::EventHandler {
                 if (num_qm_atoms > 0 && num_molecular_orbitals() > 0) {
                     // Before any window draws, so both transition windows see the same numbers and
                     // neither has to be open for the other to have data.
-                    update_nto_derived_data(state.mold.sys);
+                    update_nto_derived_data(state);
 
                     update_critical_points(state);
 
@@ -2656,9 +2595,6 @@ struct QuantumChemistry : viamd::EventHandler {
         critical_points.raw_graph.alloc = arena;
         critical_points.simp_graph.alloc = arena;
         basis = {};  // arena reset above invalidates allocations; zero the struct
-        // Same as basis: the arena reset above released these, so the struct is zeroed rather
-        // than freed through td_cache_free().
-        td_cache = TransitionDensityCache{};
         atom_xyzw = nullptr;
         if (app) {
             panel_meshes_free(&orb.mesh, app);
@@ -2736,9 +2672,6 @@ struct QuantumChemistry : viamd::EventHandler {
         // The one number kept: see num_qm_atoms above for why the pointers are not.
         num_qm_atoms = qm.count;
         const size_t num_atoms = qm.count;
-
-        // A new dataset: whatever state index was cached names a different state now.
-        td_cache_free();
 
         num_mos = 0;
         es_orbital_extent(state.mold.sys, &num_mos, nullptr);
@@ -2934,97 +2867,12 @@ struct QuantumChemistry : viamd::EventHandler {
         return orbital_evaluate(&state, vol_tex, grid, path, &slice, MD_GTO_EVAL_MODE_PSI, op, DEFAULT_GTO_CUTOFF_VALUE);
     }
 
-    // Releases what the cache holds. Only valid while the arena it was allocated from is alive -
-    // reset_data() rewinds that arena and zeroes the struct instead of calling this.
-    void td_cache_free() {
-        if (td_cache.attach) {
-            md_free(arena, td_cache.attach, sizeof(double) * td_cache.dim * td_cache.dim);
-        }
-        if (td_cache.detach) {
-            md_free(arena, td_cache.detach, sizeof(double) * td_cache.dim * td_cache.dim);
-        }
-        td_cache = TransitionDensityCache{};
-    }
-
-    // Both matrices for one excited state, rebuilding them only when the state asked for is not
-    // the one already held. False when the system carries no transition densities, or when the two
-    // do not agree on their dimension - the callers then draw and attribute nothing, which is what
-    // they did when the extract itself failed.
-    bool td_cache_ensure(const md_system_t& sys, int state_idx) {
-        if (state_idx < 0) {
-            return false;
-        }
-        if (td_cache.state_idx == state_idx && td_cache.attach && td_cache.detach) {
-            return true;
-        }
-
-        md_temp_scope_t temp = md_temp_begin();
-        MD_DEFER { md_temp_end(temp); };
-
-        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
-
-        size_t a_dim = 0;
-        size_t d_dim = 0;
-        const double* attach = density_matrix_extract(&a_dim, temp, sys, es_path::attachment_density, &slice);
-        const double* detach = density_matrix_extract(&d_dim, temp, sys, es_path::detachment_density, &slice);
-        if (!attach || !detach || a_dim == 0 || a_dim != d_dim) {
-            // Whatever is held is for a state that is no longer the one being asked about, so it
-            // is dropped rather than left to answer the next call.
-            td_cache_free();
-            return false;
-        }
-
-        if (td_cache.dim != a_dim || !td_cache.attach || !td_cache.detach) {
-            td_cache_free();
-            const size_t bytes = sizeof(double) * a_dim * a_dim;
-            td_cache.attach = (double*)md_alloc(arena, bytes);
-            td_cache.detach = (double*)md_alloc(arena, bytes);
-            if (!td_cache.attach || !td_cache.detach) {
-                td_cache_free();
-                return false;
-            }
-            td_cache.dim = a_dim;
-        }
-
-        const size_t bytes = sizeof(double) * a_dim * a_dim;
-        md_memcpy(td_cache.attach, attach, bytes);
-        md_memcpy(td_cache.detach, detach, bytes);
-        td_cache.state_idx = state_idx;
-        return true;
-    }
-
+    // One excited state's attachment, detachment or difference density: from its tiles, made of the state's factors
+    // (md_qm_density_factors) and kept with the system's other densities (density_cache.h), on the device the one copy
+    // of it every GPU path reads
     bool evaluate_transition_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, size_t state_idx, ElectronicStructureTransitionDensityComponent component) {
-        // Out of the cache rather than out of the attribute: see TransitionDensityCache. The
-        // difference is the one component the table would have reconstructed a third matrix for,
-        // and it is the subtraction the provider performs anyway.
-        if (!td_cache_ensure(state.mold.sys, (int)state_idx)) {
-            return false;
-        }
-
-        const size_t dim = td_cache.dim;
-        const double* density_matrix = td_cache.attach;
-
-        md_temp_scope_t temp = md_temp_begin();
-        MD_DEFER { md_temp_end(temp); };
-
-        switch (component) {
-        case ElectronicStructureTransitionDensityComponent::Detachment:
-            density_matrix = td_cache.detach;
-            break;
-        case ElectronicStructureTransitionDensityComponent::Difference: {
-            double* diff = md_temp_alloc_array(temp, double, dim * dim);
-            for (size_t i = 0; i < dim * dim; ++i) {
-                diff[i] = td_cache.attach[i] - td_cache.detach[i];
-            }
-            density_matrix = diff;
-            break;
-        }
-        case ElectronicStructureTransitionDensityComponent::Attachment:
-        default:
-            break;
-        }
-
-        return density_matrix_evaluate(&state, vol_tex, grid, density_matrix, dim, MD_GTO_OP_SET);
+        const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)state_idx);
+        return density_evaluate(&state, vol_tex, grid, es_transition_density_path(component), &slice, MD_GTO_OP_SET);
     }
 
     bool evaluate_electron_density(ApplicationState& state, uint32_t vol_tex, const md_grid_t& grid, ElectronicStructureSpin spin, md_gto_op_t op) {
@@ -9942,9 +9790,19 @@ struct QuantumChemistry : viamd::EventHandler {
                         uint64_t key = md_hash64(id, sizeof(id), pos_hash);
                         key = key ? key : 1;
                         panel_meshes_field(&nto.mesh, &state, i, key, [&]() -> md_gto_iso_field_t* {
-                            if (!td_cache_ensure(state.mold.sys, nto.sel_nto_idx)) return nullptr;
-                            const double* D = (i == NTO_Attachment) ? td_cache.attach : td_cache.detach;
-                            return iso_field_create_density_matrix(&state, D, td_cache.dim);
+                            if (nto.sel_nto_idx < 0) return nullptr;
+                            // from the state's factors; its set reads the tiles on the device the volumes read
+                            const md_str_t path = i == NTO_Attachment ? es_path::attachment_density : es_path::detachment_density;
+                            const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)nto.sel_nto_idx);
+                            md_gto_iso_field_t* f = iso_field_create_density(&state, path, &slice);
+#if MD_ENABLE_GPU
+                            const std::shared_ptr<const DensityGpuTiles> t = f ? density_gpu_tiles_ensure(&state, path, &slice) : nullptr;
+                            if (t) {
+                                md_gto_iso_field_set_gpu_dmat(f, t->dm);
+                                iso_field_hold(f, t);
+                            }
+#endif
+                            return f;
                         });
                     }
                     panel_meshes_update(&nto.mesh, &state, 2, nto.iso_val * nto.iso_val, MD_GTO_ISO_SHEET_POSITIVE);
@@ -12394,12 +12252,7 @@ struct QuantumChemistry : viamd::EventHandler {
         }
         if (flow.mode == FLOW_MODE_FRAGMENTS) {
             lowdin_pending = lowdin && !lowdin->done.load(std::memory_order_acquire);
-            if (lowdin_job_ready(lowdin) && rsp.selected >= 0 && !nto_pending && (!ct_job || ct_job->state != rsp.selected) &&
-                flow.ct_failed_state != rsp.selected) {
-                ct_state_job_destroy(ct_job);
-                ct_job = ct_state_job_start(state.mold.sys, lowdin, rsp.selected);
-                if (!ct_job) flow.ct_failed_state = rsp.selected;   // no NTO pairs to read: do not ask every frame
-            }
+            ct_job_begin(state, rsp.selected);
             ct_pending = ct_job && (!ct_job->done.load(std::memory_order_acquire) || ct_job->state != rsp.selected);
             hash ^= (uint64_t)lowdin_job_ready(lowdin) << 32;
             if (ct_job) hash ^= ((uint64_t)(ct_job->state + 1) << 40) ^ ((uint64_t)ct_state_job_ready(ct_job) << 56);
@@ -13148,18 +13001,33 @@ struct QuantumChemistry : viamd::EventHandler {
         return success;
     }
 
-    // Bookkeeping rather than numerics: it owns the hashes and the transition matrix storage, and
-    // the two procedures it hands the numbers to - attribute_charge_density and
-    // compute_transition_matrix - already take nothing but arrays. So this is where the system is
-    // allowed to be, and the fetches stay INSIDE the hash guard: a transition density is rebuilt
-    // from the solution vector on every read, and pulling two A x A of them per frame would be a
-    // real cost for a value that only changes when the selection does.
-    void update_nto_derived_data(const md_system_t& sys) {
-        if (!nto.atom_group_idx) return;
+    // The selected state's charge transfer numbers per atom (CtStateJob), begun once the Lowdin basis is there and the
+    // state's NTOs have been read, when the job held is of another state (one that could not be made is not tried
+    // again). The Charge Transfer window's and the Transition Analysis window's alike: one job for both.
+    void ct_job_begin(ApplicationState& state, int32_t sel) {
+        if (!lowdin_job_ready(lowdin) || sel < 0 || (ct_job && ct_job->state == sel) || flow.ct_failed_state == sel) return;
+        if (!es_nto_ready(&state, (size_t)sel)) return;
+        ct_state_job_destroy(ct_job);
+        ct_job = ct_state_job_start(state.mold.sys, lowdin, sel);
+        if (!ct_job) flow.ct_failed_state = sel;   // no NTO pairs to read: do not ask every frame
+    }
 
-        // What the table carries, not what a reader parsed. A system with no transition densities
-        // has no transition to attribute, whichever program produced it.
-        if (!md_attributes_find(&sys.attributes, es_path::attachment_density)) return;
+    // Bookkeeping rather than numerics: it owns the hashes and the transition matrix storage, and hands the numbers
+    // to compute_transition_matrix, which takes nothing but arrays.
+    //
+    // A group's hole and particle are the LOWDIN populations of the state's detachment and attachment densities over
+    // its atoms: in the Lowdin basis, where the NTOs are orthonormal, the detachment density on atom A is
+    // sum_k lambda_k H^A_kk (H^A the hole NTOs' block over A's AOs, md_qm_ct.h) and the attachment's the same of the
+    // particles - the row and column sums of the charge transfer numbers Omega, exactly. From the selected state's job
+    // (CtStateJob: its blocks per atom), made while the Transition Analysis window is shown; nothing until it is done.
+    // (Mulliken populations of the two matrices were here before: they can turn negative and depend on the basis.)
+    void update_nto_derived_data(ApplicationState& state) {
+        if (!nto.atom_group_idx) return;
+        const md_system_t& sys = state.mold.sys;
+
+        // What the table carries, not what a reader parsed. A system with no NTOs has no transition to attribute,
+        // whichever program produced it.
+        if (!md_attributes_find(&sys.attributes, es_path::nto_lambda)) return;
 
         // Create hash to check for changes to trigger update of colors in gl representation
         uint64_t atom_idx_hash = md_hash64(nto.atom_group_idx, md_array_bytes(nto.atom_group_idx), 0);
@@ -13171,99 +13039,62 @@ struct QuantumChemistry : viamd::EventHandler {
             update_nto_group_colors(sys);
         }
 
+        const int32_t sel = rsp.selected;
+        if (nto.show_window && sel >= 0) {
+            if (!lowdin && num_qm_atoms > 0) lowdin = lowdin_job_start(sys, basis, num_qm_atoms);
+            ct_job_begin(state, sel);
+        }
+        const CtStateJob* job = (sel >= 0 && ct_state_job_ready(ct_job) && ct_job->state == sel) ? ct_job : nullptr;
+
         // Create hash to check for changes to trigger recomputation of transition matrix
-        uint64_t matrix_hash = atom_idx_hash ^ (uint64_t)rsp.selected ^ nto.group.count;
+        uint64_t matrix_hash = md_hash64(&sel, sizeof(sel), atom_idx_hash);
+        matrix_hash = md_hash64(&nto.group.count, sizeof(nto.group.count), matrix_hash);
+        matrix_hash = md_hash64(&job, sizeof(job), matrix_hash);
         static uint64_t cur_matrix_hash = 0;
+        if (matrix_hash == cur_matrix_hash) return;
+        cur_matrix_hash = matrix_hash;
 
-        if (matrix_hash != cur_matrix_hash) {
-            cur_matrix_hash = matrix_hash;
-
-            // Resize transition matrix to the correct size
-            if (nto.transition_matrix_dim != nto.group.count) {
-                if (nto.transition_matrix) {
-                    // The allocated size contains matrix N*N + 2*N for hole/part arrays
-                    const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-                    md_free(arena, nto.transition_matrix, cur_mem);
-                }
-
-                nto.transition_matrix_dim = nto.group.count;
-                const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
-                nto.transition_matrix = (float*)md_alloc(arena, new_mem);
-                nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
-                nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
+        // Resize transition matrix to the correct size
+        if (nto.transition_matrix_dim != nto.group.count) {
+            if (nto.transition_matrix) {
+                // The allocated size contains matrix N*N + 2*N for hole/part arrays
+                const size_t cur_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+                md_free(arena, nto.transition_matrix, cur_mem);
             }
 
-            // Clear all of the values to zero (matrix, group values)
-            md_memset(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+            nto.transition_matrix_dim = nto.group.count;
+            const size_t new_mem = sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2);
+            nto.transition_matrix = (float*)md_alloc(arena, new_mem);
+            nto.transition_density_hole = nto.transition_matrix + (nto.transition_matrix_dim * nto.transition_matrix_dim);
+            nto.transition_density_part = nto.transition_density_hole + nto.transition_matrix_dim;
+        }
 
-			if (rsp.selected != -1) {
-				const size_t nto_idx = (size_t)rsp.selected;
-				{
-					md_temp_scope_t temp = md_temp_begin();
-                    MD_DEFER { md_temp_end(temp); };
+        // Clear all of the values to zero (matrix, group values)
+        md_memset(nto.transition_matrix, 0, sizeof(float) * nto.transition_matrix_dim * (nto.transition_matrix_dim + 2));
+        if (!job) return;
 
-					// Full-density Mulliken attribution from attachment / detachment AO matrices.
-					// hole charges  <- detachment density (D-)
-					// part charges  <- attachment density (D+)
-					//
-					// Both are VIRTUAL attributes indexed by excited state, and the Transition
-					// Analysis window wants the same two matrices in this same frame - so they
-					// come from the component's cache, which rebuilds them once per state.
-					const bool have_td = td_cache_ensure(sys, (int)nto_idx);
-
-					size_t s_dim = 0;
-					const double* D_attach = have_td ? td_cache.attach : nullptr;
-					const double* D_detach = have_td ? td_cache.detach : nullptr;
-					// The overlap is STORED, so extracting it is a copy and not a reconstruction.
-					const double* S        = density_matrix_extract(&s_dim, temp, sys, es_path::overlap, nullptr);
-
-					const size_t num_aos = s_dim;
-
-					if (num_aos > 0 && S && D_attach && D_detach) {
-						if (td_cache.dim == num_aos) {
-							double group_density_part[MAX_NTO_GROUPS] = {0};
-							double group_density_hole[MAX_NTO_GROUPS] = {0};
-
-							// A pure function of the shell list - the same call md_vlx uses to build
-							// the copy this used to read - so there is no map to publish and none
-							// that can drift from the AO ordering.
-							uint32_t* ao_to_atom = md_temp_alloc_array(temp, uint32_t, num_aos);
-							if (md_gto_basis_num_ao(&basis) != num_aos ||
-								md_gto_basis_ao_to_atom(ao_to_atom, &basis) != num_aos) {
-								return;
-							}
-
-							// Bounded by the array actually being indexed rather than by any atom
-							// count reported elsewhere, which is the only bound that makes the read
-							// below safe.
-							const size_t num_group_atoms = md_array_size(nto.atom_group_idx);
-                            int* ao_to_group = md_temp_alloc_array(temp, int, num_aos);
-
-							for (size_t i = 0; i < num_aos; i++) {
-								const uint32_t atom_idx = ao_to_atom[i];
-								MD_ASSERT(atom_idx < num_group_atoms);
-								int g = (atom_idx < num_group_atoms) ? (int)nto.atom_group_idx[atom_idx] : 0;
-								if (g < 0 || g >= MAX_NTO_GROUPS) g = 0;
-								ao_to_group[i] = g;
-							}
-
-							attribute_charge_density(group_density_part, ao_to_group, D_attach, S, num_aos);
-							attribute_charge_density(group_density_hole, ao_to_group, D_detach, S, num_aos);
-
-							for (size_t g1 = 0; g1 < nto.group.count; g1++) {
-								// Mulliken populations of the attachment / detachment density are non-negative
-								// in exact arithmetic. Clamp tiny negative numerical noise to zero so that
-								// the downstream transition matrix cannot acquire spurious negative entries.
-								nto.transition_density_part[g1] = (float)MD_MAX(0.0, group_density_part[g1]);
-								nto.transition_density_hole[g1] = (float)MD_MAX(0.0, group_density_hole[g1]);
-							}
-							compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
-						}
-					}
-				}
-
+        double hole[MAX_NTO_GROUPS] = {0};
+        double part[MAX_NTO_GROUPS] = {0};
+        const size_t K = job->K;
+        // Bounded by the array actually being indexed as well as by the job's atoms
+        const size_t n = MD_MIN(job->num_atoms, md_array_size(nto.atom_group_idx));
+        for (size_t a = 0; a < n; ++a) {
+            uint32_t g = nto.atom_group_idx[a];
+            if (g >= MAX_NTO_GROUPS) g = 0;
+            const double* H = job->hole_blocks + a * K * K;
+            const double* P = job->part_blocks + a * K * K;
+            for (size_t k = 0; k < K; ++k) {
+                const double l = MD_MAX(0.0, job->lambda[k]);
+                hole[g] += l * H[k * K + k];
+                part[g] += l * P[k * K + k];
             }
         }
+        for (size_t g = 0; g < nto.group.count && g < MAX_NTO_GROUPS; ++g) {
+            // sums of squares: never negative
+            nto.transition_density_hole[g] = (float)MD_MAX(0.0, hole[g]);
+            nto.transition_density_part[g] = (float)MD_MAX(0.0, part[g]);
+        }
+        compute_transition_matrix(nto.transition_matrix, nto.group.count, nto.transition_density_hole, nto.transition_density_part);
     }
 
 };
