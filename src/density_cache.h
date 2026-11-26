@@ -4,8 +4,8 @@
 // (quantum_chemistry.cpp) - kept once made, each in the one representation of a density matrix: md_gto_dmat_t's
 // tiles, in double, built from the density's orbitals (md_qm_density_orbitals) at DENSITY_TILES_CUTOFF and
 // DENSITY_TILES_MARGIN, never the whole matrix. 39 MB for a 1152 atom protein (9636 AOs), built in about a second on
-// 8 threads, where the matrix's packed triangle was 371 MB read from the file in seconds. The GPU paths build their
-// own float tiles from the orbitals (md_gto_gpu_dmat).
+// 8 threads, where the matrix's packed triangle was 371 MB read from the file in seconds. The GPU reads their copy
+// (DensityGpuTiles, below): no density is built on the device.
 //
 // Built when a system is loaded (density_cache_preload, from init_system_data), on the task pool while the geometry
 // is shown, so that the first of them finds them there.
@@ -38,6 +38,22 @@ struct DensityTiles {
     DensityTiles& operator=(const DensityTiles&) = delete;
     ~DensityTiles();
 };
+
+#if MD_ENABLE_GPU
+// The same tiles on the device (md_gto_gpu_dmat_upload of src): the one copy of a density in device memory, which
+// everything on the GPU reads (the density volume, ELF and LOL, isosurface sets, the critical point search), made
+// and handed out by the application (viamd.h, density_gpu_tiles_prepare). Held by what reads it; the last holder
+// lets go of it on the main thread, which destroys it on the GL thread's stream, after what that stream has issued.
+struct DensityGpuTiles {
+    md_gto_gpu_dmat_t dm = nullptr;
+    std::shared_ptr<const DensityTiles> src;    // the host's tiles it is the copy of
+    md_gpu_stream_t   stream = nullptr;         // the GL thread's: where it goes
+    DensityGpuTiles() = default;
+    DensityGpuTiles(const DensityGpuTiles&) = delete;
+    DensityGpuTiles& operator=(const DensityGpuTiles&) = delete;
+    ~DensityGpuTiles();
+};
+#endif
 
 DensityCache* density_cache_create();
 void density_cache_destroy(DensityCache* cache);

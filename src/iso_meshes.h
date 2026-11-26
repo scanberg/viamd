@@ -27,6 +27,8 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <memory>
+#include <vector>
 
 struct ApplicationState;
 struct ElectronicStructureRepresentation;
@@ -80,6 +82,7 @@ struct IsoMeshes {
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;
     void*    gpu_set = nullptr;     // md_gto_iso_gpu_set_t
+    std::vector<std::shared_ptr<const void>> gpu_set_keep;    // what its fields' hints point at (iso_field_hold), while it lives
     void*    set_build = nullptr;   // the set being made on a worker thread (of these fields, or of the ones before)
     uint64_t set_failed_key = 0;    // the fields no set could be made of: extracted on the CPU
     struct Cache {
@@ -104,6 +107,11 @@ bool     iso_meshes_current(const IsoMeshes* m, uint64_t slots_key);
 
 // A field no longer used: destroyed now, or when the pool task that reads it ends
 void iso_field_release(md_gto_iso_field_t* field);
+
+// What the field's hint on the device points at (md_gto_iso_field_set_gpu_dmat: a density's tiles, which a set of it
+// reads in place), held by every set made of the field for as long as that set lives, and by the field until it goes.
+// Main thread.
+void iso_field_hold(const md_gto_iso_field_t* field, std::shared_ptr<const void> keep);
 
 // Frees what the pool tasks that are no longer wanted left behind, once they end: once a frame, whether or not any
 // meshes are drawn (a representation's field let go of in the volume rendering mode is held until then).

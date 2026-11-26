@@ -717,6 +717,9 @@ struct GtoCriticalPointJob {
     md_gto_basis_t     basis    = {};
     float*             atom_xyz = nullptr;   // [3 * num_atoms] Bohr
     std::shared_ptr<const DensityTiles> tiles;   // the cache's, held: a newer build or a clear leaves these be
+#if MD_ENABLE_GPU
+    std::shared_ptr<const DensityGpuTiles> gpu_tiles;   // the same on the device (desc.gpu_dmat), held; null: uploaded by the run
+#endif
     md_topo_gto_desc_t desc     = {};
 
     md_topo_extremum_graph_t graph   = {};   // heap, filled by the run
@@ -799,8 +802,17 @@ static GtoCriticalPointJob* gto_critical_point_job_start(ApplicationState& app, 
     job->hash  = hash;
     job->start = md_tick_now();
 #if MD_ENABLE_GPU
-    // The octree sweep goes to the GPU when there is one; the CPU keeps the double precision parts.
-    if (use_gpu && app.gpu_device) job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
+    // The octree sweep goes to the GPU when there is one; the CPU keeps the double precision parts. It reads the
+    // density's tiles on the device, the copy every GPU path reads, when that is of the same tiles (made from the
+    // cache's as they are now); otherwise it uploads its own for the run (and that copy is begun for the next).
+    if (use_gpu && app.gpu_device) {
+        job->stream = md_gpu_stream_create(app.gpu_device, MD_GPU_STREAM_COMPUTE, "Critical points");
+        std::shared_ptr<const DensityGpuTiles> g;
+        if (density_gpu_tiles_prepare(&app, path, &g) == 1 && g->src == job->tiles) {
+            job->gpu_tiles = g;
+            job->desc.gpu_dmat = g->dm;
+        }
+    }
 #endif
 
     // Listed in the overlay, with the search's own progress and a cancel button that reaches it (the task's flags,

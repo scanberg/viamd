@@ -21,6 +21,12 @@ DensityTiles::~DensityTiles() {
     md_gto_dmat_free(&dm);
 }
 
+#if MD_ENABLE_GPU
+DensityGpuTiles::~DensityGpuTiles() {
+    if (dm) md_gto_gpu_dmat_destroy(stream, dm);
+}
+#endif
+
 struct DensityCache {
     struct Entry {
         std::string path;

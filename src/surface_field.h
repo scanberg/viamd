@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <memory>
 
 #include <core/md_grid.h>
 #include <core/md_unit.h>
@@ -229,7 +230,21 @@ struct SurfaceFieldDesc {
     // making the ESP again - back to it from another field, or a geometry within the tiles' margin - does not build
     // them again. Null: built each time. Must outlive the volume (the application's is).
     struct DensityCache*     density_cache = nullptr;
+
+#if MD_ENABLE_GPU
+    // Optional, for the orbital ratios (surface_field_is_orbital_ratio): the total density's tiles on the device
+    // (density_gpu_tiles_prepare), which the GPU set of their density field reads rather than building its own
+    // (md_gto_iso_field_set_gpu_dmat), held for as long as that set lives. Null: the set builds them.
+    std::shared_ptr<const struct DensityGpuTiles> gpu_density_tiles;
+#endif
 };
+
+// The fields that are ratios of orbital densities (the ionization and attachment energies, the density scale length):
+// made of the total density's field, on the device a set of md_gto_iso
+static inline bool surface_field_is_orbital_ratio(SurfaceFieldKind kind) {
+    return kind == SurfaceFieldKind::AverageLocalIonizationEnergy || kind == SurfaceFieldKind::LocalElectronAttachmentEnergy ||
+           kind == SurfaceFieldKind::DensityScaleLength;
+}
 
 // Whether the field is made of the QM region's basis, at basis_atom_xyz (SurfaceFieldDesc)
 static inline bool surface_field_uses_basis(SurfaceFieldKind kind) {

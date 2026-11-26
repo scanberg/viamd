@@ -431,6 +431,8 @@ struct OrbitalRatio {
     md_gto_iso_field_t* num = nullptr;      // the numerator, hartree times density; NULL for the scale length
     size_t              num_orbitals = 0;   // in the numerator (the scale length: in the density)
     double              floor_value = 0.0;  // where rho is below RATIO_RHO_FLOOR, hartree
+    std::shared_ptr<const void> rho_tiles;  // what rho's hint on the device points at (SurfaceFieldDesc.gpu_density_tiles):
+                                            // held while the ratio, and so every set of it, lives; let go of on the main thread
 };
 
 // The density scale length: rho / |grad rho| of the density field, without a numerator
@@ -869,6 +871,9 @@ struct FieldBuild {
     // occupied orbitals) builds its matrices on the device and waits for them, seconds that would otherwise be
     // the GL thread's (source_ratio_gpu). NULL: on the GL thread when first wanted.
     md_gpu_stream_t    stream = nullptr;
+#if MD_ENABLE_GPU
+    std::shared_ptr<const DensityGpuTiles> gpu_density_tiles;    // SurfaceFieldDesc's, for the ratio's density field
+#endif
     // made by the task
     FieldData          data;
     void*              gpu_set = nullptr;   // md_gto_iso_gpu_set_t of data.ratio
@@ -912,8 +917,7 @@ static void build_destroy(FieldBuild* b, md_gpu_stream_t gl_stream = nullptr) {
 }
 
 static inline bool kind_is_ratio(SurfaceFieldKind kind) {
-    return kind == SurfaceFieldKind::AverageLocalIonizationEnergy || kind == SurfaceFieldKind::LocalElectronAttachmentEnergy ||
-           kind == SurfaceFieldKind::DensityScaleLength;
+    return surface_field_is_orbital_ratio(kind);
 }
 
 static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
@@ -925,6 +929,7 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
 #if MD_ENABLE_GPU
     if (desc.gpu_stream && kind_is_ratio(desc.kind)) {
         b->stream = md_gpu_stream_create(md_gpu_stream_device(desc.gpu_stream), MD_GPU_STREAM_COMPUTE, "surface field");
+        b->gpu_density_tiles = desc.gpu_density_tiles;
     }
 #endif
     if (desc.basis_atom_xyz && desc.num_basis_atoms) {
@@ -963,6 +968,11 @@ static void build_run(FieldBuild* b) {
         b->data.ratio = build_ratio(desc);
         b->ok = b->data.ratio != nullptr;
 #if MD_ENABLE_GPU
+        if (OrbitalRatio* a = b->data.ratio; a && a->rho && b->gpu_density_tiles) {
+            // the density's tiles on the device, read by the set in place rather than built for it
+            md_gto_iso_field_set_gpu_dmat(a->rho, b->gpu_density_tiles->dm);
+            a->rho_tiles = b->gpu_density_tiles;
+        }
         if (b->stream) {
             if (const OrbitalRatio* a = b->data.ratio) {
                 const md_gto_iso_field_t* fields[2] = { a->rho, a->num };

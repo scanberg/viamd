@@ -5,6 +5,7 @@
 #include <task_system.h>
 #include <surface_field.h>
 #include <gostshyp.h>
+#include <density_cache.h>
 
 #include <md_gto_iso.h>
 #include <md_qm.h>
@@ -233,8 +234,39 @@ struct IsoBuild {
     md_gpu_stream_t stream = nullptr;
     md_gpu_stream_t gl_stream = nullptr;
     void* set = nullptr;              // md_gto_iso_gpu_set_t
+    std::shared_ptr<const void> keep[ISO_MESHES_MAX_SLOTS];    // what the fields' hints point at (iso_field_hold): the set's
 #endif
 };
+
+// What the fields' hints on the device point at (iso_field_hold): main thread
+static std::vector<std::pair<const md_gto_iso_field_t*, std::shared_ptr<const void>>> g_field_keep;
+
+static std::shared_ptr<const void> field_keep(const md_gto_iso_field_t* f) {
+    for (const auto& e : g_field_keep) if (e.first == f) return e.second;
+    return {};
+}
+
+void iso_field_hold(const md_gto_iso_field_t* field, std::shared_ptr<const void> keep) {
+    if (!field) return;
+    for (auto& e : g_field_keep) {
+        if (e.first == field) {
+            e.second = std::move(keep);
+            return;
+        }
+    }
+    g_field_keep.push_back({field, std::move(keep)});
+}
+
+// Before the field goes, so that a field made later at its address is not taken for it
+static void field_keep_remove(const md_gto_iso_field_t* f) {
+    for (size_t i = 0; i < g_field_keep.size(); ++i) {
+        if (g_field_keep[i].first == f) {
+            g_field_keep[i] = std::move(g_field_keep.back());
+            g_field_keep.pop_back();
+            return;
+        }
+    }
+}
 
 static IsoBuild* g_builds[256];
 static uint32_t  g_num_builds = 0;
@@ -347,6 +379,7 @@ static bool field_held(const md_gto_iso_field_t* f) {
 // give back, at the frame that takes the next one
 static void field_destroy(md_gto_iso_field_t* field) {
     own_basis_remove(field);
+    field_keep_remove(field);
     task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
@@ -428,6 +461,7 @@ static void release_extraction_state(IsoMeshes* m, ApplicationState* state) {
     if (m->gpu_set) {
         md_gto_iso_gpu_set_destroy(state->gpu_stream, (md_gto_iso_gpu_set_t*)m->gpu_set);
     }
+    m->gpu_set_keep.clear();    // after the set: what it read goes on the same stream, after it
 #else
     (void)state;
 #endif
@@ -522,6 +556,7 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
                 // its uploads are done: the task waited for them before it ended (destroying its stream)
                 m->gpu_set = b->set;
                 b->set = nullptr;
+                m->gpu_set_keep.assign(b->keep, b->keep + n);
                 MD_LOG_DEBUG("Isosurface meshes: %u fields on the device in %.1f ms (on a worker thread)", n, md_tick_to_milliseconds(md_tick_now() - b->t0));
             } else {
                 m->set_failed_key = m->fields_key;
@@ -536,7 +571,10 @@ static int set_ensure(IsoMeshes* m, ApplicationState* state, const IsoMeshSlot* 
     IsoBuild* nb = build_new(IsoBuild::Set, m->fields_key, g.sys, g.atom_xyz, g.num_atoms);
     if (!nb) return -1;
     nb->num_fields = n;
-    for (uint32_t k = 0; k < n; ++k) nb->fields[k] = slots[k].field;     // held: iso_field_release
+    for (uint32_t k = 0; k < n; ++k) {
+        nb->fields[k] = slots[k].field;     // held: iso_field_release
+        nb->keep[k] = field_keep(slots[k].field);
+    }
     nb->stream = md_gpu_stream_create(state->gpu_device, MD_GPU_STREAM_COMPUTE, "isosurface fields");
     nb->gl_stream = state->gpu_stream;
     if (!nb->stream) {
@@ -854,6 +892,7 @@ struct EsIsoMesh {
     md_float3_t*  field_xyz = nullptr;   // where the field's atoms are (bohr): what its set on the device is made at
     size_t   field_num_atoms = 0;
     IsoBuild* field_build = nullptr;    // the field of another key, being made on a worker thread
+    uint64_t field_build_key = 0;       // the key of the last one begun
     IsoMeshes meshes = {};
 
     // A field at the vertices (SurfaceColoring::Field)
@@ -997,7 +1036,21 @@ void electronic_structure_mesh_free(ApplicationState* state, ElectronicStructure
 // one shown is (so after the meshes' update, which begins that): for a large density each is seconds of the CPU and
 // a few hundred MB (the field's orbitals, the set's density matrix), and one at a time keeps both to what one
 // extraction needs; the next field is made while the GPU extracts the last
+// An SCF density's tiles on the device (density_gpu_tiles_prepare), the copy every GPU path reads, which the set of its
+// field reads in place rather than building tiles of its own: 1 there (into out), 0 being made (begun here), -1 not to
+// be had (no GPU, not such a density)
+static int es_density_tiles(ApplicationState* state, const FieldRef& spec, std::shared_ptr<const DensityGpuTiles>* out) {
+#if MD_ENABLE_GPU
+    if (spec.source == ElectronicStructureSource::ElectronDensity) return density_gpu_tiles_prepare(state, es_electron_density_path(spec.spin), out);
+#else
+    (void)state; (void)spec;
+#endif
+    if (out) out->reset();
+    return -1;
+}
+
 static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t field_key, const FieldRef& spec) {
+    if (field_key != em.field_key && field_key != em.field_build_key) es_density_tiles(state, spec, nullptr);   // made beside the field
     if (field_key != em.field_key && !em.field_build && !build_running((const IsoBuild*)em.meshes.set_build) &&
         // a natural transition orbital: not until its state has been read (on a worker thread, es_nto_ready)
         (spec.source != ElectronicStructureSource::NaturalTransitionOrbital || es_nto_ready(state, (size_t)spec.excited_state_idx))) {
@@ -1009,6 +1062,7 @@ static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t f
             b->spec = spec;
             build_start(b);
             em.field_build = b;
+            em.field_build_key = field_key;
         }
     }
 }
@@ -1028,8 +1082,11 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
     const uint64_t field_key = electronic_structure_field_key(state, es);
     const FieldRef spec = field_spec_of(es);
     const bool shown_is_wanted = em.field && field_spec_equal(em.field_spec, spec);
+    // a density's field not before its tiles on the device are there, which its set reads (or are not to be had)
+    std::shared_ptr<const DensityGpuTiles> field_tiles;
     if (em.field_build && !build_running(em.field_build) &&
-        !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes))) {
+        !(build_made(em.field_build) && field_spec_equal(em.field_build->spec, spec) && shown_is_wanted && iso_meshes_busy(&em.meshes)) &&
+        !(build_made(em.field_build) && es_density_tiles(state, em.field_build->spec, &field_tiles) == 0)) {
         IsoBuild* b = em.field_build;
         em.field_build = nullptr;
         build_remove(b);
@@ -1047,6 +1104,12 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             em.field_key = b->key;
             em.field_spec = b->spec;
             em.field_failed = em.field == nullptr;
+#if MD_ENABLE_GPU
+            if (em.field && field_tiles) {
+                md_gto_iso_field_set_gpu_dmat(em.field, field_tiles->dm);
+                iso_field_hold(em.field, field_tiles);
+            }
+#endif
             if (em.field_failed) {
                 MD_LOG_ERROR("Isosurface meshes: no field for the representation '%s'", rep->name);
             } else {
@@ -1120,6 +1183,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             }
 #if MD_ENABLE_GPU
             desc.gpu_stream = state->gpu_stream;
+            if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, &desc.gpu_density_tiles);
 #endif
             SurfaceFieldPointSet points = {};
             points.xyz        = em.meshes.xyz;

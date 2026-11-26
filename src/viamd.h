@@ -14,6 +14,7 @@
 #include <core/md_grid.h>
 #include <script_engine.h>
 #include <string>
+#include <memory>
 #include <md_gl.h>
 #include <md_infer.h>
 #include <md_chem.h>
@@ -1678,18 +1679,11 @@ struct ApplicationState {
         // uploaded against what is wanted is the only test that cannot go stale, and it costs a hash
         // over the QM atoms against an upload of the same array.
         uint64_t            gpu_atoms_hash = 0;
-        // The SCF density the evaluations read, as a matrix in tiles (md_gto_gpu_dmat): only the AO pairs
-        // an evaluation reads, built on the device from the orbitals, so no matrix is made on the host.
-        // Its pattern follows the atoms while they stay within its margin; the matrix is rebuilt when the
-        // density asked for, or the orbitals it is made of, change.
-        md_gto_gpu_dmat_t   gpu_dmat = nullptr;
-        uint64_t            gpu_dmat_key = 0;      // the density and the orbitals' versions it holds, 0: none
-        // The next one, made on a worker thread for the representations (viamd.cpp, DmatBuild), and the key of
-        // one that could not be (made where it is asked for instead)
-        void*               gpu_dmat_build = nullptr;
-        uint64_t            gpu_dmat_failed_key = 0;
-        // What the ELF and LOL kernel reads (viamd.cpp, LocalizationGpu): a GPU basis at their AO cutoff and the
-        // spins' density matrices in tiles, made by a pool task; and the key of one that could not be made
+        // The SCF densities' tiles on the device, one copy of each (density_gpu_tiles_prepare; viamd.cpp,
+        // GpuTilesRegistry): what every GPU path reads them from
+        void*               gpu_tiles = nullptr;
+        // What the ELF and LOL kernel reads besides those tiles (viamd.cpp, LocalizationGpu): a GPU basis at their
+        // AO cutoff, made by a pool task; and the key of one that could not be made
         void*               gpu_localization = nullptr;
         uint64_t            gpu_localization_failed_key = 0;
         // Any other density a representation evaluates (a transition density, made by its provider on every
@@ -3036,6 +3030,19 @@ void es_nto_warm_free(ApplicationState* state);
 
 // The application's density cache (density_cache.h), made when first asked for. Main thread.
 struct DensityCache* density_cache_of(ApplicationState* state);
+
+struct DensityGpuTiles;     // density_cache.h
+#if MD_ENABLE_GPU
+// The tiles on the device of the SCF density at density_path (orbital/{alpha,beta,total,difference}/density): the
+// upload of the density cache's tiles, one copy of each density, which every GPU path reads (the density volume, ELF
+// and LOL, isosurface sets, the critical point search), made by a pool task and kept while the orbitals keep their
+// versions and the atoms stay within the tiles' margin. 1 when they are there for the atoms where they are now (into
+// *out, held by whoever reads them for as long as it does), 0 while they are being made (begun here when they are
+// not), -1 when they cannot be (no GPU, not an SCF density, no orbitals). Main thread; out may be NULL.
+int density_gpu_tiles_prepare(ApplicationState* state, md_str_t density_path, std::shared_ptr<const DensityGpuTiles>* out = nullptr);
+// The same, waiting for a build under way or for its own: NULL when they cannot be made. Main thread.
+std::shared_ptr<const DensityGpuTiles> density_gpu_tiles_ensure(ApplicationState* state, md_str_t density_path);
+#endif
 
 // One AO x AO density matrix, out of the attribute at density_path narrowed by 'slice', whole and in
 // double precision. Allocated from temp; NULL when the path is absent or the slice does not narrow
