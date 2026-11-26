@@ -37,7 +37,7 @@ struct SurfaceFieldPointsWork;
 // NOTHING HERE BLOCKS. Making what the field is evaluated from (reading a QM density and building
 // md_gto_int's distribution of it: seconds on a protein; the ionization energy's orbitals, and their fields on
 // the device) runs on a worker thread, the evaluation on the GPU as a job in pieces of a few ms of GPU time
-// (md_gto_int's, md_gto_iso's: a GpuJob, gpu_job.h, advanced once a frame), and its readback is waited for by
+// (md_gto_int's, md_gto_iso's: a step job, task_system.h, advanced once a frame), and its readback is waited for by
 // looking. An update works out what is wanted and starts it; surface_field_poll, once a frame while
 // surface_field_busy, takes what has finished. Until new values arrive a surface keeps the ones it
 // has. What is under way is listed in the overlay (task_system activities: the preparation, the CPU's

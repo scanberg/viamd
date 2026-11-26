@@ -2159,6 +2159,7 @@ static void write_color_scale(viamd::serialization_state_t& s, viamd::PathPrefix
     viamd::write_bool(s, p("AutoRange"), sc.auto_range);
     viamd::write_bool(s, p("Symmetric"), sc.symmetric);
     viamd::write_bool(s, p("Legend"), sc.show_legend);
+    viamd::write_bool(s, p("LegendHorizontal"), sc.legend_horizontal);
 }
 
 static void read_color_scale(viamd::Entries& e, viamd::PathPrefix p, ColorScale& sc, bool range_is_set) {
@@ -2172,6 +2173,7 @@ static void read_color_scale(viamd::Entries& e, viamd::PathPrefix p, ColorScale&
     viamd::get(e, p("AutoRange"), sc.auto_range);
     viamd::get(e, p("Symmetric"), sc.symmetric);
     viamd::get(e, p("Legend"), sc.show_legend);
+    viamd::get(e, p("LegendHorizontal"), sc.legend_horizontal);
 }
 
 // The lines on the surfaces a field colours, at values in the field's own unit
@@ -4954,7 +4956,7 @@ void draw_representation_legends(ApplicationState& state) {
             const bool has_field = es_mesh_mode(&state, es) ? electronic_structure_mesh_field_span(es).valid : es.field_vol.tex_id != 0;
             const bool colored = es.display == ElectronicStructureDisplay::Isosurface && es.coloring == SurfaceColoring::Field;
             if (colored && es.field_map.show_legend && has_field) {
-                color_scale_draw_legend(es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
+                color_scale_draw_legend(&es.field_map, surface_field_kind_info(es.field_kind).unit, surface_field_kind_info(es.field_kind).label, rep.name, (int)rep.node.id, slot++, &es.field_isolines);
                 continue;
             }
         }
@@ -4967,7 +4969,7 @@ void draw_representation_legends(ApplicationState& state) {
                 char label[160];
                 if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
                 else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
-                color_scale_draw_legend(rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
+                color_scale_draw_legend(&rep.glyphs.scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++);
             }
             continue;
         }
@@ -4991,7 +4993,7 @@ void draw_representation_legends(ApplicationState& state) {
             if (!attr) continue;
             char label[128];
             atom_attribute_legend_label(label, sizeof(label), attr, rep.atom_attribute.variant_idx);
-            color_scale_draw_legend(rep.atom_attribute.scale, attr->unit, label, rep.name, (int)rep.node.id, slot++);
+            color_scale_draw_legend(&rep.atom_attribute.scale, attr->unit, label, rep.name, (int)rep.node.id, slot++);
         }
     }
 }

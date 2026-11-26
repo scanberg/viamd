@@ -82,9 +82,6 @@ enum : EventType {
 	EventType_ViamdScriptEvalBegin					= HASH_STR_LIT("VIAMD Script Eval Begin"),
 	EventType_ViamdScriptEvalEnd					= HASH_STR_LIT("VIAMD Script Eval End"),
 
-	// Every frame, for the task overlay (draw_async_task_window in main.cpp): a handler with long work under way that the
-	// task system does not show adds a line to the request (payload TaskProgressRequest)
-	EventType_ViamdTaskProgressRequest				= HASH_STR_LIT("VIAMD Task Progress Request"),
 };
 
 enum : EventPayloadType {
@@ -100,7 +97,6 @@ enum : EventPayloadType {
     EventPayloadType_InteractionSurfaceEvent    = HASH_STR_LIT("Payload Interaction Surface Event"),
 	EventPayloadType_ViewFitRequest				= HASH_STR_LIT("Payload View Fit Request"),
 	EventPayloadType_RenderKey					= HASH_STR_LIT("Payload Render Key"),
-	EventPayloadType_TaskProgressRequest		= HASH_STR_LIT("Payload Task Progress Request"),
 	EventPayloadType_WindowMenuRequest			= HASH_STR_LIT("Payload Window Menu Request"),
 };
 

@@ -49,7 +49,6 @@
 #include <gfx/volumerender_utils.h>
 #include <gfx/isomesh_utils.h>
 #include <iso_meshes.h>
-#include <gpu_job.h>
 #include <density_cache.h>
 #include <es_planes.h>
 #include <surface_field.h>
@@ -91,9 +90,9 @@
 #define NOTIFICATION_DISPLAY_TIME_IN_SECONDS 5.0
 #define MEASURE_EVALUATION_TIME 1
 #define VIAMD_RECOMPUTE_ORBITAL_PER_FRAME 0
-// What a frame spends issuing the GPU jobs' next pieces, all of them (gpu_job.h): the pieces are the GPU's time, this
-// is the frame's
-#define GPU_JOBS_BUDGET_MS 6.0
+// What a frame spends advancing the step jobs, all of them (task_system::poll): issuing the next pieces of the work on
+// the GPU, whose pieces are the GPU's time, this is the frame's
+#define STEP_JOBS_BUDGET_MS 6.0
 
 // Global data for application
 // Grows mask by the atoms within radius (Angstrom) of those it holds, within viable_mask when given
@@ -1010,9 +1009,9 @@ int main(int argc, char** argv) {
             md_gpu_device_poll(state.gpu_device);
         }
 #endif
-        // The GPU work over frames (gpu_job.h): every job advanced, a few ms in all
-        gpu_jobs_poll(GPU_JOBS_BUDGET_MS);
-        // The density evaluations whose counts have come back: the rest of them issued, their readbacks queued
+        // The work over frames (task_system step jobs, the GPU's): every job advanced, a few ms in all
+        task_system::poll(STEP_JOBS_BUDGET_MS);
+        // The volumes evaluated on the GPU whose results the step jobs above have brought back: into their GL textures
         gpu_volume_jobs_poll(&state);
         // What the isosurface meshes' pool tasks left behind that nobody wants any more
         iso_meshes_collect();
@@ -1782,14 +1781,13 @@ int main(int argc, char** argv) {
         surface_field_free(&state.representation.reps[i].electronic_structure.field_vol);
         surface_field_free(&state.representation.reps[i].electronic_structure.source_vol);
     }
-    gpu_jobs_cancel_all();          // the GPU jobs left: their pieces in flight complete, their memory goes after them
     iso_meshes_shutdown(&state);    // what the isosurface meshes' pool tasks made, on the GPU stream
     isomesh::shutdown();
     // Its preload is a pool job: before the pool goes. Whatever else reads it was waited for above (the fields' builds)
     density_cache_destroy(state.mold.density_cache);
     state.mold.density_cache = nullptr;
     VIAMD_LOG_DEBUG("Shutting down task system...");
-    task_system::shutdown();
+    task_system::shutdown();        // the step jobs left end first: their pieces in flight complete, their memory goes after
 
     gbuffer_free(&state.gbuffer);
 #if MD_ENABLE_GPU
@@ -3737,8 +3735,8 @@ static void draw_async_task_window(ApplicationState* data) {
     constexpr double MIN_SECONDS = 0.25;
 
     // Everything under way over time, in one list (task_system activities): the pool's labelled jobs (what the GPU
-    // evaluations wait for: density matrices, fields, orbitals read on demand), the GPU jobs (gpu_job.h: the surface
-    // fields, the isosurface meshes) and the volumes evaluated on the GPU (gpu_volume_jobs_poll)
+    // evaluations wait for: density matrices, fields, orbitals read on demand), the step jobs (the surface fields and
+    // the isosurface meshes and the volumes evaluated on the GPU)
     task_system::ActivityInfo all[32];
     const size_t num_all = task_system::activity_list(all, MD_COUNTOF(all));
     task_system::ActivityInfo activities[32];
@@ -3748,11 +3746,6 @@ static void draw_async_task_window(ApplicationState* data) {
         if (all[i].seconds >= MIN_SECONDS || is_evaluate) activities[num_activities++] = all[i];
     }
     bool any_task_label_visible = num_activities > 0;
-    // and what the components have under way that the task system does not show, such as the analytic critical
-    // point search of the QM module: asked for through an event, as a component may not be built
-    TaskProgressRequest component_progress = {};
-    viamd::event_system_broadcast_event(viamd::EventType_ViamdTaskProgressRequest, viamd::EventPayloadType_TaskProgressRequest, &component_progress);
-    any_task_label_visible |= component_progress.count > 0;
 
     // The representations shown whose filter, or the context of their groups, is not valid: they show what it picked
     // when it last was, or nothing (representation_filter_invalid). Said once it has stayed so for a moment, so that a
@@ -3811,19 +3804,6 @@ static void draw_async_task_window(ApplicationState* data) {
                     if (is_evaluate) {
                         script::eval_interrupt(data->script.eval);
                     }
-                }
-                ImGui::PopID();
-            }
-        }
-        for (size_t i = 0; i < component_progress.count; i++) {
-            const TaskProgress& p = component_progress.items[i];
-            snprintf(buf, sizeof(buf), "%s %.0f%%", p.label, p.fraction * 100.f);
-            ImGui::ProgressBar(p.fraction, ImVec2(ImGui::GetContentRegionAvail().x - (size + pad), 0), buf);
-            if (p.cancel) {
-                ImGui::SameLine();
-                ImGui::PushID((int)i);
-                if (ImGui::DeleteButton((const char*)ICON_FA_XMARK "##component task", ImVec2(size, size))) {
-                    *p.cancel = 1;
                 }
                 ImGui::PopID();
             }

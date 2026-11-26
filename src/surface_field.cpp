@@ -3,7 +3,6 @@
 #include <gostshyp.h>
 
 #include <task_system.h>
-#include <gpu_job.h>
 #include <gfx/gl.h>
 #include <gfx/gl_utils.h>
 
@@ -1215,6 +1214,33 @@ static void ratio_gpu_values(float* out, const void* rb, size_t count, const Orb
     const double floor_value = a ? a->floor_value : 0.0;
     for (size_t i = 0; i < count; ++i) out[i] = ratio_value(v[count + i], v[i], floor_value);
 }
+
+// The device's evaluations as step jobs (task_system.h): md_gto_int's (the potential, on a grid or at points) and
+// md_gto_iso's (a ratio at points, ratio_gpu_job). Done, either has written the owner's buffers; the job is ended
+// however it ends.
+static void start_gpu_job(task_system::Job* job, md_gto_int_gpu_job_t* j, md_str_t label) {
+    job->start_steps(label,
+        [j](double budget_ms) {
+            const md_gto_int_gpu_job_status_t st = md_gto_int_gpu_job_poll(j, budget_ms);
+            task_system::set_progress(md_gto_int_gpu_job_progress(j));
+            return st == MD_GTO_INT_GPU_JOB_RUNNING ? task_system::Status::Running
+                 : st == MD_GTO_INT_GPU_JOB_DONE    ? task_system::Status::Completed
+                                                    : task_system::Status::Failed;
+        },
+        [j]() { md_gto_int_gpu_job_end(j); });
+}
+
+static void start_gpu_job(task_system::Job* job, md_gto_iso_gpu_eval_job_t* j, md_str_t label) {
+    job->start_steps(label,
+        [j](double budget_ms) {
+            const md_gto_iso_gpu_job_status_t st = md_gto_iso_gpu_evaluate_job_poll(j, budget_ms);
+            task_system::set_progress(md_gto_iso_gpu_evaluate_job_progress(j));
+            return st == MD_GTO_ISO_GPU_JOB_RUNNING ? task_system::Status::Running
+                 : st == MD_GTO_ISO_GPU_JOB_DONE    ? task_system::Status::Completed
+                                                    : task_system::Status::Failed;
+        },
+        [j]() { md_gto_iso_gpu_evaluate_job_end(j); });
+}
 #endif
 
 // ---------------------------------------------------------------------------
@@ -1238,7 +1264,7 @@ struct SurfaceFieldWork {
     bool     gpu_failed = false;    // the device could not serve this source: the CPU does
     md_tick_t t0 = 0;
 #if MD_ENABLE_GPU
-    GpuJob   job;                   // the evaluation on the device: the potential's, or the ratio's at the points
+    task_system::Job job;           // the evaluation on the device: the potential's, or the ratio's at the points
     md_gpu_texture_t tex = nullptr; // the field grid, written by the potential's job
     int      tex_dim[3] = {};
     md_gpu_mem_t  rb = {};          // its readback
@@ -1629,7 +1655,7 @@ static bool start_gpu_ratio(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
         work_cpu_free(w);
         return false;
     }
-    w->job.start(job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
+    start_gpu_job(&w->job, job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
     w->ratio_points = true;
     w->stage = SurfaceFieldWork::Gpu;
     return true;
@@ -1705,7 +1731,7 @@ static bool start_gpu(SurfaceFieldVolume* vol, SurfaceFieldWork* w) {
     pd.voxel_mask       = mask;     // copied by the job
     md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_job_begin(stream, &pd);
     if (!job) return false;
-    w->job.start(job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
+    start_gpu_job(&w->job, job, md_str_from_cstr(surface_field_kind_info(w->kind).label));
     w->stage = SurfaceFieldWork::Gpu;
     return true;
 }
@@ -1794,17 +1820,17 @@ bool surface_field_poll(SurfaceFieldVolume* vol) {
     switch (w->stage) {
 #if MD_ENABLE_GPU
     case SurfaceFieldWork::Gpu: {
-        // advanced once a frame with every GPU job (gpu_jobs_poll), listed in the overlay while it runs
-        const GpuJob::Status st = w->job.status();
-        if (st == GpuJob::Status::Running) break;
-        if (st == GpuJob::Status::Cancelled) {
+        // advanced once a frame with every step job (task_system::poll), listed in the overlay while it runs
+        const task_system::Status st = w->job.status();
+        if (st == task_system::Status::Running) break;
+        if (st == task_system::Status::Cancelled) {
             // from the overlay: what it holds is not the field's. Not asked again until the band or the source changes
             work_cpu_free(w);
             w->stage = SurfaceFieldWork::Idle;
             w->num_left = 0;
             break;
         }
-        const bool ok = st == GpuJob::Status::Done && (w->ratio_points ? start_ratio_readback(w) : start_readback(vol, w));
+        const bool ok = st == task_system::Status::Completed && (w->ratio_points ? start_ratio_readback(w) : start_readback(vol, w));
         if (!ok) {
             MD_LOG_ERROR("Surface field '%s': the evaluation on the GPU failed, the CPU takes over", name);
             work_cpu_free(w);
@@ -2051,7 +2077,7 @@ struct SurfaceFieldPointsWork {
     md_gpu_mem_t gpu_out = {};
     md_gpu_mem_t rb = {};
     md_gpu_sync_t rb_sync = {};
-    GpuJob       job;                   // the evaluation on the device, listed in the overlay while it runs
+    task_system::Job job;               // the evaluation on the device, listed in the overlay while it runs
     bool         ratio = false;         // gpu_out and rb hold both fields of an orbital ratio
 #endif
     task_system::Job cpu_task;
@@ -2123,7 +2149,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
         w->gpu_out = md_gpu_malloc(w->stream, MD_GPU_MEM_DEVICE, ratio_gpu_bytes(w->source.data.ratio, w->count));
         md_gto_iso_gpu_eval_job_t* job = w->gpu_out.gpu ? ratio_gpu_job(w->stream, set, xyz, stride, w->count, w->gpu_out.gpu, w->source.data.ratio) : nullptr;
         if (!job) return false;
-        w->job.start(job, label);
+        start_gpu_job(&w->job, job, label);
         w->ratio = true;
         w->stage = SurfaceFieldPointsWork::Gpu;
         w->on_gpu = true;
@@ -2139,7 +2165,7 @@ static bool points_start_gpu(SurfaceFieldPointsWork* w) {
     pd.out_potential = w->gpu_out.gpu;
     md_gto_int_gpu_job_t* job = md_gto_int_gpu_potential_xyz_job_begin(w->stream, &pd);
     if (!job) return false;
-    w->job.start(job, label);
+    start_gpu_job(&w->job, job, label);
     w->stage = SurfaceFieldPointsWork::Gpu;
     w->on_gpu = true;
     return true;
@@ -2223,14 +2249,14 @@ SurfaceFieldPointsStatus surface_field_points_poll(SurfaceFieldPoints* fp, const
         break;
 #if MD_ENABLE_GPU
     case SurfaceFieldPointsWork::Gpu: {
-        // advanced once a frame with every GPU job (gpu_jobs_poll)
-        const GpuJob::Status st = w->job.status();
-        if (st == GpuJob::Status::Running) break;
-        if (st == GpuJob::Status::Cancelled) {      // from the overlay: no values
+        // advanced once a frame with every step job (task_system::poll)
+        const task_system::Status st = w->job.status();
+        if (st == task_system::Status::Running) break;
+        if (st == task_system::Status::Cancelled) {      // from the overlay: no values
             w->stage = SurfaceFieldPointsWork::Failed;
             break;
         }
-        bool ok = st == GpuJob::Status::Done;
+        bool ok = st == task_system::Status::Completed;
         if (ok) {
             const size_t bytes = w->ratio ? ratio_gpu_bytes(w->source.data.ratio, w->count) : sizeof(float) * w->count;
             w->rb = md_gpu_malloc(w->stream, MD_GPU_MEM_HOST_READ, bytes);

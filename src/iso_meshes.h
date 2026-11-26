@@ -7,7 +7,7 @@
 // one GL mesh. On the GPU (md_gto_iso_gpu) the slots are extracted together - the corner values are shared,
 // a field in several slots costs its functions once - and the result is read back once; without a GPU device
 // the double precision CPU path (md_gto_iso cache + mesh) does the same, slower. On the GPU the extraction is a
-// job (md_gto_iso_gpu_job_t, run as a GpuJob: gpu_job.h) advanced once a frame: the mesh shown stays the
+// job (md_gto_iso_gpu_job_t, run as a step job: task_system.h) advanced once a frame: the mesh shown stays the
 // previous one until the job is done, so a long extraction never stalls the frame (the overlay tells how
 // far it is). The CPU path blocks.
 //
@@ -71,12 +71,11 @@ struct IsoMeshes {
     uint32_t tri_index_count = 0;   // along the surface (isomesh::mesh_field_gradient)
     md_gpu_addr_t gpu_xyz = 0;
 
-    // The GPU extraction under way (a GpuJob of an md_gto_iso_gpu_job_t: gpu_job.h, listed in the overlay while it
-    // runs), of the slots whose key is job_key: until it is done the mesh above is the previous one
-    class GpuJob* job = nullptr;
+    // The GPU extraction under way (a step job of an md_gto_iso_gpu_job_t: task_system.h, listed in the overlay while
+    // it runs), of the slots whose key is job_key: until it is done the mesh above is the previous one
+    struct IsoMeshJob* job = nullptr;
     uint64_t job_key = 0;
     uint32_t job_slots = 0;
-    int64_t  job_start = 0;     // md_tick_t: when it began
 
     // Kept between extractions of the same fields
     uint64_t fields_key = 0;

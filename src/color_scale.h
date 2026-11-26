@@ -34,6 +34,7 @@ struct ColorScale {
     bool  symmetric   = false;  // a range centred on zero
     bool  auto_range  = true;   // the range follows the span of the values
     bool  show_legend = false;  // the colour map with its range and unit, drawn over the view
+    bool  legend_horizontal = false;    // the legend's bar across the view rather than up it
 };
 
 // A colour map as a workspace keeps it, by ImPlot's name for it: an index changes when a map is added before it. NULL
@@ -127,13 +128,14 @@ uint32_t color_scale_color_u32(const ColorScale& scale, float value);
 bool color_scale_draw_controls(ColorScale* scale, const ColorScaleSpan& span, md_unit_t unit, const char* span_label, const char* span_tooltip);
 
 // The legend: the colour map over its range with values, headed by 'label' and the unit, in a window
-// without decoration over the view. Like the coordinate widget it takes no input unless Alt is held,
-// and can then be moved and resized; where it was is kept in the .ini under 'id'. 'owner' names it in
-// its title bar, which shows while Alt is held. 'slot' is its place among the legends drawn, which
-// decides where it starts out.
+// without decoration over the view, its bar vertical or horizontal (legend_horizontal). Like the coordinate
+// widget it takes no input unless Alt is held, and can then be moved and resized; where it was is kept in the
+// .ini under 'id', for each layout. A right click on its heading (or, with Alt, anywhere on it) opens a menu
+// of the layout. 'owner' names it in its title bar, which shows while Alt is held. 'slot' is its place among
+// the legends drawn, which decides where it starts out.
 //
 // With 'lines' the scale also shows and edits isolines: it takes the mouse while the cursor is over the colour
 // bar and its values (and passes it to the view everywhere else, as without them). The value under the cursor is
 // the transient line; a click adds a line there and dragging moves it, a line's marker is dragged to move it,
-// and a right click edits or removes the line at the cursor.
-void color_scale_draw_legend(const ColorScale& scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines = nullptr);
+// and a right click edits or removes the line at the cursor (and lays the legend out).
+void color_scale_draw_legend(ColorScale* scale, md_unit_t unit, const char* label, const char* owner, int id, int slot, ColorScaleIsolines* lines = nullptr);
