@@ -225,9 +225,9 @@ struct SurfaceFieldDesc {
     // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
 
-    // Optional: where the QM density the ESP is made of is kept once read (density_cache.h), so that making the ESP
-    // again - another geometry, or back to it from another field - does not read it from its file again. Null: read
-    // each time. Must outlive the volume (the application's is).
+    // Optional: where the tiles of the QM density the ESP is made of are kept once built (density_cache.h), so that
+    // making the ESP again - back to it from another field, or a geometry within the tiles' margin - does not build
+    // them again. Null: built each time. Must outlive the volume (the application's is).
     struct DensityCache*     density_cache = nullptr;
 };
 

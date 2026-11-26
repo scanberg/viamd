@@ -351,17 +351,16 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     }
 
     const md_attribute_t* d_attr = find_esp_density(sys);
-    if (!d_attr || d_attr->format.rank != 2 || d_attr->format.components != 1 ||
-        d_attr->format.shape[0] != num_ao || d_attr->format.shape[1] != num_ao) {
-        MD_LOG_ERROR("Electrostatic potential: no ground state density over the %zu atomic orbitals of the basis", num_ao);
+    if (!d_attr) {
+        MD_LOG_ERROR("Electrostatic potential: no ground state density");
         return false;
     }
-    // Its packed triangle in double, kept once read (density_cache.h): md_gto_int makes the same distribution of it
-    // as of the square matrix, which is twice the size and was read from the file for every build. On a worker
-    // thread: its loops on this one (no io), as the read always was.
-    const std::shared_ptr<const PackedDensity> D = density_cache_packed(desc.density_cache, sys, d_attr->path, nullptr);
-    if (!D || D->dim != num_ao) {
-        MD_LOG_ERROR("Electrostatic potential: could not read '" MD_STR_FMT "'", MD_STR_ARG(d_attr->path));
+    // Its tiles (density_cache.h): built from its orbitals once, kept while they and the atoms' places hold. On a
+    // worker thread: their loops on the task pool.
+    const std::shared_ptr<const DensityTiles> D = density_cache_tiles(desc.density_cache, sys, d_attr->path, &basis, desc.basis_atom_xyz[0].elem,
+                                                                      sizeof(md_float3_t));
+    if (!D) {
+        MD_LOG_ERROR("Electrostatic potential: no orbitals for '" MD_STR_FMT "' over the %zu atomic orbitals of the basis", MD_STR_ARG(d_attr->path), num_ao);
         return false;
     }
 
@@ -381,7 +380,7 @@ static bool build_esp_charges(md_gto_int_charges_t* out, const SurfaceFieldDesc&
     cd.basis            = &basis;
     cd.atom_xyz         = desc.basis_atom_xyz[0].elem;
     cd.atom_xyz_stride  = sizeof(md_float3_t);
-    cd.density_packed   = D->tri;
+    cd.dmat             = &D->dm;
     cd.density_scale    = -1.0;
     cd.point_xyz        = desc.basis_atom_xyz[0].elem;
     cd.point_xyz_stride = sizeof(md_float3_t);
