@@ -4983,7 +4983,7 @@ void draw_representation_legends(ApplicationState& state) {
                 char label[160];
                 if (!display && unit[0]) snprintf(label, sizeof(label), "%.*s (%s)", (int)nm.len, nm.ptr, unit);
                 else snprintf(label, sizeof(label), "%.*s", (int)nm.len, nm.ptr);
-                color_scale_draw_legend(rep.vdw.color_scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++, &rep.vdw.isolines);
+                color_scale_draw_legend(&rep.vdw.color_scale, display ? a->unit : md_unit_none(), label, rep.name, (int)rep.node.id, slot++, &rep.vdw.isolines);
             }
             continue;
         }
