@@ -126,7 +126,6 @@ bool vdw_surface_select_cavity(VdwSurfaceRepresentation* v, const md_system_t& s
         if ((a->flags & MD_ATTRIBUTE_FLAG_PRINCIPAL) && md_str_begins_with(a->path, group)) pick = q[i];
     }
     vdw_surface_select_quantity(v, sys, pick);
-    v->color_scale.show_legend = pick != MD_ATTRIBUTE_INVALID;   // what the colours mean, beside them
     return true;
 }
 
