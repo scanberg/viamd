@@ -333,6 +333,10 @@ static uint32_t jitter_count(const ApplicationState* state) {
 }
 
 // Whether the anti-aliasing runs: the temporal (the jitter with it)
+// The sharpening's weight at strength 1 (md_post_present's unsharp mask): master's 0.5, which looked better than its
+// default of 1. Its strength is of this.
+static constexpr float SHARPEN_WEIGHT = 0.5f;
+
 // The frames the shadows and the ambient occlusion take to settle when they are filtered over time: their histories,
 // twice through their sample patterns (md_compose's history)
 static constexpr uint32_t OCCLUSION_SETTLE_FRAMES = 32;
@@ -612,6 +616,9 @@ int main(int argc, char** argv) {
     app_settings::bind(MD_STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
     app_settings::bind(MD_STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
     app_settings::bind(MD_STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
+    // Not master's sharpen_strength: the same number now sharpens half as much
+    app_settings::bind(MD_STR_LIT("sharpen"), &state.visuals.temporal_aa.sharpen.enabled);
+    app_settings::bind(MD_STR_LIT("sharpen_amount"), &state.visuals.temporal_aa.sharpen.strength);
     // The look a session starts with (Visuals > Save as Default)
     {
         auto& look = state.settings.look;
@@ -2018,6 +2025,14 @@ static void draw_main_menu(ApplicationState* data) {
                     ImGui::SameLine(0.0f, gap);
                     ImGui::SetNextItemWidth(-FLT_MIN);
                     machine_dirty |= ImGui::SliderFloat("##motion_blur_strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f, "strength %.2f");
+                }
+                prop::row("sharpen", "Sharpen the image shown, against the softness the blending of frames brings.\n"
+                                     "Only in the image shown: what is kept to smooth the next frames is without it.");
+                machine_dirty |= ImGui::Checkbox("##sharpen", &data->visuals.temporal_aa.sharpen.enabled);
+                if (data->visuals.temporal_aa.sharpen.enabled) {
+                    ImGui::SameLine(0.0f, gap);
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    machine_dirty |= ImGui::SliderFloat("##sharpen_strength", &data->visuals.temporal_aa.sharpen.strength, 0.0f, 4.0f, "strength %.2f");
                 }
                 prop::section_end();
             }
@@ -7084,6 +7099,8 @@ static postprocess_pipeline::Settings frame_settings(const ApplicationState* sta
     const double dt = MD_MAX(state->app.timing.delta_s, 1.0e-4);
     settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
     settings.taa.motion_blur.motion_scale = (float)(state->visuals.temporal_aa.motion_blur.motion_scale * MOTION_BLUR_REFERENCE_DT / dt);
+    settings.sharpen.enabled = taa_active(state) && state->visuals.temporal_aa.sharpen.enabled;
+    settings.sharpen.weight = SHARPEN_WEIGHT * MD_MAX(state->visuals.temporal_aa.sharpen.strength, 0.0f);
     return settings;
 }
 

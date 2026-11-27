@@ -129,6 +129,7 @@ struct MdRenderBridge {
     md_gpu_texture_t scene = nullptr, frame = nullptr;
     md_gpu_texture_t history[2] = {};
     md_gpu_texture_t shown = nullptr;           // the TAA's image with the motion blur, while it is on (else the history)
+    float     sharpen = 0.0f;                   // md_post_present's sharpening of the image kept, as it was made with
     md_compose_history_t vis_history = nullptr; // the shadows' and the occlusion's, while they are filtered over time
     int       hist = 0;                         // the history written last
     bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
@@ -1693,9 +1694,11 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         b->hist ^= 1;
         b->hist_valid = ok;
         b->image = ok ? (blur ? b->shown : b->history[b->hist]) : nullptr;
+        b->sharpen = settings.sharpen.enabled ? settings.sharpen.weight : 0.0f;
     } else {
         b->hist_valid = false;
         b->image = ok ? b->frame : nullptr;
+        b->sharpen = 0.0f;
     }
     if (!ok) {
         set_status(b, "The main view's frame could not be made (see the log)%s");
@@ -1836,6 +1839,7 @@ bool md_render_bridge_present(ApplicationState* state, const postprocess_pipelin
     pd.marks  = marks ? &m : nullptr;
     pd.target = b->out;
     pd.frame  = b->presents++;
+    pd.sharpen = b->sharpen;
     return md_post_present(b->stream, b->post, &pd) && draw_overlay(b, state, overlay);
 }
 

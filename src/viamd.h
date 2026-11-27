@@ -1867,6 +1867,13 @@ struct ApplicationState {
                 bool enabled = true;
                 float motion_scale = 1.0f;
             } motion_blur;
+
+            // The image shown sharpened against the TAA's softness: strength 1 is master's weight 0.5
+            // (SHARPEN_WEIGHT, main.cpp), which looked better than its default of 1
+            struct {
+                bool enabled = true;
+                float strength = 1.0f;
+            } sharpen;
         } temporal_aa;
 
         struct {

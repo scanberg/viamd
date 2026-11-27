@@ -108,6 +108,13 @@ struct Settings {
         } motion_blur;
     } taa;
 
+    // The image shown sharpened after the TAA (md_post_present's): weight is its unsharp mask's, (1 + w) of a pixel
+    // less w / 4 of its four neighbours. With the TAA only: the softness it is there for is the TAA's.
+    struct {
+        bool enabled = true;
+        float weight = 0.5f;
+    } sharpen;
+
     // The marks, put over the finished image as it is presented, in display colours: [0] of the selection, [1] of the
     // highlight. A tint where they are in view, a fill where they are behind something, and the outline of where they
     // are at all. A colour's alpha is how much of it. The highlight's group 0 has its colours, group k > 0 the colour
