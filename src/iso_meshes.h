@@ -38,6 +38,7 @@ struct md_gto_iso_field_t;
 struct md_gto_iso_cache_t;
 struct md_attribute_slice_t;
 struct md_system_t;
+struct DensityCache;
 enum class VolumeResolution;
 
 static constexpr uint32_t ISO_MESHES_MAX_SLOTS = 16;
@@ -48,12 +49,18 @@ struct IsoMeshSlot {
     uint32_t sheets = 0;        // MD_GTO_ISO_SHEET_*
 };
 
-// Where a field's atoms are: the system whose attributes it is made of, and the positions (bohr) of its basis atoms
+// Where a field's atoms are: the system whose attributes it is made of, and the positions (bohr) of its basis atoms.
+// density_tiles: a density of more products than DENSITY_FIELD_PRODUCTS_MAX (density_cache.h) is made a field of its
+// tiles, density_cache's, which only the GPU extracts (there is a device): neither the host nor the device then holds
+// its products.
 struct IsoFieldGeometry {
     const md_system_t* sys = nullptr;
     const md_float3_t* atom_xyz = nullptr;
     size_t num_atoms = 0;
+    DensityCache* density_cache = nullptr;
+    bool density_tiles = false;
 };
+
 
 struct IsoMeshes {
     isomesh::Mesh mesh = {};
@@ -128,8 +135,10 @@ double iso_meshes_cell_size(VolumeResolution resolution);
 // Fields at the atoms of the current frame. NULL on failure. Free with iso_field_release once given to meshes.
 md_gto_iso_field_t* iso_field_create_orbital(const ApplicationState* state, md_str_t coefficient_path, const md_attribute_slice_t* slice);
 // A density from the factors it is the sum of (md_qm_density_factors): an SCF density's orbitals (slice NULL), an
-// excited state's attachment, detachment or difference factors (slice its state)
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
+// excited state's attachment, detachment or difference factors (slice its state); of more than
+// DENSITY_FIELD_PRODUCTS_MAX of them, where there is a device, from its tiles (IsoFieldGeometry.density_tiles), which
+// the field holds. Main thread.
+md_gto_iso_field_t* iso_field_create_density(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice);
 // At a geometry the caller gives (a worker thread's copy of the positions, say), from data the caller holds: an
 // orbital from its AO coefficients, a density as a sum of orbital products (md_gto_iso_field_create_products:
 // right NULL for squares). Safe on any thread while g.sys lives.

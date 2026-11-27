@@ -33,6 +33,12 @@ struct DensityCache;
 #define DENSITY_TILES_CUTOFF 1.0e-6
 #define DENSITY_TILES_MARGIN 1.0
 
+// A density of more products than this (md_qm_density_factor_count) is a field of its tiles where it is evaluated
+// pointwise (md_gto_iso_field_create_dmat: the isosurface meshes, the surface fields), never of its products, which
+// are then not all held: a protein of 100k AOs has 16 GB of occupied orbitals. As many functions as a GPU set's
+// factored kernels hold (md_gto_iso_gpu_set_create): a set of more evaluates the D form, from tiles, anyway.
+#define DENSITY_FIELD_PRODUCTS_MAX 1024
+
 struct DensityTiles {
     md_gto_dmat_t dm = {};
     DensityTiles() = default;

@@ -119,13 +119,29 @@ md_gto_iso_field_t* iso_field_create_products(const IsoFieldGeometry& g, const d
 
 // A density from the factors it is the sum of (md_qm_density_factors: an SCF density's orbitals, slice NULL; an
 // excited state's attachment, detachment or difference factors, slice its state): the field takes them as they are,
-// where from a matrix it would factorize it again, which for a protein's density is minutes rather than a second.
-// NULL when the system does not publish them, or the density is zero.
-static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice) {
+// where from a matrix it would factorize it again, which for a protein's density is minutes rather than a second. Of
+// more than DENSITY_FIELD_PRODUCTS_MAX of them, which the GPU evaluates in the D form from the density's tiles anyway,
+// where g allows it: a field of those tiles (md_gto_iso_field_create_dmat), the cache's, into out_tiles, which the field
+// needs as long as it lives: neither the factors nor a copy of them are held (a protein of 100k AOs: 16 GB of its
+// occupied orbitals, twice). NULL when the system does not publish them, or the density is zero.
+static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_str_t density_path, const md_attribute_slice_t* slice,
+                                                std::shared_ptr<const DensityTiles>* out_tiles) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
     FieldContext ctx;
     if (!field_context(&ctx, temp, g)) return nullptr;
+    bool nonnegative = false;
+    const size_t num_factors = md_qm_density_factor_count(g.sys, density_path, slice, &nonnegative);
+    if (num_factors == 0) return nullptr;
+    if (num_factors > DENSITY_FIELD_PRODUCTS_MAX && g.density_tiles && g.density_cache && out_tiles) {
+        std::shared_ptr<const DensityTiles> t = density_cache_tiles(g.density_cache, *g.sys, density_path, slice, &ctx.basis,
+                                                                    (const float*)ctx.atom_xyz, sizeof(md_float3_t));
+        if (!t) return nullptr;
+        md_gto_iso_field_t* f = md_gto_iso_field_create_dmat(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), &t->dm, nonnegative,
+                                                             md_get_heap_allocator());
+        if (f) *out_tiles = std::move(t);
+        return f;
+    }
     double* rows = nullptr;
     double* weights = nullptr;
     size_t num_ao = 0;
@@ -138,10 +154,28 @@ static md_gto_iso_field_t* field_create_density(const IsoFieldGeometry& g, md_st
     return md_gto_iso_field_create_products(&ctx.basis, (const float*)ctx.atom_xyz, sizeof(md_float3_t), rows, nullptr, weights, count, md_get_heap_allocator());
 }
 
-md_gto_iso_field_t* iso_field_create_density(const ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
+// Whether a density's field may be its tiles: they are extracted on the GPU only
+static bool density_tiles_allowed(const ApplicationState* state) {
+#if MD_ENABLE_GPU
+    return state->gpu_device && state->gpu_stream;
+#else
+    (void)state;
+    return false;
+#endif
+}
+
+static void field_tiles_add(const md_gto_iso_field_t* f, std::shared_ptr<const DensityTiles> tiles);
+
+md_gto_iso_field_t* iso_field_create_density(ApplicationState* state, md_str_t density_path, const md_attribute_slice_t* slice) {
     md_temp_scope_t temp = md_temp_begin();
     MD_DEFER { md_temp_end(temp); };
-    return field_create_density(current_geometry(temp, state), density_path, slice);
+    IsoFieldGeometry g = current_geometry(temp, state);
+    g.density_cache = density_cache_of(state);
+    g.density_tiles = density_tiles_allowed(state);
+    std::shared_ptr<const DensityTiles> tiles;
+    md_gto_iso_field_t* f = field_create_density(g, density_path, slice, &tiles);
+    if (f && tiles) field_tiles_add(f, std::move(tiles));
+    return f;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -194,9 +228,12 @@ struct IsoBuild {
     const md_system_t* sys = nullptr;
     md_float3_t*   xyz = nullptr;     // bohr, its copy
     size_t    num_atoms = 0;
+    DensityCache* density_cache = nullptr;  // IsoFieldGeometry's
+    bool      density_tiles = false;
     // Field
     FieldRef spec = {};
     md_gto_iso_field_t* field = nullptr;
+    std::shared_ptr<const DensityTiles> tiles;  // what a field of a density's tiles reads (field_create_density)
     // Set
     const md_gto_iso_field_t* fields[ISO_MESHES_MAX_SLOTS] = {};
     uint32_t  num_fields = 0;
@@ -241,12 +278,31 @@ static void field_keep_remove(const md_gto_iso_field_t* f) {
     }
 }
 
+// The host's tiles of the fields made of them (md_gto_iso_field_create_dmat), which they read for as long as they live:
+// main thread
+static std::vector<std::pair<const md_gto_iso_field_t*, std::shared_ptr<const DensityTiles>>> g_field_tiles;
+
+static void field_tiles_add(const md_gto_iso_field_t* f, std::shared_ptr<const DensityTiles> tiles) {
+    if (f && tiles) g_field_tiles.push_back({f, std::move(tiles)});
+}
+
+// When the field goes (its destruction reads none of them)
+static void field_tiles_remove(const md_gto_iso_field_t* f) {
+    for (size_t i = 0; i < g_field_tiles.size(); ++i) {
+        if (g_field_tiles[i].first == f) {
+            g_field_tiles[i] = std::move(g_field_tiles.back());
+            g_field_tiles.pop_back();
+            return;
+        }
+    }
+}
+
 static IsoBuild* g_builds[256];
 static uint32_t  g_num_builds = 0;
 static md_gto_iso_field_t* g_dead_fields[256];   // let go of while a set of them was being made
 static uint32_t  g_num_dead = 0;
 
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec);
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& spec, std::shared_ptr<const DensityTiles>* out_tiles);
 
 // Fields over a basis of their own rather than the system's (the GOSTSHYP wall's, on its tesserae): the basis a set
 // of one is made over on the device. Made by pool tasks, looked up by them: under a lock.
@@ -314,8 +370,10 @@ static void build_run(IsoBuild* b) {
     g.sys = b->sys;
     g.atom_xyz = b->xyz;
     g.num_atoms = b->num_atoms;
+    g.density_cache = b->density_cache;
+    g.density_tiles = b->density_tiles;
     if (b->kind == IsoBuild::Field) {
-        b->field = field_make(g, b->spec);
+        b->field = field_make(g, b->spec, &b->tiles);
         return;
     }
 #if MD_ENABLE_GPU
@@ -353,6 +411,7 @@ static bool field_held(const md_gto_iso_field_t* f) {
 static void field_destroy(md_gto_iso_field_t* field) {
     own_basis_remove(field);
     field_keep_remove(field);
+    field_tiles_remove(field);
     task_system::detach({}, [field]() { md_gto_iso_field_destroy(field); });
 }
 
@@ -912,7 +971,7 @@ static md_gto_iso_field_t* field_create_gostshyp(const IsoFieldGeometry& g, Gost
 
 // The field of a representation at the positions of g. Reads only the system's attributes and g: a pool task
 // makes it (IsoBuild).
-static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es) {
+static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef& es, std::shared_ptr<const DensityTiles>* out_tiles) {
     switch (es.source) {
     case ElectronicStructureSource::MolecularOrbital: {
         const md_str_t path = (es.spin == ElectronicStructureSpin::Beta) ? es_path::beta_coefficient : es_path::alpha_coefficient;
@@ -926,12 +985,12 @@ static md_gto_iso_field_t* field_make(const IsoFieldGeometry& g, const FieldRef&
     }
     case ElectronicStructureSource::TransitionDensity: {
         const md_attribute_slice_t slice = md_attribute_slice_1((uint32_t)es.excited_state_idx);
-        return field_create_density(g, es_transition_density_path(es.transition_density_component), &slice);
+        return field_create_density(g, es_transition_density_path(es.transition_density_component), &slice, out_tiles);
     }
     case ElectronicStructureSource::ElectronDensity: {
         // from its orbitals. Its maxima are at the nuclei: the GPU extraction evaluates it only around the surface
         // (the flood)
-        md_gto_iso_field_t* f = field_create_density(g, es_electron_density_path(es.spin), nullptr);
+        md_gto_iso_field_t* f = field_create_density(g, es_electron_density_path(es.spin), nullptr, out_tiles);
         md_gto_iso_field_set_maxima_at_atoms(f, true);
         return f;
     }
@@ -1021,6 +1080,8 @@ static void field_build_begin(EsIsoMesh& em, ApplicationState* state, uint64_t f
         IsoBuild* b = build_new(IsoBuild::Field, field_key, g.sys, g.atom_xyz, g.num_atoms);
         md_temp_end(temp);
         if (b) {
+            b->density_cache = density_cache_of(state);
+            b->density_tiles = density_tiles_allowed(state);
             b->spec = spec;
             build_start(b);
             em.field_build = b;
@@ -1058,6 +1119,7 @@ size_t electronic_structure_mesh_surfaces(isomesh::Surface* out, size_t cap, App
             iso_field_release(em.field);
             em.field = b->field;
             b->field = nullptr;
+            field_tiles_add(em.field, std::move(b->tiles));
             free(em.field_xyz);
             em.field_xyz = b->xyz;
             em.field_num_atoms = b->num_atoms;
