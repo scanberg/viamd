@@ -46,7 +46,7 @@ UTEST(density_cache, tiles_are_built_once_and_follow_the_atoms) {
     for (size_t i = 0; i < 3 * na; ++i) xyz[i] = (float)(c[i] * 1.8897261246257702);
 
     md_str_t path = MD_STR_LIT("orbital/total/density");
-    if (!md_attributes_find(&sys.attributes, path)) path = MD_STR_LIT("orbital/alpha/density");
+    if (!md_qm_density_factors_available(&sys, path)) path = MD_STR_LIT("orbital/alpha/density");
     DensityCache* cache = density_cache_create();
     std::shared_ptr<const DensityTiles> a = density_cache_tiles(cache, sys, path, nullptr, &basis, xyz, 0);
     ASSERT_TRUE(a != nullptr);
@@ -114,7 +114,7 @@ UTEST(density_cache, preload_builds_the_tiles_on_the_pool) {
     }
 
     md_str_t path = MD_STR_LIT("orbital/total/density");
-    if (!md_attributes_find(&sys.attributes, path)) path = MD_STR_LIT("orbital/alpha/density");
+    if (!md_qm_density_factors_available(&sys, path)) path = MD_STR_LIT("orbital/alpha/density");
     DensityCache* cache = density_cache_create();
     density_cache_preload(cache, sys, path, xyz, na);
     task_system::wait_all();
@@ -201,7 +201,7 @@ UTEST(density_cache, excited_state_tiles_are_of_the_states_factors) {
     EXPECT_TRUE(density_cache_tiles(cache, sys, paths[0], &past, &basis, xyz, 0) == nullptr);
     // an SCF density beside them
     md_str_t scf = MD_STR_LIT("orbital/total/density");
-    if (!md_attributes_find(&sys.attributes, scf)) scf = MD_STR_LIT("orbital/alpha/density");
+    if (!md_qm_density_factors_available(&sys, scf)) scf = MD_STR_LIT("orbital/alpha/density");
     ASSERT_TRUE(density_cache_tiles(cache, sys, scf, nullptr, &basis, xyz, 0) != nullptr);
     EXPECT_EQ(4 * sizeof(double) * 256 * t[0]->dm.num_tiles, density_cache_bytes(cache));
 

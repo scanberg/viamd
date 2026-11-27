@@ -1894,7 +1894,7 @@ void init_system_data(ApplicationState* data) {
     // first of them finds them there. Only for a system with a basis to make a field of it with, at its atoms' places now.
     {
         const md_system_t& sys = data->mold.sys;
-        const md_str_t path = md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+        const md_str_t path = md_qm_density_factors_available(&sys, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
         const bool basis = md_attributes_find(&sys.attributes, MD_STR_LIT("basis/shell/atom_index")) != nullptr &&
                            md_attributes_find(&sys.attributes, MD_STR_LIT("basis/primitive/exponent")) != nullptr;
         if (basis) {
@@ -5720,7 +5720,7 @@ ElectronicStructureSourceFlags es_source_mask(const md_system_t& sys) {
     ElectronicStructureSourceFlags mask = 0;
 
     if (attribute_exists(sys, es_path::alpha_coefficient))  mask |= ElectronicStructureSourceFlag_MolecularOrbital;
-    if (attribute_exists(sys, es_path::alpha_density))      mask |= ElectronicStructureSourceFlag_ElectronDensity;
+    if (md_qm_density_factors_available(&sys, es_path::alpha_density)) mask |= ElectronicStructureSourceFlag_ElectronDensity;
     if (attribute_exists(sys, es_path::nto_particle))       mask |= ElectronicStructureSourceFlag_NaturalTransitionOrbital;
     if (md_qm_density_factors_available(&sys, es_path::attachment_density)) mask |= ElectronicStructureSourceFlag_TransitionDensity;
     // ELF and LOL take the occupied orbitals' gradients: the orbitals with their occupations, and a basis whose

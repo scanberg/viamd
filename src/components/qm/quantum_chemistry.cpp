@@ -23,6 +23,7 @@
 #include <md_topo.h>
 #include "svg_core.h"
 #include "flow_core.h"
+#include <md_qm.h>
 #include <md_qm_ct.h>
 #include <md_fragment.h>
 #include <md_csv.h>
@@ -652,7 +653,7 @@ struct FlowData {
 // calculation that publishes a single spin channel publishes only the alpha one, and that one is then
 // the total.
 static md_str_t critical_points_density_path(const md_system_t& sys) {
-    return md_attributes_find(&sys.attributes, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
+    return md_qm_density_factors_available(&sys, es_path::total_density) ? es_path::total_density : es_path::alpha_density;
 }
 
 #if MD_ENABLE_GPU
@@ -8647,10 +8648,10 @@ struct QuantumChemistry : viamd::EventHandler {
             }
 
             if (export_state.source == ElectronicStructureSource::ElectronDensity) {
-                // Whether there is a beta density to offer is whether one is published. Restricted
-                // publishes it as an alias of alpha's, so the selector is offered there too - which
+                // Whether there is a beta density to offer is whether there are beta orbitals. Restricted
+                // publishes them as a second name for alpha's, so the selector is offered there too - which
                 // is right: Total and Difference are still meaningful choices over the pair.
-                const bool has_beta_density = attribute_exists(state.mold.sys, es_path::beta_density);
+                const bool has_beta_density = md_qm_density_factors_available(&state.mold.sys, es_path::beta_density);
                 if (has_beta_density) {
                     const ElectronicStructureSpin spin_options[] = {
                         ElectronicStructureSpin::Total,

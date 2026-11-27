@@ -2719,7 +2719,7 @@ void electronic_structure_field_poll(Representation* rep);
 // Brings what an electronic structure representation draws up to date: its volume, evaluated again only
 // when what it is evaluated from changed (the frame among it), and the colours of its surfaces - from
 // atom_colors, the colours of the atoms as the representation has them, or from the field it is coloured by.
-// False when something it waits for without blocking (the volume's last readback, a density matrix made on a
+// False when something it waits for without blocking (the volume's last readback, a density's tiles made on a
 // worker thread, the density a field update reads) is not there yet: it is to be called again next frame.
 // The planes display evaluated on its planes (on the GPU): each slice's image, made again where
 // the plane, the source or the frame changed (not while the plane is dragged), one at a time per plane. A plane whose
@@ -2975,6 +2975,8 @@ namespace es_path {
     // basis that was stored spherically - see the note on md_vlx_publish_attributes.
     inline const md_str_t overlap             = MD_STR_INIT("basis/overlap");
 
+    // The SCF densities: names, not attributes - md_qm_density_factors makes each from the orbitals and occupations
+    // above (md_qm_density_factors_available: whether it can)
     inline const md_str_t alpha_density       = MD_STR_INIT("orbital/alpha/density");
     inline const md_str_t beta_density        = MD_STR_INIT("orbital/beta/density");
     inline const md_str_t total_density       = MD_STR_INIT("orbital/total/density");
@@ -3033,7 +3035,7 @@ bool electronic_structure_grid_init(md_grid_t* grid, const md_system_t& sys, con
 // The entry points a representation calls: name the attribute, get a filled 3D texture, evaluated on the GPU
 // (md_gpu) at the system's current state. One function per kind of thing being evaluated. coefficient_path is a rank
 // 2 {M,A} attribute of doubles, "orbital/alpha/coefficient" or its beta sibling, and slice selects the row;
-// density_path and slice name a density matrix - "orbital/total/density" with no slice,
+// density_path and slice name a density - "orbital/total/density" with no slice,
 // "vlx/rsp/transition_density/attachment" with the excited state index. False, and said once, without a GPU device.
 //
 // The texture is filled from the frame loop rather than before the call returns; gpu_volume_jobs_drain() forces it
