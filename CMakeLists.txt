@@ -391,6 +391,16 @@ if (VIAMD_ENABLE_DEFAULT_DATASET)
     set(VIAMD_DEFINES ${VIAMD_DEFINES} VIAMD_DEFAULT_DATASET=\"datasets/1ALA-500.pdb\")
 endif()
 
+# The revisions of viamd and mdlib the build is made from (viamd_revision.h), for what it measures: the profiler's CSV
+# names them. Looked up at every build; the header changes only when they do.
+add_custom_target(viamd_revision
+    COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR} -DOUT=${CMAKE_CURRENT_BINARY_DIR}/revision/viamd_revision.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Revision.cmake
+    BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/revision/viamd_revision.h
+    VERBATIM)
+add_dependencies(viamd viamd_revision)
+target_include_directories(viamd PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/revision)
+
 target_compile_definitions(viamd PRIVATE
     ${VIAMD_DEFINES}
     VIAMD_NUM_WORKER_THREADS=${VIAMD_NUM_WORKER_THREADS}

@@ -47,6 +47,7 @@
 #include <md_render_bridge.h>
 #include <density_map.h>
 #include <app/imgui_impl_md_gpu.h>
+#include <viamd_revision.h>
 #include <gpu_volume.h>
 #include <density_cache.h>
 #include <es_planes.h>
@@ -5469,6 +5470,7 @@ static void draw_distribution_window(ApplicationState* data) {
 
 // What the profiler's times were measured at, a line each, for the head of an export (profiler::write_csv)
 static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* state) {
+    md_str_writer_fmt(sw, "revision: viamd %s, mdlib %s\n", VIAMD_REVISION, MDLIB_REVISION);
     md_str_writer_fmt(sw, "framebuffer: %u x %u\n", (unsigned)state->app.framebuffer.width, (unsigned)state->app.framebuffer.height);
     md_str_writer_fmt(sw, "viewport: %u x %u shown, render scale %.3f, %u x %u rendered\n",
                       (unsigned)state->target.out_width, (unsigned)state->target.out_height, state->settings.render_scale,
@@ -5507,6 +5509,7 @@ static void draw_profiler_window(ApplicationState* data) {
                             "the work recorded within it, each kernel and render pass under it (by module, then name), "
                             "while this window is open. The wait for vsync is outside the frame.");
         const int made = (int)md_popcnt64(data->render.history);
+        ImGui::TextDisabled("Build: viamd %s, mdlib %s.", VIAMD_REVISION, MDLIB_REVISION);
         ImGui::TextDisabled("The scene was made in %d of the last 64 frames%s.", made,
                             data->settings.lazy_rendering ? "; shown again as it was in the others" : " (lazy rendering is off)");
         ImGui::PopTextWrapPos();

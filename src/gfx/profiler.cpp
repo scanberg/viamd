@@ -422,7 +422,7 @@ static void write_csv_rows(md_writer_i* w, int i) {
     write_csv_field(w, path);
     if (n.cpu) md_writef(w, ",%.4f", n.cpu_ms); else md_write_char(w, ',');
     if (n.gpu) md_writef(w, ",%.4f", n.gpu_ms); else md_write_char(w, ',');
-    md_writef(w, ",%.2f\n", n.calls);
+    if (n.calls > 0.0f) md_writef(w, ",%.2f\n", n.calls); else md_write_cstr(w, ",\n");
     for (int c = n.first_child; c >= 0; c = g.nodes[c].next_sibling) {
         if (g.nodes[c].shown) write_csv_rows(w, c);
     }
