@@ -1,9 +1,9 @@
 #pragma once
 
 // The densities, kept once made, each in the one representation of a density matrix: md_gto_dmat_t's tiles, in
-// double, built from the factors the density is a sum of (md_qm_density_factors: an SCF density's orbitals, an
-// excited state's attachment, detachment or difference factors) at DENSITY_TILES_CUTOFF and DENSITY_TILES_MARGIN,
-// never the whole matrix. 39 MB for a 1152 atom protein (9636 AOs), built in about a second on 8 threads, where the
+// double, built from the factors the density is a sum of (md_qm_density_dmat_build: an SCF density's orbitals, read
+// from the file a block at a time, an excited state's attachment, detachment or difference factors) at
+// DENSITY_TILES_CUTOFF and DENSITY_TILES_MARGIN, never the whole matrix nor all of the orbitals at once. 39 MB for a 1152 atom protein (9636 AOs), built in about a second on 8 threads, where the
 // matrix's packed triangle was 371 MB read from the file in seconds. The CPU paths read them (the ESP's charge
 // distribution, surface_field.cpp; the critical point search, quantum_chemistry.cpp), the GPU their copy
 // (DensityGpuTiles, below): no density is built on the device.

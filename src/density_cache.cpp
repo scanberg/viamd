@@ -77,26 +77,16 @@ uint64_t density_tiles_key(const md_system_t& sys, md_str_t path, const md_attri
     return key ? key : 1;
 }
 
+// The density's tiles, built from its factors a block at a time where they are orbitals read from a file
+// (md_qm_density_dmat_build): the whole occupied block is never held
 static std::shared_ptr<const DensityTiles> tiles_build(const md_system_t& sys, md_str_t path, const md_attribute_slice_t* slice,
                                                        const md_gto_basis_t* basis, const float* atom_xyz, size_t atom_xyz_stride) {
-    md_allocator_i* heap = md_get_heap_allocator();
-    double* rows = nullptr;
-    double* w = nullptr;
-    size_t num_ao = 0;
-    const size_t count = md_qm_density_factors(&rows, &w, &num_ao, &sys, path, slice, heap);
-    if (count == 0) return {};
-    MD_DEFER {
-        md_free(heap, rows, sizeof(double) * count * num_ao);
-        md_free(heap, w, sizeof(double) * count);
-    };
-    if (num_ao != md_gto_basis_num_ao(basis)) {
-        MD_LOG_ERROR("Density '" MD_STR_FMT "': its factors span %zu atomic orbitals, the basis %zu", MD_STR_ARG(path), num_ao, md_gto_basis_num_ao(basis));
-        return {};
-    }
+    if (!md_qm_density_factors_available(&sys, path)) return {};
     auto t = std::make_shared<DensityTiles>();
     const md_gto_dmat_desc_t desc = { .basis = basis, .atom_xyz = atom_xyz, .atom_xyz_stride = atom_xyz_stride,
                                       .cutoff = DENSITY_TILES_CUTOFF, .margin = DENSITY_TILES_MARGIN };
-    if (!md_gto_dmat_init(&t->dm, &desc, heap) || !md_gto_dmat_build(&t->dm, rows, num_ao, 1, w, count, task_system::executor())) {
+    if (!md_gto_dmat_init(&t->dm, &desc, md_get_heap_allocator()) ||
+        md_qm_density_dmat_build(&t->dm, &sys, path, slice, 0, task_system::executor()) == 0) {
         return {};
     }
     return t;
