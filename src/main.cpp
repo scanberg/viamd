@@ -394,6 +394,7 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 
 static void draw_debug_window(ApplicationState* state);
 static void draw_profiler_window(ApplicationState* state);
+static bool profiler_gpu_timing = true;     // the GPU's times in the profiler, while its window is open
 static void draw_property_export_window(ApplicationState* state);
 static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
@@ -648,6 +649,9 @@ int main(int argc, char** argv) {
         // The scratch belongs to the device, not to whichever component happens to evaluate
         // first. Components borrow it; see the note on ApplicationState.
         state.gpu_stream = md_gpu_stream_default(state.gpu_device, MD_GPU_STREAM_COMPUTE);
+        // The streams a frame's GPU work is recorded on, timed by the profiler while its window is open
+        md_gpu_stream_t timed[2] = {state.app.gpu.stream, state.gpu_stream};
+        profiler::set_gpu_streams(timed, 2);
         // The representations' volumes, filled by the evaluations on that stream (gpu_volume.h)
         gpu_volumes_init(state.gpu_stream);
 
@@ -782,6 +786,7 @@ int main(int argc, char** argv) {
     while (!state.app.window.should_close) {
         // The frame for the profiler, in sections: the start (events, ImGui's new frame, files, components' frame
         // ticks), the windows, the main viewport's input, the update of the state, its upload, the rendering
+        profiler::set_gpu(state.show_profiler_window && profiler_gpu_timing);
         profiler::frame_begin();
         PUSH_GPU_SECTION("Start");
         application::update(&state.app);
@@ -5498,8 +5503,9 @@ static void draw_profiler_window(ApplicationState* data) {
     ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 36.0f, ImGui::GetFontSize() * 32.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Profiler", &data->show_profiler_window)) {
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextDisabled("Per frame, averaged over 30 frames. GPU: the work a section issued; CPU: from its start to its "
-                            "end. The wait for vsync is outside the frame.");
+        ImGui::TextDisabled("Per frame, averaged over 30 frames. CPU: from a section's start to its end. GPU: the time of "
+                            "the work recorded within it, each kernel and render pass under it (by module, then name), "
+                            "while this window is open. The wait for vsync is outside the frame.");
         const int made = (int)md_popcnt64(data->render.history);
         ImGui::TextDisabled("The scene was made in %d of the last 64 frames%s.", made,
                             data->settings.lazy_rendering ? "; shown again as it was in the others" : " (lazy rendering is off)");
@@ -5526,6 +5532,9 @@ static void draw_profiler_window(ApplicationState* data) {
         }
         ImGui::SetItemTooltip("The same, to the clipboard");
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::Checkbox("GPU times", &profiler_gpu_timing);
+        ImGui::SetItemTooltip("A GPU timestamp after each kernel and render pass, while this window is open");
 
         profiler::draw_table();
     }
