@@ -1819,7 +1819,7 @@ struct ApplicationState {
             float specular = 0.25f;     // basic
         } shading;
 
-        // The shadows of the directional light (md_compose's, from a map of the scene drawn from the light)
+        // The shadows of the directional light (md_compose's, found in the depth on screen)
         struct {
             bool enabled = true;
             float softness = 10.0f;     // the light's angular radius, degrees

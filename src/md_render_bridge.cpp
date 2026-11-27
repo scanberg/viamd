@@ -10,7 +10,6 @@
 #include <core/md_bitset.h>
 #include <core/md_common.h>
 #include <core/md_arena_allocator.h>
-#include <core/md_geom.h>
 
 #include <imgui.h>
 
@@ -169,15 +168,6 @@ struct MdRenderBridge {
     };
     md_array(Glyphs) glyphs = nullptr;
 
-    // The shadows (draw_light): the view of the scene from the light, its depth alone, while they are on; its batches,
-    // the scene's opaque ones. The boxes of what casts them: the atoms' as their positions were taken up, the meshes'
-    // (bohr) as they were made.
-    md_render_view_t            light_view = nullptr;
-    md_array(md_render_batch_t) light_batches = nullptr;
-    float atoms_lo[3] = {}, atoms_hi[3] = {};
-    bool  atoms_box = false;
-    float mesh_lo[3] = {}, mesh_hi[3] = {};
-    bool  mesh_box = false;
 
     // md_render's answers to the picks, the newest last
     static constexpr int PICKS = 8;
@@ -292,7 +282,6 @@ static void free_system(MdRenderBridge* b) {
     for (size_t i = 0; i < md_array_size(b->reps); ++i) free_rep(b->stream, &b->reps[i]);
     md_array_shrink(b->reps, 0);
     free_parts(b);
-    b->atoms_box = false;
     b->has_topo = false;
     b->topo = {};
     b->dynamic = b->positions = b->marks = b->secondary = 0;
@@ -422,9 +411,6 @@ static bool take_up(MdRenderBridge* b, ApplicationState* state) {
             set_status(b, "md_render_mol could not upload the positions (see the log)%s");
             return false;
         }
-        const size_t n = MD_MIN((size_t)b->atom_count, state->mold.state.num_atoms);
-        b->atoms_box = n > 0;
-        if (n) md_geom_aabb(b->atoms_lo, b->atoms_hi, (const float*)state->mold.state.xyz, 0, nullptr, n);
         md_render_mol_update_flags_t flags = 0;
         // The small molecules regrouped on a new frame of the trajectory, not between frames
         const int64_t frame = md_state_has_frame(&state->mold.state) ? (int64_t)md_state_frame_nearest(&state->mold.state) : 0;
@@ -1225,9 +1211,6 @@ static void emit_meshes(MdRenderBridge* b, ApplicationState* state, md_allocator
     // read when the frame is drawn
     b->mesh_model = iso_meshes_model_matrix();
     uint64_t drawn = 0;
-    struct Points { const float* xyz; uint32_t count; };
-    md_array(Points) points = nullptr;
-    md_allocator_i* temp = state->allocator.frame;
     for (size_t i = 0; i < md_array_size(b->mesh_colors); ++i) b->mesh_colors[i].used = false;
     for (size_t r = 0; r < md_array_size(state->representation.reps); ++r) {
         const Representation& rep = state->representation.reps[r];
@@ -1269,7 +1252,6 @@ static void emit_meshes(MdRenderBridge* b, ApplicationState* state, md_allocator
         }
         drawn = md_hash64(&d.version, sizeof(d.version), drawn);
         drawn = md_hash64(&colors, sizeof(colors), drawn);
-        if (d.xyz && d.num_vertices) md_array_push(points, (Points{d.xyz, d.num_vertices}), temp);
 
         for (uint32_t i = 0; i < d.num_parts; ++i) {
             const EsMeshDraw::Part& p = d.parts[i];
@@ -1316,17 +1298,6 @@ static void emit_meshes(MdRenderBridge* b, ApplicationState* state, md_allocator
         b->meshes_key = drawn;
         b->content[MD_RENDER_CONTENT_GEOMETRY] += 1;
         b->content[MD_RENDER_CONTENT_APPEARANCE] += 1;
-        // and their box
-        b->mesh_box = false;
-        for (size_t i = 0; i < md_array_size(points); ++i) {
-            float lo[3], hi[3];
-            md_geom_aabb(lo, hi, points[i].xyz, 0, nullptr, points[i].count);
-            for (int k = 0; k < 3; ++k) {
-                b->mesh_lo[k] = b->mesh_box ? MD_MIN(b->mesh_lo[k], lo[k]) : lo[k];
-                b->mesh_hi[k] = b->mesh_box ? MD_MAX(b->mesh_hi[k], hi[k]) : hi[k];
-            }
-            b->mesh_box = true;
-        }
     }
 }
 
@@ -1557,115 +1528,6 @@ static void collect_electronic_structure(MdRenderBridge* b, ApplicationState* st
 
 // md_post's display transform of the settings' (display::transform of the post-processing that was): basic shading
 // and no tone mapping are the encoding alone
-// ---- Shadows -----------------------------------------------------------------------------------------------------
-
-static constexpr uint32_t SHADOW_MAP     = 2048;    // the light view's texels across
-static constexpr float    SHADOW_MARGIN  = 4.0f;    // past the atoms' centres (their radii), Ångström
-static constexpr float    SHADOW_CONTACT = 4.0f;    // the contact ray's reach, the map's texels
-
-// The sphere about what casts shadows: the atoms in the copies drawn of them (the assembly's parts, the periodic
-// images), the meshes. Of the whole scene rather than of what is in view: a map that does not change as the view
-// moves over it. False: nothing.
-static bool shadow_sphere(const MdRenderBridge* b, const ApplicationState& state, md_float3_t* centre, float* radius) {
-    md_float3_t lo = md_float3_set1(FLT_MAX), hi = md_float3_set1(-FLT_MAX);
-    auto add = [&](const float l[3], const float h[3], const md_float4x4_t* M) {
-        for (int c = 0; c < 8; ++c) {
-            md_float3_t p = {(c & 1) ? h[0] : l[0], (c & 2) ? h[1] : l[1], (c & 4) ? h[2] : l[2]};
-            if (M) p = md_float4x4_mul_float3(*M, p, 1.0f);
-            lo = md_float3_min(lo, p);
-            hi = md_float3_max(hi, p);
-        }
-    };
-    if (b->atoms_box) {
-        const size_t num_parts = md_array_size(b->parts);
-        bool periodic = false;
-        for (size_t i = 0; i < md_array_size(state.representation.reps) && !periodic; ++i) {
-            periodic = draws(state, state.representation.reps[i]) && state.representation.reps[i].periodic_images;
-        }
-        if (num_parts > 0) {
-            for (size_t p = 0; p < num_parts; ++p) {
-                for (uint32_t c = b->parts[p].c0; c < b->parts[p].c1 && c < md_array_size(state.view.assembly_transforms); ++c) {
-                    add(b->atoms_lo, b->atoms_hi, &state.view.assembly_transforms[c]);
-                }
-            }
-        } else if (periodic && md_array_size(state.view.periodic_transforms) > 1) {
-            for (size_t c = 0; c < md_array_size(state.view.periodic_transforms); ++c) add(b->atoms_lo, b->atoms_hi, &state.view.periodic_transforms[c]);
-        } else {
-            add(b->atoms_lo, b->atoms_hi, nullptr);
-        }
-    }
-    if (b->mesh_box) add(b->mesh_lo, b->mesh_hi, &b->mesh_model);
-    if (!(lo.x <= hi.x)) return false;
-    *centre = (lo + hi) * 0.5f;
-    *radius = 0.5f * md_float3_length(hi - lo) + SHADOW_MARGIN;
-    return true;
-}
-
-// The light's camera: orthographic, looking along the light (light_dir: toward it, in view space) through the sphere,
-// its near plane at the sphere's front. Its axes are the view's turned to the light, so that the map turns with the
-// view: md_compose's map is of this frame's light, which is the view's.
-static md_render_camera_t light_camera(const md_render_camera_t& cam, const float light_dir[3], md_float3_t c, float r) {
-    md_float3_t z = md_float3_normalize(md_float3_set(light_dir[0], light_dir[1], light_dir[2]));
-    const md_float3_t up = fabsf(z.y) > 0.99f ? md_float3_set(1, 0, 0) : md_float3_set(0, 1, 0);
-    const md_float3_t x = md_float3_normalize(md_float3_cross(up, z));
-    const md_float3_t y = md_float3_cross(z, x);
-    const md_float3_t axes[3] = {x, y, z};
-    const float* V = cam.view;          // column-major: V[c * 4 + r]
-    const float D = r * 1.01f;
-    md_render_camera_t l = {};
-    for (int i = 0; i < 3; ++i) {
-        // row i of the light's rotation (in view space) times the view's: world to the light's axes
-        float m[3];
-        for (int k = 0; k < 3; ++k) m[k] = axes[i].x * V[k * 4 + 0] + axes[i].y * V[k * 4 + 1] + axes[i].z * V[k * 4 + 2];
-        for (int k = 0; k < 3; ++k) l.view[k * 4 + i] = m[k];
-        l.view[12 + i] = -(m[0] * c.x + m[1] * c.y + m[2] * c.z) - (i == 2 ? D : 0.0f);
-    }
-    l.view[15] = 1.0f;
-    l.proj[0] = l.proj[5] = 1.0f / r;
-    l.proj[10] = 1.0f / (2.0f * D);     // reverse Z: 1 at the near plane, 0 at 2 D past it
-    l.proj[14] = 1.0f;
-    l.proj[15] = 1.0f;
-    return l;
-}
-
-// The scene drawn from the light, its depth alone (the opaque batches: the layers neither cast shadows nor take them),
-// for md_compose's shadows; the view made while they are on and let go when they are off. False: none this frame.
-static bool draw_light(MdRenderBridge* b, const ApplicationState& state, const postprocess_pipeline::Settings& s,
-                       const md_render_frame_t& f, const md_compose_shading_t& sh, md_compose_shadow_t* out) {
-    if (!s.shadows.enabled || sh.light_strength <= 0.0f) {
-        if (b->light_view) {
-            md_render_view_destroy(b->stream, b->light_view);
-            b->light_view = nullptr;
-        }
-        return false;
-    }
-    md_float3_t c;
-    float r;
-    if (!shadow_sphere(b, state, &c, &r)) return false;
-    if (!b->light_view) b->light_view = md_render_view_create(b->render, "light view");
-    if (!b->light_view) return false;
-    md_array_shrink(b->light_batches, 0);
-    for (size_t i = 0; i < md_array_size(b->batches); ++i) {
-        const float t = b->batches[i].color.transparency;
-        if (!(t > 0.0f && t < 1.0f)) md_array_push(b->light_batches, b->batches[i], state.allocator.persistent);
-    }
-    md_render_frame_t lf = {};
-    lf.width = lf.height = SHADOW_MAP;
-    lf.camera = light_camera(f.camera, sh.light_dir, c, r);
-    lf.jitter = MD_RENDER_JITTER_NONE;
-    lf.time = f.time;
-    lf.batches = b->light_batches;
-    lf.batch_count = (uint32_t)md_array_size(b->light_batches);
-    for (int i = 0; i < MD_RENDER_CONTENT_COUNT; ++i) lf.content[i] = f.content[i];
-    lf.depth_only = true;
-    if (!md_render_view_draw(b->stream, b->light_view, &lf, nullptr)) return false;
-    out->depth = md_render_view_targets(b->light_view).depth;
-    out->light = lf.camera;
-    out->angular_radius = (float)MD_DEG_TO_RAD(MD_MAX(s.shadows.softness, 0.0f));
-    out->contact = SHADOW_CONTACT;
-    return true;
-}
-
 static void display_of(md_post_display_t* d, const postprocess_pipeline::Settings& s) {
     d->curve = MD_POST_CURVE_NONE;
     if (s.shading.mode != postprocess_pipeline::ShadingMode_Basic && s.tonemap.enabled) {
@@ -1789,8 +1651,9 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     // the volumes' rays through the samples the raster's surfaces are of
     cd.jitter[0] = st.jitter[0];
     cd.jitter[1] = st.jitter[1];
-    md_compose_shadow_t shadow = {};
-    if (draw_light(b, *state, settings, f, cd.shading, &shadow)) cd.shadow = &shadow;
+    // The key light's shadows, found in the depth (md_compose): the light's size, their softness
+    cd.shadows = settings.shadows.enabled;
+    cd.light_radius = (float)MD_DEG_TO_RAD(MD_MAX(settings.shadows.softness, 0.0f));
     cd.target = b->scene;
     md_post_display_t dd = {};
     display_of(&dd, settings);
@@ -2828,7 +2691,6 @@ void md_render_bridge_destroy(ApplicationState* state) {
         if (b->shape_scale) md_gpu_free(b->stream, b->shape_scale);
         for (size_t i = 0; i < md_array_size(b->glyphs); ++i) free_glyphs(b, &b->glyphs[i]);
         free_targets(b);
-        if (b->light_view) md_render_view_destroy(b->stream, b->light_view);
         if (b->view) md_render_view_destroy(b->stream, b->view);
         md_gpu_stream_sync(b->stream);
     }
@@ -2838,7 +2700,6 @@ void md_render_bridge_destroy(ApplicationState* state) {
     if (b->render) md_render_destroy(b->render);
     md_array_free(b->reps, state->allocator.persistent);
     md_array_free(b->batches, state->allocator.persistent);
-    md_array_free(b->light_batches, state->allocator.persistent);
     md_array_free(b->glyphs, state->allocator.persistent);
     md_array_free(b->overlay, state->allocator.persistent);
     md_array_free(b->parts, state->allocator.persistent);

@@ -1917,10 +1917,11 @@ static void draw_main_menu(ApplicationState* data) {
                 prop::section_end();
             }
 
-            // The shadows of the directional light, from a map of the scene seen from it
+            // The shadows of the directional light, found in what is on screen (md_compose)
             if (prop::section_toggle("Shadows", &data->visuals.shadows.enabled, nullptr, false,
                                      "Darken what other parts hide from the directional light.\n"
                                      "How dark they are is how strong the light is against the surroundings (Shading: light, environment).\n"
+                                     "Found in what is on screen: what is outside the view casts none.\n"
                                      "Transparent surfaces and volumes neither cast nor take them.")) {
                 prop::row("softness", "The size of the light, as its angular radius. A larger light casts softer shadows,\n"
                                       "whose edges blur more the further they fall from what casts them.");
