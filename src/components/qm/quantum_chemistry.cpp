@@ -809,6 +809,11 @@ static void gto_critical_point_job_destroy(GtoCriticalPointJob* job) {
 // the task system's threads (products and eigendecomposition alike). Every excited state then
 // reuses the result, and the overlap and the AO to atom map it
 // keeps with it, so a state's own job (CtStateJob) needs nothing from the attribute table.
+//
+// Not for more than CT_LOWDIN_MAX_AO atomic orbitals: it holds C, C~ and S whole and dense (three A^2 matrices of
+// double, 2 GB for the 9.6k AO protein, 3.5 GB at the limit) and grows as M^2 A. The analysis of charge transfer stops
+// there (too_large: the windows say so); larger systems are for visualization, whose densities never need it.
+#define CT_LOWDIN_MAX_AO 12000
 struct LowdinJob {
     double*   C        = nullptr;   // {M,A} input, owned
     double*   C_lowdin = nullptr;   // {M,A} output, owned
@@ -818,6 +823,7 @@ struct LowdinJob {
     size_t    num_ao    = 0;
     size_t    num_atoms = 0;        // QM atoms
     bool      ok        = false;
+    bool      too_large = false;    // more than CT_LOWDIN_MAX_AO AOs: not computed
     std::atomic<bool> done = false;
     task_system::Job task;
 };
@@ -846,6 +852,17 @@ static LowdinJob* lowdin_job_start(const md_system_t& sys, const md_gto_basis_t&
     if (basis.num_shells == 0 || md_gto_basis_num_ao(&basis) != num_ao) {
         MD_LOG_ERROR("Charge transfer: the basis does not match the orbitals");
         return nullptr;
+    }
+    if (num_ao > CT_LOWDIN_MAX_AO) {
+        // a finished job that holds nothing, so it is not asked for again
+        MD_LOG_INFO("Charge transfer: not analysed for %zu atomic orbitals, more than %d", num_ao, CT_LOWDIN_MAX_AO);
+        LowdinJob* job = new LowdinJob();
+        job->num_mo    = num_mo;
+        job->num_ao    = num_ao;
+        job->num_atoms = num_qm_atoms;
+        job->too_large = true;
+        job->done.store(true, std::memory_order_release);
+        return job;
     }
 
     md_allocator_i* heap = md_get_heap_allocator();
@@ -9665,6 +9682,10 @@ struct QuantumChemistry : viamd::EventHandler {
                     im_sankey_diagram(&state, {p0.x, p0.y, p1.x, p1.y}, &nto, hide_overlap_text);
                     ImVec2 text_pos_bl = ImVec2(p0.x + TEXT_BASE_HEIGHT * 0.5f, p1.y - TEXT_BASE_HEIGHT);
                     draw_list->AddText(text_pos_bl, ImColor(0, 0, 0, 255), "Transition Diagram");
+                    if (lowdin && lowdin->too_large) {
+                        const char* msg = "Not analysed: more than " MD_STRINGIFY_VAL(CT_LOWDIN_MAX_AO) " atomic orbitals";
+                        draw_list->AddText((p0 + p1 - ImGui::CalcTextSize(msg)) * 0.5f, ImColor(0, 0, 0, 160), msg);
+                    }
                 }
                 // Draw grid
                 {
@@ -10418,8 +10439,10 @@ struct QuantumChemistry : viamd::EventHandler {
         }
 
         // Extracted rather than pointed at, so a producer that publishes either of these through a
-        // provider instead of storing them works here unchanged.
-        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::overlap)) {
+        // provider instead of storing them works here unchanged. Both dense and whole: not past
+        // CT_LOWDIN_MAX_AO, where the dominant orbital character is left blank (the two stay null).
+        const bool dense_ok = num_ao <= CT_LOWDIN_MAX_AO;
+        if (const md_attribute_t* attr = dense_ok ? md_attributes_find(&sys.attributes, es_path::overlap) : nullptr) {
             if (attr->format.rank == 2 && attr->format.components == 1 &&
                 attr->format.shape[0] == num_ao && attr->format.shape[1] == num_ao) {
                 double* S = md_temp_alloc_array(temp, double, num_ao * num_ao);
@@ -10429,7 +10452,7 @@ struct QuantumChemistry : viamd::EventHandler {
             }
         }
 
-        if (const md_attribute_t* attr = md_attributes_find(&sys.attributes, es_path::alpha_coefficient)) {
+        if (const md_attribute_t* attr = dense_ok ? md_attributes_find(&sys.attributes, es_path::alpha_coefficient) : nullptr) {
             double* C = md_temp_alloc_array(temp, double, num_mo * num_ao);
             if (md_attribute_extract_f64(C, num_mo * num_ao, &sys.attributes, attr, md_attribute_slice_all(), md_unit_none()) == num_mo * num_ao) {
                 out->C_mo = C;
@@ -12450,6 +12473,8 @@ struct QuantumChemistry : viamd::EventHandler {
                 const char* msg = lowdin_pending ? "Computing the Lowdin basis (once per system)..."
                                 : nto_pending    ? "Computing the natural transition orbitals..."
                                 : ct_pending     ? "Computing the charge transfer numbers..."
+                                : (flow.mode == FLOW_MODE_FRAGMENTS && lowdin && lowdin->too_large)
+                                                 ? "Charge transfer is not analysed for systems of more than " MD_STRINGIFY_VAL(CT_LOWDIN_MAX_AO) " atomic orbitals"
                                 : (flow.mode == FLOW_MODE_FRAGMENTS && lowdin && !lowdin_job_ready(lowdin))
                                                  ? "The Lowdin basis could not be computed (see the log)"
                                                  : "No transition data for this state";
