@@ -128,6 +128,7 @@ struct MdRenderBridge {
     uint32_t  out_width = 0, out_height = 0;    // the image's
     md_gpu_texture_t scene = nullptr, frame = nullptr;
     md_gpu_texture_t history[2] = {};
+    md_gpu_texture_t shown = nullptr;           // the TAA's image with the motion blur, while it is on (else the history)
     md_compose_history_t vis_history = nullptr; // the shadows' and the occlusion's, while they are filtered over time
     int       hist = 0;                         // the history written last
     bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
@@ -187,7 +188,7 @@ static md_gpu_texture_t gpu_texture(MdRenderBridge* b, md_gpu_format_t format, m
 }
 
 static void free_targets(MdRenderBridge* b) {
-    md_gpu_texture_t* t[] = {&b->scene, &b->frame, &b->history[0], &b->history[1]};
+    md_gpu_texture_t* t[] = {&b->scene, &b->frame, &b->history[0], &b->history[1], &b->shown};
     for (md_gpu_texture_t* x : t) {
         if (*x) md_gpu_texture_destroy(*x);
         *x = nullptr;
@@ -208,7 +209,8 @@ static bool ensure_targets(MdRenderBridge* b, uint32_t width, uint32_t height, u
     b->frame      = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, width, height, "main view frame");
     b->history[0] = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, out_width, out_height, "main view history 0");
     b->history[1] = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, out_width, out_height, "main view history 1");
-    if (!b->scene || !b->frame || !b->history[0] || !b->history[1]) {
+    b->shown      = gpu_texture(b, MD_GPU_FORMAT_RGBA16_FLOAT, SS, out_width, out_height, "main view shown");
+    if (!b->scene || !b->frame || !b->history[0] || !b->history[1] || !b->shown) {
         set_status(b, "Could not make the main view's targets: %s", md_gpu_last_error());
         free_targets(b);
         return false;
@@ -1682,10 +1684,15 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
         rd.history = b->history[b->hist ^ 1];
         rd.feedback_min = settings.taa.feedback_min;
         rd.feedback_max = settings.taa.feedback_max;
+        // The motion blur into the image shown; the history goes on without it
+        const bool blur = settings.taa.motion_blur.enabled && settings.taa.motion_blur.motion_scale > 0.0f;
+        rd.motion_blur = blur ? settings.taa.motion_blur.motion_scale : 0.0f;
+        rd.shown = blur ? b->shown : nullptr;
+        rd.seed = (uint32_t)ImGui::GetFrameCount();
         ok = md_post_resolve(b->stream, b->post, &rd);
         b->hist ^= 1;
         b->hist_valid = ok;
-        b->image = ok ? b->history[b->hist] : nullptr;
+        b->image = ok ? (blur ? b->shown : b->history[b->hist]) : nullptr;
     } else {
         b->hist_valid = false;
         b->image = ok ? b->frame : nullptr;

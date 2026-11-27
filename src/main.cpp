@@ -610,6 +610,8 @@ int main(int argc, char** argv) {
     app_settings::bind(MD_STR_LIT("taa_jitter_samples"), &state.visuals.temporal_aa.jitter_samples);
     app_settings::bind(MD_STR_LIT("taa_history_min"), &state.visuals.temporal_aa.feedback_min);
     app_settings::bind(MD_STR_LIT("taa_history_max"), &state.visuals.temporal_aa.feedback_max);
+    app_settings::bind(MD_STR_LIT("motion_blur"), &state.visuals.temporal_aa.motion_blur.enabled);
+    app_settings::bind(MD_STR_LIT("motion_blur_strength"), &state.visuals.temporal_aa.motion_blur.motion_scale);
     // The look a session starts with (Visuals > Save as Default)
     {
         auto& look = state.settings.look;
@@ -2008,6 +2010,15 @@ static void draw_main_menu(ApplicationState* data) {
                 machine_dirty |= ImGui::SliderFloat("##history_min", &data->visuals.temporal_aa.feedback_min, 0.5f, 1.0f, "%.2f");
                 prop::row("history max", "How much of the previous frames is kept where the image is still");
                 machine_dirty |= ImGui::SliderFloat("##history_max", &data->visuals.temporal_aa.feedback_max, 0.5f, 1.0f, "%.2f");
+                // On, and how much, on one row: the amount means nothing while off
+                prop::row("motion blur", "Smear what moves along its motion, as a camera's exposure of 1/60 s would at strength 1.\n"
+                                         "Only in the image shown: what is kept to smooth the next frames is without it.");
+                machine_dirty |= ImGui::Checkbox("##motion_blur", &data->visuals.temporal_aa.motion_blur.enabled);
+                if (data->visuals.temporal_aa.motion_blur.enabled) {
+                    ImGui::SameLine(0.0f, gap);
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+                    machine_dirty |= ImGui::SliderFloat("##motion_blur_strength", &data->visuals.temporal_aa.motion_blur.motion_scale, 0.f, 2.0f, "strength %.2f");
+                }
                 prop::section_end();
             }
             machine_dirty |= aa_toggled;
@@ -7067,6 +7078,12 @@ static postprocess_pipeline::Settings frame_settings(const ApplicationState* sta
     settings.taa.enabled = taa_active(state);
     settings.taa.feedback_min = state->visuals.temporal_aa.feedback_min;
     settings.taa.feedback_max = state->visuals.temporal_aa.feedback_max;
+    // The motion blur as long as an exposure of 1/60 s at strength 1, whatever the frame's time: the motion is the
+    // frame's, so its share is the reference's over the frame's time
+    constexpr double MOTION_BLUR_REFERENCE_DT = 1.0 / 60.0;
+    const double dt = MD_MAX(state->app.timing.delta_s, 1.0e-4);
+    settings.taa.motion_blur.enabled = state->visuals.temporal_aa.motion_blur.enabled;
+    settings.taa.motion_blur.motion_scale = (float)(state->visuals.temporal_aa.motion_blur.motion_scale * MOTION_BLUR_REFERENCE_DT / dt);
     return settings;
 }
 

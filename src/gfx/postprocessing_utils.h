@@ -101,6 +101,11 @@ struct Settings {
         bool enabled = true;
         float feedback_min = 0.80f;
         float feedback_max = 0.95f;
+        // The image shown smeared along the motion (md_post_resolve's motion_blur): of the frame's motion, how much
+        struct {
+            bool enabled = true;
+            float motion_scale = 1.0f;
+        } motion_blur;
     } taa;
 
     // The marks, put over the finished image as it is presented, in display colours: [0] of the selection, [1] of the

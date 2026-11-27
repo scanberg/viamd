@@ -1861,6 +1861,12 @@ struct ApplicationState {
             int jitter_samples = 32;
             float feedback_min = 0.80f;
             float feedback_max = 0.95f;
+
+            // The image smeared along the motion, as a camera's exposure of 1/60 s would at strength 1
+            struct {
+                bool enabled = true;
+                float motion_scale = 1.0f;
+            } motion_blur;
         } temporal_aa;
 
         struct {
