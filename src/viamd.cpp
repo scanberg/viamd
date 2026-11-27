@@ -4537,24 +4537,18 @@ struct LocalizationGpu {
 // On a worker thread
 static void localization_gpu_build(LocalizationGpu* L) {
     md_allocator_i* heap = md_get_heap_allocator();
-    md_temp_scope_t temp = md_temp_begin();
-    md_allocator_i* alloc = md_temp_allocator(temp);
     bool ok = md_gto_basis_extract_attributes(&L->basis, &L->sys->attributes, heap);
     const md_gto_gpu_basis_desc_t bd = { .basis = &L->basis, .cutoff = ES_LOCALIZATION_CUTOFF };
     L->gpu_basis = ok ? md_gto_gpu_basis_create(L->stream, &bd) : nullptr;
     ok = ok && L->gpu_basis;
-    // a closed shell: the same orbitals and occupations in both spins, which are then one density, the total
-    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
-    size_t ana = 0, bna = 0;
-    const size_t an = ok ? md_qm_density_orbitals(&ar, &aw, &ana, L->sys, es_path::alpha_density, alloc) : 0;
-    const size_t bn = ok ? md_qm_density_orbitals(&br, &bw, &bna, L->sys, es_path::beta_density, alloc) : 0;
-    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density, the total. From the
+    // occupations alone (md_qm_density_spins_closed, md_qm_density_factor_count): the orbitals are not read
+    const bool closed = md_qm_density_spins_closed(L->sys);
     L->num_spins = closed ? 1 : 2;
-    L->ok = ok && an > 0 && bn > 0;
-    md_temp_end(temp);
+    L->ok = ok && md_qm_density_factor_count(L->sys, es_path::alpha_density, nullptr, nullptr) > 0 &&
+                  md_qm_density_factor_count(L->sys, es_path::beta_density, nullptr, nullptr) > 0;
     md_gpu_stream_destroy(L->stream);   // once its work is done
     L->stream = nullptr;
-    md_temp_trim();
 }
 
 static void localization_gpu_destroy(LocalizationGpu* L, md_gpu_stream_t gl_stream) {
@@ -5589,11 +5583,13 @@ static int es_source_volume_poll(ApplicationState* state, Representation* rep, c
     // field is made of (an electrostatic potential's distribution) and evaluates again
     desc.source_hash = es_source_hash(state, g);
     desc.band_hash   = 1;
+    desc.density_cache = density_cache_of(state);
     if (surface_field_uses_basis(kind)) {
         desc.basis_atom_xyz = basis_atom_positions_extract(&desc.num_basis_atoms, temp, sys, state->mold.state);
     }
 #if MD_ENABLE_GPU
     desc.gpu_stream = state->gpu_stream;
+    if (surface_field_is_orbital_ratio(desc.kind)) density_gpu_tiles_prepare(state, es_path::total_density, nullptr, &desc.gpu_density_tiles);
 #endif
     SurfaceFieldVolume& fv = es.source_vol;
     if (!surface_field_update(&fv, desc)) return -1;

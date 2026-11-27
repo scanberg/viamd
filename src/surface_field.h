@@ -77,7 +77,8 @@ enum class SurfaceFieldKind {
     // with which the electrons at r are held, on average. Mapped onto an isodensity surface, its lowest
     // values are where the least tightly held electrons are - the sites an electrophile or a radical
     // attacks - and it is never below |e_HOMO|. Hartree. Made of the canonical orbitals, their occupations
-    // and their energies (md_qm_alie_orbitals); not for natural orbitals, and not for a file without
+    // and their energies (md_qm_alie_orbitals; of more than DENSITY_FIELD_PRODUCTS_MAX of them, the numerator's
+    // tiles, md_qm_alie_dmat_build, over the density's); not for natural orbitals, and not for a file without
     // orbital energies. Kohn-Sham orbital energies give lower values than Hartree-Fock ones, as usual.
     AverageLocalIonizationEnergy,
 
@@ -97,8 +98,8 @@ enum class SurfaceFieldKind {
     // surface rho = c it is c / |grad rho|, how far the surface moves along its normal per relative change of the
     // density - a change d rho / rho moves it by L d rho / rho - so it shows where the boundary of the electron cloud
     // is soft (large L) and where stiff (small L), as when the density is compressed under pressure (GOSTSHYP). Bohr.
-    // Made of the total density's orbitals (md_qm_density_orbitals) and its gradient: on the CPU by md_gto_iso in
-    // double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
+    // Made of the total density (its orbitals' products, or of more than DENSITY_FIELD_PRODUCTS_MAX its tiles) and its
+    // gradient: on the CPU by md_gto_iso in double, on the GPU by md_gto_iso_gpu_evaluate_launch's gradients.
     DensityScaleLength,
 
     // The GOSTSHYP wall of a run under pressure (gostshyp.h): the potential of its Gaussians, V1 = sum_j p_j g_j,
@@ -108,17 +109,17 @@ enum class SurfaceFieldKind {
     GostshypWallPotential,
     GostshypEffectivePotential,
 
-    // rho(r) V1(r): where the energy of the GOSTSHYP wall is, integrating to it. Hartree / bohr^3. The density made of
-    // the total density's orbitals (md_qm_density_orbitals), evaluated only where the wall reaches: zero elsewhere.
+    // rho(r) V1(r): where the energy of the GOSTSHYP wall is, integrating to it. Hartree / bohr^3. The total density as
+    // the scale length's, evaluated only where the wall reaches: zero elsewhere.
     GostshypEnergyDensity,
 
-    // The QM region's ground state electron density, of both spins: made of the total density's orbitals
-    // (md_qm_density_orbitals), as the ratios above. Electrons / bohr^3.
+    // The QM region's ground state electron density, of both spins: as the scale length's. Electrons / bohr^3.
     ElectronDensity,
 
     // The electron localization function (ELF, md_qm_elf) and the localized orbital locator (LOL, md_qm_lol) of the
     // ground state, of both spins together: in [0, 1]. Made of each spin's density, its gradient and its kinetic energy
-    // density (md_qm_kinetic_orbitals), in double on the CPU. A volume of the whole of either is made faster on the
+    // density, from the spin's tiles (md_gto_dmat_evaluate: the density cache's, as the GPU's kernel reads them), in
+    // double on the CPU. A volume of the whole of either is made faster on the
     // GPU by its own kernel (viamd.cpp); this is what colours a surface, and the volume without that kernel.
     ElectronLocalization,
     LocalizedOrbitalLocator,
@@ -226,15 +227,17 @@ struct SurfaceFieldDesc {
     // outlive the volume.
     md_gpu_stream_t          gpu_stream = nullptr;
 
-    // Optional: where the tiles of the QM density the ESP is made of are kept once built (density_cache.h), so that
-    // making the ESP again - back to it from another field, or a geometry within the tiles' margin - does not build
-    // them again. Null: built each time. Must outlive the volume (the application's is).
+    // Optional: where the tiles of the QM densities are kept once built (density_cache.h): the ESP's, and those of the
+    // fields made of a density of more than DENSITY_FIELD_PRODUCTS_MAX orbitals (the ratios', the electron density's)
+    // or of ELF and LOL, so that making them again - back to one from another field, or a geometry within the tiles'
+    // margin - does not build them again. Null: built each time. Must outlive the volume (the application's is).
     struct DensityCache*     density_cache = nullptr;
 
 #if MD_ENABLE_GPU
     // Optional, for the orbital ratios (surface_field_is_orbital_ratio): the total density's tiles on the device
     // (density_gpu_tiles_prepare), which the GPU set of their density field reads rather than building its own
-    // (md_gto_iso_field_set_gpu_dmat), held for as long as that set lives. Null: the set builds them.
+    // (md_gto_iso_field_set_gpu_dmat), held for as long as that set lives. Null: the set builds them, or, for a field of
+    // the density's tiles, there is no set (on the CPU).
     std::shared_ptr<const struct DensityGpuTiles> gpu_density_tiles;
 #endif
 };

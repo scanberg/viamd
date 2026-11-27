@@ -23,6 +23,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
+#include <vector>
 #include <float.h>
 #include <math.h>
 #include <string.h>
@@ -433,6 +435,10 @@ struct OrbitalRatio {
     double              floor_value = 0.0;  // where rho is below RATIO_RHO_FLOOR, hartree
     std::shared_ptr<const void> rho_tiles;  // what rho's hint on the device points at (SurfaceFieldDesc.gpu_density_tiles):
                                             // held while the ratio, and so every set of it, lives; let go of on the main thread
+    // Of more than DENSITY_FIELD_PRODUCTS_MAX orbitals the fields are of tiles (total_density_field), which they read
+    std::shared_ptr<const DensityTiles> rho_host;   // the total density's
+    std::shared_ptr<const DensityTiles> num_host;   // the ionization energy's numerator (md_qm_alie_dmat_build)
+    std::shared_ptr<const void> num_tiles;  // the numerator's on the device (DensityGpuTiles, its upload): held as rho_tiles
 };
 
 // The density scale length: rho / |grad rho| of the density field, without a numerator
@@ -463,6 +469,35 @@ static void ratio_destroy(OrbitalRatio* a) {
     delete a;
 }
 
+#if MD_ENABLE_GPU
+// A field's tiles uploaded on stream for the field to read (md_gto_iso_field_set_gpu_dmat), destroyed on gl_stream when
+// let go of (on the main thread: DensityGpuTiles)
+static std::shared_ptr<const void> field_tiles_upload(md_gto_iso_field_t* f, const std::shared_ptr<const DensityTiles>& host, md_gpu_stream_t stream,
+                                                      md_gpu_stream_t gl_stream) {
+    std::shared_ptr<DensityGpuTiles> g = std::make_shared<DensityGpuTiles>();
+    g->dm = md_gto_gpu_dmat_upload(stream, &host->dm);
+    if (!g->dm) return nullptr;
+    g->src = host;
+    g->stream = gl_stream;
+    md_gto_iso_field_set_gpu_dmat(f, g->dm);
+    return g;
+}
+
+// What the ratio's fields read on the device, which a set of a field of tiles needs: the density's tiles given (their
+// copy every GPU path reads) where they hold at the ratio's atoms, else, where the density is of tiles, its own upload;
+// the numerator's upload where it is of tiles. Uploads on stream (the task's, or the GL thread's: none without it),
+// destroyed on gl_stream when the ratio goes.
+static void ratio_gpu_tiles(OrbitalRatio* a, const std::shared_ptr<const DensityGpuTiles>& given, md_gpu_stream_t stream, md_gpu_stream_t gl_stream) {
+    if (!a->rho_tiles && given && given->dm && md_gto_gpu_dmat_pattern_valid(given->dm, a->atom_xyz, 0)) {
+        md_gto_iso_field_set_gpu_dmat(a->rho, given->dm);
+        a->rho_tiles = given;
+    }
+    if (!stream || !gl_stream) return;
+    if (!a->rho_tiles && a->rho_host) a->rho_tiles = field_tiles_upload(a->rho, a->rho_host, stream, gl_stream);
+    if (!a->num_tiles && a->num_host) a->num_tiles = field_tiles_upload(a->num, a->num_host, stream, gl_stream);
+}
+#endif
+
 // Rows and weights handed out by md_qm, freed together
 struct OrbitalRows {
     double* rows = nullptr;
@@ -478,8 +513,42 @@ static void rows_free(OrbitalRows* r) {
     *r = OrbitalRows{};
 }
 
-// The ratio of the kind at the basis atoms' positions (desc.basis_atom_xyz), as two product fields
-static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
+// The ground state's total density over basis at atom_xyz (bohr, packed, one per basis atom), as a field: of its
+// orbitals' products (md_gto_iso_field_create_products) up to DENSITY_FIELD_PRODUCTS_MAX of them, else of its tiles
+// (md_gto_iso_field_create_dmat), into *out_tiles, which the field reads for as long as it lives: prefer where they hold
+// at these positions (the tiles a copy on the device is of, which a GPU set of the field then reads), else the cache's
+// (null: built for it). A protein's occupied orbitals are then never all held. The orbitals into *out_count. NULL
+// without the density.
+static md_gto_iso_field_t* total_density_field(size_t* out_count, std::shared_ptr<const DensityTiles>* out_tiles, const md_gto_basis_t& basis,
+                                               const float* atom_xyz, const md_system_t& sys, DensityCache* cache,
+                                               std::shared_ptr<const DensityTiles> prefer) {
+    md_allocator_i* heap = md_get_heap_allocator();
+    const size_t num_ao = md_gto_basis_num_ao(&basis);
+    *out_count = md_qm_density_factor_count(&sys, ESP_TOTAL_DENSITY_PATH, nullptr, nullptr);
+    if (*out_count == 0) return nullptr;
+    if (*out_count > DENSITY_FIELD_PRODUCTS_MAX) {
+        std::shared_ptr<const DensityTiles> t = prefer && prefer->dm.num_ao == num_ao && md_gto_dmat_pattern_valid(&prefer->dm, atom_xyz, 0) ? prefer :
+                                                density_cache_tiles(cache, sys, ESP_TOTAL_DENSITY_PATH, nullptr, &basis, atom_xyz, 0);
+        if (!t) return nullptr;
+        md_gto_iso_field_t* f = md_gto_iso_field_create_dmat(&basis, atom_xyz, 0, &t->dm, true, heap);
+        if (f) *out_tiles = std::move(t);
+        return f;
+    }
+    double* rows = nullptr;
+    double* w = nullptr;
+    size_t na = 0;
+    md_gto_iso_field_t* rho = nullptr;
+    const size_t n = md_qm_density_orbitals(&rows, &w, &na, &sys, ESP_TOTAL_DENSITY_PATH, heap);
+    if (n && na == num_ao) rho = md_gto_iso_field_create_products(&basis, atom_xyz, 0, rows, nullptr, w, n, heap);
+    if (rows) md_free(heap, rows, sizeof(double) * n * na);
+    if (w)    md_free(heap, w, sizeof(double) * n);
+    return rho;
+}
+
+// The ratio of the kind at the basis atoms' positions (desc.basis_atom_xyz), as two fields: the total density's
+// (total_density_field) and the numerator's, of products, or for the ionization energy of more than
+// DENSITY_FIELD_PRODUCTS_MAX orbitals of tiles in the density's pattern. prefer: as total_density_field's.
+static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc, std::shared_ptr<const DensityTiles> prefer) {
     const md_system_t& sys = *desc.sys;
     const char* what = surface_field_kind_info(desc.kind).label;
     md_allocator_i* heap = md_get_heap_allocator();
@@ -502,56 +571,64 @@ static OrbitalRatio* build_ratio(const SurfaceFieldDesc& desc) {
         for (int c = 0; c < 3; ++c) a->atom_xyz[3 * i + c] = desc.basis_atom_xyz[i].elem[c];
     }
 
-    // denominator and numerator
-    OrbitalRows den, nom;
+    // the denominator: the total density
+    size_t den_count = 0;
+    a->rho = total_density_field(&den_count, &a->rho_host, a->basis, a->atom_xyz, sys, desc.density_cache, std::move(prefer));
+    if (!a->rho) {
+        MD_LOG_ERROR("%s: no orbitals with occupations over the %zu atomic orbitals of the basis", what, num_ao);
+        ratio_destroy(a);
+        return nullptr;
+    }
     if (desc.kind == SurfaceFieldKind::DensityScaleLength) {
         // the density alone, with its gradient
-        den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, MD_STR_LIT("orbital/total/density"), heap);
-        if (!den.count || den.num_ao != num_ao) {
-            MD_LOG_ERROR("%s: no orbitals with occupations over the %zu atomic orbitals of the basis", what, num_ao);
-            rows_free(&den);
-            ratio_destroy(a);
-            return nullptr;
-        }
-        a->num_orbitals = den.count;
-        a->rho = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, den.rows, nullptr, den.w, den.count, heap);
-        rows_free(&den);
-        if (!a->rho) {
-            MD_LOG_ERROR("%s: could not make the density field", what);
-            ratio_destroy(a);
-            return nullptr;
-        }
+        a->num_orbitals = den_count;
         return a;
-    } else if (desc.kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
+    }
+    // the numerator
+    if (desc.kind == SurfaceFieldKind::AverageLocalIonizationEnergy && a->rho_host) {
+        // the density's orbitals at their energy weights, in tiles of the density's pattern
+        std::shared_ptr<DensityTiles> t = std::make_shared<DensityTiles>();
+        double lowest = 0.0;
+        if (md_gto_dmat_init_like(&t->dm, &a->rho_host->dm, heap) && md_qm_alie_dmat_build(&t->dm, &lowest, &sys, 0, task_system::executor()) > 0) {
+            a->num = md_gto_iso_field_create_dmat(&a->basis, a->atom_xyz, 0, &t->dm, true, heap);
+        }
+        if (!a->num) {
+            MD_LOG_ERROR("%s: no canonical orbitals with energies over the %zu atomic orbitals of the basis", what, num_ao);
+            ratio_destroy(a);
+            return nullptr;
+        }
+        a->num_host = std::move(t);
+        a->num_orbitals = den_count;
+        a->floor_value = lowest;    // |e_HOMO|
+        return a;
+    }
+    OrbitalRows nom, den;
+    if (desc.kind == SurfaceFieldKind::AverageLocalIonizationEnergy) {
         double* we = nullptr;
         den.count = md_qm_alie_orbitals(&den.rows, &den.w, &we, &den.num_ao, &sys, heap);
         if (den.count) {
-            // the same orbitals: the numerator borrows the rows, with the energy weights
+            // the same orbitals at their energy weights
             nom.rows = den.rows; nom.w = we; nom.count = den.count; nom.num_ao = den.num_ao;
+            den.rows = nullptr;
             a->floor_value = DBL_MAX;
             for (size_t k = 0; k < den.count; ++k) a->floor_value = MD_MIN(a->floor_value, we[k] / den.w[k]);   // |e_HOMO|
         }
     } else {
-        den.count = md_qm_density_orbitals(&den.rows, &den.w, &den.num_ao, &sys, MD_STR_LIT("orbital/total/density"), heap);
         nom.count = md_qm_attachment_orbitals(&nom.rows, &nom.w, &nom.num_ao, &sys, heap);
         a->floor_value = 0.0;
     }
-    if (!den.count || !nom.count || den.num_ao != num_ao || nom.num_ao != num_ao) {
+    if (den.w) md_free(heap, den.w, sizeof(double) * den.count);
+    if (!nom.count || nom.num_ao != num_ao) {
         MD_LOG_ERROR("%s: no canonical orbitals with energies over the %zu atomic orbitals of the basis%s", what, num_ao,
                      desc.kind == SurfaceFieldKind::LocalElectronAttachmentEnergy ? ", or no virtual orbital below zero" : "");
-        if (nom.rows == den.rows) nom.rows = nullptr;
-        rows_free(&den);
         rows_free(&nom);
         ratio_destroy(a);
         return nullptr;
     }
     a->num_orbitals = nom.count;
-    a->rho = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, den.rows, nullptr, den.w, den.count, heap);
     a->num = md_gto_iso_field_create_products(&a->basis, a->atom_xyz, 0, nom.rows, nullptr, nom.w, nom.count, heap);
-    if (nom.rows == den.rows) nom.rows = nullptr;
-    rows_free(&den);
     rows_free(&nom);
-    if (!a->rho || !a->num) {
+    if (!a->num) {
         MD_LOG_ERROR("%s: could not make the orbital fields", what);
         ratio_destroy(a);
         return nullptr;
@@ -674,37 +751,29 @@ static inline void bit_set(uint64_t* bits, size_t i)       { bits[i >> 6] |= (1u
 // D + MD_QM_ELF_D_MIN (md_qm_elf), which goes to 0 smoothly by rho 1e-4. LOL is a plain ratio and goes to 0 there
 // itself.
 
-// The total density of the ground state, as products of its orbitals at the basis atoms (bohr)
-static md_gto_iso_field_t* density_field_create(md_gto_basis_t* basis, const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms) {
-    md_allocator_i* heap = md_get_heap_allocator();
-    double* rows = nullptr;
-    double* w = nullptr;
-    size_t num_ao = 0;
-    md_gto_iso_field_t* rho = nullptr;
-    const size_t n = md_qm_density_orbitals(&rows, &w, &num_ao, &sys, ESP_TOTAL_DENSITY_PATH, heap);
-    if (n && md_gto_basis_extract_attributes(basis, &sys.attributes, heap) && md_gto_basis_num_ao(basis) == num_ao &&
-        md_gto_basis_num_atoms(basis) <= num_atoms) {
-        rho = md_gto_iso_field_create_products(basis, (const float*)atom_xyz, 0, rows, nullptr, w, n, heap);
-    }
-    if (rows) md_free(heap, rows, sizeof(double) * n * num_ao);
-    if (w)    md_free(heap, w, sizeof(double) * n);
-    return rho;
+// The total density of the ground state at the basis atoms (bohr), over the system's basis (into basis):
+// total_density_field's, its tiles into *out_tiles where it is of them
+static md_gto_iso_field_t* density_field_create(md_gto_basis_t* basis, std::shared_ptr<const DensityTiles>* out_tiles, const md_system_t& sys,
+                                                DensityCache* cache, const md_float3_t* atom_xyz, size_t num_atoms) {
+    if (!md_gto_basis_extract_attributes(basis, &sys.attributes, md_get_heap_allocator()) || md_gto_basis_num_atoms(basis) > num_atoms) return nullptr;
+    size_t count = 0;
+    return total_density_field(&count, out_tiles, *basis, (const float*)atom_xyz, sys, cache, nullptr);
 }
 
-// The densities and kinetic energy densities of the spins (one, the total, for a closed shell)
+// The densities of the spins (one, the total, for a closed shell) as their tiles, the cache's: md_gto_dmat_evaluate
+// gives rho, its gradient and tau of each at a point, from the tiles at DENSITY_TILES_CUTOFF (ELF and LOL within 1.1e-4
+// where rho > 1e-3, as the GPU's kernel), with no orbitals held, nor their derivatives
 struct LocalizationFields {
-    md_gto_iso_field_t* rho[2] = {};
-    md_gto_iso_field_t* tau[2] = {};
+    md_gto_basis_t      basis = {};     // heap
+    std::vector<float>  xyz;            // the basis atoms, packed (bohr)
+    std::shared_ptr<const DensityTiles> tiles[2];   // null for a spin without electrons: zero
     int                 num_spins = 0;  // 1: closed shell (the total density), 2: alpha and beta
     bool                lol = false;
 };
 
 static void localization_destroy(LocalizationFields* f) {
     if (!f) return;
-    for (int i = 0; i < 2; ++i) {
-        if (f->rho[i]) md_gto_iso_field_destroy(f->rho[i]);
-        if (f->tau[i]) md_gto_iso_field_destroy(f->tau[i]);
-    }
+    md_gto_basis_free(&f->basis, md_get_heap_allocator());
     delete f;
 }
 
@@ -718,13 +787,12 @@ int localization_fields_create(md_gto_iso_field_t* out_rho[2], md_gto_iso_field_
     // the fields copy what they take of the bases
     md_gto_basis_t basis = {};
     if (!md_gto_basis_extract_attributes(&basis, &sys.attributes, alloc) || md_gto_basis_num_atoms(&basis) > num_atoms) return 0;
-    // a closed shell: the same orbitals and occupations in both spins, which are then one density
-    double *ar = nullptr, *aw = nullptr, *br = nullptr, *bw = nullptr;
-    size_t ana = 0, bna = 0;
-    const size_t an = md_qm_density_orbitals(&ar, &aw, &ana, &sys, ESP_ALPHA_DENSITY_PATH, alloc);
-    const size_t bn = md_qm_density_orbitals(&br, &bw, &bna, &sys, ESP_BETA_DENSITY_PATH, alloc);
+    // a closed shell: the same orbitals and occupations in both spins, which are then one density (from the occupations:
+    // md_qm_density_spins_closed, md_qm_density_factor_count)
+    const size_t an = md_qm_density_factor_count(&sys, ESP_ALPHA_DENSITY_PATH, nullptr, nullptr);
+    const size_t bn = md_qm_density_factor_count(&sys, ESP_BETA_DENSITY_PATH, nullptr, nullptr);
     if (an == 0 && bn == 0) return 0;
-    const bool closed = an == bn && ana == bna && memcmp(ar, br, sizeof(double) * an * ana) == 0 && memcmp(aw, bw, sizeof(double) * an) == 0;
+    const bool closed = md_qm_density_spins_closed(&sys);
     // A spin without occupied orbitals has no density: it is left out, as md_qm_elf takes a spin of none
     md_str_t paths[2];
     int num = 0;
@@ -765,11 +833,29 @@ int localization_fields_create(md_gto_iso_field_t* out_rho[2], md_gto_iso_field_
     return closed ? 1 : num;
 }
 
-static LocalizationFields* localization_create(const md_system_t& sys, const md_float3_t* atom_xyz, size_t num_atoms, bool lol) {
+static LocalizationFields* localization_create(const md_system_t& sys, DensityCache* cache, const md_float3_t* atom_xyz, size_t num_atoms, bool lol) {
     LocalizationFields* f = new LocalizationFields();
     f->lol = lol;
-    f->num_spins = localization_fields_create(f->rho, f->tau, sys, atom_xyz, num_atoms);
-    if (!f->num_spins) {
+    if (!md_gto_basis_extract_attributes(&f->basis, &sys.attributes, md_get_heap_allocator()) || md_gto_basis_num_atoms(&f->basis) > num_atoms) {
+        localization_destroy(f);
+        return nullptr;
+    }
+    f->xyz.assign((const float*)atom_xyz, (const float*)atom_xyz + 3 * md_gto_basis_num_atoms(&f->basis));
+    const bool closed = md_qm_density_spins_closed(&sys);
+    f->num_spins = closed ? 1 : 2;
+    const md_str_t paths[2] = { closed ? ESP_TOTAL_DENSITY_PATH : ESP_ALPHA_DENSITY_PATH, ESP_BETA_DENSITY_PATH };
+    bool any = false;
+    for (int s = 0; s < f->num_spins; ++s) {
+        // a spin without electrons has no density: zero, as md_qm_elf takes a spin of none
+        if (md_qm_density_factor_count(&sys, paths[s], nullptr, nullptr) == 0) continue;
+        f->tiles[s] = density_cache_tiles(cache, sys, paths[s], nullptr, &f->basis, f->xyz.data(), 0);
+        if (!f->tiles[s]) {
+            localization_destroy(f);
+            return nullptr;
+        }
+        any = true;
+    }
+    if (!any) {
         localization_destroy(f);
         return nullptr;
     }
@@ -789,10 +875,12 @@ static inline double localization_value(bool lol, int num_spins, const double rh
 static void localization_evaluate(double* out, const float* xyz, size_t n, const LocalizationFields* f) {
     MD_ASSERT(n <= 8);
     const int ns = f->num_spins;
-    double rho[2][8], grad[2][24], tau[2][8];
+    double rho[2][8] = {}, grad[2][24] = {}, tau[2][8] = {};
     for (int s = 0; s < ns; ++s) {
-        md_gto_iso_field_evaluate(f->rho[s], xyz, n, 0, rho[s], grad[s]);
-        md_gto_iso_field_evaluate(f->tau[s], xyz, n, 0, tau[s], nullptr);
+        if (f->tiles[s] && !md_gto_dmat_evaluate(rho[s], grad[s], tau[s], &f->tiles[s]->dm, &f->basis, f->xyz.data(), 0, xyz, n, 0, nullptr)) {
+            for (size_t i = 0; i < n; ++i) out[i] = NAN;
+            return;
+        }
     }
     for (size_t i = 0; i < n; ++i) {
         double r[2] = {}, g2[2] = {}, t[2] = {};
@@ -813,6 +901,7 @@ struct FieldData {
     GostshypField         wall_field = GostshypField::WallPotential;
     md_gto_iso_field_t*   rho = nullptr;        // the electron density; with the wall, the energy density rho V1
     md_gto_basis_t*       rho_basis = nullptr;  // its basis, owned
+    std::shared_ptr<const DensityTiles> rho_tiles;  // what rho reads where it is of tiles (total_density_field)
     LocalizationFields*   loc = nullptr;        // ELF or LOL
 };
 
@@ -873,6 +962,7 @@ struct FieldBuild {
     md_gpu_stream_t    stream = nullptr;
 #if MD_ENABLE_GPU
     std::shared_ptr<const DensityGpuTiles> gpu_density_tiles;    // SurfaceFieldDesc's, for the ratio's density field
+    md_gpu_stream_t    gl_stream = nullptr;     // SurfaceFieldDesc's: where what the task puts on the device goes
 #endif
     // made by the task
     FieldData          data;
@@ -930,6 +1020,7 @@ static FieldBuild* build_create(const SurfaceFieldDesc& desc) {
     if (desc.gpu_stream && kind_is_ratio(desc.kind)) {
         b->stream = md_gpu_stream_create(md_gpu_stream_device(desc.gpu_stream), MD_GPU_STREAM_COMPUTE, "surface field");
         b->gpu_density_tiles = desc.gpu_density_tiles;
+        b->gl_stream = desc.gpu_stream;
     }
 #endif
     if (desc.basis_atom_xyz && desc.num_basis_atoms) {
@@ -965,14 +1056,17 @@ static void build_run(FieldBuild* b) {
     desc.density_cache   = b->density_cache;
     md_allocator_i* heap = md_get_heap_allocator();
     if (kind_is_ratio(b->kind)) {
-        b->data.ratio = build_ratio(desc);
+#if MD_ENABLE_GPU
+        // the density's fields of tiles, where they are, of the tiles the copy on the device is of
+        std::shared_ptr<const DensityTiles> prefer = b->gpu_density_tiles ? b->gpu_density_tiles->src : nullptr;
+#else
+        std::shared_ptr<const DensityTiles> prefer;
+#endif
+        b->data.ratio = build_ratio(desc, std::move(prefer));
         b->ok = b->data.ratio != nullptr;
 #if MD_ENABLE_GPU
-        if (OrbitalRatio* a = b->data.ratio; a && a->rho && b->gpu_density_tiles) {
-            // the density's tiles on the device, read by the set in place rather than built for it
-            md_gto_iso_field_set_gpu_dmat(a->rho, b->gpu_density_tiles->dm);
-            a->rho_tiles = b->gpu_density_tiles;
-        }
+        // the density's tiles on the device, read by the set in place rather than built for it
+        if (OrbitalRatio* a = b->data.ratio) ratio_gpu_tiles(a, b->gpu_density_tiles, b->stream, b->gl_stream);
         if (b->stream) {
             if (const OrbitalRatio* a = b->data.ratio) {
                 const md_gto_iso_field_t* fields[2] = { a->rho, a->num };
@@ -994,16 +1088,16 @@ static void build_run(FieldBuild* b) {
         }
         if (b->kind == SurfaceFieldKind::GostshypEnergyDensity && b->data.wall) {
             b->data.rho_basis = new md_gto_basis_t{};
-            b->data.rho = density_field_create(b->data.rho_basis, *b->sys, b->basis_atom_xyz, b->num_basis_atoms);
+            b->data.rho = density_field_create(b->data.rho_basis, &b->data.rho_tiles, *b->sys, b->density_cache, b->basis_atom_xyz, b->num_basis_atoms);
             if (!b->data.rho) MD_LOG_ERROR("GOSTSHYP energy density: no ground state density to make it of");
         }
         b->ok = b->data.wall != nullptr && (b->kind != SurfaceFieldKind::GostshypEnergyDensity || b->data.rho);
     } else if (b->kind == SurfaceFieldKind::ElectronDensity) {
         b->data.rho_basis = new md_gto_basis_t{};
-        b->data.rho = density_field_create(b->data.rho_basis, *b->sys, b->basis_atom_xyz, b->num_basis_atoms);
+        b->data.rho = density_field_create(b->data.rho_basis, &b->data.rho_tiles, *b->sys, b->density_cache, b->basis_atom_xyz, b->num_basis_atoms);
         b->ok = b->data.rho != nullptr;
     } else if (b->kind == SurfaceFieldKind::ElectronLocalization || b->kind == SurfaceFieldKind::LocalizedOrbitalLocator) {
-        b->data.loc = localization_create(*b->sys, b->basis_atom_xyz, b->num_basis_atoms, b->kind == SurfaceFieldKind::LocalizedOrbitalLocator);
+        b->data.loc = localization_create(*b->sys, b->density_cache, b->basis_atom_xyz, b->num_basis_atoms, b->kind == SurfaceFieldKind::LocalizedOrbitalLocator);
         b->ok = b->data.loc != nullptr;
     } else if (md_gto_int_charges_t* q = (md_gto_int_charges_t*)md_alloc(heap, sizeof(md_gto_int_charges_t))) {
         md_memset(q, 0, sizeof(*q));
@@ -1161,9 +1255,10 @@ static md_gto_int_gpu_charges_t source_gpu(FieldSource* fs, md_gpu_stream_t stre
 // An orbital ratio's two fields on the device, as one set: field 0 the density, field 1 the numerator (the scale
 // length: the density alone)
 static md_gto_iso_gpu_set_t* source_ratio_gpu(FieldSource* fs, md_gpu_stream_t stream) {
-    const OrbitalRatio* a = fs->data.ratio;
+    OrbitalRatio* a = fs->data.ratio;
     if (!a || !stream) return nullptr;
     if (!fs->gpu && !fs->gpu_failed) {
+        ratio_gpu_tiles(a, nullptr, stream, stream);
         const md_gto_iso_field_t* fields[2] = { a->rho, a->num };
         fs->gpu = md_gto_iso_gpu_set_create(stream, &a->basis, a->atom_xyz, 0, fields, a->num ? 2 : 1, md_get_heap_allocator());
         fs->gpu_failed = fs->gpu == nullptr;
