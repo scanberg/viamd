@@ -1832,6 +1832,8 @@ struct ApplicationState {
             postprocess_pipeline::SsaoMode mode = postprocess_pipeline::SsaoMode_Quality;     // the computer's (the .ini), as the rest of the AO
         } ssao;
 
+        bool occlusion_temporal = true; // accumulate the shadows and the ambient occlusion over frames
+
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
         struct {
             bool enabled = true;

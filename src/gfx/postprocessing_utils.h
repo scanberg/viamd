@@ -91,6 +91,10 @@ struct Settings {
         SsaoMode mode = SsaoMode_Performance;
     } ssao;
 
+    // The shadows and the ambient occlusion accumulated over frames, their sample patterns turning with the frame
+    // (md_compose's history); else the patterns held still
+    bool occlusion_temporal = true;
+
     // The temporal antialiasing (md_post_resolve): how much of the history is kept, from where the image moves to
     // where it is still
     struct {

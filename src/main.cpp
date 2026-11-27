@@ -333,6 +333,19 @@ static uint32_t jitter_count(const ApplicationState* state) {
 }
 
 // Whether the anti-aliasing runs: the temporal (the jitter with it)
+// The frames the shadows and the ambient occlusion take to settle when they are filtered over time: their histories,
+// twice through their sample patterns (md_compose's history)
+static constexpr uint32_t OCCLUSION_SETTLE_FRAMES = 32;
+
+static constexpr const char* OCCLUSION_TEMPORAL_TIP =
+    "Accumulate the shadows and the occlusion over frames: removes the flicker in crevasses and smooths the soft shadows.\n"
+    "Shared by both. Off gives a fixed sample pattern instead.";
+
+static inline bool occlusion_temporal_active(const ApplicationState* state) {
+    const bool shadows = state->visuals.shadows.enabled && state->visuals.shading.light > 0.0f;
+    return (shadows || state->visuals.ssao.enabled) && state->visuals.occlusion_temporal;
+}
+
 static inline bool taa_active(const ApplicationState* state) {
     return state->visuals.anti_aliasing.enabled;
 }
@@ -589,6 +602,7 @@ int main(int argc, char** argv) {
     app_settings::bind(MD_STR_LIT("lazy_rendering"), &state.settings.lazy_rendering);
     app_settings::bind(MD_STR_LIT("shadows"), &state.visuals.shadows.enabled);
     app_settings::bind(MD_STR_LIT("shadows_softness"), &state.visuals.shadows.softness);
+    app_settings::bind(MD_STR_LIT("occlusion_temporal"), &state.visuals.occlusion_temporal);
     app_settings::bind(MD_STR_LIT("ssao"), &state.visuals.ssao.enabled);
     app_settings::bind_enum(MD_STR_LIT("ssao_mode"), &state.visuals.ssao.mode);
     app_settings::bind(MD_STR_LIT("ssao_intensity"), &state.visuals.ssao.intensity);
@@ -1914,6 +1928,8 @@ static void draw_main_menu(ApplicationState* data) {
                 }
                 prop::row("strength", "How much the ambient occlusion darkens");
                 machine_dirty |= ImGui::SliderFloat("##ssao_intensity", &data->visuals.ssao.intensity, 0.0f, 8.f, "%.2f");
+                prop::row("temporal filter", OCCLUSION_TEMPORAL_TIP);
+                machine_dirty |= ImGui::Checkbox("##ssao_temporal", &data->visuals.occlusion_temporal);
                 prop::section_end();
             }
 
@@ -1927,6 +1943,8 @@ static void draw_main_menu(ApplicationState* data) {
                                       "whose edges blur more the further they fall from what casts them.");
                 machine_dirty |= ImGui::SliderFloat("##shadow_softness", &data->visuals.shadows.softness, SHADOW_SOFTNESS_MIN, SHADOW_SOFTNESS_MAX,
                                                     (const char*)u8"%.1f°", ImGuiSliderFlags_AlwaysClamp);
+                prop::row("temporal filter", OCCLUSION_TEMPORAL_TIP);
+                machine_dirty |= ImGui::Checkbox("##shadow_temporal", &data->visuals.occlusion_temporal);
                 prop::section_end();
             }
 #if EXPERIMENTAL_CONE_TRACED_AO == 1
@@ -6970,13 +6988,17 @@ static bool input_activity() {
 }
 
 // The frames the image takes to settle after a change: the TAA's history to within a percent of the new image (by its
-// feedback on a still view) and twice through the jitter; else the one frame
+// feedback on a still view) and twice through the jitter, the shadows and the ambient occlusion likewise when they are
+// filtered over time; else the one frame
 static uint32_t settle_frames(const ApplicationState* state) {
     uint32_t n = 1;
     if (taa_active(state)) {
         const double feedback = MD_CLAMP((double)state->visuals.temporal_aa.feedback_max, 0.5, 0.99);
         n = (uint32_t)ceil(log(0.01) / log(feedback));
         n = MD_MAX(n, 2 * jitter_count(state));
+    }
+    if (occlusion_temporal_active(state)) {
+        n = MD_MAX(n, OCCLUSION_SETTLE_FRAMES);
     }
     return MD_CLAMP(n, 1u, 2u * JITTER_SEQUENCE_MAX);
 }
@@ -7035,6 +7057,7 @@ static postprocess_pipeline::Settings frame_settings(const ApplicationState* sta
 
     settings.shadows.enabled = state->visuals.shadows.enabled;
     settings.shadows.softness = state->visuals.shadows.softness;
+    settings.occlusion_temporal = occlusion_temporal_active(state);
 
     settings.tonemap.enabled = state->visuals.tonemapping.enabled;
     settings.tonemap.mode = state->visuals.tonemapping.tonemapper;

@@ -128,6 +128,7 @@ struct MdRenderBridge {
     uint32_t  out_width = 0, out_height = 0;    // the image's
     md_gpu_texture_t scene = nullptr, frame = nullptr;
     md_gpu_texture_t history[2] = {};
+    md_compose_history_t vis_history = nullptr; // the shadows' and the occlusion's, while they are filtered over time
     int       hist = 0;                         // the history written last
     bool      hist_valid = false;               // it holds the image of the frame before, for the TAA to go on from
     md_gpu_texture_t image = nullptr;
@@ -1654,6 +1655,15 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     // The key light's shadows, found in the depth (md_compose): the light's size, their softness
     cd.shadows = settings.shadows.enabled;
     cd.light_radius = (float)MD_DEG_TO_RAD(MD_MAX(settings.shadows.softness, 0.0f));
+    // Both accumulated over frames (md_compose's history), else their sample patterns held still. The history goes
+    // with the filter: one made again starts over rather than from frames long past.
+    if (settings.occlusion_temporal) {
+        if (!b->vis_history) b->vis_history = md_compose_history_create();
+    } else if (b->vis_history) {
+        md_compose_history_destroy(b->stream, b->vis_history);
+        b->vis_history = nullptr;
+    }
+    cd.history = b->vis_history;
     cd.target = b->scene;
     md_post_display_t dd = {};
     display_of(&dd, settings);
@@ -2691,6 +2701,8 @@ void md_render_bridge_destroy(ApplicationState* state) {
         if (b->shape_scale) md_gpu_free(b->stream, b->shape_scale);
         for (size_t i = 0; i < md_array_size(b->glyphs); ++i) free_glyphs(b, &b->glyphs[i]);
         free_targets(b);
+        md_compose_history_destroy(b->stream, b->vis_history);
+        b->vis_history = nullptr;
         if (b->view) md_render_view_destroy(b->stream, b->view);
         md_gpu_stream_sync(b->stream);
     }
