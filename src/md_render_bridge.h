@@ -74,6 +74,18 @@ md_gpu_texture_t md_render_bridge_image(const ApplicationState* state);
 // It read back (rgba: width x height, its size), waiting for the GPU. False: none, or of another size.
 bool md_render_bridge_read_image(ApplicationState* state, uint32_t* rgba, uint32_t width, uint32_t height);
 
+// ---- Diagnostics (the Profiler's) ---------------------------------------------------------------------------------
+// md_render's switches (md_render_debug.h) for measuring: occlusion culling by md_render's own measure of whether it
+// pays (0), always (1) or never (2); the compute raster of the elements a few pixels across on or off. The main view
+// rasterises again when they change.
+enum { RenderOcclusion_Auto = 0, RenderOcclusion_Always = 1, RenderOcclusion_Off = 2 };
+void md_render_bridge_debug(ApplicationState* state, int occlusion, bool compute_raster);
+// A line each into w: with raster, the switches and what md_render's latest completed raster of the main view did with
+// the elements; with kernels, what the driver reports of each kernel and raster pipeline of md_render, md_compose and
+// md_post (registers, ...: where it reports anything, as it names them)
+struct md_str_writer_t;
+void md_render_bridge_debug_text(const ApplicationState* state, md_str_writer_t* w, bool raster, bool kernels);
+
 // ---- Panels -------------------------------------------------------------------------------------------------------
 // The component windows' views (the Orbital Grid's, the Transition Analysis', the Charge Transfer side views, the
 // Density Volume's): panels of one size and one camera, each the molecule (representations of the system's atoms)

@@ -21,8 +21,10 @@
 
 #include <md_render.h>
 #include <md_render_mol.h>
+#include <md_render_debug.h>
 #include <md_compose.h>
 #include <md_post.h>
+#include <core/md_writer.h>
 #include <gfx/postprocessing_utils.h>
 #include <gfx/isolines.h>
 #include <gpu_volume.h>
@@ -68,6 +70,10 @@ static void free_rep(md_gpu_stream_t s, BridgeRep* r) {
     if (r->profile) md_gpu_free(s, r->profile);
     free_pairs(s, &r->pairs);
 }
+
+// The driver's statistics of md_compose's and md_post's kernels: theirs, kept out of their headers (md_render_bench's too)
+extern "C" bool md_compose_debug_kernel_info(md_compose_ctx_t c, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
+extern "C" bool md_post_debug_kernel_info(md_post_ctx_t p, uint32_t i, const char** name, md_gpu_kernel_info_t* info);
 
 struct MdRenderBridge {
     bool        ok = false;
@@ -136,6 +142,11 @@ struct MdRenderBridge {
     md_gpu_texture_t image = nullptr;
     md_gpu_texture_t out = nullptr;             // the image shown: the image kept presented, the overlay over it
     bool      still = true;         // md_render did not rasterise this frame: nothing moved
+    // The Profiler's switches (md_render_bridge_debug) as set, and md_render's counts of the latest completed raster
+    int       dbg_occlusion = RenderOcclusion_Auto;
+    bool      dbg_compute = true;
+    md_render_stats_t stats = {};
+    bool      has_stats = false;
     md_render_frame_t last = {};    // the frame drawn last (its batches are `batches`), for the masks alone
     bool      has_last = false;
     int       last_ui_frame = -1;   // the ImGui frame it was drawn in
@@ -1551,6 +1562,7 @@ void md_render_bridge_render(ApplicationState* state, const postprocess_pipeline
     MdRenderBridge* b = state->md_render_bridge;
     if (b) b->still = true;
     if (!b || !b->ok) return;
+    if (md_render_view_stats(b->view, &b->stats)) b->has_stats = true;    // asynchronous: a raster that has completed
     b->has_last = false;
     md_array_shrink(b->batches, 0);
     const uint32_t width = state->target.width, height = state->target.height;
@@ -1858,6 +1870,51 @@ bool md_render_bridge_read_image(ApplicationState* state, uint32_t* rgba, uint32
     if (ok) memcpy(rgba, rb.cpu, bytes);
     if (rb.gpu) md_gpu_free(b->stream, rb.gpu);
     return ok;
+}
+
+// ---- Diagnostics --------------------------------------------------------------------------------------------------
+
+void md_render_bridge_debug(ApplicationState* state, int occlusion, bool compute_raster) {
+    MdRenderBridge* b = state->md_render_bridge;
+    if (!b || !b->ok || !b->view) return;
+    if (occlusion == b->dbg_occlusion && compute_raster == b->dbg_compute) return;
+    md_render_debug_occlusion_auto(occlusion == RenderOcclusion_Auto);
+    uint32_t options = 0;
+    if (occlusion == RenderOcclusion_Off) options |= MD_RENDER_DEBUG_NO_OCCLUSION;
+    if (!compute_raster)                  options |= MD_RENDER_DEBUG_NO_COMPUTE_RASTER;
+    md_render_debug_view(b->view, options, 0.0f);
+    b->dbg_occlusion = occlusion;
+    b->dbg_compute   = compute_raster;
+}
+
+void md_render_bridge_debug_text(const ApplicationState* state, md_str_writer_t* w, bool raster, bool kernels) {
+    const MdRenderBridge* b = state->md_render_bridge;
+    if (!b || !b->ok) return;
+    static const char* occl[] = { "auto (md_render's measure)", "always", "off" };
+    if (raster) md_str_writer_fmt(w, "md_render: occlusion %s, compute raster %s\n", occl[b->dbg_occlusion], b->dbg_compute ? "on" : "off");
+    if (raster && b->has_stats) {
+        const md_render_stats_t& s = b->stats;
+        md_str_writer_fmt(w, "md_render raster %u: elements %llu; drawn in hardware %u + %u, in compute %u + %u (phase 1 + 2); "
+                             "occluded %u (retested %u), outside %u, faded %u, hidden %u\n",
+                          s.raster, (unsigned long long)s.elements, s.hardware[0], s.hardware[1], s.compute[0], s.compute[1],
+                          s.occluded, s.occlusion_retested, s.outside, s.faded, s.hidden);
+        md_str_writer_fmt(w, "md_render raster %u: clusters %u, expanded %u + %u, occluded %u%s\n", s.raster, s.clusters,
+                          s.clusters_expanded[0], s.clusters_expanded[1], s.clusters_occluded, s.refitted ? ", refitted" : "");
+    }
+    if (!kernels) return;
+    const char* name = nullptr;
+    md_gpu_kernel_info_t ki = {};
+    md_gpu_pipeline_info_t pi = {};
+    for (uint32_t i = 0; md_render_debug_kernel_info(b->render, i, &name, &ki); ++i)
+        if (ki.stats[0]) md_str_writer_fmt(w, "kernel md_render.%s: %s\n", name, ki.stats);
+    for (uint32_t i = 0; md_render_debug_pipeline_info(b->render, i, &name, &pi); ++i) {
+        if (pi.vertex_stats[0])   md_str_writer_fmt(w, "pipeline md_render.%s, vertex: %s\n", name, pi.vertex_stats);
+        if (pi.fragment_stats[0]) md_str_writer_fmt(w, "pipeline md_render.%s, fragment: %s\n", name, pi.fragment_stats);
+    }
+    for (uint32_t i = 0; md_compose_debug_kernel_info(b->compose, i, &name, &ki); ++i)
+        if (ki.stats[0]) md_str_writer_fmt(w, "kernel md_compose.%s: %s\n", name, ki.stats);
+    for (uint32_t i = 0; md_post_debug_kernel_info(b->post, i, &name, &ki); ++i)
+        if (ki.stats[0]) md_str_writer_fmt(w, "kernel md_post.%s: %s\n", name, ki.stats);
 }
 
 // ---- Picking ------------------------------------------------------------------------------------------------------

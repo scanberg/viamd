@@ -396,6 +396,8 @@ static void draw_coordinate_system_widget_window(ViewTransform* target, const Vi
 static void draw_debug_window(ApplicationState* state);
 static void draw_profiler_window(ApplicationState* state);
 static bool profiler_gpu_timing = true;     // the GPU's times in the profiler, while its window is open
+static int  profiler_occlusion  = RenderOcclusion_Auto;   // md_render's switches, for measuring (md_render_bridge_debug)
+static bool profiler_compute_raster = true;
 static void draw_property_export_window(ApplicationState* state);
 static void draw_structure_export_window(ApplicationState* state);
 static void draw_notifications_window();
@@ -5475,6 +5477,7 @@ static void profiler_export_info(md_str_writer_t* sw, const ApplicationState* st
     md_str_writer_fmt(sw, "viewport: %u x %u shown, render scale %.3f, %u x %u rendered\n",
                       (unsigned)state->target.out_width, (unsigned)state->target.out_height, state->settings.render_scale,
                       (unsigned)state->target.width, (unsigned)state->target.height);
+    md_render_bridge_debug_text(state, sw, true, true);
 }
 
 // The profiler's times (profiler::write_csv) as a CSV file
@@ -5538,6 +5541,32 @@ static void draw_profiler_window(ApplicationState* data) {
         ImGui::SameLine();
         ImGui::Checkbox("GPU times", &profiler_gpu_timing);
         ImGui::SetItemTooltip("A GPU timestamp after each kernel and render pass, while this window is open");
+
+        // md_render's switches, for measuring; what its latest raster did, and what the driver says of the kernels
+        if (ImGui::CollapsingHeader("Renderer")) {
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+            ImGui::Combo("Occlusion culling", &profiler_occlusion, "Auto (md_render's measure)\0Always\0Off\0");
+            ImGui::SetItemTooltip("Auto: md_render turns it off for 60 rasters when a raster that tested it culled few elements");
+            ImGui::Checkbox("Compute raster", &profiler_compute_raster);
+            ImGui::SetItemTooltip("Elements up to 6 pixels across rasterised in a compute kernel and copied into the raster's "
+                                  "targets at the start of each raster pass; off: all in hardware");
+            md_render_bridge_debug(data, profiler_occlusion, profiler_compute_raster);
+            md_temp_scope_t temp = md_temp_begin();
+            md_str_writer_t text = md_str_writer_create(md_temp_allocator(temp));
+            md_render_bridge_debug_text(data, &text, true, false);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(md_str_writer_to_cstr(&text));
+            ImGui::PopTextWrapPos();
+            if (ImGui::TreeNode("Kernels, as the driver reports them")) {
+                md_str_writer_t k = md_str_writer_create(md_temp_allocator(temp));
+                md_render_bridge_debug_text(data, &k, false, true);
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(md_str_writer_to_cstr(&k));
+                ImGui::PopTextWrapPos();
+                ImGui::TreePop();
+            }
+            md_temp_end(temp);
+        }
 
         profiler::draw_table();
     }
